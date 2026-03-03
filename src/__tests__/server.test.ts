@@ -358,6 +358,50 @@ describe("POST /v1/chat/completions", () => {
   });
 });
 
+describe("POST /v1/chat/completions (non-streaming)", () => {
+  it("returns text response as JSON when stream=false", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("chat.completion");
+    expect(body.model).toBe("gpt-4");
+    expect(body.choices).toHaveLength(1);
+    expect(body.choices[0].message.role).toBe("assistant");
+    expect(body.choices[0].message.content).toBe("Hi there!");
+    expect(body.choices[0].finish_reason).toBe("stop");
+  });
+
+  it("returns tool call response as JSON when stream=false", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "weather" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("chat.completion");
+    expect(body.choices[0].message.content).toBeNull();
+    expect(body.choices[0].finish_reason).toBe("tool_calls");
+
+    const tc = body.choices[0].message.tool_calls;
+    expect(tc).toHaveLength(1);
+    expect(tc[0].function.name).toBe("get_weather");
+    expect(tc[0].function.arguments).toBe('{"city":"NYC"}');
+  });
+});
+
 describe("routing", () => {
   it("returns 404 for GET /v1/chat/completions", async () => {
     instance = await createServer(allFixtures);

@@ -7,6 +7,8 @@ import {
   isErrorResponse,
   buildTextChunks,
   buildToolCallChunks,
+  buildTextCompletion,
+  buildToolCallCompletion,
 } from "../helpers.js";
 
 describe("generateId", () => {
@@ -259,5 +261,74 @@ describe("buildToolCallChunks", () => {
     );
     expect(argChunks.length).toBe(1);
     expect(argChunks[0].choices[0].delta.tool_calls![0].function!.arguments).toBe('{"x":1}');
+  });
+});
+
+describe("buildTextCompletion", () => {
+  it("returns a valid chat.completion object", () => {
+    const result = buildTextCompletion("Hello!", "gpt-4");
+    expect(result.object).toBe("chat.completion");
+    expect(result.model).toBe("gpt-4");
+    expect(result.id).toMatch(/^chatcmpl-/);
+    expect(result.created).toBeGreaterThan(0);
+  });
+
+  it("has a single choice with assistant role and content", () => {
+    const result = buildTextCompletion("Hello!", "gpt-4");
+    expect(result.choices).toHaveLength(1);
+    expect(result.choices[0].index).toBe(0);
+    expect(result.choices[0].message.role).toBe("assistant");
+    expect(result.choices[0].message.content).toBe("Hello!");
+    expect(result.choices[0].finish_reason).toBe("stop");
+  });
+
+  it("includes usage object", () => {
+    const result = buildTextCompletion("Hello!", "gpt-4");
+    expect(result.usage).toEqual({
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+    });
+  });
+});
+
+describe("buildToolCallCompletion", () => {
+  it("returns a valid chat.completion with tool_calls", () => {
+    const result = buildToolCallCompletion(
+      [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      "gpt-4",
+    );
+    expect(result.object).toBe("chat.completion");
+    expect(result.model).toBe("gpt-4");
+    expect(result.choices).toHaveLength(1);
+    expect(result.choices[0].finish_reason).toBe("tool_calls");
+    expect(result.choices[0].message.content).toBeNull();
+  });
+
+  it("maps tool calls with correct structure", () => {
+    const result = buildToolCallCompletion(
+      [
+        { name: "fn_a", arguments: '{"x":1}' },
+        { name: "fn_b", arguments: '{"y":2}', id: "call_custom" },
+      ],
+      "gpt-4",
+    );
+    const tcs = result.choices[0].message.tool_calls!;
+    expect(tcs).toHaveLength(2);
+
+    expect(tcs[0].type).toBe("function");
+    expect(tcs[0].function.name).toBe("fn_a");
+    expect(tcs[0].function.arguments).toBe('{"x":1}');
+    expect(tcs[0].id).toMatch(/^call_/);
+
+    expect(tcs[1].id).toBe("call_custom");
+    expect(tcs[1].function.name).toBe("fn_b");
+  });
+
+  it("generates tool call IDs when not provided", () => {
+    const result = buildToolCallCompletion([{ name: "fn", arguments: "{}" }], "gpt-4");
+    const tc = result.choices[0].message.tool_calls![0];
+    expect(tc.id).toMatch(/^call_/);
+    expect(tc.id.length).toBeGreaterThan(5);
   });
 });
