@@ -36,5 +36,5 @@ entire repo, not just staged files.
 
 ## Commit Messages
 
-- Plain English, no conventional commit prefixes (no feat:, fix:, chore:, etc.)
+- This repo enforces conventional commit prefixes via commitlint: `fix:`, `feat:`, `docs:`, `test:`, `chore:`, `refactor:`, etc.
 - No Co-Authored-By lines
