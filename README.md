@@ -1,4 +1,4 @@
-# @copilotkit/llmock
+# @copilotkit/llmock [![Unit Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml)
 
 Deterministic multi-provider mock LLM server for testing. Streams SSE responses in real OpenAI, Claude, and Gemini API formats, driven entirely by fixtures. Zero runtime dependencies — built on Node.js builtins only.
 
