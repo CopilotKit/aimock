@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>mock-openai — Deterministic OpenAI mock server for testing</title>
+    <title>llmock — Deterministic mock LLM server for testing</title>
     <meta
       name="description"
-      content="Real HTTP server. Real SSE streams. Fixture-driven. Zero dependencies. Drop-in replacement for OpenAI in your test suite."
+      content="Real HTTP server. Real SSE streams. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini — drop-in replacement for your test suite."
     />
 
     <!-- Fonts -->
@@ -839,13 +839,13 @@
     <!-- ═══ Nav ═══════════════════════════════════════════════════════ -->
     <nav>
       <div class="container">
-        <a href="#" class="nav-brand"> <span class="prompt">$</span> mock-openai </a>
+        <a href="#" class="nav-brand"> <span class="prompt">$</span> llmock </a>
         <ul class="nav-links">
           <li><a href="#features">Features</a></li>
           <li><a href="#examples">Examples</a></li>
           <li><a href="#comparison">vs MSW</a></li>
           <li>
-            <a href="https://github.com/CopilotKit/mock-openai" class="gh-link" target="_blank">
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path
                   d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
@@ -866,19 +866,19 @@
           Zero dependencies &middot; Node.js builtins only
         </div>
 
-        <h1>Deterministic <span class="highlight">OpenAI mock</span> server for testing</h1>
+        <h1>Deterministic <span class="highlight">mock LLM</span> server for testing</h1>
 
         <p class="hero-sub">
-          Real HTTP server. Real SSE streams. Fixture-driven responses. Drop-in replacement for
-          OpenAI — any process on the machine can reach it.
+          Real HTTP server. Real SSE streams. Fixture-driven responses. Multi-provider mock —
+          OpenAI, Claude, Gemini — any process on the machine can reach it.
         </p>
 
         <div class="hero-actions">
-          <a href="https://github.com/CopilotKit/mock-openai#readme" class="btn btn-primary">
+          <a href="https://github.com/CopilotKit/llmock#readme" class="btn btn-primary">
             Get Started
           </a>
           <a
-            href="https://www.npmjs.com/package/@copilotkit/mock-openai"
+            href="https://www.npmjs.com/package/@copilotkit/llmock"
             class="btn btn-secondary"
             target="_blank"
           >
@@ -888,11 +888,11 @@
 
         <div class="hero-install">
           <span class="dollar">$</span>
-          <code>npm install @copilotkit/mock-openai</code>
+          <code>npm install @copilotkit/llmock</code>
           <button
             class="copy-btn"
             onclick="
-              navigator.clipboard.writeText('npm install @copilotkit/mock-openai');
+              navigator.clipboard.writeText('npm install @copilotkit/llmock');
               this.textContent = '✓';
               setTimeout(() => (this.textContent = '⧉'), 1500);
             "
@@ -943,7 +943,7 @@
     <!-- ═══ Features ══════════════════════════════════════════════════ -->
     <section id="features" class="reveal">
       <div class="container">
-        <span class="section-label">Why mock-openai</span>
+        <span class="section-label">Why llmock</span>
         <h2 class="section-title">Everything you need to test AI integrations</h2>
         <p class="section-desc">
           Built for E2E test suites where multiple processes — your app, agent workers, framework
@@ -963,8 +963,8 @@
             <div class="feature-icon blue">📡</div>
             <h3>Authentic SSE Streams</h3>
             <p>
-              Chat Completions API and Responses API — byte-for-byte identical to real OpenAI.
-              Streaming and non-streaming modes.
+              OpenAI, Claude, and Gemini APIs — authentic SSE format for each provider. Streaming
+              and non-streaming modes.
             </p>
           </div>
           <div class="feature-card">
@@ -1138,9 +1138,9 @@
               e2e/global-setup.ts
               <span class="lang-tag">ts</span>
             </div>
-            <pre><code><span class="kw">import</span> { <span class="type">MockOpenAI</span> } <span class="kw">from</span> <span class="str">"@copilotkit/mock-openai"</span>;
+            <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
 
-<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">MockOpenAI</span>({ <span class="prop">port</span>: <span class="num">5555</span> });
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({ <span class="prop">port</span>: <span class="num">5555</span> });
 
 <span class="cm">// Load JSON fixture files</span>
 <span class="op">mock</span>.<span class="fn">loadFixtureDir</span>(<span class="str">"./fixtures/openai"</span>);
@@ -1182,17 +1182,16 @@
     <section id="comparison" class="comparison reveal">
       <div class="container">
         <span class="section-label">Comparison</span>
-        <h2 class="section-title">mock-openai vs MSW</h2>
+        <h2 class="section-title">llmock vs MSW</h2>
         <p class="section-desc">
-          MSW is great for in-process API mocking. mock-openai is for when multiple processes need
-          to hit the same OpenAI endpoint.
+          MSW is great for in-process API mocking. llmock is for when multiple processes need to hit
+          the same LLM endpoint.
         </p>
 
         <div class="arch-diagram">
           <span class="dim">// MSW: only intercepts in the process that calls server.listen()</span
           ><br />
-          <span class="dim"
-            >// mock-openai: real server on a real port — any process can reach it</span
+          <span class="dim">// llmock: real server on a real port — any process can reach it</span
           ><br /><br />
           <span class="process">Playwright test runner</span><br />
           <span class="arrow">&nbsp;&nbsp;└─</span> <span class="process">controls browser</span>
@@ -1202,7 +1201,7 @@
             >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─</span
           >
           <span class="env">OPENAI_BASE_URL</span> <span class="arrow">→</span>
-          <span class="mock">mock-openai :5555</span><br />
+          <span class="mock">llmock :5555</span><br />
           <span class="arrow"
             >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─</span
           >
@@ -1221,7 +1220,7 @@
           <thead>
             <tr>
               <th>Capability</th>
-              <th>mock-openai</th>
+              <th>llmock</th>
               <th>MSW</th>
             </tr>
           </thead>
@@ -1240,6 +1239,21 @@
               <td>Responses API SSE</td>
               <td class="yes">Built-in ✓</td>
               <td class="manual">Manual — MSW sse() uses wrong format</td>
+            </tr>
+            <tr>
+              <td>Claude Messages API SSE</td>
+              <td class="yes">Built-in ✓</td>
+              <td class="manual">Manual — build event/data SSE yourself</td>
+            </tr>
+            <tr>
+              <td>Gemini streaming</td>
+              <td class="yes">Built-in ✓</td>
+              <td class="manual">Manual — build data SSE yourself</td>
+            </tr>
+            <tr>
+              <td>Multi-provider support</td>
+              <td class="yes">OpenAI + Claude + Gemini ✓</td>
+              <td class="no">Provider-agnostic (manual)</td>
             </tr>
             <tr>
               <td>Fixture files (JSON)</td>
@@ -1280,19 +1294,19 @@
     <footer>
       <div class="container">
         <div class="footer-left">
-          <span>$</span> mock-openai &middot; MIT License &middot; Built by
+          <span>$</span> llmock &middot; MIT License &middot; Built by
           <a href="https://github.com/CopilotKit" target="_blank">CopilotKit</a>
         </div>
         <ul class="footer-links">
-          <li><a href="https://github.com/CopilotKit/mock-openai" target="_blank">GitHub</a></li>
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/mock-openai" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
           </li>
           <li>
-            <a href="https://github.com/CopilotKit/mock-openai#readme" target="_blank">Docs</a>
+            <a href="https://github.com/CopilotKit/llmock#readme" target="_blank">Docs</a>
           </li>
           <li>
-            <a href="https://github.com/CopilotKit/mock-openai/issues" target="_blank">Issues</a>
+            <a href="https://github.com/CopilotKit/llmock/issues" target="_blank">Issues</a>
           </li>
         </ul>
       </div>
@@ -1318,7 +1332,7 @@
       // ── Terminal demo animation ──────────────────────────────────────
       const termSteps = [
         // Step 1: User types command
-        { type: "prompt", text: "mock-openai -p 5555 -f ./fixtures", delay: 600 },
+        { type: "prompt", text: "llmock -p 5555 -f ./fixtures", delay: 600 },
         // Step 2: Server starts
         {
           type: "line",

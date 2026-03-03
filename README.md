@@ -1,38 +1,38 @@
-# @copilotkit/mock-openai
+# @copilotkit/llmock
 
-Deterministic mock OpenAI server for testing. Streams SSE responses in real OpenAI Chat Completions and Responses API format, driven entirely by fixtures. Zero runtime dependencies — built on Node.js builtins only.
+Deterministic multi-provider mock LLM server for testing. Streams SSE responses in real OpenAI, Claude, and Gemini API formats, driven entirely by fixtures. Zero runtime dependencies — built on Node.js builtins only.
 
-Supports both streaming (SSE) and non-streaming JSON responses, text completions, tool calls, and error injection. Point any process at it via `OPENAI_BASE_URL` and get reproducible, instant responses.
+Supports both streaming (SSE) and non-streaming JSON responses across OpenAI (Chat Completions + Responses), Anthropic Claude (Messages), and Google Gemini (GenerateContent) APIs. Text completions, tool calls, and error injection. Point any process at it via `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, or Gemini base URL and get reproducible, instant responses.
 
 ## Install
 
 ```bash
-npm install @copilotkit/mock-openai
+npm install @copilotkit/llmock
 ```
 
 ## When to Use This vs MSW
 
 [MSW (Mock Service Worker)](https://mswjs.io/) is a popular API mocking library, but it solves a different problem.
 
-**The key difference is architecture.** mock-openai runs a real HTTP server on a port. MSW patches `http`/`https`/`fetch` modules inside a single Node.js process. MSW can only intercept requests from the process that calls `server.listen()` — child processes, separate services, and workers are unaffected.
+**The key difference is architecture.** llmock runs a real HTTP server on a port. MSW patches `http`/`https`/`fetch` modules inside a single Node.js process. MSW can only intercept requests from the process that calls `server.listen()` — child processes, separate services, and workers are unaffected.
 
-This matters for E2E tests where multiple processes make OpenAI calls:
+This matters for E2E tests where multiple processes make LLM API calls:
 
 ```
 Playwright test runner (Node)
   └─ controls browser → Next.js app (separate process)
-                            └─ OPENAI_BASE_URL → mock-openai :5555
+                            └─ OPENAI_BASE_URL → llmock :5555
                                 ├─ Mastra agent workers
                                 ├─ LangGraph workers
                                 └─ CopilotKit runtime
 ```
 
-MSW can't intercept any of those calls. mock-openai can — it's a real server on a real port.
+MSW can't intercept any of those calls. llmock can — it's a real server on a real port.
 
-**Use mock-openai when:**
+**Use llmock when:**
 
 - Multiple processes need to hit the same mock (E2E tests, agent frameworks, microservices)
-- You want OpenAI-specific SSE format out of the box (Chat Completions + Responses API)
+- You want multi-provider SSE format out of the box (OpenAI, Claude, Gemini)
 - You prefer defining fixtures as JSON files rather than code
 - You need a standalone CLI server
 
@@ -42,11 +42,13 @@ MSW can't intercept any of those calls. mock-openai can — it's a real server o
 - You're mocking many different APIs, not just OpenAI
 - You want in-process interception without running a server
 
-| Capability                   | mock-openai           | MSW                                                                       |
+| Capability                   | llmock                | MSW                                                                       |
 | ---------------------------- | --------------------- | ------------------------------------------------------------------------- |
 | Cross-process interception   | **Yes** (real server) | **No** (in-process only)                                                  |
 | OpenAI Chat Completions SSE  | **Built-in**          | Manual — build `data: {json}\n\n` + `[DONE]` yourself                     |
 | OpenAI Responses API SSE     | **Built-in**          | Manual — MSW's `sse()` sends `data:` events, not OpenAI's `event:` format |
+| Claude Messages API SSE      | **Built-in**          | Manual — build `event:`/`data:` SSE yourself                              |
+| Gemini streaming             | **Built-in**          | Manual — build `data:` SSE yourself                                       |
 | Fixture file loading (JSON)  | **Yes**               | **No** — handlers are code-only                                           |
 | Request journal / inspection | **Yes**               | **No** — track requests manually                                          |
 | Non-streaming responses      | **Yes**               | **Yes**                                                                   |
@@ -57,9 +59,9 @@ MSW can't intercept any of those calls. mock-openai can — it's a real server o
 ## Quick Start
 
 ```typescript
-import { MockOpenAI } from "@copilotkit/mock-openai";
+import { LLMock } from "@copilotkit/llmock";
 
-const mock = new MockOpenAI({ port: 5555 });
+const mock = new LLMock({ port: 5555 });
 
 mock.onMessage("hello", { content: "Hi there!" });
 
@@ -73,21 +75,21 @@ await mock.stop();
 
 ## E2E Test Patterns
 
-Real-world patterns from using mock-openai in Playwright E2E tests with CopilotKit, Mastra, LangGraph, and Agno agent frameworks.
+Real-world patterns from using llmock in Playwright E2E tests with CopilotKit, Mastra, LangGraph, and Agno agent frameworks.
 
 ### Global Setup/Teardown
 
 Start the mock server once for the entire test suite. All child processes (Next.js, agent workers) inherit the URL via environment variable.
 
 ```typescript
-// e2e/mock-openai-setup.ts
-import { MockOpenAI } from "@copilotkit/mock-openai";
+// e2e/llmock-setup.ts
+import { LLMock } from "@copilotkit/llmock";
 import * as path from "node:path";
 
-let mockServer: MockOpenAI | null = null;
+let mockServer: LLMock | null = null;
 
-export async function setupMockOpenAI(): Promise<void> {
-  mockServer = new MockOpenAI({ port: 5555 });
+export async function setupLLMock(): Promise<void> {
+  mockServer = new LLMock({ port: 5555 });
 
   // Load JSON fixtures from a directory
   mockServer.loadFixtureDir(path.join(__dirname, "fixtures", "openai"));
@@ -95,10 +97,10 @@ export async function setupMockOpenAI(): Promise<void> {
   const url = await mockServer.start();
 
   // Child processes use this to find the mock
-  process.env.MOCK_OPENAI_URL = `${url}/v1`;
+  process.env.LLMOCK_URL = `${url}/v1`;
 }
 
-export async function teardownMockOpenAI(): Promise<void> {
+export async function teardownLLMock(): Promise<void> {
   if (mockServer) {
     await mockServer.stop();
     mockServer = null;
@@ -111,6 +113,12 @@ The Next.js app (or any other service) just needs:
 ```env
 OPENAI_BASE_URL=http://localhost:5555/v1
 OPENAI_API_KEY=mock-key
+
+# Or for Anthropic Claude:
+ANTHROPIC_BASE_URL=http://localhost:5555/v1
+
+# Or for Google Gemini — point at the base URL:
+# http://localhost:5555/v1beta
 ```
 
 ### JSON Fixture Files
@@ -260,7 +268,7 @@ mockServer.addFixture({
 
 ## Programmatic API
 
-### `new MockOpenAI(options?)`
+### `new LLMock(options?)`
 
 Create a new mock server instance.
 
@@ -271,9 +279,9 @@ Create a new mock server instance.
 | `latency`   | `number` | `0`           | Default ms delay between SSE chunks |
 | `chunkSize` | `number` | `20`          | Default characters per SSE chunk    |
 
-### `MockOpenAI.create(options?)`
+### `LLMock.create(options?)`
 
-Static factory — creates an instance and starts it in one call. Returns `Promise<MockOpenAI>`.
+Static factory — creates an instance and starts it in one call. Returns `Promise<LLMock>`.
 
 ### Server Lifecycle
 
@@ -354,7 +362,7 @@ mock.nextRequestError(429, {
 
 ### Request Journal
 
-Every request to `/v1/chat/completions` and `/v1/responses` is recorded in a journal.
+Every request to all API endpoints (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, and Gemini endpoints) is recorded in a journal.
 
 #### Programmatic Access
 
@@ -440,14 +448,19 @@ Streams as SSE chunks, splitting `content` by `chunkSize`. With `stream: false`,
 The server handles:
 
 - **POST `/v1/chat/completions`** — OpenAI Chat Completions API (streaming and non-streaming)
-- **POST `/v1/responses`** — OpenAI Responses API (streaming and non-streaming). Requests are translated to the Chat Completions fixture format internally, so the same fixtures work for both endpoints.
+- **POST `/v1/responses`** — OpenAI Responses API (streaming and non-streaming)
+- **POST `/v1/messages`** — Anthropic Claude Messages API (streaming and non-streaming)
+- **POST `/v1beta/models/{model}:generateContent`** — Google Gemini (non-streaming)
+- **POST `/v1beta/models/{model}:streamGenerateContent`** — Google Gemini (streaming)
+
+All endpoints share the same fixture pool — the same fixtures work across all providers. Requests are translated to a common format internally for fixture matching.
 
 ## CLI
 
 The package includes a standalone server binary:
 
 ```bash
-mock-openai [options]
+llmock [options]
 ```
 
 | Option         | Short | Default      | Description                        |
@@ -461,23 +474,23 @@ mock-openai [options]
 
 ```bash
 # Start with bundled example fixtures
-mock-openai
+llmock
 
 # Custom fixtures on a specific port
-mock-openai -p 8080 -f ./my-fixtures
+llmock -p 8080 -f ./my-fixtures
 
 # Simulate slow responses
-mock-openai --latency 100 --chunk-size 5
+llmock --latency 100 --chunk-size 5
 ```
 
 ## Advanced Usage
 
 ### Low-level Server
 
-If you need the raw HTTP server without the `MockOpenAI` wrapper:
+If you need the raw HTTP server without the `LLMock` wrapper:
 
 ```typescript
-import { createServer } from "@copilotkit/mock-openai";
+import { createServer } from "@copilotkit/llmock";
 
 const fixtures = [{ match: { userMessage: "hi" }, response: { content: "Hello!" } }];
 
