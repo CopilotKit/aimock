@@ -1,4 +1,4 @@
-# @copilotkit/mock-openai
+# @copilotkit/mock-openai [![Unit Tests](https://github.com/CopilotKit/mock-openai/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/mock-openai/actions/workflows/test-unit.yml)
 
 Deterministic mock OpenAI server for testing. Streams SSE responses in real OpenAI Chat Completions and Responses API format, driven entirely by fixtures. Zero runtime dependencies — built on Node.js builtins only.
 
