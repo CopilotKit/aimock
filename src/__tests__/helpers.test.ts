@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   generateId,
   generateToolCallId,
+  generateMessageId,
+  generateToolUseId,
   isTextResponse,
   isToolCallResponse,
   isErrorResponse,
@@ -33,6 +35,32 @@ describe("generateToolCallId", () => {
   it("generates tool call IDs with call_ prefix", () => {
     const id = generateToolCallId();
     expect(id).toMatch(/^call_/);
+  });
+});
+
+describe("generateMessageId", () => {
+  it("generates message IDs with msg_ prefix", () => {
+    const id = generateMessageId();
+    expect(id).toMatch(/^msg_/);
+    expect(id.length).toBeGreaterThan(5);
+  });
+
+  it("generates unique IDs", () => {
+    const ids = new Set(Array.from({ length: 100 }, () => generateMessageId()));
+    expect(ids.size).toBe(100);
+  });
+});
+
+describe("generateToolUseId", () => {
+  it("generates tool use IDs with toolu_ prefix", () => {
+    const id = generateToolUseId();
+    expect(id).toMatch(/^toolu_/);
+    expect(id.length).toBeGreaterThan(7);
+  });
+
+  it("generates unique IDs", () => {
+    const ids = new Set(Array.from({ length: 100 }, () => generateToolUseId()));
+    expect(ids.size).toBe(100);
   });
 });
 

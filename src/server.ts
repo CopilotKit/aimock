@@ -13,6 +13,8 @@ import {
   isErrorResponse,
 } from "./helpers.js";
 import { handleResponses } from "./responses.js";
+import { handleMessages } from "./messages.js";
+import { handleGemini } from "./gemini.js";
 
 export interface ServerInstance {
   server: http.Server;
@@ -22,7 +24,10 @@ export interface ServerInstance {
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
 const RESPONSES_PATH = "/v1/responses";
+const MESSAGES_PATH = "/v1/messages";
 const DEFAULT_CHUNK_SIZE = 20;
+
+const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
 
 const REQUESTS_PATH = "/v1/_requests";
 
@@ -229,7 +234,7 @@ function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, strin
 }
 
 // NOTE: The fixtures array is read by reference on each request. Callers
-// (e.g. MockOpenAI) may mutate it after the server starts and changes will
+// (e.g. LLMock) may mutate it after the server starts and changes will
 // be visible immediately. This is intentional — do not copy the array.
 export async function createServer(
   fixtures: Fixture[],
@@ -308,6 +313,69 @@ export async function createServer(
           } else if (!res.writableEnded) {
             try {
               res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            } catch {
+              /* */
+            }
+            res.end();
+          }
+        });
+      return;
+    }
+
+    // POST /v1/messages — Anthropic Claude Messages API
+    if (pathname === MESSAGES_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) => handleMessages(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            try {
+              res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            } catch {
+              /* */
+            }
+            res.end();
+          }
+        });
+      return;
+    }
+
+    // POST /v1beta/models/{model}:(generateContent|streamGenerateContent) — Google Gemini
+    const geminiMatch = pathname.match(GEMINI_PATH_RE);
+    if (geminiMatch && req.method === "POST") {
+      const geminiModel = geminiMatch[1];
+      const streaming = geminiMatch[2] === "streamGenerateContent";
+      readBody(req)
+        .then((raw) =>
+          handleGemini(
+            req,
+            res,
+            raw,
+            geminiModel,
+            streaming,
+            fixtures,
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            try {
+              res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
             } catch {
               /* */
             }

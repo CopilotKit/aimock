@@ -414,6 +414,46 @@ describe("routing", () => {
     const res = await post(`${instance.url}/other/path`, { model: "gpt-4", messages: [] });
     expect(res.status).toBe(404);
   });
+
+  it("routes POST /v1/messages to Claude handler", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 404 for GET /v1/messages", async () => {
+    instance = await createServer(allFixtures);
+    const res = await get(`${instance.url}/v1/messages`);
+    expect(res.status).toBe(404);
+  });
+
+  it("routes POST to Gemini generateContent", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "hello" }] }],
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("routes POST to Gemini streamGenerateContent", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "hello" }] }],
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 404 for unknown Gemini-like path", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:unknownAction`, {
+      contents: [],
+    });
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("CORS", () => {

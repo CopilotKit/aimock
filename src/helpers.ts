@@ -17,6 +17,14 @@ export function generateToolCallId(): string {
   return `call_${randomBytes(12).toString("base64url")}`;
 }
 
+export function generateMessageId(): string {
+  return `msg_${randomBytes(12).toString("base64url")}`;
+}
+
+export function generateToolUseId(): string {
+  return `toolu_${randomBytes(12).toString("base64url")}`;
+}
+
 export function isTextResponse(r: FixtureResponse): r is TextResponse {
   return "content" in r && typeof (r as TextResponse).content === "string";
 }
