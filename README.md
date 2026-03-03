@@ -31,12 +31,12 @@ await mock.stop();
 
 Create a new mock server instance.
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `port` | `number` | `0` (random) | Port to listen on |
-| `host` | `string` | `"127.0.0.1"` | Host to bind to |
-| `latency` | `number` | `0` | Default ms delay between SSE chunks |
-| `chunkSize` | `number` | `20` | Default characters per SSE chunk |
+| Option      | Type     | Default       | Description                         |
+| ----------- | -------- | ------------- | ----------------------------------- |
+| `port`      | `number` | `0` (random)  | Port to listen on                   |
+| `host`      | `string` | `"127.0.0.1"` | Host to bind to                     |
+| `latency`   | `number` | `0`           | Default ms delay between SSE chunks |
+| `chunkSize` | `number` | `20`          | Default characters per SSE chunk    |
 
 ### `MockOpenAI.create(options?)`
 
@@ -44,13 +44,13 @@ Static factory — creates an instance and starts it in one call. Returns `Promi
 
 ### Server Lifecycle
 
-| Method | Returns | Description |
-|---|---|---|
+| Method    | Returns           | Description                            |
+| --------- | ----------------- | -------------------------------------- |
 | `start()` | `Promise<string>` | Start the server, returns the base URL |
-| `stop()` | `Promise<void>` | Stop the server |
-| `url` | `string` | Base URL (throws if not started) |
-| `baseUrl` | `string` | Alias for `url` |
-| `port` | `number` | Listening port (throws if not started) |
+| `stop()`  | `Promise<void>`   | Stop the server                        |
+| `url`     | `string`          | Base URL (throws if not started)       |
+| `baseUrl` | `string`          | Alias for `url`                        |
+| `port`    | `number`          | Listening port (throws if not started) |
 
 ### Fixture Registration
 
@@ -61,11 +61,7 @@ All registration methods return `this` for chaining.
 Register a fixture with full control over match criteria.
 
 ```typescript
-mock.on(
-  { userMessage: /weather/i, model: "gpt-4" },
-  { content: "It's sunny!" },
-  { latency: 50 },
-);
+mock.on({ userMessage: /weather/i, model: "gpt-4" }, { content: "It's sunny!" }, { latency: 50 });
 ```
 
 #### `onMessage(pattern, response, opts?)`
@@ -129,12 +125,12 @@ Every request to `/v1/chat/completions` is recorded in a journal.
 
 #### Programmatic Access
 
-| Method | Returns | Description |
-|---|---|---|
-| `getRequests()` | `JournalEntry[]` | All recorded requests |
-| `getLastRequest()` | `JournalEntry \| null` | Most recent request |
-| `clearRequests()` | `void` | Clear the journal |
-| `journal` | `Journal` | Direct access to the journal instance |
+| Method             | Returns                | Description                           |
+| ------------------ | ---------------------- | ------------------------------------- |
+| `getRequests()`    | `JournalEntry[]`       | All recorded requests                 |
+| `getLastRequest()` | `JournalEntry \| null` | Most recent request                   |
+| `clearRequests()`  | `void`                 | Clear the journal                     |
+| `journal`          | `Journal`              | Direct access to the journal instance |
 
 ```typescript
 await fetch(mock.url + "/v1/chat/completions", { ... });
@@ -169,20 +165,22 @@ afterEach(() => {
 
 Fixtures are evaluated in registration order (first match wins). A fixture matches when **all** specified fields match the incoming request (AND logic).
 
-| Field | Type | Matches on |
-|---|---|---|
-| `userMessage` | `string \| RegExp` | Content of the last `role: "user"` message |
-| `toolName` | `string` | Name of a tool in the request's `tools` array |
-| `toolCallId` | `string` | `tool_call_id` on a `role: "tool"` message |
-| `model` | `string \| RegExp` | The `model` field in the request |
-| `predicate` | `(req) => boolean` | Arbitrary matching function |
+| Field         | Type               | Matches on                                    |
+| ------------- | ------------------ | --------------------------------------------- |
+| `userMessage` | `string \| RegExp` | Content of the last `role: "user"` message    |
+| `toolName`    | `string`           | Name of a tool in the request's `tools` array |
+| `toolCallId`  | `string`           | `tool_call_id` on a `role: "tool"` message    |
+| `model`       | `string \| RegExp` | The `model` field in the request              |
+| `predicate`   | `(req) => boolean` | Arbitrary matching function                   |
 
 ## Fixture Responses
 
 ### Text
 
 ```typescript
-{ content: "Hello world" }
+{
+  content: "Hello world";
+}
 ```
 
 Streams as SSE chunks, splitting `content` by `chunkSize`.
@@ -191,9 +189,7 @@ Streams as SSE chunks, splitting `content` by `chunkSize`.
 
 ```typescript
 {
-  toolCalls: [
-    { name: "get_weather", arguments: '{"location":"SF"}' }
-  ]
+  toolCalls: [{ name: "get_weather", arguments: '{"location":"SF"}' }];
 }
 ```
 
@@ -242,14 +238,14 @@ The package includes a standalone server binary:
 mock-openai [options]
 ```
 
-| Option | Short | Default | Description |
-|---|---|---|---|
-| `--port` | `-p` | `4010` | Port to listen on |
-| `--host` | `-h` | `127.0.0.1` | Host to bind to |
-| `--fixtures` | `-f` | `./fixtures` | Path to fixtures directory or file |
-| `--latency` | `-l` | `0` | Latency between SSE chunks (ms) |
-| `--chunk-size` | `-c` | `20` | Characters per SSE chunk |
-| `--help` | | | Show help |
+| Option         | Short | Default      | Description                        |
+| -------------- | ----- | ------------ | ---------------------------------- |
+| `--port`       | `-p`  | `4010`       | Port to listen on                  |
+| `--host`       | `-h`  | `127.0.0.1`  | Host to bind to                    |
+| `--fixtures`   | `-f`  | `./fixtures` | Path to fixtures directory or file |
+| `--latency`    | `-l`  | `0`          | Latency between SSE chunks (ms)    |
+| `--chunk-size` | `-c`  | `20`         | Characters per SSE chunk           |
+| `--help`       |       |              | Show help                          |
 
 ```bash
 # Start with bundled example fixtures
@@ -271,9 +267,7 @@ If you need the raw HTTP server without the `MockOpenAI` wrapper:
 ```typescript
 import { createServer } from "@copilotkit/mock-openai";
 
-const fixtures = [
-  { match: { userMessage: "hi" }, response: { content: "Hello!" } },
-];
+const fixtures = [{ match: { userMessage: "hi" }, response: { content: "Hello!" } }];
 
 const { server, journal, url } = await createServer(fixtures, { port: 0 });
 // ... use it ...
@@ -285,8 +279,7 @@ server.close();
 ```typescript
 mock.on(
   {
-    predicate: (req) =>
-      req.messages.length > 5 && req.model.startsWith("gpt-4"),
+    predicate: (req) => req.messages.length > 5 && req.model.startsWith("gpt-4"),
   },
   { content: "You've been chatting a while!" },
 );
@@ -295,11 +288,7 @@ mock.on(
 ### Per-Fixture Timing
 
 ```typescript
-mock.on(
-  { userMessage: "slow" },
-  { content: "Finally..." },
-  { latency: 200, chunkSize: 5 },
-);
+mock.on({ userMessage: "slow" }, { content: "Finally..." }, { latency: 200, chunkSize: 5 });
 ```
 
 ## License

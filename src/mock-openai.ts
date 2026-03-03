@@ -85,7 +85,10 @@ export class MockOpenAI {
    * with a `predicate` that always matches (so it fires first) and spliced
    * at the front of the fixture list.
    */
-  nextRequestError(status: number, errorBody?: { message?: string; type?: string; code?: string }): this {
+  nextRequestError(
+    status: number,
+    errorBody?: { message?: string; type?: string; code?: string },
+  ): this {
     const errorResponse: FixtureResponse = {
       error: {
         message: errorBody?.message ?? "Injected error",
@@ -101,15 +104,14 @@ export class MockOpenAI {
     // Insert at front so it matches before everything else
     this.fixtures.unshift(fixture);
     // Remove after first match — the journal records it so tests can assert
-    const self = this;
     const original = fixture.match.predicate!;
     fixture.match.predicate = (req) => {
       const result = original(req);
       if (result) {
         // Defer splice so it doesn't mutate the array while matchFixture iterates it
         queueMicrotask(() => {
-          const idx = self.fixtures.indexOf(fixture);
-          if (idx !== -1) self.fixtures.splice(idx, 1);
+          const idx = this.fixtures.indexOf(fixture);
+          if (idx !== -1) this.fixtures.splice(idx, 1);
         });
       }
       return result;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Journal } from "../journal.js";
-import type { JournalEntry } from "../types.js";
+import type { Fixture, JournalEntry } from "../types.js";
 
 // Minimal valid entry fields (everything except id and timestamp)
 function makeEntry(
@@ -154,30 +154,30 @@ describe("Journal", () => {
   describe("findByFixture", () => {
     it("returns entries matching the given fixture reference", () => {
       const journal = new Journal();
-      const fixtureA = { match: { userMessage: "a" }, response: { content: "A" } } as const;
-      const fixtureB = { match: { userMessage: "b" }, response: { content: "B" } } as const;
+      const fixtureA: Fixture = { match: { userMessage: "a" }, response: { content: "A" } };
+      const fixtureB: Fixture = { match: { userMessage: "b" }, response: { content: "B" } };
 
-      journal.add(makeEntry({ response: { status: 200, fixture: fixtureA as any } }));
-      journal.add(makeEntry({ response: { status: 200, fixture: fixtureB as any } }));
-      journal.add(makeEntry({ response: { status: 200, fixture: fixtureA as any } }));
+      journal.add(makeEntry({ response: { status: 200, fixture: fixtureA } }));
+      journal.add(makeEntry({ response: { status: 200, fixture: fixtureB } }));
+      journal.add(makeEntry({ response: { status: 200, fixture: fixtureA } }));
 
-      const results = journal.findByFixture(fixtureA as any);
+      const results = journal.findByFixture(fixtureA);
       expect(results).toHaveLength(2);
       expect(results.every((e) => e.response.fixture === fixtureA)).toBe(true);
     });
 
     it("returns empty array when no entries match", () => {
       const journal = new Journal();
-      const fixture = { match: { userMessage: "x" }, response: { content: "X" } } as const;
+      const fixture: Fixture = { match: { userMessage: "x" }, response: { content: "X" } };
       journal.add(makeEntry());
 
-      expect(journal.findByFixture(fixture as any)).toEqual([]);
+      expect(journal.findByFixture(fixture)).toEqual([]);
     });
 
     it("returns empty array on empty journal", () => {
       const journal = new Journal();
-      const fixture = { match: { userMessage: "x" }, response: { content: "X" } } as const;
-      expect(journal.findByFixture(fixture as any)).toEqual([]);
+      const fixture: Fixture = { match: { userMessage: "x" }, response: { content: "X" } };
+      expect(journal.findByFixture(fixture)).toEqual([]);
     });
   });
 

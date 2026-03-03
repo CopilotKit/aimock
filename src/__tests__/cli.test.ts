@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFile, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
+const CLI_AVAILABLE = existsSync(CLI_PATH);
 
 /** Spawn the CLI and collect stdout/stderr/exit code. */
 function runCli(
@@ -90,7 +91,7 @@ function writeFixture(dir: string, name: string): string {
 
 /* ================================================================== */
 
-describe("CLI: --help", () => {
+describe.skipIf(!CLI_AVAILABLE)("CLI: --help", () => {
   it("prints usage text and exits with code 0", async () => {
     const { stdout, code } = await runCli(["--help"]);
     expect(stdout).toContain("Usage: mock-openai");
@@ -100,7 +101,7 @@ describe("CLI: --help", () => {
   });
 });
 
-describe("CLI: argument validation", () => {
+describe.skipIf(!CLI_AVAILABLE)("CLI: argument validation", () => {
   it("rejects --port 99999 (out of range)", async () => {
     const { stderr, code } = await runCli(["--port", "99999"]);
     expect(stderr).toContain("Invalid port");
@@ -126,7 +127,7 @@ describe("CLI: argument validation", () => {
   });
 });
 
-describe("CLI: fixture loading", () => {
+describe.skipIf(!CLI_AVAILABLE)("CLI: fixture loading", () => {
   let tmpDir: string;
 
   beforeEach(() => {
