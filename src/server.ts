@@ -6,10 +6,13 @@ import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import {
   buildTextChunks,
   buildToolCallChunks,
+  buildTextCompletion,
+  buildToolCallCompletion,
   isTextResponse,
   isToolCallResponse,
   isErrorResponse,
 } from "./helpers.js";
+import { handleResponses } from "./responses.js";
 
 export interface ServerInstance {
   server: http.Server;
@@ -18,6 +21,7 @@ export interface ServerInstance {
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
+const RESPONSES_PATH = "/v1/responses";
 const DEFAULT_CHUNK_SIZE = 20;
 
 const REQUESTS_PATH = "/v1/_requests";
@@ -157,7 +161,6 @@ async function handleCompletions(
 
   // Text response
   if (isTextResponse(response)) {
-    const chunks = buildTextChunks(response.content, body.model, chunkSize);
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -165,13 +168,19 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    await writeSSEStream(res, chunks, latency);
+    if (body.stream === false) {
+      const completion = buildTextCompletion(response.content, body.model);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(completion));
+    } else {
+      const chunks = buildTextChunks(response.content, body.model, chunkSize);
+      await writeSSEStream(res, chunks, latency);
+    }
     return;
   }
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    const chunks = buildToolCallChunks(response.toolCalls, body.model, chunkSize);
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -179,7 +188,14 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    await writeSSEStream(res, chunks, latency);
+    if (body.stream === false) {
+      const completion = buildToolCallCompletion(response.toolCalls, body.model);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(completion));
+    } else {
+      const chunks = buildToolCallChunks(response.toolCalls, body.model, chunkSize);
+      await writeSSEStream(res, chunks, latency);
+    }
     return;
   }
 
@@ -277,7 +293,23 @@ export async function createServer(
       return;
     }
 
-    // Only POST /v1/chat/completions
+    // POST /v1/responses — OpenAI Responses API
+    if (pathname === RESPONSES_PATH && req.method === "POST") {
+      readBody(req).then((raw) =>
+        handleResponses(req, res, raw, fixtures, journal, defaults, setCorsHeaders)
+      ).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(res, 500, JSON.stringify({ error: { message: msg, type: "server_error" } }));
+        } else if (!res.writableEnded) {
+          try { res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`); } catch { /* */ }
+          res.end();
+        }
+      });
+      return;
+    }
+
+    // POST /v1/chat/completions — Chat Completions API
     if (pathname !== COMPLETIONS_PATH) {
       handleNotFound(res, "Not found");
       return;

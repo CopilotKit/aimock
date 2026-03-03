@@ -135,6 +135,29 @@ export interface SSEToolCallDelta {
   function?: { name?: string; arguments?: string };
 }
 
+// Non-streaming completion response types (OpenAI format)
+
+export interface ChatCompletion {
+  id: string;
+  object: "chat.completion";
+  created: number;
+  model: string;
+  choices: ChatCompletionChoice[];
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+}
+
+export interface ChatCompletionChoice {
+  index: number;
+  message: ChatCompletionMessage;
+  finish_reason: string;
+}
+
+export interface ChatCompletionMessage {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: ToolCallMessage[];
+}
+
 // Server options
 
 export interface MockServerOptions {

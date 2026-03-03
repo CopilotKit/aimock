@@ -6,6 +6,7 @@ import type {
   ErrorResponse,
   SSEChunk,
   ToolCall,
+  ChatCompletion,
 } from "./types.js";
 
 export function generateId(prefix = "chatcmpl"): string {
@@ -149,4 +150,48 @@ export function buildToolCallChunks(
   });
 
   return chunks;
+}
+
+// Non-streaming response builders
+
+export function buildTextCompletion(content: string, model: string): ChatCompletion {
+  return {
+    id: generateId(),
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
+
+export function buildToolCallCompletion(toolCalls: ToolCall[], model: string): ChatCompletion {
+  return {
+    id: generateId(),
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: toolCalls.map((tc, idx) => ({
+            id: tc.id || generateToolCallId(),
+            type: "function" as const,
+            function: { name: tc.name, arguments: tc.arguments },
+          })),
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
 }
