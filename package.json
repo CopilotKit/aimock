@@ -36,7 +36,12 @@
     "test:exports": "publint && attw --pack .",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && changeset publish",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,mts,js,mjs,cjs,json,html,css,md}": "prettier --write",
+    "*.{ts,mts,js,mjs}": "eslint --fix"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.17.3",
@@ -46,6 +51,8 @@
     "@eslint/js": "^9.30.0",
     "eslint": "^9.30.0",
     "eslint-config-prettier": "^10.1.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.2",
     "prettier": "^3.6.2",
     "publint": "^0.3.12",
     "tsdown": "^0.12.5",
