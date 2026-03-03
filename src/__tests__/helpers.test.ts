@@ -92,6 +92,48 @@ describe("buildTextChunks", () => {
       expect(chunk.model).toBe("gpt-4o-mini");
     }
   });
+
+  it("produces role + finish with no content chunks for empty string", () => {
+    const chunks = buildTextChunks("", "gpt-4", 20);
+    expect(chunks.length).toBe(2); // role + finish only
+
+    // Role chunk
+    expect(chunks[0].choices[0].delta.role).toBe("assistant");
+    expect(chunks[0].choices[0].delta.content).toBe("");
+    expect(chunks[0].choices[0].finish_reason).toBeNull();
+
+    // Finish chunk
+    expect(chunks[1].choices[0].delta).toEqual({});
+    expect(chunks[1].choices[0].finish_reason).toBe("stop");
+  });
+
+  it("produces a single content chunk for a single character", () => {
+    const chunks = buildTextChunks("a", "gpt-4", 20);
+    expect(chunks.length).toBe(3); // role + "a" + finish
+
+    expect(chunks[1].choices[0].delta.content).toBe("a");
+  });
+
+  it("preserves unicode multibyte content through chunking and reassembly", () => {
+    const chunks = buildTextChunks("Hello 🌍🎉", "gpt-4", 3);
+
+    // Reassemble all content chunks — slice() splits on UTF-16 code units,
+    // so individual chunks may contain lone surrogates, but concatenation
+    // must reproduce the original string.
+    const contentChunks = chunks.slice(1, -1); // skip role and finish
+    const reassembled = contentChunks.map((c) => c.choices[0].delta.content).join("");
+    expect(reassembled).toBe("Hello 🌍🎉");
+
+    // "Hello 🌍🎉" is 10 UTF-16 code units, so ceil(10/3) = 4 content chunks
+    expect(contentChunks.length).toBe(4);
+  });
+
+  it("produces a single content chunk when content is shorter than chunkSize", () => {
+    const chunks = buildTextChunks("hi", "gpt-4", 100);
+    expect(chunks.length).toBe(3); // role + "hi" + finish
+
+    expect(chunks[1].choices[0].delta.content).toBe("hi");
+  });
 });
 
 describe("buildToolCallChunks", () => {
@@ -169,5 +211,61 @@ describe("buildToolCallChunks", () => {
     );
     const initial = chunks.find((c) => c.choices[0].delta.tool_calls?.[0]?.id);
     expect(initial!.choices[0].delta.tool_calls![0].id).toBe("call_custom123");
+  });
+
+  it("handles empty arguments string with role + initial + finish", () => {
+    const chunks = buildToolCallChunks(
+      [{ name: "fn", arguments: "" }],
+      "gpt-4",
+      20,
+    );
+    // role + initial tool call chunk + finish = 3 (no arg chunks since args is empty)
+    expect(chunks.length).toBe(3);
+
+    // Role chunk
+    expect(chunks[0].choices[0].delta.role).toBe("assistant");
+    expect(chunks[0].choices[0].delta.content).toBeNull();
+
+    // Initial tool call chunk
+    const tc = chunks[1].choices[0].delta.tool_calls;
+    expect(tc).toBeDefined();
+    expect(tc![0].function?.name).toBe("fn");
+    expect(tc![0].function?.arguments).toBe("");
+
+    // Finish chunk
+    expect(chunks[2].choices[0].delta).toEqual({});
+    expect(chunks[2].choices[0].finish_reason).toBe("tool_calls");
+  });
+
+  it("handles empty toolCalls array with role + finish only", () => {
+    const chunks = buildToolCallChunks([], "gpt-4", 20);
+    expect(chunks.length).toBe(2); // role + finish
+
+    // Role chunk
+    expect(chunks[0].choices[0].delta.role).toBe("assistant");
+    expect(chunks[0].choices[0].delta.content).toBeNull();
+    expect(chunks[0].choices[0].finish_reason).toBeNull();
+
+    // Finish chunk
+    expect(chunks[1].choices[0].delta).toEqual({});
+    expect(chunks[1].choices[0].finish_reason).toBe("tool_calls");
+  });
+
+  it("produces a single arg chunk when arguments are shorter than chunkSize", () => {
+    const chunks = buildToolCallChunks(
+      [{ name: "fn", arguments: '{"x":1}' }],
+      "gpt-4",
+      100,
+    );
+    // role + initial + 1 arg chunk + finish = 4
+    expect(chunks.length).toBe(4);
+
+    const argChunks = chunks.filter(
+      (c) =>
+        c.choices[0].delta.tool_calls?.[0].function?.arguments !== undefined &&
+        c.choices[0].delta.tool_calls?.[0].function?.arguments !== "",
+    );
+    expect(argChunks.length).toBe(1);
+    expect(argChunks[0].choices[0].delta.tool_calls![0].function!.arguments).toBe('{"x":1}');
   });
 });

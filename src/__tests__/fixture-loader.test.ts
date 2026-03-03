@@ -4,6 +4,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadFixtureFile, loadFixturesFromDir } from "../fixture-loader.js";
 
+/* ------------------------------------------------------------------ *
+ * vi.mock for node:fs — defaults to the real implementation so that  *
+ * every test using real files keeps working.  Individual tests in    *
+ * the "fs error paths" describe block override specific functions.   *
+ * ------------------------------------------------------------------ */
+const fsMocks = vi.hoisted(() => ({
+  readFileSync: vi.fn(),
+  readdirSync: vi.fn(),
+  statSync: vi.fn(),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    readFileSync: fsMocks.readFileSync.mockImplementation(actual.readFileSync),
+    readdirSync: fsMocks.readdirSync.mockImplementation(actual.readdirSync),
+    statSync: fsMocks.statSync.mockImplementation(actual.statSync),
+  };
+});
+
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "fixture-loader-test-"));
 }
@@ -254,5 +275,87 @@ describe("loadFixturesFromDir", () => {
     expect(fixtures[0].match.userMessage).toBe("top");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Skipping subdirectory"));
     warn.mockRestore();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * fs error paths (uses the vi.mock overrides declared at top level)  *
+ * ------------------------------------------------------------------ */
+describe("fixture-loader fs error paths", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loadFixtureFile warns and returns empty when readFileSync throws EACCES", () => {
+    fsMocks.readFileSync.mockImplementation(() => {
+      const err = new Error("permission denied") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = loadFixtureFile("/some/protected-file.json");
+    expect(result).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Could not read file"),
+      expect.anything(),
+    );
+  });
+
+  it("loadFixturesFromDir silently skips a file when statSync throws ENOENT", () => {
+    fsMocks.readdirSync.mockReturnValue(["a.json", "vanished.json", "b.json"]);
+    fsMocks.statSync.mockImplementation((p: unknown) => {
+      if (String(p).includes("vanished.json")) {
+        const err = new Error("no such file") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return { isDirectory: () => false };
+    });
+    fsMocks.readFileSync.mockImplementation((p: unknown) => {
+      return JSON.stringify({
+        fixtures: [{ match: { userMessage: String(p) }, response: { content: "ok" } }],
+      });
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = loadFixturesFromDir("/fake/dir");
+
+    // vanished.json is silently skipped (ENOENT is not warned about per the source)
+    expect(result).toHaveLength(2);
+
+    const statWarns = warn.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("Could not stat"),
+    );
+    expect(statWarns).toHaveLength(0);
+  });
+
+  it("loadFixturesFromDir warns when statSync throws a non-ENOENT error (e.g. EACCES)", () => {
+    fsMocks.readdirSync.mockReturnValue(["ok.json", "noperm.json"]);
+    fsMocks.statSync.mockImplementation((p: unknown) => {
+      if (String(p).includes("noperm.json")) {
+        const err = new Error("permission denied") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return { isDirectory: () => false };
+    });
+    fsMocks.readFileSync.mockImplementation(() => {
+      return JSON.stringify({
+        fixtures: [{ match: { userMessage: "x" }, response: { content: "y" } }],
+      });
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = loadFixturesFromDir("/fake/dir");
+
+    // noperm.json is skipped but a warning IS emitted for non-ENOENT errors
+    expect(result).toHaveLength(1);
+
+    const statWarns = warn.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("Could not stat"),
+    );
+    expect(statWarns).toHaveLength(1);
+    expect(statWarns[0][0]).toContain("noperm.json");
   });
 });

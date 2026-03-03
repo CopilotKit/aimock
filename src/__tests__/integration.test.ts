@@ -3,6 +3,7 @@ import http from "node:http";
 import { resolve } from "node:path";
 import { createServer, type ServerInstance } from "../server.js";
 import { loadFixturesFromDir } from "../fixture-loader.js";
+import { MockOpenAI } from "../mock-openai.js";
 import type { Fixture, SSEChunk, ChatCompletionRequest } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -471,5 +472,144 @@ describe("integration: server options", () => {
     const chunks = parseSSEResponse(res.body);
     const content = reassembleTextContent(chunks);
     expect(content).toBe("pong");
+  });
+});
+
+describe("integration: onToolResult", () => {
+  let mock: MockOpenAI | null = null;
+
+  afterEach(async () => {
+    if (mock) {
+      try {
+        await mock.stop();
+      } catch (err) {
+        if (!(err instanceof Error && err.message === "Server not started")) {
+          throw err;
+        }
+      }
+      mock = null;
+    }
+  });
+
+  it("matches a tool result message and streams the expected response", async () => {
+    mock = new MockOpenAI();
+    mock.onToolResult("call_abc", { content: "result text" });
+    await mock.start();
+
+    // Send a request with a tool result message matching the call ID
+    const res = await httpPost(`${mock.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      stream: true,
+      messages: [
+        {
+          role: "user",
+          content: "do something",
+        },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_abc",
+              type: "function",
+              function: {
+                name: "some_tool",
+                arguments: "{}",
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "tool output here",
+          tool_call_id: "call_abc",
+        },
+      ],
+    });
+
+    expect(res.status).toBe(200);
+
+    // Parse SSE chunks and reassemble content
+    const chunks = parseSSEResponse(res.body);
+    expect(chunks.length).toBeGreaterThan(0);
+
+    const content = reassembleTextContent(chunks);
+    expect(content).toBe("result text");
+
+    // Raw response ends with [DONE]
+    expect(res.body).toContain("data: [DONE]");
+
+    // Verify journal records the matched fixture
+    const entries = mock.getRequests();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].response.status).toBe(200);
+    expect(entries[0].response.fixture).not.toBeNull();
+    expect(entries[0].response.fixture!.match.toolCallId).toBe("call_abc");
+  });
+});
+
+describe("integration: large payload streaming", () => {
+  it("streams and reassembles a large (50KB+) text response", async () => {
+    const largeContent = "x".repeat(50000);
+
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "big" },
+        response: { content: largeContent },
+      },
+    ];
+
+    instance = await createServer(fixtures, {
+      port: 0,
+      chunkSize: 20,
+    });
+
+    const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("big payload"));
+
+    expect(res.status).toBe(200);
+
+    const chunks = parseSSEResponse(res.body);
+    expect(chunks.length).toBeGreaterThan(0);
+
+    const content = reassembleTextContent(chunks);
+    expect(content).toBe(largeContent);
+    expect(content.length).toBe(50000);
+
+    expect(res.body).toContain("data: [DONE]");
+  });
+
+  it("works with a very small chunkSize to maximize chunk count", async () => {
+    const largeContent = "y".repeat(50000);
+
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "tiny-chunks" },
+        response: { content: largeContent },
+        chunkSize: 5,
+      },
+    ];
+
+    instance = await createServer(fixtures, {
+      port: 0,
+    });
+
+    const res = await httpPost(
+      `${instance.url}/v1/chat/completions`,
+      chatRequest("tiny-chunks test"),
+    );
+
+    expect(res.status).toBe(200);
+
+    const chunks = parseSSEResponse(res.body);
+
+    // With chunkSize=5 on 50000 chars, we expect many chunks
+    // (at least 50000/5 = 10000 content chunks, plus role + finish chunks)
+    expect(chunks.length).toBeGreaterThan(5000);
+
+    const content = reassembleTextContent(chunks);
+    expect(content).toBe(largeContent);
+    expect(content.length).toBe(50000);
+
+    expect(res.body).toContain("data: [DONE]");
   });
 });

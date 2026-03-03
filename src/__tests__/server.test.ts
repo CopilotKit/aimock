@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import * as net from "node:net";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
 
@@ -572,5 +573,292 @@ describe("journal", () => {
 
     const entry = instance.journal.getLast();
     expect(entry!.headers["authorization"]).toBe("Bearer sk-test");
+  });
+});
+
+describe("readBody error path", () => {
+  it("returns 500 when the request body stream is destroyed mid-read", async () => {
+    instance = await createServer(allFixtures);
+    const parsed = new URL(instance.url);
+    const port = parseInt(parsed.port, 10);
+
+    // Open a raw TCP connection so we can control exactly what gets sent and
+    // when the socket is destroyed. We advertise a Content-Length far larger
+    // than the data we actually send, then destroy the socket. This causes
+    // the async iterator in readBody() to emit an error (premature close).
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
+        const partialBody = '{"model":"gpt-4","mess';
+        const headers = [
+          "POST /v1/chat/completions HTTP/1.1",
+          `Host: 127.0.0.1:${port}`,
+          "Content-Type: application/json",
+          `Content-Length: 1000`,
+          "",
+          "",
+        ].join("\r\n");
+
+        socket.write(headers);
+        socket.write(partialBody);
+
+        // Destroy after a brief delay so the server has started reading
+        setTimeout(() => socket.destroy(), 20);
+      });
+
+      // The server should still send a response before the socket dies, but
+      // since we destroyed the socket, we may or may not get the response
+      // data. Collect what we can.
+      let data = "";
+      socket.on("data", (chunk: Buffer) => {
+        data += chunk.toString();
+      });
+      socket.on("close", () => {
+        // Parse the HTTP status from the raw response if we got one
+        const statusMatch = data.match(/HTTP\/1\.1 (\d+)/);
+        const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+        const bodyStart = data.indexOf("\r\n\r\n");
+        const body = bodyStart >= 0 ? data.slice(bodyStart + 4) : "";
+        resolve({ status, body });
+      });
+      socket.on("error", () => {
+        // Socket errors are expected — we destroyed it intentionally
+        resolve({ status: 0, body: "" });
+      });
+    });
+
+    // The journal should have recorded the failed request regardless of
+    // whether we received the response on the destroyed socket.
+    // Give the server a moment to finish processing the error path.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.status).toBe(500);
+    expect(entry!.response.fixture).toBeNull();
+  });
+});
+
+describe("handleCompletions catch handler", () => {
+  it("returns 500 JSON when predicate throws before headers are sent", async () => {
+    const throwingFixture: Fixture = {
+      match: {
+        predicate: () => {
+          throw new Error("boom");
+        },
+      },
+      response: { content: "never reached" },
+    };
+    instance = await createServer([throwingFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "anything" }],
+    });
+
+    // The predicate throw is not caught inside matchFixture — it propagates
+    // to handleCompletions and is caught by the .catch() handler. Since
+    // headers haven't been sent yet, we get a 500 JSON response.
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("boom");
+    expect(body.error.type).toBe("server_error");
+  });
+
+  it("server stays alive after client disconnects mid-SSE-stream", async () => {
+    const slowFixture: Fixture = {
+      match: { userMessage: "slow" },
+      response: { content: "A".repeat(200) },
+      latency: 30,
+      chunkSize: 10,
+    };
+    const quickFixture: Fixture = {
+      match: { userMessage: "quick" },
+      response: { content: "done" },
+    };
+    instance = await createServer([slowFixture, quickFixture]);
+    const parsed = new URL(instance.url);
+
+    // Start a request that will take a while to stream, then abort it
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: "/v1/chat/completions",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(
+              JSON.stringify({
+                model: "gpt-4",
+                messages: [{ role: "user", content: "slow" }],
+              }),
+            ),
+          },
+        },
+        (res) => {
+          // Read a bit then destroy
+          res.once("data", () => {
+            req.destroy();
+            // Give the server a moment to handle the disconnect
+            setTimeout(resolve, 100);
+          });
+        },
+      );
+      req.on("error", () => {
+        // Expected — we destroyed the request
+      });
+      req.write(
+        JSON.stringify({
+          model: "gpt-4",
+          messages: [{ role: "user", content: "slow" }],
+        }),
+      );
+      req.end();
+    });
+
+    // The server should still be alive and functional
+    expect(instance.server.listening).toBe(true);
+
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "quick" }],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("data: [DONE]");
+  });
+});
+
+describe("concurrent request handling", () => {
+  it("handles 10 parallel requests correctly", async () => {
+    const concurrentFixture: Fixture = {
+      match: { userMessage: "concurrent" },
+      response: { content: "Hello from concurrent!" },
+      latency: 50,
+    };
+    instance = await createServer([concurrentFixture]);
+    const url = `${instance.url}/v1/chat/completions`;
+    const body = {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "concurrent" }],
+    };
+
+    // Fire 10 requests in parallel
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => post(url, body)),
+    );
+
+    // All 10 should succeed as valid SSE streams
+    for (const res of results) {
+      expect(res.status).toBe(200);
+      expect(res.headers["content-type"]).toBe("text/event-stream");
+      expect(res.body).toContain("data: [DONE]");
+
+      const events = parseSSEEvents(res.body);
+      expect(events.length).toBeGreaterThanOrEqual(3);
+
+      // First event has role
+      const first = events[0] as {
+        choices: [{ delta: { role?: string } }];
+      };
+      expect(first.choices[0].delta.role).toBe("assistant");
+
+      // Last event has finish_reason
+      const last = events[events.length - 1] as {
+        choices: [{ finish_reason: string | null }];
+      };
+      expect(last.choices[0].finish_reason).toBe("stop");
+    }
+
+    // Journal should have exactly 10 entries
+    expect(instance.journal.size).toBe(10);
+    const entries = instance.journal.getAll();
+    expect(entries).toHaveLength(10);
+    for (const entry of entries) {
+      expect(entry.response.status).toBe(200);
+      expect(entry.response.fixture).toBe(concurrentFixture);
+    }
+  });
+});
+
+describe("header forwarding in journal", () => {
+  it("captures custom headers in journal entries", async () => {
+    instance = await createServer(allFixtures);
+    await post(
+      `${instance.url}/v1/chat/completions`,
+      {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      {
+        Authorization: "Bearer test-key",
+        "X-Custom-Header": "custom-value",
+      },
+    );
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.headers["authorization"]).toBe("Bearer test-key");
+    expect(entry!.headers["x-custom-header"]).toBe("custom-value");
+    expect(entry!.headers["content-type"]).toBe("application/json");
+  });
+
+  it("captures standard headers (host, content-length) in journal entries", async () => {
+    instance = await createServer(allFixtures);
+    const body = {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+    };
+    await post(`${instance.url}/v1/chat/completions`, body);
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.headers["host"]).toBeDefined();
+    expect(entry!.headers["content-length"]).toBe(
+      String(Buffer.byteLength(JSON.stringify(body))),
+    );
+    expect(entry!.headers["content-type"]).toBe("application/json");
+  });
+
+  it("headers are visible through the GET /v1/_requests endpoint", async () => {
+    instance = await createServer(allFixtures);
+    await post(
+      `${instance.url}/v1/chat/completions`,
+      {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      {
+        Authorization: "Bearer api-key-123",
+        "X-Request-Id": "req-abc-def",
+      },
+    );
+
+    const res = await get(`${instance.url}/v1/_requests`);
+    expect(res.status).toBe(200);
+
+    const entries = JSON.parse(res.body);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].headers["authorization"]).toBe("Bearer api-key-123");
+    expect(entries[0].headers["x-request-id"]).toBe("req-abc-def");
+    expect(entries[0].headers["content-type"]).toBe("application/json");
+    expect(entries[0].headers["host"]).toBeDefined();
+    expect(entries[0].headers["content-length"]).toBeDefined();
+  });
+
+  it("records headers from multiple sequential requests independently", async () => {
+    instance = await createServer(allFixtures);
+    const url = `${instance.url}/v1/chat/completions`;
+    const body = {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    await post(url, body, { Authorization: "Bearer key-one" });
+    await post(url, body, { Authorization: "Bearer key-two" });
+
+    const entries = instance.journal.getAll();
+    expect(entries).toHaveLength(2);
+    expect(entries[0].headers["authorization"]).toBe("Bearer key-one");
+    expect(entries[1].headers["authorization"]).toBe("Bearer key-two");
   });
 });

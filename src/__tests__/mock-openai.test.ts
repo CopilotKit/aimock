@@ -265,6 +265,30 @@ describe("MockOpenAI", () => {
       await expect(mock.stop()).rejects.toThrow("Server not started");
     });
 
+    it("stop rejects when server.close() errors", async () => {
+      mock = new MockOpenAI();
+      await mock.start();
+
+      // Access the underlying http.Server via the private serverInstance field
+      const internal = mock as unknown as { serverInstance: { server: http.Server } | null };
+      const realClose = internal.serverInstance!.server.close.bind(internal.serverInstance!.server);
+
+      // Monkey-patch close to invoke its callback with an Error
+      internal.serverInstance!.server.close = ((cb?: (err?: Error) => void) => {
+        // Still actually close the server so cleanup works
+        return realClose(() => {
+          if (cb) cb(new Error("close failed"));
+        });
+      }) as typeof internal.serverInstance!.server.close;
+
+      await expect(mock.stop()).rejects.toThrow("close failed");
+
+      // stop() rejected so serverInstance is still set — null it out manually
+      // since the real server is already closed
+      internal.serverInstance = null;
+      mock = null; // prevent afterEach double-stop
+    });
+
     it("can restart after stop", async () => {
       mock = new MockOpenAI();
       mock.addFixture({
@@ -474,6 +498,33 @@ describe("MockOpenAI", () => {
       mock = new MockOpenAI();
       expect(mock.nextRequestError(500)).toBe(mock);
     });
+
+    it("stacks multiple one-shot errors (last pushed fires first)", async () => {
+      mock = new MockOpenAI();
+      mock.onMessage("hello", { content: "Normal response" });
+      await mock.start();
+
+      // Push two errors — unshift means the LAST call ends up at index 0
+      mock.nextRequestError(429, { message: "Rate limited" });
+      mock.nextRequestError(503, { message: "Unavailable" });
+
+      // First request → 503 (last pushed = index 0)
+      const res1 = await post(mock.url, chatBody("hello"));
+      expect(res1.status).toBe(503);
+      const body1 = JSON.parse(res1.data);
+      expect(body1.error.message).toBe("Unavailable");
+
+      // Second request → 429 (first pushed, now at index 0 after 503 removed)
+      const res2 = await post(mock.url, chatBody("hello"));
+      expect(res2.status).toBe(429);
+      const body2 = JSON.parse(res2.data);
+      expect(body2.error.message).toBe("Rate limited");
+
+      // Third request → normal fixture matching
+      const res3 = await post(mock.url, chatBody("hello"));
+      expect(res3.status).toBe(200);
+      expect(res3.data).toContain("Normal response");
+    });
   });
 
   describe("journal proxies", () => {
@@ -554,6 +605,60 @@ describe("MockOpenAI", () => {
       mock = new MockOpenAI();
       mock.onMessage("hi", { content: "Hello" });
       expect(mock.reset()).toBe(mock);
+    });
+
+    it("is idempotent — calling reset() twice causes no error", async () => {
+      mock = new MockOpenAI();
+      mock.onMessage("hi", { content: "Hello" });
+      await mock.start();
+
+      // Make a request so journal has an entry
+      await post(mock.url, chatBody("hi"));
+      expect(mock.journal.size).toBe(1);
+
+      // First reset clears everything
+      mock.reset();
+      expect(mock.journal.size).toBe(0);
+
+      // Second reset immediately — no error, still empty
+      mock.reset();
+      expect(mock.journal.size).toBe(0);
+
+      // All fixtures gone — should 404
+      const res = await post(mock.url, chatBody("hi"));
+      expect(res.status).toBe(404);
+    });
+
+    it("after reset, only newly added fixtures are active", async () => {
+      mock = new MockOpenAI();
+      mock.onMessage("old", { content: "Old response" });
+      mock.onMessage("new", { content: "New response" });
+      await mock.start();
+
+      // Both fixtures work before reset
+      const res1 = await post(mock.url, chatBody("old"));
+      expect(res1.status).toBe(200);
+
+      mock.reset();
+
+      // Add only one fixture back
+      mock.onMessage("new", { content: "Fresh response" });
+
+      // Old fixture is gone
+      const res2 = await post(mock.url, chatBody("old"));
+      expect(res2.status).toBe(404);
+
+      // New fixture works
+      const res3 = await post(mock.url, chatBody("new"));
+      expect(res3.status).toBe(200);
+      expect(res3.data).toContain("Fresh response");
+    });
+
+    it("clearFixtures works before server is started", () => {
+      mock = new MockOpenAI();
+      mock.onMessage("hi", { content: "Hello" });
+      // clearFixtures alone should not throw before start
+      expect(mock.clearFixtures()).toBe(mock);
     });
   });
 

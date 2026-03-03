@@ -140,6 +140,29 @@ describe("writeSSEStream", () => {
     expect(setTimeoutSpy).not.toHaveBeenCalled();
     setTimeoutSpy.mockRestore();
   });
+
+  it("propagates error when res.write() throws mid-stream", async () => {
+    const { res, output } = makeMockResponse();
+    let writeCount = 0;
+    const originalWrite = res.write.bind(res);
+    res.write = ((data: string) => {
+      writeCount++;
+      if (writeCount > 2) {
+        throw new Error("write failed");
+      }
+      return originalWrite(data);
+    }) as typeof res.write;
+
+    const chunks = [makeChunk("id1", "A"), makeChunk("id2", "B"), makeChunk("id3", "C")];
+    await expect(writeSSEStream(res, chunks)).rejects.toThrow("write failed");
+
+    // First two chunks should have been written successfully
+    const body = output();
+    expect(body).toContain(JSON.stringify(chunks[0]));
+    expect(body).toContain(JSON.stringify(chunks[1]));
+    // Third chunk should not appear
+    expect(body).not.toContain(JSON.stringify(chunks[2]));
+  });
 });
 
 describe("writeErrorResponse", () => {
