@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { matchFixture, getLastMessageByRole } from "../router.js";
-import type { ChatCompletionRequest, ChatMessage, Fixture } from "../types.js";
+import { matchFixture, getLastMessageByRole, getTextContent } from "../router.js";
+import type { ChatCompletionRequest, ChatMessage, ContentPart, Fixture } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,6 +55,57 @@ describe("getLastMessageByRole", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getTextContent
+// ---------------------------------------------------------------------------
+
+describe("getTextContent", () => {
+  it("returns the string as-is for string content", () => {
+    expect(getTextContent("hello world")).toBe("hello world");
+  });
+
+  it("returns null for null content", () => {
+    expect(getTextContent(null)).toBeNull();
+  });
+
+  it("extracts text from array-of-parts content", () => {
+    const parts: ContentPart[] = [{ type: "text", text: "hello world" }];
+    expect(getTextContent(parts)).toBe("hello world");
+  });
+
+  it("concatenates multiple text parts", () => {
+    const parts: ContentPart[] = [
+      { type: "text", text: "hello " },
+      { type: "text", text: "world" },
+    ];
+    expect(getTextContent(parts)).toBe("hello world");
+  });
+
+  it("ignores non-text parts in array content", () => {
+    const parts: ContentPart[] = [
+      { type: "image_url", image_url: { url: "https://example.com/img.png" } },
+      { type: "text", text: "describe this" },
+    ];
+    expect(getTextContent(parts)).toBe("describe this");
+  });
+
+  it("returns null for array with no text parts", () => {
+    const parts: ContentPart[] = [
+      { type: "image_url", image_url: { url: "https://example.com/img.png" } },
+    ];
+    expect(getTextContent(parts)).toBeNull();
+  });
+
+  it("returns null for empty array", () => {
+    expect(getTextContent([])).toBeNull();
+  });
+
+  it("returns null for array with only empty-string text parts", () => {
+    const parts: ContentPart[] = [{ type: "text", text: "" }];
+    expect(getTextContent(parts)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // matchFixture — empty / null cases
 // ---------------------------------------------------------------------------
 
@@ -102,6 +153,61 @@ describe("matchFixture — userMessage (string)", () => {
   it("does not match when there is no user message", () => {
     const fixture = makeFixture({ userMessage: "hello" });
     const req = makeReq({ messages: [{ role: "system", content: "hello system" }] });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+});
+
+describe("matchFixture — userMessage (array content)", () => {
+  it("matches when user content is array-of-parts with matching text", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const req = makeReq({
+      messages: [{ role: "user", content: [{ type: "text", text: "say hello world" }] }],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when array-of-parts text does not include the string", () => {
+    const fixture = makeFixture({ userMessage: "goodbye" });
+    const req = makeReq({
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches regexp against array-of-parts text", () => {
+    const fixture = makeFixture({ userMessage: /^hello/i });
+    const req = makeReq({
+      messages: [{ role: "user", content: [{ type: "text", text: "Hello world" }] }],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("concatenates multiple text parts for matching", () => {
+    const fixture = makeFixture({ userMessage: "hello world" });
+    const req = makeReq({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hello " },
+            { type: "text", text: "world" },
+          ],
+        },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("skips array content with no text parts", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const req = makeReq({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "https://example.com" } }],
+        },
+      ],
+    });
     expect(matchFixture([fixture], req)).toBeNull();
   });
 });

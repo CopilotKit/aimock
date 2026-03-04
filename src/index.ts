@@ -11,7 +11,7 @@ export { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
 export { Journal } from "./journal.js";
 
 // Router
-export { matchFixture } from "./router.js";
+export { matchFixture, getTextContent } from "./router.js";
 
 // Provider handlers
 export { handleResponses } from "./responses.js";
@@ -35,6 +35,7 @@ export { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 export type {
   ChatMessage,
   ChatCompletionRequest,
+  ContentPart,
   ToolDefinition,
   FixtureMatch,
   TextResponse,
