@@ -1,8 +1,24 @@
-import type { ChatCompletionRequest, ChatMessage, Fixture } from "./types.js";
+import type { ChatCompletionRequest, ChatMessage, ContentPart, Fixture } from "./types.js";
 
 export function getLastMessageByRole(messages: ChatMessage[], role: string): ChatMessage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === role) return messages[i];
+  }
+  return null;
+}
+
+/**
+ * Extract the text content from a message's content field.
+ * Handles both plain string content and array-of-parts content
+ * (e.g. `[{type: "text", text: "..."}]` as sent by some SDKs).
+ */
+export function getTextContent(content: string | ContentPart[] | null): string | null {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const texts = content
+      .filter((p) => p.type === "text" && typeof p.text === "string" && p.text !== "")
+      .map((p) => p.text as string);
+    return texts.length > 0 ? texts.join("") : null;
   }
   return null;
 }
@@ -19,11 +35,12 @@ export function matchFixture(fixtures: Fixture[], req: ChatCompletionRequest): F
     // userMessage — match against the last user message content
     if (match.userMessage !== undefined) {
       const msg = getLastMessageByRole(req.messages, "user");
-      if (!msg || typeof msg.content !== "string") continue;
+      const text = msg ? getTextContent(msg.content) : null;
+      if (!text) continue;
       if (typeof match.userMessage === "string") {
-        if (!msg.content.includes(match.userMessage)) continue;
+        if (!text.includes(match.userMessage)) continue;
       } else {
-        if (!match.userMessage.test(msg.content)) continue;
+        if (!match.userMessage.test(text)) continue;
       }
     }
 
