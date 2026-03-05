@@ -36,7 +36,7 @@
     "test:exports": "publint && attw --pack .",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "release": "pnpm build && changeset publish",
+    "release": "pnpm build && npm publish",
     "prepare": "husky || true"
   },
   "lint-staged": {
@@ -45,7 +45,6 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.17.3",
-    "@changesets/cli": "^2.29.4",
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.30.0",
