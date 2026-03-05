@@ -24,6 +24,15 @@ export class LLMock {
     return this;
   }
 
+  prependFixture(fixture: Fixture): this {
+    this.fixtures.unshift(fixture);
+    return this;
+  }
+
+  getFixtures(): readonly Fixture[] {
+    return this.fixtures;
+  }
+
   loadFixtureFile(filePath: string): this {
     this.fixtures.push(...loadFixtureFile(filePath));
     return this;

@@ -125,6 +125,78 @@ describe("LLMock", () => {
       expect(result).toBe(mock);
     });
 
+    it("prependFixture inserts at the front and returns this", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "second" },
+        response: { content: "Second" },
+      });
+      const result = mock.prependFixture({
+        match: { userMessage: "first" },
+        response: { content: "First" },
+      });
+      expect(result).toBe(mock);
+
+      const fixtures = mock.getFixtures();
+      expect(fixtures).toHaveLength(2);
+      expect(fixtures[0].match.userMessage).toBe("first");
+      expect(fixtures[1].match.userMessage).toBe("second");
+    });
+
+    it("prependFixture is visible to a running server", async () => {
+      mock = new LLMock();
+      // Add a catch-all that matches everything
+      mock.addFixture({
+        match: { predicate: () => true },
+        response: { content: "catch-all" },
+      });
+      await mock.start();
+
+      // Prepend a specific fixture — it should match first
+      mock.prependFixture({
+        match: { userMessage: "specific" },
+        response: { content: "specific response" },
+      });
+
+      const res = await post(mock.url, chatBody("specific"));
+      expect(res.status).toBe(200);
+      expect(res.data).toContain("specific response");
+    });
+
+    it("getFixtures returns a readonly view of all fixtures", () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "a" },
+        response: { content: "A" },
+      });
+      mock.addFixture({
+        match: { userMessage: "b" },
+        response: { content: "B" },
+      });
+
+      const fixtures = mock.getFixtures();
+      expect(fixtures).toHaveLength(2);
+      expect(fixtures[0].match.userMessage).toBe("a");
+      expect(fixtures[1].match.userMessage).toBe("b");
+    });
+
+    it("getFixtures returns empty array when no fixtures added", () => {
+      mock = new LLMock();
+      expect(mock.getFixtures()).toHaveLength(0);
+    });
+
+    it("getFixtures reflects mutations from clearFixtures", () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "a" },
+        response: { content: "A" },
+      });
+      expect(mock.getFixtures()).toHaveLength(1);
+
+      mock.clearFixtures();
+      expect(mock.getFixtures()).toHaveLength(0);
+    });
+
     it("clearFixtures empties all fixtures and returns this", async () => {
       mock = new LLMock();
       mock.addFixture({
