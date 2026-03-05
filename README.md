@@ -334,7 +334,29 @@ mock.onToolResult("call_abc123", { content: "Temperature is 72F" });
 
 #### `addFixture(fixture)` / `addFixtures(fixtures)`
 
-Add raw `Fixture` objects directly.
+Add raw `Fixture` objects directly (appended to the end of the list).
+
+#### `prependFixture(fixture)`
+
+Insert a fixture at the **front** of the list so it matches before all existing fixtures.
+Useful for catch-all predicates that must fire before substring-based fixtures.
+
+```typescript
+mock.prependFixture({
+  match: { predicate: (req) => req.messages.at(-1)?.role === "tool" },
+  response: { content: "Done!" },
+});
+```
+
+#### `getFixtures()`
+
+Returns a `readonly Fixture[]` view of all registered fixtures. Useful for
+debugging and logging fixture statistics without accessing private internals.
+
+```typescript
+const fixtures = mock.getFixtures();
+console.log(`${fixtures.length} fixtures loaded`);
+```
 
 #### `loadFixtureFile(path)` / `loadFixtureDir(path)`
 
