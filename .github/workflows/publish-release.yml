@@ -15,11 +15,30 @@ jobs:
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
-      - uses: changesets/action@v1
-        with:
-          publish: pnpm release
-          version: pnpm changeset version
+
+      - name: Check if version is already published
+        id: check
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version 2>/dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and publish
+        if: steps.check.outputs.published == 'false'
+        run: pnpm release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release tag
+        if: steps.check.outputs.published == 'false'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          git tag "v${PKG_VERSION}"
+          git push origin "v${PKG_VERSION}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
