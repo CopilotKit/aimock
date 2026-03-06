@@ -14,7 +14,12 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types.js";
-import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
+import {
+  isTextResponse,
+  isToolCallResponse,
+  isErrorResponse,
+  generateToolCallId,
+} from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -23,7 +28,7 @@ import type { Journal } from "./journal.js";
 
 interface GeminiPart {
   text?: string;
-  functionCall?: { name: string; args: Record<string, unknown> };
+  functionCall?: { name: string; args: Record<string, unknown>; id?: string };
   functionResponse?: { name: string; response: unknown };
 }
 
@@ -232,7 +237,7 @@ function buildGeminiToolCallStreamChunks(toolCalls: ToolCall[]): GeminiResponseC
       argsObj = {};
     }
     return {
-      functionCall: { name: tc.name, args: argsObj },
+      functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() },
     };
   });
 
@@ -283,7 +288,7 @@ function buildGeminiToolCallResponse(toolCalls: ToolCall[]): GeminiResponseChunk
       argsObj = {};
     }
     return {
-      functionCall: { name: tc.name, args: argsObj },
+      functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() },
     };
   });
 
