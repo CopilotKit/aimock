@@ -49,6 +49,7 @@ MSW can't intercept any of those calls. llmock can — it's a real server on a r
 | OpenAI Responses API SSE     | **Built-in**          | Manual — MSW's `sse()` sends `data:` events, not OpenAI's `event:` format |
 | Claude Messages API SSE      | **Built-in**          | Manual — build `event:`/`data:` SSE yourself                              |
 | Gemini streaming             | **Built-in**          | Manual — build `data:` SSE yourself                                       |
+| WebSocket APIs               | **Built-in**          | **No**                                                                    |
 | Fixture file loading (JSON)  | **Yes**               | **No** — handlers are code-only                                           |
 | Request journal / inspection | **Yes**               | **No** — track requests manually                                          |
 | Non-streaming responses      | **Yes**               | **Yes**                                                                   |
