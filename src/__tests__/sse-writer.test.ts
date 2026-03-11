@@ -209,6 +209,23 @@ describe("delay", () => {
     await delay(-5);
     // no error
   });
+
+  it("resolves immediately when signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    let resolved = false;
+    const raceResult = await Promise.race([
+      delay(5000, controller.signal).then(() => {
+        resolved = true;
+        return "delay";
+      }),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 100)),
+    ]);
+
+    expect(raceResult).toBe("delay");
+    expect(resolved).toBe(true);
+  });
 });
 
 describe("writeSSEStream with StreamOptions", () => {

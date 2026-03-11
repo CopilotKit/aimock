@@ -116,4 +116,27 @@ describe("createInterruptionSignal", () => {
     expect(ctrl!.reason()).toBeUndefined();
     ctrl!.cleanup();
   });
+
+  it("truncateAfterChunks: 0 aborts immediately on first tick", () => {
+    const ctrl = createInterruptionSignal(makeFixture({ truncateAfterChunks: 0 }));
+    expect(ctrl).not.toBeNull();
+    expect(ctrl!.signal.aborted).toBe(false);
+
+    ctrl!.tick();
+    expect(ctrl!.signal.aborted).toBe(true);
+    expect(ctrl!.reason()).toBe("truncateAfterChunks");
+
+    ctrl!.cleanup();
+  });
+
+  it("disconnectAfterMs: 0 aborts promptly", async () => {
+    const ctrl = createInterruptionSignal(makeFixture({ disconnectAfterMs: 0 }));
+    expect(ctrl).not.toBeNull();
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ctrl!.signal.aborted).toBe(true);
+    expect(ctrl!.reason()).toBe("disconnectAfterMs");
+
+    ctrl!.cleanup();
+  });
 });
