@@ -150,12 +150,12 @@ function itemId(): string {
 
 // Streaming events for Responses API
 
-interface ResponsesSSEEvent {
+export interface ResponsesSSEEvent {
   type: string;
   [key: string]: unknown;
 }
 
-function buildTextStreamEvents(
+export function buildTextStreamEvents(
   content: string,
   model: string,
   chunkSize: number,
@@ -282,7 +282,7 @@ function buildTextStreamEvents(
   return events;
 }
 
-function buildToolCallStreamEvents(
+export function buildToolCallStreamEvents(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
