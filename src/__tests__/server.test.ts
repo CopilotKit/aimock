@@ -942,3 +942,295 @@ describe("header forwarding in journal", () => {
     expect(entries[1].headers["authorization"]).toBe("Bearer key-two");
   });
 });
+
+describe("stream interruption", () => {
+  // Helper that collects whatever data arrives before the server destroys the
+  // connection. Unlike `post()`, it does NOT reject on socket errors — it
+  // returns the partial body that was received.
+  function postPartial(url: string, body: unknown): Promise<{ body: string; aborted: boolean }> {
+    return new Promise((resolve) => {
+      const data = JSON.stringify(body);
+      const parsed = new URL(url);
+      const chunks: Buffer[] = [];
+      let aborted = false;
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => {
+            resolve({ body: Buffer.concat(chunks).toString(), aborted });
+          });
+          res.on("error", () => {
+            aborted = true;
+          });
+          res.on("aborted", () => {
+            aborted = true;
+          });
+          res.on("close", () => {
+            resolve({ body: Buffer.concat(chunks).toString(), aborted });
+          });
+        },
+      );
+      req.on("error", () => {
+        aborted = true;
+        resolve({ body: Buffer.concat(chunks).toString(), aborted });
+      });
+      req.write(data);
+      req.end();
+    });
+  }
+
+  it("truncateAfterChunks stops stream early and records interruption", async () => {
+    // Use enough chunks that without truncation, we'd get many more events.
+    // With truncateAfterChunks: 2, only 2 chunks should be written before abort.
+    // res.destroy() simulates abrupt disconnect — some data may be lost in
+    // transit, so we verify via the journal (which is always reliable).
+    const fixture: Fixture = {
+      match: { userMessage: "truncate-me" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 content + role + finish = 7
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "truncate-me" }],
+    });
+
+    // The body should NOT contain [DONE] since we interrupted
+    expect(res.body).not.toContain("data: [DONE]");
+
+    // The connection should have been aborted
+    expect(res.aborted).toBe(true);
+
+    // Journal should record interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("truncateAfterChunks is ignored for non-streaming requests", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "no-stream-truncate" },
+      response: { content: "Hello world" },
+      truncateAfterChunks: 1,
+    };
+    instance = await createServer([fixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "no-stream-truncate" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].message.content).toBe("Hello world");
+
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBeUndefined();
+  });
+
+  it("journal records interrupted: true with interruptReason", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "journal-int" },
+      response: { content: "ABCDEFGHIJ" },
+      chunkSize: 2,
+      truncateAfterChunks: 1,
+    };
+    instance = await createServer([fixture]);
+    await postPartial(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "journal-int" }],
+    });
+
+    // Give server a moment to finish the async handler
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("disconnectAfterMs stops stream after timeout", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "disconnect-me" },
+      response: { content: "A".repeat(200) },
+      chunkSize: 10,
+      latency: 20,
+      disconnectAfterMs: 50,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "disconnect-me" }],
+    });
+
+    // Should be a partial stream
+    expect(res.body).not.toContain("data: [DONE]");
+    const events = parseSSEEvents(res.body);
+    // With 200 chars / 10 chunkSize = 20 content chunks + 1 role + 1 finish = 22 total
+    // But disconnectAfterMs: 50 with latency: 20 should only get a few
+    expect(events.length).toBeLessThan(22);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    // Give server a moment to finish the async handler
+    await new Promise((r) => setTimeout(r, 100));
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
+
+  it("tool call interruption via OpenAI /v1/chat/completions with truncateAfterChunks", async () => {
+    // Tool call stream: role chunk + N argument delta chunks + finish chunk
+    // With truncateAfterChunks: 2 we get at most 2 chunks before abort
+    const fixture: Fixture = {
+      match: { userMessage: "tool-truncate" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"New York","units":"metric"}' }],
+      },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "tool-truncate" }],
+    });
+
+    // No [DONE] — stream was cut short
+    expect(res.body).not.toContain("data: [DONE]");
+
+    // Journal must record interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("Claude Messages API /v1/messages with truncateAfterChunks stops stream early", async () => {
+    // Claude SSE events: message_start, content_block_start, N content_block_delta, content_block_stop, message_delta, message_stop
+    // With truncateAfterChunks: 2 the stream ends before message_stop
+    const fixture: Fixture = {
+      match: { userMessage: "claude-truncate" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 deltas
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content: "claude-truncate" }],
+    });
+
+    // No message_stop event — stream was cut short
+    expect(res.body).not.toContain('"message_stop"');
+
+    // Journal records interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("Claude Messages API /v1/messages with disconnectAfterMs stops stream early", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "claude-disconnect" },
+      response: { content: "A".repeat(150) },
+      chunkSize: 10,
+      latency: 20,
+      disconnectAfterMs: 50,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content: "claude-disconnect" }],
+    });
+
+    // No message_stop event — stream was cut short
+    expect(res.body).not.toContain('"message_stop"');
+
+    // Journal records disconnectAfterMs reason
+    await new Promise((r) => setTimeout(r, 100));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
+
+  it("Gemini HTTP SSE streamGenerateContent with truncateAfterChunks stops stream early", async () => {
+    // Gemini SSE: N data-only chunks (no [DONE]). The last chunk has finishReason: "STOP".
+    // With truncateAfterChunks: 2 out of 5 content chunks, finishReason never appears.
+    const fixture: Fixture = {
+      match: { userMessage: "gemini-truncate" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 chunks
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(
+      `${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse`,
+      {
+        contents: [{ role: "user", parts: [{ text: "gemini-truncate" }] }],
+      },
+    );
+
+    // No STOP finishReason in the truncated stream
+    expect(res.body).not.toContain('"STOP"');
+
+    // Journal records interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("HTTP Responses API /v1/responses with truncateAfterChunks stops stream early", async () => {
+    // Responses API SSE ends with response.completed event.
+    // With truncateAfterChunks: 2, that terminal event never appears.
+    const fixture: Fixture = {
+      match: { userMessage: "responses-truncate" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 deltas
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([fixture]);
+    const res = await postPartial(`${instance.url}/v1/responses`, {
+      model: "gpt-4o",
+      stream: true,
+      input: [{ role: "user", content: "responses-truncate" }],
+    });
+
+    // No response.completed event — stream was cut short
+    expect(res.body).not.toContain("response.completed");
+
+    // Journal records interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+});

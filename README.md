@@ -475,7 +475,91 @@ The server handles:
 - **POST `/v1beta/models/{model}:generateContent`** — Google Gemini (non-streaming)
 - **POST `/v1beta/models/{model}:streamGenerateContent`** — Google Gemini (streaming)
 
+WebSocket endpoints:
+
+- **WS `/v1/responses`** — OpenAI Responses API over WebSocket
+- **WS `/v1/realtime`** — OpenAI Realtime API (text + tool calls)
+- **WS `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`** — Gemini Live
+
 All endpoints share the same fixture pool — the same fixtures work across all providers. Requests are translated to a common format internally for fixture matching.
+
+## WebSocket APIs
+
+The same fixtures that drive HTTP responses also work over WebSocket transport. llmock implements RFC 6455 WebSocket framing with zero external dependencies — connect, send events, and receive streaming responses in real provider formats.
+
+Only text and tool call paths are supported over WebSocket. Audio, video, and binary frames are not implemented.
+
+### OpenAI Responses API (WebSocket)
+
+Connect to `ws://localhost:5555/v1/responses` and send a `response.create` event. The server streams back the same events as OpenAI's real WebSocket Responses API:
+
+```jsonc
+// → Client sends:
+{
+  "type": "response.create",
+  "response": {
+    "modalities": ["text"],
+    "instructions": "You are a helpful assistant.",
+    "input": [
+      { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Hello" }] },
+    ],
+  },
+}
+
+// ← Server streams:
+// {"type": "response.created", ...}
+// {"type": "response.output_item.added", ...}
+// {"type": "response.content_part.added", ...}
+// {"type": "response.output_item.done", ...}
+// {"type": "response.done", ...}
+```
+
+### OpenAI Realtime API
+
+Connect to `ws://localhost:5555/v1/realtime`. The Realtime API uses a session-based protocol — configure the session, add conversation items, then request a response:
+
+```jsonc
+// → Configure session:
+{ "type": "session.update", "session": { "modalities": ["text"], "model": "gpt-4o-realtime" } }
+
+// → Add a user message:
+{
+  "type": "conversation.item.create",
+  "item": {
+    "type": "message",
+    "role": "user",
+    "content": [{ "type": "input_text", "text": "What is the capital of France?" }]
+  }
+}
+
+// → Request a response:
+{ "type": "response.create" }
+
+// ← Server streams:
+// {"type": "response.created", ...}
+// {"type": "response.text.delta", "delta": "The"}
+// {"type": "response.text.delta", "delta": " capital"}
+// ...
+// {"type": "response.text.done", ...}
+// {"type": "response.done", ...}
+```
+
+### Gemini Live (BidiGenerateContent)
+
+Connect to `ws://localhost:5555/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`. Gemini Live uses a setup/content/response flow:
+
+```jsonc
+// → Setup message (must be first):
+{ "setup": { "model": "models/gemini-2.0-flash-live", "generationConfig": { "responseModalities": ["TEXT"] } } }
+
+// → Send user content:
+{ "clientContent": { "turns": [{ "role": "user", "parts": [{ "text": "Hello" }] }], "turnComplete": true } }
+
+// ← Server streams:
+// {"setupComplete": {}}
+// {"serverContent": {"modelTurnComplete": false, "parts": [{"text": "Hello"}]}}
+// {"serverContent": {"modelTurnComplete": true}}
+```
 
 ## CLI
 
@@ -538,11 +622,6 @@ Areas where llmock could grow, and explicit non-goals for the current scope.
 - **WebSocket compression**: `permessage-deflate` is not supported.
 - **Session persistence**: Realtime and Gemini Live sessions exist only for the lifetime of a single WebSocket connection. There is no cross-connection session resumption.
 
-### Streaming
-
-- **Mid-stream interruption**: No way to simulate a server disconnecting partway through a stream (e.g. `truncateAfterChunks`, `disconnectAfterMs`).
-- **Abort/cancellation signaling**: Streaming functions do not accept an `AbortSignal` for client-side cancellation.
-
 ### Fixtures
 
 - **Request metadata in predicates**: Predicate functions receive only the `ChatCompletionRequest`, not HTTP headers, method, or URL.
@@ -561,6 +640,12 @@ Areas where llmock could grow, and explicit non-goals for the current scope.
 - **`--watch` mode**: No file-watching to auto-reload fixtures on change.
 - **`--log-level`**: No configurable log verbosity.
 - **`--validate-on-load`**: No flag to validate fixture schemas at startup.
+
+## Real-World Usage
+
+[CopilotKit](https://github.com/CopilotKit/CopilotKit) uses llmock across its test suite to verify AI agent behavior across multiple LLM providers without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn conversations across both v1 and v2 runtimes.
+
+See the [CopilotKit test suite](https://github.com/CopilotKit/CopilotKit/search?q=llmock&type=code) for real-world examples of llmock in action.
 
 ## License
 

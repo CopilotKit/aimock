@@ -79,6 +79,8 @@ export interface Fixture {
   response: FixtureResponse;
   latency?: number;
   chunkSize?: number;
+  truncateAfterChunks?: number;
+  disconnectAfterMs?: number;
 }
 
 // Fixture file format (JSON on disk)
@@ -98,6 +100,8 @@ export interface FixtureFileEntry {
   response: FixtureResponse;
   latency?: number;
   chunkSize?: number;
+  truncateAfterChunks?: number;
+  disconnectAfterMs?: number;
 }
 
 // Request journal
@@ -109,7 +113,12 @@ export interface JournalEntry {
   path: string;
   headers: Record<string, string>;
   body: ChatCompletionRequest;
-  response: { status: number; fixture: Fixture | null };
+  response: {
+    status: number;
+    fixture: Fixture | null;
+    interrupted?: boolean;
+    interruptReason?: string;
+  };
 }
 
 // SSE chunk types (OpenAI format)

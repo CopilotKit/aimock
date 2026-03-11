@@ -6,7 +6,7 @@
     <title>llmock — Deterministic mock LLM server for testing</title>
     <meta
       name="description"
-      content="Real HTTP server. Real SSE streams. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini — drop-in replacement for your test suite."
+      content="Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini — drop-in replacement for your test suite."
     />
 
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
@@ -871,8 +871,8 @@
         <h1>Deterministic <span class="highlight">mock LLM</span> server for testing</h1>
 
         <p class="hero-sub">
-          Real HTTP server. Real SSE streams. Fixture-driven responses. Multi-provider mock —
-          OpenAI, Claude, Gemini — any process on the machine can reach it.
+          Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven responses.
+          Multi-provider mock — OpenAI, Claude, Gemini — any process on the machine can reach it.
         </p>
 
         <div class="hero-actions">
@@ -1000,6 +1000,14 @@
             <p>
               Every request recorded. Inspect messages, verify tool calls, assert on conversation
               history. HTTP and programmatic access.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">🔌</div>
+            <h3>WebSocket APIs</h3>
+            <p>
+              OpenAI Responses, OpenAI Realtime, and Gemini Live over WebSocket. Same fixtures, real
+              RFC 6455 framing, zero dependencies. Text + tool calls.
             </p>
           </div>
         </div>
@@ -1178,6 +1186,51 @@
             </ul>
           </div>
         </div>
+
+        <!-- Example 5: WebSocket Realtime -->
+        <div class="code-section reveal">
+          <div class="text-side">
+            <h3>WebSocket APIs</h3>
+            <p>
+              Same fixtures work over WebSocket transport. OpenAI Responses, OpenAI Realtime, and
+              Gemini Live — RFC 6455 framing with zero dependencies.
+            </p>
+            <ul>
+              <li>OpenAI Responses API over WebSocket</li>
+              <li>OpenAI Realtime API — text + tool calls</li>
+              <li>Gemini Live BidiGenerateContent</li>
+              <li>No audio/video — text and tool call paths only</li>
+            </ul>
+          </div>
+          <div class="code-block">
+            <div class="code-block-header">
+              OpenAI Realtime over WebSocket
+              <span class="lang-tag">jsonc</span>
+            </div>
+            <pre><code><span class="cm">// Connect to ws://localhost:5555/v1/realtime</span>
+
+<span class="cm">// → Configure session:</span>
+{ <span class="key">"type"</span>: <span class="str">"session.update"</span>,
+  <span class="key">"session"</span>: { <span class="key">"modalities"</span>: [<span class="str">"text"</span>] } }
+
+<span class="cm">// → Add user message:</span>
+{ <span class="key">"type"</span>: <span class="str">"conversation.item.create"</span>,
+  <span class="key">"item"</span>: { <span class="key">"type"</span>: <span class="str">"message"</span>,
+    <span class="key">"role"</span>: <span class="str">"user"</span>,
+    <span class="key">"content"</span>: [{ <span class="key">"type"</span>: <span class="str">"input_text"</span>,
+      <span class="key">"text"</span>: <span class="str">"Hello"</span> }] } }
+
+<span class="cm">// → Request response:</span>
+{ <span class="key">"type"</span>: <span class="str">"response.create"</span> }
+
+<span class="cm">// ← Server streams back:</span>
+<span class="cm">// {"type":"response.created", ...}</span>
+<span class="cm">// {"type":"response.text.delta","delta":"Hi"}</span>
+<span class="cm">// {"type":"response.text.delta","delta":" there!"}</span>
+<span class="cm">// {"type":"response.text.done", ...}</span>
+<span class="cm">// {"type":"response.done", ...}</span></code></pre>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1254,6 +1307,11 @@
               <td class="manual">Manual — build data SSE yourself</td>
             </tr>
             <tr>
+              <td>WebSocket APIs (Realtime, Gemini Live)</td>
+              <td class="yes">Built-in ✓</td>
+              <td class="no">No</td>
+            </tr>
+            <tr>
               <td>Multi-provider support</td>
               <td class="yes">OpenAI + Claude + Gemini ✓</td>
               <td class="no">Provider-agnostic (manual)</td>
@@ -1290,6 +1348,28 @@
             </tr>
           </tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- ═══ Real-World Usage ═════════════════════════════════════════ -->
+    <section class="reveal">
+      <div class="container">
+        <h2>Real-World Usage</h2>
+        <p>
+          <a href="https://github.com/CopilotKit/CopilotKit" target="_blank">CopilotKit</a> uses
+          llmock across its test suite to verify AI agent behavior across multiple LLM providers
+          without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn
+          conversations across both v1 and v2 runtimes.
+        </p>
+        <p>
+          See the
+          <a
+            href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
+            target="_blank"
+            >CopilotKit test suite</a
+          >
+          for real-world examples of llmock in action.
+        </p>
       </div>
     </section>
 

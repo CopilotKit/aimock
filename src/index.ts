@@ -35,8 +35,13 @@ export {
   buildToolCallChunks,
 } from "./helpers.js";
 
+// Interruption
+export { createInterruptionSignal } from "./interruption.js";
+export type { InterruptionControl } from "./interruption.js";
+
 // SSE
-export { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
+export { writeSSEStream, writeErrorResponse, delay } from "./sse-writer.js";
+export type { StreamOptions } from "./sse-writer.js";
 
 // Types
 export type {

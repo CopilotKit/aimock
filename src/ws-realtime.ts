@@ -15,12 +15,10 @@ import {
   isToolCallResponse,
   isErrorResponse,
 } from "./helpers.js";
+import { createInterruptionSignal } from "./interruption.js";
+import { delay } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import type { WebSocketConnection } from "./ws-framing.js";
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ─── Realtime protocol types ────────────────────────────────────────────────
 
@@ -335,7 +333,7 @@ async function handleResponseCreate(
 
   // ── Text response ───────────────────────────────────────────────────
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path: "/v1/realtime",
       headers: {},
@@ -383,10 +381,17 @@ async function handleResponseCreate(
 
     // response.text.delta (chunked)
     const content = response.content;
+    const interruption = createInterruptionSignal(fixture);
+    let interrupted = false;
+
     for (let i = 0; i < content.length; i += chunkSize) {
-      if (ws.isClosed) return;
-      if (latency > 0) await delay(latency);
-      if (ws.isClosed) return;
+      if (ws.isClosed) break;
+      if (latency > 0) await delay(latency, interruption?.signal);
+      if (interruption?.signal.aborted) {
+        interrupted = true;
+        break;
+      }
+      if (ws.isClosed) break;
       const chunk = content.slice(i, i + chunkSize);
       ws.send(
         evt("response.text.delta", {
@@ -397,7 +402,22 @@ async function handleResponseCreate(
           delta: chunk,
         }),
       );
+      interruption?.tick();
+      if (interruption?.signal.aborted) {
+        interrupted = true;
+        break;
+      }
     }
+
+    if (interrupted) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      interruption?.cleanup();
+      return;
+    }
+
+    interruption?.cleanup();
 
     // response.text.done
     ws.send(
@@ -449,7 +469,7 @@ async function handleResponseCreate(
 
   // ── Tool call response ──────────────────────────────────────────────
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path: "/v1/realtime",
       headers: {},
@@ -465,6 +485,8 @@ async function handleResponseCreate(
     );
 
     const outputItems: unknown[] = [];
+    const interruption = createInterruptionSignal(fixture);
+    let interrupted = false;
 
     for (let tcIdx = 0; tcIdx < response.toolCalls.length; tcIdx++) {
       const tc = response.toolCalls[tcIdx];
@@ -497,9 +519,13 @@ async function handleResponseCreate(
       // response.function_call_arguments.delta (chunked)
       const args = tc.arguments;
       for (let i = 0; i < args.length; i += chunkSize) {
-        if (ws.isClosed) return;
-        if (latency > 0) await delay(latency);
-        if (ws.isClosed) return;
+        if (ws.isClosed) break;
+        if (latency > 0) await delay(latency, interruption?.signal);
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
+        if (ws.isClosed) break;
         const chunk = args.slice(i, i + chunkSize);
         ws.send(
           evt("response.function_call_arguments.delta", {
@@ -510,7 +536,14 @@ async function handleResponseCreate(
             delta: chunk,
           }),
         );
+        interruption?.tick();
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
       }
+
+      if (interrupted) break;
 
       // response.function_call_arguments.done
       ws.send(
@@ -534,6 +567,16 @@ async function handleResponseCreate(
 
       outputItems.push(outputItem);
     }
+
+    if (interrupted) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      interruption?.cleanup();
+      return;
+    }
+
+    interruption?.cleanup();
 
     // response.done
     ws.send(

@@ -252,6 +252,121 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     ws.close();
   });
 
+  it("truncateAfterChunks stops stream early, no turnComplete: true", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-gemini" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 chunks
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("truncate-gemini"));
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Small pause for server-side processing
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Check that no message with turnComplete: true was sent
+    const raw = await ws.waitForMessages(1).catch(() => [] as string[]);
+    if (raw.length > 1) {
+      const chunks = raw.slice(1).map((r) => JSON.parse(r));
+      const hasTurnComplete = chunks.some((c) => c.serverContent?.turnComplete === true);
+      expect(hasTurnComplete).toBe(false);
+    }
+  });
+
+  it("truncateAfterChunks records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-journal-gemini" },
+      response: { content: "ABCDEFGHIJKLMNO" },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("truncate-journal-gemini"));
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  // Gemini Live sends all tool calls in a single WS frame, so truncateAfterChunks: 1
+  // interrupts after that frame is sent (preventing conversation history update).
+  it("truncateAfterChunks with toolCalls records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-tool-gemini" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+      latency: 5,
+      truncateAfterChunks: 1,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("truncate-tool-gemini"));
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("disconnectAfterMs interrupts stream and records in journal", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "disconnect-gemini" },
+      response: { content: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" },
+      chunkSize: 1,
+      latency: 20,
+      disconnectAfterMs: 30,
+    };
+    instance = await createServer([fixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("disconnect-gemini"));
+
+    await ws.waitForClose();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
+
   it("returns error when message sent before setup", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);

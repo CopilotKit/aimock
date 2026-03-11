@@ -13,6 +13,10 @@ function entryToFixture(entry: FixtureFileEntry): Fixture {
     response: entry.response,
     ...(entry.latency !== undefined && { latency: entry.latency }),
     ...(entry.chunkSize !== undefined && { chunkSize: entry.chunkSize }),
+    ...(entry.truncateAfterChunks !== undefined && {
+      truncateAfterChunks: entry.truncateAfterChunks,
+    }),
+    ...(entry.disconnectAfterMs !== undefined && { disconnectAfterMs: entry.disconnectAfterMs }),
   };
 }
 

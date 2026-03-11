@@ -236,4 +236,108 @@ describe("WebSocket /v1/responses", () => {
       "Upgrade failed",
     );
   });
+
+  it("truncateAfterChunks stops stream early, no response.completed event", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-ws" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 content chunks
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("truncate-ws"));
+
+    // Wait for the connection to be destroyed
+    await ws.waitForClose();
+
+    // Small pause to ensure server-side processing completed
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Collect whatever messages were received
+    // We should have some events but NOT the response.completed event
+    const raw = await ws.waitForMessages(1).catch(() => [] as string[]);
+    // If we got messages, verify no response.completed
+    if (raw.length > 0) {
+      const events = parseEvents(raw);
+      const types = events.map((e) => e.type);
+      expect(types).not.toContain("response.completed");
+    }
+  });
+
+  it("truncateAfterChunks records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-journal-ws" },
+      response: { content: "ABCDEFGHIJKLMNO" },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("truncate-journal-ws"));
+
+    // Wait for the connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("truncateAfterChunks with toolCalls records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-tool-ws" },
+      response: {
+        toolCalls: [{ name: "search", arguments: '{"query":"hello world test string"}' }],
+      },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("truncate-tool-ws"));
+
+    // Wait for the connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("disconnectAfterMs interrupts stream and records in journal", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "disconnect-ws" },
+      response: { content: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" },
+      chunkSize: 1,
+      latency: 20,
+      disconnectAfterMs: 30,
+    };
+    instance = await createServer([fixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("disconnect-ws"));
+
+    await ws.waitForClose();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
 });

@@ -55,7 +55,12 @@ export class LLMock {
   on(
     match: FixtureMatch,
     response: FixtureResponse,
-    opts?: { latency?: number; chunkSize?: number },
+    opts?: {
+      latency?: number;
+      chunkSize?: number;
+      truncateAfterChunks?: number;
+      disconnectAfterMs?: number;
+    },
   ): this {
     return this.addFixture({
       match,
@@ -67,7 +72,12 @@ export class LLMock {
   onMessage(
     pattern: string | RegExp,
     response: FixtureResponse,
-    opts?: { latency?: number; chunkSize?: number },
+    opts?: {
+      latency?: number;
+      chunkSize?: number;
+      truncateAfterChunks?: number;
+      disconnectAfterMs?: number;
+    },
   ): this {
     return this.on({ userMessage: pattern }, response, opts);
   }
@@ -75,7 +85,12 @@ export class LLMock {
   onToolCall(
     name: string,
     response: FixtureResponse,
-    opts?: { latency?: number; chunkSize?: number },
+    opts?: {
+      latency?: number;
+      chunkSize?: number;
+      truncateAfterChunks?: number;
+      disconnectAfterMs?: number;
+    },
   ): this {
     return this.on({ toolName: name }, response, opts);
   }
@@ -83,7 +98,12 @@ export class LLMock {
   onToolResult(
     id: string,
     response: FixtureResponse,
-    opts?: { latency?: number; chunkSize?: number },
+    opts?: {
+      latency?: number;
+      chunkSize?: number;
+      truncateAfterChunks?: number;
+      disconnectAfterMs?: number;
+    },
   ): this {
     return this.on({ toolCallId: id }, response, opts);
   }

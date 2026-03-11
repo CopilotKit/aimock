@@ -114,6 +114,71 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].chunkSize).toBeUndefined();
   });
 
+  it("passes through truncateAfterChunks when set", () => {
+    const filePath = writeJson(tmpDir, "truncate.json", {
+      fixtures: [
+        {
+          match: { userMessage: "truncate me" },
+          response: { content: "partial" },
+          truncateAfterChunks: 3,
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].truncateAfterChunks).toBe(3);
+  });
+
+  it("passes through disconnectAfterMs when set", () => {
+    const filePath = writeJson(tmpDir, "disconnect.json", {
+      fixtures: [
+        {
+          match: { userMessage: "disconnect me" },
+          response: { content: "partial" },
+          disconnectAfterMs: 500,
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].disconnectAfterMs).toBe(500);
+  });
+
+  it("passes through both truncateAfterChunks and disconnectAfterMs together", () => {
+    const filePath = writeJson(tmpDir, "both-interruptions.json", {
+      fixtures: [
+        {
+          match: { userMessage: "both" },
+          response: { content: "partial" },
+          truncateAfterChunks: 5,
+          disconnectAfterMs: 1000,
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].truncateAfterChunks).toBe(5);
+    expect(fixtures[0].disconnectAfterMs).toBe(1000);
+  });
+
+  it("omits truncateAfterChunks and disconnectAfterMs when not present in JSON", () => {
+    const filePath = writeJson(tmpDir, "no-interruptions.json", {
+      fixtures: [
+        {
+          match: { userMessage: "plain" },
+          response: { content: "complete" },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures[0].truncateAfterChunks).toBeUndefined();
+    expect(fixtures[0].disconnectAfterMs).toBeUndefined();
+  });
+
   it("warns and returns empty array for invalid JSON", () => {
     const filePath = join(tmpDir, "bad.json");
     writeFileSync(filePath, "{ not valid json", "utf-8");
