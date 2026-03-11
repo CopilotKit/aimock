@@ -22,7 +22,8 @@ import {
   isErrorResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
-import { writeErrorResponse } from "./sse-writer.js";
+import { writeErrorResponse, delay } from "./sse-writer.js";
+import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 
 // ─── Claude Messages API request types ──────────────────────────────────────
@@ -367,29 +368,41 @@ function buildClaudeToolCallResponse(toolCalls: ToolCall[], model: string): obje
 
 // ─── SSE writer for Claude Messages API ─────────────────────────────────────
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+interface ClaudeStreamOptions {
+  latency?: number;
+  signal?: AbortSignal;
+  onChunkSent?: () => void;
 }
 
 async function writeClaudeSSEStream(
   res: http.ServerResponse,
   events: ClaudeSSEEvent[],
-  latency = 0,
-): Promise<void> {
-  if (res.writableEnded) return;
+  optionsOrLatency?: number | ClaudeStreamOptions,
+): Promise<boolean> {
+  const opts: ClaudeStreamOptions =
+    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
+  const latency = opts.latency ?? 0;
+  const signal = opts.signal;
+  const onChunkSent = opts.onChunkSent;
+
+  if (res.writableEnded) return true;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
   for (const event of events) {
-    if (latency > 0) await delay(latency);
-    if (res.writableEnded) return;
+    if (latency > 0) await delay(latency, signal);
+    if (signal?.aborted) return false;
+    if (res.writableEnded) return true;
     res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    onChunkSent?.();
+    if (signal?.aborted) return false;
   }
 
   if (!res.writableEnded) {
     res.end();
   }
+  return true;
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -468,7 +481,7 @@ export async function handleMessages(
 
   // Text response
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: {},
@@ -481,14 +494,25 @@ export async function handleMessages(
       res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeTextStreamEvents(response.content, completionReq.model, chunkSize);
-      await writeClaudeSSEStream(res, events, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeClaudeSSEStream(res, events, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: {},
@@ -505,7 +529,18 @@ export async function handleMessages(
         completionReq.model,
         chunkSize,
       );
-      await writeClaudeSSEStream(res, events, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeClaudeSSEStream(res, events, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }

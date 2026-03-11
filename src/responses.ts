@@ -22,7 +22,8 @@ import {
   isErrorResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
-import { writeErrorResponse } from "./sse-writer.js";
+import { writeErrorResponse, delay } from "./sse-writer.js";
+import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
@@ -442,29 +443,41 @@ function buildToolCallResponse(toolCalls: ToolCall[], model: string): object {
 
 // ─── SSE writer for Responses API ───────────────────────────────────────────
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+interface ResponsesStreamOptions {
+  latency?: number;
+  signal?: AbortSignal;
+  onChunkSent?: () => void;
 }
 
 async function writeResponsesSSEStream(
   res: http.ServerResponse,
   events: ResponsesSSEEvent[],
-  latency = 0,
-): Promise<void> {
-  if (res.writableEnded) return;
+  optionsOrLatency?: number | ResponsesStreamOptions,
+): Promise<boolean> {
+  const opts: ResponsesStreamOptions =
+    typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
+  const latency = opts.latency ?? 0;
+  const signal = opts.signal;
+  const onChunkSent = opts.onChunkSent;
+
+  if (res.writableEnded) return true;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
   for (const event of events) {
-    if (latency > 0) await delay(latency);
-    if (res.writableEnded) return;
+    if (latency > 0) await delay(latency, signal);
+    if (signal?.aborted) return false;
+    if (res.writableEnded) return true;
     res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    onChunkSent?.();
+    if (signal?.aborted) return false;
   }
 
   if (!res.writableEnded) {
     res.end();
   }
+  return true;
 }
 
 // ─── Request handler ────────────────────────────────────────────────────────
@@ -541,7 +554,7 @@ export async function handleResponses(
 
   // Text response
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: {},
@@ -554,14 +567,25 @@ export async function handleResponses(
       res.end(JSON.stringify(body));
     } else {
       const events = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
-      await writeResponsesSSEStream(res, events, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeResponsesSSEStream(res, events, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: {},
@@ -574,7 +598,18 @@ export async function handleResponses(
       res.end(JSON.stringify(body));
     } else {
       const events = buildToolCallStreamEvents(response.toolCalls, completionReq.model, chunkSize);
-      await writeResponsesSSEStream(res, events, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeResponsesSSEStream(res, events, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }

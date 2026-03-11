@@ -9,6 +9,8 @@
 import type { Fixture, ChatMessage, ChatCompletionRequest, ToolDefinition } from "./types.js";
 import { matchFixture } from "./router.js";
 import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
+import { createInterruptionSignal } from "./interruption.js";
+import { delay } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import type { WebSocketConnection } from "./ws-framing.js";
 
@@ -72,10 +74,6 @@ interface SessionState {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 const WS_PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
@@ -314,7 +312,7 @@ async function processMessage(
 
   // Text response — stream chunks with serverContent
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path,
       headers: {},
@@ -343,10 +341,17 @@ async function processMessage(
       chunks.push(content.slice(i, i + chunkSize));
     }
 
+    const interruption = createInterruptionSignal(fixture);
+    let interrupted = false;
+
     for (let i = 0; i < chunks.length; i++) {
-      if (ws.isClosed) return;
-      if (latency > 0) await delay(latency);
-      if (ws.isClosed) return;
+      if (ws.isClosed) break;
+      if (latency > 0) await delay(latency, interruption?.signal);
+      if (interruption?.signal.aborted) {
+        interrupted = true;
+        break;
+      }
+      if (ws.isClosed) break;
 
       const isLast = i === chunks.length - 1;
       ws.send(
@@ -357,7 +362,22 @@ async function processMessage(
           },
         }),
       );
+      interruption?.tick();
+      if (interruption?.signal.aborted) {
+        interrupted = true;
+        break;
+      }
     }
+
+    if (interrupted) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      interruption?.cleanup();
+      return;
+    }
+
+    interruption?.cleanup();
 
     // Add assistant response to conversation history
     session.conversationHistory.push({ role: "assistant", content });
@@ -366,7 +386,7 @@ async function processMessage(
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path,
       headers: {},
@@ -374,9 +394,24 @@ async function processMessage(
       response: { status: 200, fixture },
     });
 
-    if (ws.isClosed) return;
-    if (latency > 0) await delay(latency);
-    if (ws.isClosed) return;
+    const interruption = createInterruptionSignal(fixture);
+
+    if (ws.isClosed) {
+      interruption?.cleanup();
+      return;
+    }
+    if (latency > 0) await delay(latency, interruption?.signal);
+    if (interruption?.signal.aborted) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      interruption?.cleanup();
+      return;
+    }
+    if (ws.isClosed) {
+      interruption?.cleanup();
+      return;
+    }
 
     const functionCalls = response.toolCalls.map((tc, i) => {
       let argsObj: Record<string, unknown>;
@@ -396,6 +431,17 @@ async function processMessage(
     });
 
     ws.send(JSON.stringify({ toolCall: { functionCalls } }));
+    interruption?.tick();
+
+    if (interruption?.signal.aborted) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      interruption?.cleanup();
+      return;
+    }
+
+    interruption?.cleanup();
 
     // Add assistant tool_calls to conversation history
     session.conversationHistory.push({

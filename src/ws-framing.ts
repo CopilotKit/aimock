@@ -77,6 +77,15 @@ export class WebSocketConnection extends EventEmitter {
     }, 100);
   }
 
+  destroy(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (!this.socket.destroyed) {
+      this.socket.destroy();
+    }
+    this.emit("close", 1006, "Connection destroyed");
+  }
+
   get isClosed(): boolean {
     return this.closed;
   }

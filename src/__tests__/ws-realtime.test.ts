@@ -299,6 +299,129 @@ describe("WebSocket /v1/realtime", () => {
     ws.close();
   });
 
+  it("truncateAfterChunks stops text stream early, no response.done event", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-rt" },
+      response: { content: "ABCDEFGHIJKLMNO" }, // 15 chars, chunkSize 3 => 5 delta chunks
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "truncate-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Small pause for server-side processing
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The connection was destroyed, so whatever messages arrived should NOT include response.done
+    // We got at least session.created + conversation.item.created = 2 before the response
+    const raw = await ws.waitForMessages(2).catch(() => [] as string[]);
+    if (raw.length > 2) {
+      const responseEvents = parseEvents(raw.slice(2));
+      const types = responseEvents.map((e) => e.type);
+      expect(types).not.toContain("response.done");
+    }
+  });
+
+  it("truncateAfterChunks records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-journal-rt" },
+      response: { content: "ABCDEFGHIJKLMNO" },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "truncate-journal-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("truncateAfterChunks with toolCalls records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-tool-rt" },
+      response: {
+        toolCalls: [{ name: "search", arguments: '{"query":"hello world test string"}' }],
+      },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "truncate-tool-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("disconnectAfterMs interrupts stream and records in journal", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "disconnect-rt" },
+      response: { content: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" },
+      chunkSize: 1,
+      latency: 20,
+      disconnectAfterMs: 30,
+    };
+    instance = await createServer([fixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "disconnect-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    await ws.waitForClose();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
+
   it("accumulates conversation state across multiple response.create calls", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, "/v1/realtime");

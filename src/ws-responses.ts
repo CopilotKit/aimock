@@ -15,12 +15,10 @@ import {
   type ResponsesSSEEvent,
 } from "./responses.js";
 import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
+import { createInterruptionSignal } from "./interruption.js";
+import { delay } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import type { WebSocketConnection } from "./ws-framing.js";
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 interface ResponseCreateMessage {
   type: "response.create";
@@ -182,7 +180,7 @@ async function processMessage(
 
   // Text response
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",
       headers: {},
@@ -190,13 +188,26 @@ async function processMessage(
       response: { status: 200, fixture },
     });
     const events = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
-    await sendEvents(ws, events, latency);
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await sendEvents(
+      ws,
+      events,
+      latency,
+      interruption?.signal,
+      interruption?.tick,
+    );
+    if (!completed) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
     return;
   }
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",
       headers: {},
@@ -204,7 +215,20 @@ async function processMessage(
       response: { status: 200, fixture },
     });
     const events = buildToolCallStreamEvents(response.toolCalls, completionReq.model, chunkSize);
-    await sendEvents(ws, events, latency);
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await sendEvents(
+      ws,
+      events,
+      latency,
+      interruption?.signal,
+      interruption?.tick,
+    );
+    if (!completed) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
     return;
   }
 
@@ -227,11 +251,17 @@ async function sendEvents(
   ws: WebSocketConnection,
   events: ResponsesSSEEvent[],
   latency: number,
-): Promise<void> {
+  signal?: AbortSignal,
+  onChunkSent?: () => void,
+): Promise<boolean> {
   for (const event of events) {
-    if (ws.isClosed) return;
-    if (latency > 0) await delay(latency);
-    if (ws.isClosed) return;
+    if (ws.isClosed) return true;
+    if (latency > 0) await delay(latency, signal);
+    if (signal?.aborted) return false;
+    if (ws.isClosed) return true;
     ws.send(JSON.stringify(event));
+    onChunkSent?.();
+    if (signal?.aborted) return false;
   }
+  return true;
 }

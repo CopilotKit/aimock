@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { PassThrough } from "node:stream";
 import type * as http from "node:http";
-import { writeSSEStream, writeErrorResponse } from "../sse-writer.js";
+import { writeSSEStream, writeErrorResponse, delay } from "../sse-writer.js";
 import type { SSEChunk } from "../types.js";
 
 function makeMockResponse(): {
@@ -162,6 +162,148 @@ describe("writeSSEStream", () => {
     expect(body).toContain(JSON.stringify(chunks[1]));
     // Third chunk should not appear
     expect(body).not.toContain(JSON.stringify(chunks[2]));
+  });
+});
+
+describe("delay", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves after the specified time", async () => {
+    vi.useFakeTimers();
+    let resolved = false;
+    const p = delay(100).then(() => {
+      resolved = true;
+    });
+    expect(resolved).toBe(false);
+    vi.advanceTimersByTime(100);
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("resolves immediately when ms is 0", async () => {
+    const start = Date.now();
+    await delay(0);
+    // Should return synchronously (Promise.resolve())
+    expect(Date.now() - start).toBeLessThan(50);
+  });
+
+  it("resolves early when signal is aborted", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let resolved = false;
+    const p = delay(10000, controller.signal).then(() => {
+      resolved = true;
+    });
+
+    vi.advanceTimersByTime(50);
+    expect(resolved).toBe(false);
+
+    controller.abort();
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("resolves immediately for negative ms", async () => {
+    await delay(-5);
+    // no error
+  });
+
+  it("resolves immediately when signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    let resolved = false;
+    const raceResult = await Promise.race([
+      delay(5000, controller.signal).then(() => {
+        resolved = true;
+        return "delay";
+      }),
+      new Promise<string>((r) => setTimeout(() => r("timeout"), 100)),
+    ]);
+
+    expect(raceResult).toBe("delay");
+    expect(resolved).toBe(true);
+  });
+});
+
+describe("writeSSEStream with StreamOptions", () => {
+  it("accepts options object (backward compatible)", async () => {
+    const { res, output } = makeMockResponse();
+    const chunks = [makeChunk("id1", "hello")];
+    const result = await writeSSEStream(res, chunks, { latency: 0 });
+    expect(result).toBe(true);
+    expect(output()).toContain("data: [DONE]");
+  });
+
+  it("returns true when stream completes normally", async () => {
+    const { res } = makeMockResponse();
+    const result = await writeSSEStream(res, [makeChunk("id1", "A")]);
+    expect(result).toBe(true);
+  });
+
+  it("stops mid-stream on abort signal and returns false", async () => {
+    const { res, output } = makeMockResponse();
+    const controller = new AbortController();
+
+    const chunks = [makeChunk("id1", "A"), makeChunk("id2", "B"), makeChunk("id3", "C")];
+
+    // Abort after first chunk is sent
+    let chunksSent = 0;
+    const result = await writeSSEStream(res, chunks, {
+      signal: controller.signal,
+      onChunkSent: () => {
+        chunksSent++;
+        if (chunksSent === 1) controller.abort();
+      },
+    });
+
+    expect(result).toBe(false);
+    const body = output();
+    expect(body).toContain(JSON.stringify(chunks[0]));
+    // Should not contain [DONE]
+    expect(body).not.toContain("[DONE]");
+  });
+
+  it("skips [DONE] when interrupted", async () => {
+    const { res, output } = makeMockResponse();
+    const controller = new AbortController();
+
+    const chunks = [makeChunk("id1", "A"), makeChunk("id2", "B")];
+    const result = await writeSSEStream(res, chunks, {
+      signal: controller.signal,
+      onChunkSent: () => {
+        controller.abort();
+      },
+    });
+
+    expect(result).toBe(false);
+    expect(output()).not.toContain("[DONE]");
+  });
+
+  it("onChunkSent fires per chunk", async () => {
+    const { res } = makeMockResponse();
+    const chunks = [makeChunk("id1", "A"), makeChunk("id2", "B"), makeChunk("id3", "C")];
+    let count = 0;
+    const result = await writeSSEStream(res, chunks, {
+      onChunkSent: () => {
+        count++;
+      },
+    });
+
+    expect(result).toBe(true);
+    expect(count).toBe(3);
+  });
+
+  it("returns true for numeric latency arg (backward compat)", async () => {
+    vi.useFakeTimers();
+    const { res } = makeMockResponse();
+    const promise = writeSSEStream(res, [makeChunk("id1", "A")], 10);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+    expect(result).toBe(true);
+    vi.useRealTimers();
   });
 });
 

@@ -1,5 +1,17 @@
 # @copilotkit/llmock
 
+## 1.3.0
+
+### Minor Changes
+
+- Mid-stream interruption: `truncateAfterChunks` and `disconnectAfterMs` fixture fields to simulate abrupt server disconnects
+- AbortSignal-based cancellation primitives (`createInterruptionSignal`, signal-aware `delay()`)
+- Backward-compatible `writeSSEStream` overload with `StreamOptions` returning completion status
+- Interruption support across all HTTP SSE and WebSocket streaming paths
+- `destroy()` method on `WebSocketConnection` for abrupt disconnect simulation
+- Journal records `interrupted` and `interruptReason` on interrupted streams
+- LLMock convenience API extended with interruption options (`truncateAfterChunks`, `disconnectAfterMs`)
+
 ## 1.2.0
 
 ### Minor Changes

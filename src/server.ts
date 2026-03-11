@@ -3,6 +3,7 @@ import type { Fixture, ChatCompletionRequest, MockServerOptions } from "./types.
 import { Journal } from "./journal.js";
 import { matchFixture } from "./router.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
+import { createInterruptionSignal } from "./interruption.js";
 import {
   buildTextChunks,
   buildToolCallChunks,
@@ -173,7 +174,7 @@ async function handleCompletions(
 
   // Text response
   if (isTextResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
@@ -186,14 +187,25 @@ async function handleCompletions(
       res.end(JSON.stringify(completion));
     } else {
       const chunks = buildTextChunks(response.content, body.model, chunkSize);
-      await writeSSEStream(res, chunks, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeSSEStream(res, chunks, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
@@ -206,7 +218,18 @@ async function handleCompletions(
       res.end(JSON.stringify(completion));
     } else {
       const chunks = buildToolCallChunks(response.toolCalls, body.model, chunkSize);
-      await writeSSEStream(res, chunks, latency);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeSSEStream(res, chunks, {
+        latency,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
     }
     return;
   }
