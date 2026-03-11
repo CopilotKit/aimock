@@ -311,6 +311,37 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
   });
 
+  // Gemini Live sends all tool calls in a single WS frame, so truncateAfterChunks: 1
+  // interrupts after that frame is sent (preventing conversation history update).
+  it("truncateAfterChunks with toolCalls records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-tool-gemini" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+      latency: 5,
+      truncateAfterChunks: 1,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("truncate-tool-gemini"));
+
+    // Wait for connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
   it("disconnectAfterMs interrupts stream and records in journal", async () => {
     const fixture: Fixture = {
       match: { userMessage: "disconnect-gemini" },

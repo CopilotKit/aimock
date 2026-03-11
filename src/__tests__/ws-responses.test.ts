@@ -292,6 +292,33 @@ describe("WebSocket /v1/responses", () => {
     expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
   });
 
+  it("truncateAfterChunks with toolCalls records interrupted: true in journal", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-tool-ws" },
+      response: {
+        toolCalls: [{ name: "search", arguments: '{"query":"hello world test string"}' }],
+      },
+      chunkSize: 3,
+      latency: 5,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("truncate-tool-ws"));
+
+    // Wait for the connection to be destroyed
+    await ws.waitForClose();
+
+    // Give server time to finalize journal
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
   it("disconnectAfterMs interrupts stream and records in journal", async () => {
     const fixture: Fixture = {
       match: { userMessage: "disconnect-ws" },
