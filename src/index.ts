@@ -22,6 +22,8 @@ export { handleGemini } from "./gemini.js";
 // WebSocket
 export { WebSocketConnection, upgradeToWebSocket, computeAcceptKey } from "./ws-framing.js";
 export { handleWebSocketResponses } from "./ws-responses.js";
+export { handleWebSocketRealtime } from "./ws-realtime.js";
+export { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 
 // Helpers
 export {

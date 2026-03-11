@@ -17,6 +17,8 @@ import { handleMessages } from "./messages.js";
 import { handleGemini } from "./gemini.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
+import { handleWebSocketRealtime } from "./ws-realtime.js";
+import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 
 export interface ServerInstance {
   server: http.Server;
@@ -26,6 +28,9 @@ export interface ServerInstance {
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
 const RESPONSES_PATH = "/v1/responses";
+const REALTIME_PATH = "/v1/realtime";
+const GEMINI_LIVE_PATH =
+  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const MESSAGES_PATH = "/v1/messages";
 const DEFAULT_CHUNK_SIZE = 20;
 
@@ -434,7 +439,11 @@ export async function createServer(
       const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
       const pathname = parsedUrl.pathname;
 
-      if (pathname !== RESPONSES_PATH) {
+      if (
+        pathname !== RESPONSES_PATH &&
+        pathname !== REALTIME_PATH &&
+        pathname !== GEMINI_LIVE_PATH
+      ) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
         return;
@@ -451,6 +460,7 @@ export async function createServer(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "WebSocket upgrade failed";
         console.error(`[LLMock] WebSocket upgrade error: ${msg}`);
+        if (!socket.destroyed) socket.destroy();
         return;
       }
 
@@ -465,10 +475,24 @@ export async function createServer(
         activeConnections.delete(ws);
       });
 
-      handleWebSocketResponses(ws, fixtures, journal, {
-        ...defaults,
-        model: "gpt-4",
-      });
+      // Route to handler
+      if (pathname === RESPONSES_PATH) {
+        handleWebSocketResponses(ws, fixtures, journal, {
+          ...defaults,
+          model: "gpt-4",
+        });
+      } else if (pathname === REALTIME_PATH) {
+        const model = parsedUrl.searchParams.get("model") ?? "gpt-4o-realtime";
+        handleWebSocketRealtime(ws, fixtures, journal, {
+          ...defaults,
+          model,
+        });
+      } else if (pathname === GEMINI_LIVE_PATH) {
+        handleWebSocketGeminiLive(ws, fixtures, journal, {
+          ...defaults,
+          model: "gemini-2.0-flash",
+        });
+      }
     },
   );
 
