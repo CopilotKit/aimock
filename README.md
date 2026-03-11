@@ -631,7 +631,7 @@ Areas where llmock could grow, and explicit non-goals for the current scope.
 
 ### Testing
 
-- **E2E SDK tests**: The test suite uses raw HTTP and WebSocket frames, not real OpenAI/Anthropic/Gemini client SDKs.
+- **Live API conformance**: The `api-conformance` tests validate response format structure but do not run against real LLM APIs. A subset of tests that hit actual OpenAI/Anthropic/Gemini endpoints (gated behind API keys) would catch format drift as providers evolve their APIs.
 - **Token counts**: Usage fields are always zero across all providers.
 - **Vision/image content**: Image content parts are not handled by any provider.
 
