@@ -846,6 +846,7 @@
           <li><a href="#features">Features</a></li>
           <li><a href="#examples">Examples</a></li>
           <li><a href="#comparison">vs MSW</a></li>
+          <li><a href="#claude-code">Claude Code</a></li>
           <li>
             <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -1370,6 +1371,67 @@
           >
           for real-world examples of llmock in action.
         </p>
+      </div>
+    </section>
+
+    <!-- ═══ Claude Code Integration ═══════════════════════════════════ -->
+    <section id="claude-code" class="reveal">
+      <div class="container">
+        <span class="section-label">AI-Assisted Development</span>
+        <h2 class="section-title">Claude Code Integration</h2>
+        <p class="section-desc">
+          llmock ships with a
+          <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank">Claude Code</a>
+          skill that teaches your AI assistant how to write fixtures correctly &mdash; match fields,
+          response types, agent loop patterns, gotchas, and debugging techniques.
+        </p>
+
+        <div class="features-grid" style="grid-template-columns: repeat(2, 1fr)">
+          <div class="feature-card">
+            <div class="feature-icon green">🔌</div>
+            <h3>Plugin Install</h3>
+            <p>
+              <code>/plugin marketplace add CopilotKit/llmock</code><br />
+              <code>/plugin install llmock@copilotkit-tools</code>
+            </p>
+            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
+              Skill appears as <code>/llmock:write-fixtures</code>
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">📂</div>
+            <h3>Local Plugin</h3>
+            <p>
+              <code>claude --plugin-dir ./node_modules/@copilotkit/llmock</code>
+            </p>
+            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
+              Same result, no marketplace needed
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">📁</div>
+            <h3>Add Directory</h3>
+            <p>
+              <code>claude --add-dir ./node_modules/@copilotkit/llmock</code>
+            </p>
+            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
+              Skill appears as <code>/write-fixtures</code> for the session
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">📋</div>
+            <h3>Copy to Project</h3>
+            <p>
+              <code
+                >cp node_modules/@copilotkit/llmock/.claude/commands/write-fixtures.md
+                .claude/commands/</code
+              >
+            </p>
+            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
+              Permanent <code>/write-fixtures</code> &mdash; commit to share with team
+            </p>
+          </div>
+        </div>
       </div>
     </section>
 

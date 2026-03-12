@@ -1,5 +1,13 @@
 # @copilotkit/llmock
 
+## 1.3.1
+
+### Patch Changes
+
+- Claude Code fixture authoring skill (`/write-fixtures`) — comprehensive guide for match fields, response types, agent loop patterns, gotchas, and debugging
+- Claude Code plugin structure for downstream consumers (`--plugin-dir`, `--add-dir`, or manual copy)
+- README and docs site updated with Claude Code integration instructions
+
 ## 1.3.0
 
 ### Minor Changes

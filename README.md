@@ -612,6 +612,47 @@ server.close();
 mock.on({ userMessage: "slow" }, { content: "Finally..." }, { latency: 200, chunkSize: 5 });
 ```
 
+## Claude Code Integration
+
+llmock ships with a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that teaches your AI assistant how to write fixtures correctly — match fields, response types, agent loop patterns, gotchas, and debugging techniques. Available as the `/write-fixtures` slash command.
+
+### Option 1: Plugin install (recommended)
+
+```bash
+# Add the marketplace (one time)
+/plugin marketplace add CopilotKit/llmock
+
+# Install the plugin
+/plugin install llmock@copilotkit-tools
+```
+
+The skill appears as `/llmock:write-fixtures`.
+
+### Option 2: Local plugin from node_modules
+
+```bash
+claude --plugin-dir ./node_modules/@copilotkit/llmock
+```
+
+Same result, no marketplace needed. Good for trying it out.
+
+### Option 3: Add directory
+
+```bash
+claude --add-dir ./node_modules/@copilotkit/llmock
+```
+
+The skill appears as `/write-fixtures` for the session.
+
+### Option 4: Copy to your project
+
+```bash
+mkdir -p .claude/commands
+cp node_modules/@copilotkit/llmock/.claude/commands/write-fixtures.md .claude/commands/
+```
+
+Permanently available as `/write-fixtures` in your project. Commit to share with your team.
+
 ## Future Direction
 
 Areas where llmock could grow, and explicit non-goals for the current scope.
