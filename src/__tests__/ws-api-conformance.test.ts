@@ -65,10 +65,8 @@ function parseFrames(raw: string[]): WSFrame[] {
 function responsesCreateMsg(userContent: string): string {
   return JSON.stringify({
     type: "response.create",
-    response: {
-      model: "gpt-4",
-      input: [{ role: "user", content: userContent }],
-    },
+    model: "gpt-4",
+    input: [{ role: "user", content: userContent }],
   });
 }
 

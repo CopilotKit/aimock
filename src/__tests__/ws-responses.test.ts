@@ -43,10 +43,8 @@ afterEach(async () => {
 function responseCreateMsg(userContent: string, model = "gpt-4"): string {
   return JSON.stringify({
     type: "response.create",
-    response: {
-      model,
-      input: [{ role: "user", content: userContent }],
-    },
+    model,
+    input: [{ role: "user", content: userContent }],
   });
 }
 

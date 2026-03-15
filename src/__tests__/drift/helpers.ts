@@ -10,6 +10,12 @@
 import http from "node:http";
 import { createServer, type ServerInstance } from "../../server.js";
 import type { Fixture } from "../../types.js";
+import type { WSTestClient } from "../ws-test-client.js";
+import { extractShape, type SSEEventShape } from "./schema.js";
+
+import { classifyGeminiMessage } from "./ws-providers.js";
+
+export { classifyGeminiMessage };
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -100,4 +106,78 @@ export async function startDriftServer(): Promise<ServerInstance> {
 
 export async function stopDriftServer(instance: ServerInstance): Promise<void> {
   await new Promise<void>((r) => instance.server.close(() => r()));
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket helpers
+// ---------------------------------------------------------------------------
+
+export const GEMINI_WS_PATH =
+  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+/**
+ * Collect mock WS messages until a terminal predicate fires.
+ *
+ * Uses a polling loop on waitForMessages() since ws-test-client doesn't
+ * support predicate-based collection. The `skip` parameter tells us how
+ * many messages have already been consumed so we don't re-read them.
+ *
+ * Throws if the terminal predicate never fires before the timeout expires.
+ */
+export async function collectMockWSMessages(
+  client: WSTestClient,
+  terminal: (msg: unknown) => boolean,
+  timeoutMs = 15000,
+  skip = 0,
+): Promise<{ events: SSEEventShape[]; rawMessages: unknown[] }> {
+  const rawMessages: unknown[] = [];
+  const deadline = Date.now() + timeoutMs;
+  let count = skip;
+  let terminated = false;
+
+  while (Date.now() < deadline) {
+    const nextCount = count + 1;
+    let msgs: string[];
+    try {
+      msgs = await client.waitForMessages(nextCount, Math.min(2000, deadline - Date.now()));
+    } catch (e: unknown) {
+      // Only suppress waitForMessages timeout — rethrow anything else
+      if (e instanceof Error && e.message.includes("Timeout waiting for")) {
+        if (Date.now() >= deadline) break;
+        continue;
+      }
+      throw e;
+    }
+    // Only increment count after successful receipt
+    count = nextCount;
+    const latest = msgs[count - 1];
+    let parsed: unknown;
+    try {
+      parsed = typeof latest === "string" ? JSON.parse(latest) : latest;
+    } catch {
+      throw new Error(
+        `collectMockWSMessages: failed to parse message ${count}: ${String(latest).slice(0, 200)}`,
+      );
+    }
+    rawMessages.push(parsed);
+    if (terminal(parsed)) {
+      terminated = true;
+      break;
+    }
+  }
+
+  if (!terminated) {
+    throw new Error(
+      `collectMockWSMessages timed out after ${timeoutMs}ms without terminal message. ` +
+        `Collected ${rawMessages.length} messages.`,
+    );
+  }
+
+  const events: SSEEventShape[] = rawMessages.map((msg) => {
+    const m = msg as Record<string, any>;
+    const type = m.type ?? classifyGeminiMessage(m as Record<string, unknown>);
+    return { type, dataShape: extractShape(msg) };
+  });
+
+  return { events, rawMessages };
 }

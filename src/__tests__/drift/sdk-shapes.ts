@@ -425,7 +425,280 @@ export function anthropicToolStreamEventShapes(): SSEEventShape[] {
 }
 
 // ---------------------------------------------------------------------------
-// Google Gemini
+// OpenAI Realtime API
+// ---------------------------------------------------------------------------
+
+export function openaiRealtimeTextEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "session.created",
+      dataShape: extractShape({
+        type: "session.created",
+        event_id: "evt_abc123",
+        session: {
+          id: "sess_abc123",
+          model: "gpt-4o-mini",
+          modalities: ["text"],
+          instructions: "",
+          tools: [],
+          voice: null,
+          input_audio_format: null,
+          output_audio_format: null,
+          turn_detection: null,
+          temperature: 0.8,
+        },
+      }),
+    },
+    {
+      type: "session.updated",
+      dataShape: extractShape({
+        type: "session.updated",
+        event_id: "evt_abc123",
+        session: {
+          model: "gpt-4o-mini",
+          modalities: ["text"],
+          instructions: "",
+          tools: [],
+          voice: null,
+          input_audio_format: null,
+          output_audio_format: null,
+          turn_detection: null,
+          temperature: 0.8,
+        },
+      }),
+    },
+    {
+      type: "conversation.item.created",
+      dataShape: extractShape({
+        type: "conversation.item.created",
+        event_id: "evt_abc123",
+        item: {
+          type: "message",
+          id: "item_abc123",
+          role: "user",
+          content: [{ type: "input_text", text: "Say hello" }],
+        },
+      }),
+    },
+    {
+      type: "response.created",
+      dataShape: extractShape({
+        type: "response.created",
+        event_id: "evt_abc123",
+        response: {
+          id: "resp_abc123",
+          status: "in_progress",
+          output: [],
+        },
+      }),
+    },
+    {
+      type: "response.output_item.added",
+      dataShape: extractShape({
+        type: "response.output_item.added",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "message",
+          role: "assistant",
+          content: [],
+        },
+      }),
+    },
+    {
+      type: "response.content_part.added",
+      dataShape: extractShape({
+        type: "response.content_part.added",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        part: { type: "text", text: "" },
+      }),
+    },
+    {
+      type: "response.text.delta",
+      dataShape: extractShape({
+        type: "response.text.delta",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        delta: "Hello",
+      }),
+    },
+    {
+      type: "response.text.done",
+      dataShape: extractShape({
+        type: "response.text.done",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        text: "Hello!",
+      }),
+    },
+    {
+      type: "response.content_part.done",
+      dataShape: extractShape({
+        type: "response.content_part.done",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        part: { type: "text", text: "Hello!" },
+      }),
+    },
+    {
+      type: "response.output_item.done",
+      dataShape: extractShape({
+        type: "response.output_item.done",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello!" }],
+        },
+      }),
+    },
+    {
+      type: "response.done",
+      dataShape: extractShape({
+        type: "response.done",
+        event_id: "evt_abc123",
+        response: {
+          id: "resp_abc123",
+          status: "completed",
+          output: [
+            {
+              id: "item_abc123",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "text", text: "Hello!" }],
+            },
+          ],
+        },
+      }),
+    },
+  ];
+}
+
+export function openaiRealtimeToolCallEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "response.output_item.added",
+      dataShape: extractShape({
+        type: "response.output_item.added",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "function_call",
+          call_id: "call_abc123",
+          name: "get_weather",
+          arguments: "",
+        },
+      }),
+    },
+    {
+      type: "response.function_call_arguments.delta",
+      dataShape: extractShape({
+        type: "response.function_call_arguments.delta",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        call_id: "call_abc123",
+        delta: '{"city":',
+      }),
+    },
+    {
+      type: "response.function_call_arguments.done",
+      dataShape: extractShape({
+        type: "response.function_call_arguments.done",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        call_id: "call_abc123",
+        arguments: '{"city":"Paris"}',
+      }),
+    },
+    {
+      type: "response.output_item.done",
+      dataShape: extractShape({
+        type: "response.output_item.done",
+        event_id: "evt_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "function_call",
+          call_id: "call_abc123",
+          name: "get_weather",
+          arguments: '{"city":"Paris"}',
+        },
+      }),
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Gemini Live BidiGenerateContent
+// ---------------------------------------------------------------------------
+
+export function geminiLiveSetupCompleteShape(): SSEEventShape {
+  return {
+    type: "setupComplete",
+    dataShape: extractShape({ setupComplete: {} }),
+  };
+}
+
+export function geminiLiveTextEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "serverContent",
+      dataShape: extractShape({
+        serverContent: {
+          modelTurn: { parts: [{ text: "Hello!" }] },
+          turnComplete: true,
+        },
+      }),
+    },
+  ];
+}
+
+export function geminiLiveToolCallEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "toolCall",
+      dataShape: extractShape({
+        toolCall: {
+          functionCalls: [
+            {
+              name: "get_weather",
+              args: { city: "Paris" },
+              id: "call_gemini_get_weather_0",
+            },
+          ],
+        },
+      }),
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Google Gemini (HTTP)
 // ---------------------------------------------------------------------------
 
 export function geminiContentResponseShape(): ShapeNode {

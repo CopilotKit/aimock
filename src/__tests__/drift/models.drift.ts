@@ -72,7 +72,7 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic model availability", 
     if (referenced.length === 0) return;
 
     for (const m of referenced) {
-      const found = models.some((available) => available === m || available.startsWith(`${m}`));
+      const found = models.some((available) => available === m || available.startsWith(m));
       expect(found, `Model ${m} no longer available at Anthropic`).toBe(true);
     }
   });
@@ -89,11 +89,14 @@ describe.skipIf(!process.env.GOOGLE_API_KEY)("Gemini model availability", () => 
 
     if (referenced.length === 0) return;
 
-    // Skip experimental and live-only models — they're ephemeral
-    const stable = referenced.filter((m) => !m.includes("-exp") && !m.endsWith("-live"));
+    // Skip experimental models, live-only models, and anchor-link fragments
+    // scraped from markdown (e.g., "gemini-live-bidigeneratecontent")
+    const stable = referenced.filter(
+      (m) => !m.includes("-exp") && !m.includes("-live") && !m.includes("bidigeneratecontent"),
+    );
 
     for (const m of stable) {
-      const found = models.some((available) => available === m || available.startsWith(`${m}`));
+      const found = models.some((available) => available === m || available.startsWith(m));
       expect(found, `Model ${m} no longer available at Gemini`).toBe(true);
     }
   });

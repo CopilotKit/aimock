@@ -1,7 +1,7 @@
 /**
  * WebSocket handler for OpenAI Responses API.
  *
- * Accepts `{ type: "response.create", response: { ... } }` messages over
+ * Accepts `{ type: "response.create", model: "...", input: [...] }` messages over
  * WebSocket and sends back the same Responses API SSE events as the HTTP
  * handler, but as individual WebSocket text frames.
  */
@@ -22,25 +22,22 @@ import type { WebSocketConnection } from "./ws-framing.js";
 
 interface ResponseCreateMessage {
   type: "response.create";
-  response: {
-    model?: string;
-    input?: unknown[];
-    instructions?: string;
-    tools?: unknown[];
-    tool_choice?: string | object;
-    stream?: boolean;
-    temperature?: number;
-    max_output_tokens?: number;
-    [key: string]: unknown;
-  };
+  model?: string;
+  input?: unknown[];
+  instructions?: string;
+  tools?: unknown[];
+  tool_choice?: string | object;
+  stream?: boolean;
+  temperature?: number;
+  max_output_tokens?: number;
+  [key: string]: unknown;
 }
 
 function isResponseCreateMessage(msg: unknown): msg is ResponseCreateMessage {
   return (
     typeof msg === "object" &&
     msg !== null &&
-    (msg as ResponseCreateMessage).type === "response.create" &&
-    typeof (msg as ResponseCreateMessage).response === "object"
+    (msg as ResponseCreateMessage).type === "response.create"
   );
 }
 
@@ -108,10 +105,9 @@ async function processMessage(
     return;
   }
 
-  // The response body inside response.create maps to a ResponsesRequest
   const responsesReq = {
-    model: parsed.response.model ?? defaults.model,
-    input: (parsed.response.input ?? []) as {
+    model: parsed.model ?? defaults.model,
+    input: (parsed.input ?? []) as {
       role?: string;
       type?: string;
       content?: string | { type: string; text?: string }[];
@@ -121,8 +117,8 @@ async function processMessage(
       output?: string;
       id?: string;
     }[],
-    instructions: parsed.response.instructions,
-    tools: parsed.response.tools as
+    instructions: parsed.instructions,
+    tools: parsed.tools as
       | {
           type: "function";
           name: string;
@@ -131,10 +127,10 @@ async function processMessage(
           strict?: boolean;
         }[]
       | undefined,
-    tool_choice: parsed.response.tool_choice,
-    stream: parsed.response.stream,
-    temperature: parsed.response.temperature,
-    max_output_tokens: parsed.response.max_output_tokens,
+    tool_choice: parsed.tool_choice,
+    stream: parsed.stream,
+    temperature: parsed.temperature,
+    max_output_tokens: parsed.max_output_tokens,
   };
 
   const completionReq = responsesToCompletionRequest(responsesReq);
