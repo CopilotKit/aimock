@@ -1,5 +1,14 @@
 # @copilotkit/llmock
 
+## 1.3.2
+
+### Patch Changes
+
+- Fix missing `refusal` field on OpenAI Chat Completions responses — both the SDK and real API return `refusal: null` on non-refusal messages, but llmock was omitting it
+- Live API drift detection test suite: three-layer triangulation between SDK types, real API responses, and llmock output across OpenAI (Chat + Responses), Anthropic Claude, and Google Gemini
+- Weekly CI workflow for automated drift checks
+- `DRIFT.md` documentation for the drift detection system
+
 ## 1.3.1
 
 ### Patch Changes
