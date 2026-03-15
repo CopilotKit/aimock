@@ -101,7 +101,32 @@ When a model is deprecated:
 3. Add raw fetch client functions to `src/__tests__/drift/providers.ts`
 4. Create `src/__tests__/drift/<provider>.drift.ts` with 4 test scenarios
 5. Add model listing function to `providers.ts` and model check to `models.drift.ts`
-6. Update the allowlist in `schema.ts` if needed
+6. If the provider uses WebSocket, add protocol functions to `ws-providers.ts` and create `ws-<provider>.drift.ts`
+7. Update the allowlist in `schema.ts` if needed
+
+## WebSocket Drift Coverage
+
+In addition to the 19 existing drift tests (16 HTTP response-shape + 3 model deprecation), WebSocket drift tests cover llmock's WS protocols:
+
+| Protocol            | Text | Tool Call | Real Endpoint                                                       | Status     |
+| ------------------- | ---- | --------- | ------------------------------------------------------------------- | ---------- |
+| OpenAI Responses WS | ✓    | ✓         | `wss://api.openai.com/v1/responses`                                 | Verified   |
+| OpenAI Realtime     | ✓    | ✓         | `wss://api.openai.com/v1/realtime`                                  | Verified   |
+| Gemini Live         | —    | —         | `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent` | Unverified |
+
+**Models**: `gpt-4o-mini` for Responses WS, `gpt-4o-mini-realtime-preview` for Realtime.
+
+**Auth**: Uses the same `OPENAI_API_KEY` and `GOOGLE_API_KEY` environment variables as HTTP tests. No new secrets needed.
+
+**How it works**: A TLS WebSocket client (`ws-providers.ts`) connects to real provider endpoints using `node:tls` with RFC 6455 framing. Each protocol function handles the setup sequence (e.g., Realtime session negotiation, Gemini Live setup/setupComplete) and collects messages until a terminal event. The mock side uses the existing `ws-test-client.ts` plaintext client against the local llmock server.
+
+### Gemini Live: unverified
+
+llmock's Gemini Live handler implements the text-based `BidiGenerateContent` protocol as documented in Google's [Live API reference](https://ai.google.dev/api/live) — `setup`/`setupComplete` handshake, `clientContent` with turns, `serverContent` with `modelTurn.parts[].text`, and `toolCall` responses. The protocol format is correct per the docs.
+
+However, as of March 2026, the only models that support `bidiGenerateContent` are native-audio models (`gemini-2.5-flash-native-audio-*`), which reject text-only requests. No text-capable model exists for this endpoint yet, so we cannot triangulate llmock's output against a real API response.
+
+A canary test (`ws-gemini-live.drift.ts`) queries the Gemini model listing API on each drift run and checks for a non-audio model that supports `bidiGenerateContent`. When Google ships one, the canary will flag it and the full drift tests can be enabled.
 
 ## CI Schedule
 
@@ -115,4 +140,4 @@ See `.github/workflows/test-drift.yml`.
 
 ## Cost
 
-~20 API calls per run using the cheapest available models (`gpt-4o-mini`, `claude-haiku-4-5-20251001`, `gemini-2.5-flash`) with 10-100 max tokens each. Under $0.01/week.
+~25 API calls per run (16 HTTP response-shape + 3 model listing + 4 WS + 2 canaries) using the cheapest available models (`gpt-4o-mini`, `gpt-4o-mini-realtime-preview`, `claude-haiku-4-5-20251001`, `gemini-2.5-flash`) with 10-100 max tokens each. Under $0.02/week. When Gemini Live text-capable models become available, this will increase to 6 WS calls.

@@ -500,7 +500,7 @@ WebSocket endpoints:
 
 - **WS `/v1/responses`** — OpenAI Responses API over WebSocket
 - **WS `/v1/realtime`** — OpenAI Realtime API (text + tool calls)
-- **WS `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`** — Gemini Live
+- **WS `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`** — Gemini Live ([unverified](#gemini-live-bidigeneratecontent))
 
 All endpoints share the same fixture pool — the same fixtures work across all providers. Requests are translated to a common format internally for fixture matching.
 
@@ -518,13 +518,11 @@ Connect to `ws://localhost:5555/v1/responses` and send a `response.create` event
 // → Client sends:
 {
   "type": "response.create",
-  "response": {
-    "modalities": ["text"],
-    "instructions": "You are a helpful assistant.",
-    "input": [
-      { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Hello" }] },
-    ],
-  },
+  "model": "gpt-4o",
+  "instructions": "You are a helpful assistant.",
+  "input": [
+    { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "Hello" }] },
+  ],
 }
 
 // ← Server streams:
@@ -567,19 +565,21 @@ Connect to `ws://localhost:5555/v1/realtime`. The Realtime API uses a session-ba
 
 ### Gemini Live (BidiGenerateContent)
 
-Connect to `ws://localhost:5555/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`. Gemini Live uses a setup/content/response flow:
+Connect to `ws://localhost:5555/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`. Gemini Live uses a setup/content/response flow.
+
+> **⚠️ Unverified**: As of March 2026, Google's only `bidiGenerateContent`-capable models are audio-only — no text-capable model exists for this endpoint. llmock implements the text-based protocol as documented in Google's [Live API reference](https://ai.google.dev/api/live), but the response shapes have not been verified against real API output. Code you write against this mock may need adjustment when Google ships a text-capable Live model. See [DRIFT.md](DRIFT.md#gemini-live-unverified) for details and the automated canary that tracks model availability.
 
 ```jsonc
 // → Setup message (must be first):
-{ "setup": { "model": "models/gemini-2.0-flash-live", "generationConfig": { "responseModalities": ["TEXT"] } } }
+{ "setup": { "model": "models/gemini-2.5-flash", "generationConfig": { "responseModalities": ["TEXT"] } } }
 
 // → Send user content:
 { "clientContent": { "turns": [{ "role": "user", "parts": [{ "text": "Hello" }] }], "turnComplete": true } }
 
 // ← Server streams:
 // {"setupComplete": {}}
-// {"serverContent": {"modelTurnComplete": false, "parts": [{"text": "Hello"}]}}
-// {"serverContent": {"modelTurnComplete": true}}
+// {"serverContent": {"modelTurn": {"parts": [{"text": "Hello"}]}, "turnComplete": false}}
+// {"serverContent": {"modelTurn": {"parts": [{"text": "!"}]}, "turnComplete": true}}
 ```
 
 ## CLI

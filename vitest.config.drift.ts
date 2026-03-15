@@ -4,6 +4,6 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["src/__tests__/drift/**/*.drift.ts"],
-    testTimeout: 30000,
+    testTimeout: 60000,
   },
 });

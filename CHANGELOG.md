@@ -1,5 +1,15 @@
 # @copilotkit/llmock
 
+## 1.3.3
+
+### Patch Changes
+
+- Fix Responses WS handler to accept flat `response.create` format matching the real OpenAI API (previously required a non-standard nested `response: { ... }` envelope)
+- WebSocket drift detection tests: TLS client for real provider WS endpoints, 4 verified drift tests (Responses WS + Realtime), Gemini Live canary for text-capable model availability
+- Realtime model canary: detects when `gpt-4o-mini-realtime-preview` is deprecated and suggests GA replacement
+- Gemini Live documented as unverified (no text-capable `bidiGenerateContent` model exists yet)
+- Fix README Gemini Live response shape example (`modelTurn.parts`, not `modelTurnComplete`)
+
 ## 1.3.2
 
 ### Patch Changes
