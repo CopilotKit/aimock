@@ -470,6 +470,10 @@
         margin-top: 3.5rem;
       }
 
+      .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+        grid-column: 2;
+      }
+
       .feature-card {
         padding: 2rem;
         background: var(--bg-card);
@@ -1352,28 +1356,6 @@
       </div>
     </section>
 
-    <!-- ═══ Real-World Usage ═════════════════════════════════════════ -->
-    <section class="reveal">
-      <div class="container">
-        <h2>Real-World Usage</h2>
-        <p>
-          <a href="https://github.com/CopilotKit/CopilotKit" target="_blank">CopilotKit</a> uses
-          llmock across its test suite to verify AI agent behavior across multiple LLM providers
-          without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn
-          conversations across both v1 and v2 runtimes.
-        </p>
-        <p>
-          See the
-          <a
-            href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
-            target="_blank"
-            >CopilotKit test suite</a
-          >
-          for real-world examples of llmock in action.
-        </p>
-      </div>
-    </section>
-
     <!-- ═══ Claude Code Integration ═══════════════════════════════════ -->
     <section id="claude-code" class="reveal">
       <div class="container">
@@ -1432,6 +1414,28 @@
             </p>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- ═══ Real-World Usage ═════════════════════════════════════════ -->
+    <section class="reveal">
+      <div class="container">
+        <h2>Real-World Usage</h2>
+        <p>
+          <a href="https://github.com/CopilotKit/CopilotKit" target="_blank">CopilotKit</a> uses
+          llmock across its test suite to verify AI agent behavior across multiple LLM providers
+          without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn
+          conversations across both v1 and v2 runtimes.
+        </p>
+        <p>
+          See the
+          <a
+            href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
+            target="_blank"
+            >CopilotKit test suite</a
+          >
+          for real-world examples of llmock in action.
+        </p>
       </div>
     </section>
 
