@@ -171,7 +171,7 @@ export function buildTextCompletion(content: string, model: string): ChatComplet
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content },
+        message: { role: "assistant", content, refusal: null },
         finish_reason: "stop",
       },
     ],
@@ -191,6 +191,7 @@ export function buildToolCallCompletion(toolCalls: ToolCall[], model: string): C
         message: {
           role: "assistant",
           content: null,
+          refusal: null,
           tool_calls: toolCalls.map((tc) => ({
             id: tc.id || generateToolCallId(),
             type: "function" as const,

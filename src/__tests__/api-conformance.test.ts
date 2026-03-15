@@ -167,6 +167,8 @@ describe("OpenAI Chat Completions conformance", () => {
       expect(choice).toHaveProperty("finish_reason");
       expect(choice.message.role).toBe("assistant");
       expect(typeof choice.message.content).toBe("string");
+      expect(choice.message).toHaveProperty("refusal");
+      expect(choice.message.refusal).toBeNull();
     });
 
     it("usage has prompt_tokens, completion_tokens, total_tokens as numbers", async () => {

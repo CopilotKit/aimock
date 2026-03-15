@@ -307,6 +307,7 @@ describe("buildTextCompletion", () => {
     expect(result.choices[0].index).toBe(0);
     expect(result.choices[0].message.role).toBe("assistant");
     expect(result.choices[0].message.content).toBe("Hello!");
+    expect(result.choices[0].message.refusal).toBeNull();
     expect(result.choices[0].finish_reason).toBe("stop");
   });
 
@@ -331,6 +332,7 @@ describe("buildToolCallCompletion", () => {
     expect(result.choices).toHaveLength(1);
     expect(result.choices[0].finish_reason).toBe("tool_calls");
     expect(result.choices[0].message.content).toBeNull();
+    expect(result.choices[0].message.refusal).toBeNull();
   });
 
   it("maps tool calls with correct structure", () => {

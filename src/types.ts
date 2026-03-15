@@ -170,6 +170,7 @@ export interface ChatCompletionChoice {
 export interface ChatCompletionMessage {
   role: "assistant";
   content: string | null;
+  refusal: string | null;
   tool_calls?: ToolCallMessage[];
 }
 
