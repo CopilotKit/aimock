@@ -424,3 +424,169 @@ describe("fixture-loader fs error paths", () => {
     expect(statWarns[0][0]).toContain("noperm.json");
   });
 });
+
+// ---------------------------------------------------------------------------
+// validateFixtures
+// ---------------------------------------------------------------------------
+
+import { validateFixtures } from "../fixture-loader.js";
+import type { Fixture } from "../types.js";
+
+function makeFixture(overrides: Partial<Fixture> = {}): Fixture {
+  return {
+    match: { userMessage: "test" },
+    response: { content: "Hello" },
+    ...overrides,
+  };
+}
+
+describe("validateFixtures", () => {
+  it("returns no results for valid fixtures", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello" } }),
+      makeFixture({
+        match: { userMessage: "weather" },
+        response: { toolCalls: [{ name: "fn", arguments: "{}" }] },
+      }),
+      makeFixture({
+        match: { userMessage: "error" },
+        response: { error: { message: "err", type: "e" }, status: 500 },
+      }),
+    ];
+    expect(validateFixtures(fixtures)).toEqual([]);
+  });
+
+  // --- Error checks ---
+
+  it("error: unrecognized response type", () => {
+    const fixtures = [makeFixture({ response: { foo: "bar" } as never })];
+    const results = validateFixtures(fixtures);
+    expect(results).toHaveLength(1);
+    expect(results[0].severity).toBe("error");
+    expect(results[0].message).toContain("not a recognized type");
+  });
+
+  it("error: empty content string", () => {
+    const fixtures = [makeFixture({ response: { content: "" } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("empty string"))).toBe(
+      true,
+    );
+  });
+
+  it("warning: empty toolCalls array", () => {
+    const fixtures = [makeFixture({ response: { toolCalls: [] } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "warning" && r.message.includes("empty"))).toBe(true);
+  });
+
+  it("error: toolCalls with empty name", () => {
+    const fixtures = [makeFixture({ response: { toolCalls: [{ name: "", arguments: "{}" }] } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("name is empty"))).toBe(
+      true,
+    );
+  });
+
+  it("error: toolCalls with invalid JSON arguments", () => {
+    const fixtures = [
+      makeFixture({ response: { toolCalls: [{ name: "fn", arguments: "not json" }] } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("not valid JSON")),
+    ).toBe(true);
+  });
+
+  it("error: error response with empty message", () => {
+    const fixtures = [
+      makeFixture({ response: { error: { message: "", type: "e" }, status: 500 } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("error.message is empty")),
+    ).toBe(true);
+  });
+
+  it("error: error response with invalid status code", () => {
+    const fixtures = [
+      makeFixture({ response: { error: { message: "err", type: "e" }, status: 999 } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("not a valid HTTP status")),
+    ).toBe(true);
+  });
+
+  it("error: negative latency", () => {
+    const fixtures = [makeFixture({ latency: -1 })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("latency"))).toBe(true);
+  });
+
+  it("error: chunkSize < 1", () => {
+    const fixtures = [makeFixture({ chunkSize: 0 })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("chunkSize"))).toBe(
+      true,
+    );
+  });
+
+  it("error: truncateAfterChunks < 1", () => {
+    const fixtures = [makeFixture({ truncateAfterChunks: 0 })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("truncateAfterChunks")),
+    ).toBe(true);
+  });
+
+  it("error: negative disconnectAfterMs", () => {
+    const fixtures = [makeFixture({ disconnectAfterMs: -1 })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("disconnectAfterMs")),
+    ).toBe(true);
+  });
+
+  // --- Warning checks ---
+
+  it("warning: duplicate userMessage", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello" } }),
+      makeFixture({ match: { userMessage: "hello" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "warning" && r.message.includes("duplicate"))).toBe(
+      true,
+    );
+  });
+
+  it("warning: catch-all not in last position", () => {
+    const fixtures = [makeFixture({ match: {} }), makeFixture({ match: { userMessage: "hello" } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "warning" && r.message.includes("catch-all"))).toBe(
+      true,
+    );
+  });
+
+  it("no warning for catch-all in last position", () => {
+    const fixtures = [makeFixture({ match: { userMessage: "hello" } }), makeFixture({ match: {} })];
+    const results = validateFixtures(fixtures);
+    const catchAllWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("catch-all"),
+    );
+    expect(catchAllWarnings).toHaveLength(0);
+  });
+
+  it("reports both errors and warnings together", () => {
+    const fixtures = [
+      makeFixture({ match: {}, response: { content: "" } }), // catch-all + empty content
+      makeFixture({ match: { userMessage: "hello" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const errors = results.filter((r) => r.severity === "error");
+    const warnings = results.filter((r) => r.severity === "warning");
+    expect(errors.length).toBeGreaterThan(0);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});

@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Fixture, FixtureFile, FixtureFileEntry } from "./types.js";
+import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
+import type { Logger } from "./logger.js";
 
 function entryToFixture(entry: FixtureFileEntry): Fixture {
   return {
@@ -20,12 +22,21 @@ function entryToFixture(entry: FixtureFileEntry): Fixture {
   };
 }
 
-export function loadFixtureFile(filePath: string): Fixture[] {
+// Logging helper — uses logger if provided, falls back to console.warn.
+function warn(logger: Logger | undefined, msg: string, ...rest: unknown[]): void {
+  if (logger) {
+    logger.warn(msg, ...rest);
+  } else {
+    console.warn(`[fixture-loader] ${msg}`, ...rest);
+  }
+}
+
+export function loadFixtureFile(filePath: string, logger?: Logger): Fixture[] {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf-8");
   } catch (err) {
-    console.warn(`[fixture-loader] Could not read file ${filePath}:`, err);
+    warn(logger, `Could not read file ${filePath}:`, err);
     return [];
   }
 
@@ -33,7 +44,7 @@ export function loadFixtureFile(filePath: string): Fixture[] {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    console.warn(`[fixture-loader] Invalid JSON in ${filePath}:`, err);
+    warn(logger, `Invalid JSON in ${filePath}:`, err);
     return [];
   }
 
@@ -42,19 +53,19 @@ export function loadFixtureFile(filePath: string): Fixture[] {
     parsed === null ||
     !Array.isArray((parsed as FixtureFile).fixtures)
   ) {
-    console.warn(`[fixture-loader] Missing or invalid "fixtures" array in ${filePath}`);
+    warn(logger, `Missing or invalid "fixtures" array in ${filePath}`);
     return [];
   }
 
   return (parsed as FixtureFile).fixtures.map(entryToFixture);
 }
 
-export function loadFixturesFromDir(dirPath: string): Fixture[] {
+export function loadFixturesFromDir(dirPath: string, logger?: Logger): Fixture[] {
   let entries: string[];
   try {
     entries = readdirSync(dirPath);
   } catch (err) {
-    console.warn(`[fixture-loader] Could not read directory ${dirPath}:`, err);
+    warn(logger, `Could not read directory ${dirPath}:`, err);
     return [];
   }
 
@@ -63,15 +74,13 @@ export function loadFixturesFromDir(dirPath: string): Fixture[] {
     const fullPath = join(dirPath, name);
     try {
       if (statSync(fullPath).isDirectory()) {
-        console.warn(
-          `[fixture-loader] Skipping subdirectory ${fullPath} (fixtures are not loaded recursively)`,
-        );
+        warn(logger, `Skipping subdirectory ${fullPath} (fixtures are not loaded recursively)`);
         continue;
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
-        console.warn(`[fixture-loader] Could not stat ${fullPath}:`, err);
+        warn(logger, `Could not stat ${fullPath}:`, err);
       }
       continue;
     }
@@ -84,8 +93,165 @@ export function loadFixturesFromDir(dirPath: string): Fixture[] {
   const fixtures: Fixture[] = [];
   for (const name of jsonFiles) {
     const filePath = join(dirPath, name);
-    fixtures.push(...loadFixtureFile(filePath));
+    fixtures.push(...loadFixtureFile(filePath, logger));
   }
 
   return fixtures;
+}
+
+// ---------------------------------------------------------------------------
+// Fixture validation
+// ---------------------------------------------------------------------------
+
+export interface ValidationResult {
+  severity: "error" | "warning";
+  fixtureIndex: number;
+  message: string;
+}
+
+export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
+  const results: ValidationResult[] = [];
+
+  const seenUserMessages = new Map<string, number>();
+
+  for (let i = 0; i < fixtures.length; i++) {
+    const f = fixtures[i];
+    const response = f.response;
+
+    // --- Error checks ---
+
+    // Response type recognition
+    if (!isTextResponse(response) && !isToolCallResponse(response) && !isErrorResponse(response)) {
+      results.push({
+        severity: "error",
+        fixtureIndex: i,
+        message: "response is not a recognized type (must have content, toolCalls, or error)",
+      });
+    }
+
+    // Text response checks
+    if (isTextResponse(response)) {
+      if (response.content === "") {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "content is empty string",
+        });
+      }
+    }
+
+    // Tool call response checks
+    if (isToolCallResponse(response)) {
+      if (response.toolCalls.length === 0) {
+        results.push({
+          severity: "warning",
+          fixtureIndex: i,
+          message: "toolCalls array is empty — fixture will never produce tool calls",
+        });
+      }
+      for (let j = 0; j < response.toolCalls.length; j++) {
+        const tc = response.toolCalls[j];
+        if (!tc.name) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `toolCalls[${j}].name is empty`,
+          });
+        }
+        try {
+          JSON.parse(tc.arguments);
+        } catch {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+          });
+        }
+      }
+    }
+
+    // Error response checks
+    if (isErrorResponse(response)) {
+      if (!response.error.message) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "error.message is empty",
+        });
+      }
+      if (response.status !== undefined && (response.status < 100 || response.status > 599)) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: `error status ${response.status} is not a valid HTTP status code`,
+        });
+      }
+    }
+
+    // Numeric sanity checks
+    if (f.latency !== undefined && f.latency < 0) {
+      results.push({
+        severity: "error",
+        fixtureIndex: i,
+        message: "latency must be >= 0",
+      });
+    }
+    if (f.chunkSize !== undefined && f.chunkSize < 1) {
+      results.push({
+        severity: "error",
+        fixtureIndex: i,
+        message: "chunkSize must be >= 1",
+      });
+    }
+    if (f.truncateAfterChunks !== undefined && f.truncateAfterChunks < 1) {
+      results.push({
+        severity: "error",
+        fixtureIndex: i,
+        message: "truncateAfterChunks must be >= 1",
+      });
+    }
+    if (f.disconnectAfterMs !== undefined && f.disconnectAfterMs < 0) {
+      results.push({
+        severity: "error",
+        fixtureIndex: i,
+        message: "disconnectAfterMs must be >= 0",
+      });
+    }
+
+    // --- Warning checks ---
+
+    // Duplicate userMessage shadowing
+    const um = f.match.userMessage;
+    if (typeof um === "string" && um) {
+      const prev = seenUserMessages.get(um);
+      if (prev !== undefined) {
+        results.push({
+          severity: "warning",
+          fixtureIndex: i,
+          message: `duplicate userMessage '${um}' — shadows fixture ${prev}`,
+        });
+      } else {
+        seenUserMessages.set(um, i);
+      }
+    }
+
+    // Catch-all not in last position
+    const match = f.match;
+    const hasDiscriminator =
+      match.userMessage !== undefined ||
+      match.toolCallId !== undefined ||
+      match.toolName !== undefined ||
+      match.model !== undefined ||
+      match.predicate !== undefined;
+
+    if (!hasDiscriminator && i < fixtures.length - 1) {
+      results.push({
+        severity: "warning",
+        fixtureIndex: i,
+        message: `empty match acts as catch-all but is not the last fixture — shadows fixtures ${i + 1}+`,
+      });
+    }
+  }
+
+  return results;
 }
