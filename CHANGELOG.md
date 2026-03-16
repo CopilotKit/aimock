@@ -1,5 +1,15 @@
 # @copilotkit/llmock
 
+## 1.4.0
+
+### Minor Changes
+
+- `--watch` (`-w`): File-watching with 500ms debounced reload. Keeps previous fixtures on validation failure.
+- `--log-level`: Configurable log verbosity (`silent`, `info`, `debug`). Default `info` for CLI, `silent` for programmatic API.
+- `--validate-on-load`: Fixture schema validation at startup — checks response types, tool call JSON, numeric ranges, shadowing, and catch-all positioning.
+- `validateFixtures()` exported for programmatic use
+- `Logger` class exported for programmatic use
+
 ## 1.3.3
 
 ### Patch Changes
