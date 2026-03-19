@@ -691,7 +691,7 @@ Areas where llmock could grow, and explicit non-goals for the current scope.
 
 - **Request metadata in predicates**: Predicate functions receive only the `ChatCompletionRequest`, not HTTP headers, method, or URL.
 - **Multi-turn conversation state**: Fixtures are stateless — there is no built-in way to sequence responses across multiple requests in a conversation.
-- **Validation on load**: Fixture files are not schema-validated at load time; malformed fixtures surface as runtime errors.
+- **Validation on load**: Schema validation is available via `--validate-on-load` (CLI) and `validateFixtures()` (programmatic API), but it is opt-in and not enabled by default.
 - **Inheritance and aliasing**: No `$ref` or `extends` mechanism for fixture reuse across files.
 
 ### Testing
