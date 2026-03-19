@@ -30,6 +30,13 @@ export function watchFixtures(
       return;
     }
 
+    if (newFixtures.length === 0 && fixtures.length > 0) {
+      logger.warn(
+        "Reload produced 0 fixtures — keeping previous fixtures. Check fixture file for errors.",
+      );
+      return;
+    }
+
     if (validate && validateFn) {
       const results = validateFn(newFixtures);
       const errors = results.filter((r) => r.severity === "error");
@@ -60,6 +67,13 @@ export function watchFixtures(
   });
 
   watcher.on("error", (err: Error) => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = null;
+    try {
+      watcher.close();
+    } catch {
+      /* already dead */
+    }
     logger.error(`File watcher error on ${fixturePath}: ${err.message}`);
     logger.error("Fixture auto-reload is no longer active. Restart the server to resume watching.");
   });
