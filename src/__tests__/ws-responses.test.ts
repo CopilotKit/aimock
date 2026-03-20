@@ -227,6 +227,115 @@ describe("WebSocket /v1/responses", () => {
     ws.close();
   });
 
+  it("concurrent requests don't interleave events", async () => {
+    const fixture1: Fixture = {
+      match: { userMessage: "concurrent-a" },
+      response: { content: "Response A content here" },
+      chunkSize: 5,
+    };
+    const fixture2: Fixture = {
+      match: { userMessage: "concurrent-b" },
+      response: { content: "Response B content here" },
+      chunkSize: 5,
+    };
+    instance = await createServer([fixture1, fixture2]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    // Send two requests rapidly without waiting for the first to complete
+    ws.send(responseCreateMsg("concurrent-a"));
+    ws.send(responseCreateMsg("concurrent-b"));
+
+    // "Response A content here" = 23 chars / chunkSize 5 = 5 deltas
+    // Per response: created + in_progress + output_item.added + content_part.added
+    //   + 5 deltas + output_text.done + content_part.done + output_item.done + completed = 13
+    // Two responses = 26
+    const allRaw = await ws.waitForMessages(26);
+    const events = parseEvents(allRaw);
+
+    // Find the boundary: both response sequences end with response.completed
+    const completedIndices = events
+      .map((e, i) => (e.type === "response.completed" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(completedIndices.length).toBe(2);
+
+    // All events for the first response must come before all events for the second.
+    // Verify no interleaving: events 0..completedIndices[0] belong to one response,
+    // and events completedIndices[0]+1..completedIndices[1] belong to the other.
+    const firstBatch = events.slice(0, completedIndices[0] + 1);
+    const secondBatch = events.slice(completedIndices[0] + 1, completedIndices[1] + 1);
+
+    // Each batch should start with response.created and end with response.completed
+    expect(firstBatch[0].type).toBe("response.created");
+    expect(firstBatch[firstBatch.length - 1].type).toBe("response.completed");
+    expect(secondBatch[0].type).toBe("response.created");
+    expect(secondBatch[secondBatch.length - 1].type).toBe("response.completed");
+
+    // The deltas in each batch should reconstruct to the correct content (no mixing)
+    const firstDeltas = firstBatch
+      .filter((e) => e.type === "response.output_text.delta")
+      .map((e) => e.delta)
+      .join("");
+    const secondDeltas = secondBatch
+      .filter((e) => e.type === "response.output_text.delta")
+      .map((e) => e.delta)
+      .join("");
+
+    // One should be "Response A content here" and the other "Response B content here"
+    const contents = [firstDeltas, secondDeltas].sort();
+    expect(contents).toEqual(["Response A content here", "Response B content here"]);
+
+    ws.close();
+  });
+
+  it("multiple tool calls with distinct output_index", async () => {
+    const multiToolFixture: Fixture = {
+      match: { userMessage: "multi-tool" },
+      response: {
+        toolCalls: [
+          { name: "get_weather", arguments: '{"city":"NYC"}' },
+          { name: "get_time", arguments: '{"tz":"EST"}' },
+        ],
+      },
+    };
+    instance = await createServer([multiToolFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("multi-tool"));
+
+    // 2 tool calls: response.created + in_progress
+    // + (output_item.added + 1 delta + arguments.done + output_item.done) * 2
+    // + response.completed = 2 + 8 + 1 = 11 events
+    const raw = await ws.waitForMessages(11);
+    const events = parseEvents(raw);
+
+    const types = events.map((e) => e.type);
+    expect(types[0]).toBe("response.created");
+    expect(types[types.length - 1]).toBe("response.completed");
+
+    // Verify both tool calls appear
+    const addedItems = events.filter((e) => e.type === "response.output_item.added");
+    expect(addedItems.length).toBe(2);
+    expect((addedItems[0].item as Record<string, unknown>).name).toBe("get_weather");
+    expect((addedItems[1].item as Record<string, unknown>).name).toBe("get_time");
+
+    // Verify output_index values are distinct
+    const outputIndices = addedItems.map((e) => e.output_index);
+    expect(outputIndices[0]).toBe(0);
+    expect(outputIndices[1]).toBe(1);
+
+    // Verify argument deltas for each tool call reconstruct correctly
+    const argDoneEvents = events.filter((e) => e.type === "response.function_call_arguments.done");
+    expect(argDoneEvents.length).toBe(2);
+    expect(argDoneEvents[0].arguments).toBe('{"city":"NYC"}');
+    expect(argDoneEvents[1].arguments).toBe('{"tz":"EST"}');
+
+    // Verify output_index on arguments.done events are distinct
+    expect(argDoneEvents[0].output_index).toBe(0);
+    expect(argDoneEvents[1].output_index).toBe(1);
+
+    ws.close();
+  });
+
   it("rejects WebSocket upgrade on non-responses path", async () => {
     instance = await createServer(allFixtures);
 

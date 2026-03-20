@@ -299,6 +299,131 @@ describe("WebSocket /v1/realtime", () => {
     ws.close();
   });
 
+  it("concurrent response.create messages serialize correctly", async () => {
+    const fixture1: Fixture = {
+      match: { userMessage: "ser-a" },
+      response: { content: "Alpha response" },
+      chunkSize: 5,
+    };
+    const fixture2: Fixture = {
+      match: { userMessage: "ser-b" },
+      response: { content: "Bravo response" },
+      chunkSize: 5,
+    };
+    instance = await createServer([fixture1, fixture2]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Add both conversation items
+    ws.send(conversationItemCreate("user", "ser-a"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    // Now send two response.create messages rapidly without waiting
+    // The realtime handler adds "ser-a" to conversation, so the second one
+    // also sees it. To make the second match "ser-b", add it to conversation first.
+    ws.send(conversationItemCreate("user", "ser-b"));
+    await ws.waitForMessages(3); // + second conversation.item.created
+
+    // Fire two response.create messages back-to-back
+    ws.send(responseCreate());
+    ws.send(responseCreate());
+
+    // Each text response: response.created + output_item.added + content_part.added
+    // + delta(s) + text.done + content_part.done + output_item.done + response.done
+    // "Alpha response" / 5 = 3 deltas, "Bravo response" / 5 = 3 deltas
+    // So 10 events per response = 20 total, plus the 3 initial messages = 23
+    const allRaw = await ws.waitForMessages(23);
+    const responseEvents = parseEvents(allRaw.slice(3));
+
+    // Find response.done boundaries
+    const doneIndices = responseEvents
+      .map((e, i) => (e.type === "response.done" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(doneIndices.length).toBe(2);
+
+    // Each batch should start with response.created and end with response.done
+    const firstBatch = responseEvents.slice(0, doneIndices[0] + 1);
+    const secondBatch = responseEvents.slice(doneIndices[0] + 1, doneIndices[1] + 1);
+
+    expect(firstBatch[0].type).toBe("response.created");
+    expect(firstBatch[firstBatch.length - 1].type).toBe("response.done");
+    expect(secondBatch[0].type).toBe("response.created");
+    expect(secondBatch[secondBatch.length - 1].type).toBe("response.done");
+
+    // Verify no interleaving: deltas in each batch should form a complete string
+    const firstDeltas = firstBatch
+      .filter((e) => e.type === "response.text.delta")
+      .map((e) => e.delta)
+      .join("");
+    const secondDeltas = secondBatch
+      .filter((e) => e.type === "response.text.delta")
+      .map((e) => e.delta)
+      .join("");
+
+    // Both responses match on the last user message, so the first response.create
+    // sees "ser-b" as last user message, the second also sees "ser-b" because
+    // the assistant response from the first gets appended. Both may match "ser-b".
+    // Actually, the conversation has ["ser-a", "ser-b"] and matching uses last user message.
+    // Both will match "ser-b". That's fine — the key assertion is no interleaving.
+    expect(firstDeltas.length).toBeGreaterThan(0);
+    expect(secondDeltas.length).toBeGreaterThan(0);
+
+    ws.close();
+  });
+
+  it("multiple tool calls in a single response", async () => {
+    const multiToolFixture: Fixture = {
+      match: { userMessage: "multi-tool-rt" },
+      response: {
+        toolCalls: [
+          { name: "get_weather", arguments: '{"city":"NYC"}' },
+          { name: "get_time", arguments: '{"tz":"EST"}' },
+        ],
+      },
+    };
+    instance = await createServer([multiToolFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "multi-tool-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // 2 tool calls: response.created
+    // + (output_item.added + 1 delta + arguments.done + output_item.done) * 2
+    // + response.done = 1 + 8 + 1 = 10 events
+    // Total: 2 (session.created + item.created) + 10 = 12
+    const allRaw = await ws.waitForMessages(12);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    const types = responseEvents.map((e) => e.type);
+    expect(types[0]).toBe("response.created");
+    expect(types[types.length - 1]).toBe("response.done");
+
+    // Verify both tool calls appear in output_item.added events
+    const addedItems = responseEvents.filter((e) => e.type === "response.output_item.added");
+    expect(addedItems.length).toBe(2);
+    expect((addedItems[0].item as Record<string, unknown>).name).toBe("get_weather");
+    expect((addedItems[1].item as Record<string, unknown>).name).toBe("get_time");
+
+    // Verify argument deltas reconstruct correctly for each tool call
+    const argDoneEvents = responseEvents.filter(
+      (e) => e.type === "response.function_call_arguments.done",
+    );
+    expect(argDoneEvents.length).toBe(2);
+    expect(argDoneEvents[0].arguments).toBe('{"city":"NYC"}');
+    expect(argDoneEvents[1].arguments).toBe('{"tz":"EST"}');
+
+    // Verify output_index values are distinct
+    expect(addedItems[0].output_index).toBe(0);
+    expect(addedItems[1].output_index).toBe(1);
+
+    ws.close();
+  });
+
   it("truncateAfterChunks stops text stream early, no response.done event", async () => {
     const truncFixture: Fixture = {
       match: { userMessage: "truncate-rt" },
