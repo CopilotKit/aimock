@@ -99,6 +99,36 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].match.userMessage).toBe("hello world");
   });
 
+  it("loads inputText match field from JSON", () => {
+    const filePath = writeJson(tmpDir, "embed.json", {
+      fixtures: [
+        {
+          match: { inputText: "hello world" },
+          response: { embedding: [0.1, -0.2, 0.3] },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].match.inputText).toBe("hello world");
+  });
+
+  it("loads responseFormat match field from JSON", () => {
+    const filePath = writeJson(tmpDir, "json-mode.json", {
+      fixtures: [
+        {
+          match: { userMessage: "give json", responseFormat: "json_object" },
+          response: { content: '{"key":"value"}' },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].match.responseFormat).toBe("json_object");
+  });
+
   it("omits latency and chunkSize when not present in JSON", () => {
     const filePath = writeJson(tmpDir, "no-optional.json", {
       fixtures: [
@@ -162,6 +192,40 @@ describe("loadFixtureFile", () => {
     expect(fixtures).toHaveLength(1);
     expect(fixtures[0].truncateAfterChunks).toBe(5);
     expect(fixtures[0].disconnectAfterMs).toBe(1000);
+  });
+
+  it("passes through sequenceIndex from JSON fixtures", () => {
+    const filePath = writeJson(tmpDir, "sequence.json", {
+      fixtures: [
+        {
+          match: { userMessage: "plan", sequenceIndex: 0 },
+          response: { content: "Step 1" },
+        },
+        {
+          match: { userMessage: "plan", sequenceIndex: 1 },
+          response: { content: "Step 2" },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(2);
+    expect(fixtures[0].match.sequenceIndex).toBe(0);
+    expect(fixtures[1].match.sequenceIndex).toBe(1);
+  });
+
+  it("omits sequenceIndex when not present in JSON", () => {
+    const filePath = writeJson(tmpDir, "no-sequence.json", {
+      fixtures: [
+        {
+          match: { userMessage: "hello" },
+          response: { content: "Hi!" },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures[0].match.sequenceIndex).toBeUndefined();
   });
 
   it("omits truncateAfterChunks and disconnectAfterMs when not present in JSON", () => {
@@ -588,5 +652,43 @@ describe("validateFixtures", () => {
     const warnings = results.filter((r) => r.severity === "warning");
     expect(errors.length).toBeGreaterThan(0);
     expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  // --- Embedding response checks ---
+
+  it("returns no results for a valid embedding fixture", () => {
+    const fixtures = [
+      makeFixture({
+        match: { inputText: "hello" },
+        response: { embedding: [0.1, -0.2, 0.3] },
+      }),
+    ];
+    expect(validateFixtures(fixtures)).toEqual([]);
+  });
+
+  it("error: empty embedding array", () => {
+    const fixtures = [
+      makeFixture({
+        match: { inputText: "hello" },
+        response: { embedding: [] },
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("embedding array is empty")),
+    ).toBe(true);
+  });
+
+  it("error: non-number embedding elements", () => {
+    const fixtures = [
+      makeFixture({
+        match: { inputText: "hello" },
+        response: { embedding: [0.1, "bad" as unknown as number, 0.3] },
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("not a number"))).toBe(
+      true,
+    );
   });
 });

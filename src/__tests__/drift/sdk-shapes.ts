@@ -108,6 +108,28 @@ export function openaiChatCompletionChunkShape(): ShapeNode {
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI Embeddings
+// ---------------------------------------------------------------------------
+
+export function openaiEmbeddingResponseShape(): ShapeNode {
+  return extractShape({
+    object: "list",
+    data: [
+      {
+        object: "embedding",
+        index: 0,
+        embedding: [0.1, -0.2, 0.3],
+      },
+    ],
+    model: "text-embedding-3-small",
+    usage: {
+      prompt_tokens: 2,
+      total_tokens: 2,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // OpenAI Responses API
 // ---------------------------------------------------------------------------
 

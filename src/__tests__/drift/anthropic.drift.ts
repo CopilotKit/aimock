@@ -186,3 +186,45 @@ describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic Claude Messages drift", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Canary: detect when Anthropic adds new capabilities
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic capability canaries", () => {
+  it("canary: detect WebSocket API", async () => {
+    // Anthropic doesn't have a WebSocket API as of 2026-03.
+    // If they add one, this test will detect it via upgrade headers.
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "OPTIONS",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
+      },
+    });
+    // If Anthropic adds WebSocket support, they'll likely add upgrade headers
+    const upgradeHeader = res.headers.get("upgrade");
+    if (upgradeHeader) {
+      console.warn("[CANARY] Anthropic may now support WebSocket upgrade. Investigate.");
+    }
+    expect(true).toBe(true); // canary always passes
+  });
+
+  it("canary: detect embeddings API", async () => {
+    // Anthropic doesn't have an embeddings API as of 2026-03.
+    const res = await fetch("https://api.anthropic.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ model: "claude-3-5-sonnet-20241022", input: "test" }),
+    });
+    // If they add it, we'd get a 200 or 400 (bad request format) instead of 404
+    if (res.status !== 404) {
+      console.warn(`[CANARY] Anthropic /v1/embeddings returned ${res.status}. May now exist.`);
+    }
+    expect(true).toBe(true);
+  });
+});

@@ -502,6 +502,51 @@ describe("LLMock", () => {
     });
   });
 
+  describe("onEmbedding convenience", () => {
+    it("registers a fixture matching an inputText string", async () => {
+      mock = new LLMock();
+      mock.onEmbedding("embed-test", { embedding: [0.1, 0.2, 0.3] });
+      await mock.start();
+
+      const res = await new Promise<{ status: number; data: string }>((resolve, reject) => {
+        const parsed = new URL(mock!.url);
+        const payload = JSON.stringify({
+          model: "text-embedding-3-small",
+          input: "embed-test input",
+        });
+        const req = http.request(
+          {
+            hostname: parsed.hostname,
+            port: parsed.port,
+            path: "/v1/embeddings",
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(payload),
+            },
+          },
+          (res) => {
+            let data = "";
+            res.on("data", (chunk) => (data += chunk));
+            res.on("end", () => resolve({ status: res.statusCode!, data }));
+          },
+        );
+        req.on("error", reject);
+        req.write(payload);
+        req.end();
+      });
+
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.data);
+      expect(json.data[0].embedding).toEqual([0.1, 0.2, 0.3]);
+    });
+
+    it("returns this for chaining", () => {
+      mock = new LLMock();
+      expect(mock.onEmbedding("x", { embedding: [0.1] })).toBe(mock);
+    });
+  });
+
   describe("onToolCall convenience", () => {
     it("registers a fixture matching a tool name", async () => {
       mock = new LLMock();
@@ -529,6 +574,67 @@ describe("LLMock", () => {
     it("returns this for chaining", () => {
       mock = new LLMock();
       expect(mock.onToolCall("fn", { content: "r" })).toBe(mock);
+    });
+  });
+
+  describe("onJsonOutput convenience", () => {
+    it("registers a fixture with responseFormat json_object and stringified content", () => {
+      mock = new LLMock();
+      mock.onJsonOutput("json-test", { name: "Alice", age: 30 });
+
+      const fixtures = mock.getFixtures();
+      expect(fixtures).toHaveLength(1);
+      expect(fixtures[0].match.userMessage).toBe("json-test");
+      expect(fixtures[0].match.responseFormat).toBe("json_object");
+      expect((fixtures[0].response as { content: string }).content).toBe(
+        JSON.stringify({ name: "Alice", age: 30 }),
+      );
+    });
+
+    it("accepts a string as jsonContent and uses it directly", () => {
+      mock = new LLMock();
+      mock.onJsonOutput("json-str", '{"key":"value"}');
+
+      const fixtures = mock.getFixtures();
+      expect((fixtures[0].response as { content: string }).content).toBe('{"key":"value"}');
+    });
+
+    it("accepts a RegExp pattern", () => {
+      mock = new LLMock();
+      mock.onJsonOutput(/json-\d+/, { result: true });
+
+      const fixtures = mock.getFixtures();
+      expect(fixtures[0].match.userMessage).toEqual(/json-\d+/);
+    });
+
+    it("returns this for chaining", () => {
+      mock = new LLMock();
+      expect(mock.onJsonOutput("x", { a: 1 })).toBe(mock);
+    });
+
+    it("passes through opts like latency", () => {
+      mock = new LLMock();
+      mock.onJsonOutput("opts", { a: 1 }, { latency: 100 });
+
+      const fixtures = mock.getFixtures();
+      expect(fixtures[0].latency).toBe(100);
+    });
+
+    it("serves JSON content through the server", async () => {
+      mock = new LLMock();
+      mock.onJsonOutput("give-json", { answer: 42 });
+      await mock.start();
+
+      const res = await post(mock.url, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "give-json" }],
+        stream: false,
+        response_format: { type: "json_object" },
+      });
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.data);
+      const content = json.choices[0].message.content;
+      expect(JSON.parse(content)).toEqual({ answer: 42 });
     });
   });
 
@@ -653,6 +759,29 @@ describe("LLMock", () => {
     it("getRequests throws when server not started", () => {
       mock = new LLMock();
       expect(() => mock!.getRequests()).toThrow("Server not started");
+    });
+  });
+
+  describe("resetMatchCounts", () => {
+    it("clears match counts without clearing fixtures or journal", async () => {
+      mock = new LLMock();
+      mock.onMessage("hi", { content: "Hello" });
+      await mock.start();
+
+      // Make a request to populate journal and match counts
+      await post(mock.url, chatBody("hi"));
+      expect(mock.journal.size).toBe(1);
+      expect(mock.journal.fixtureMatchCounts.size).toBeGreaterThan(0);
+
+      // resetMatchCounts should clear counts but not journal or fixtures
+      mock.resetMatchCounts();
+      expect(mock.journal.fixtureMatchCounts.size).toBe(0);
+      expect(mock.journal.size).toBe(1); // journal entries preserved
+      expect(mock.getFixtures()).toHaveLength(1); // fixtures preserved
+
+      // Fixture should still work
+      const res = await post(mock.url, chatBody("hi"));
+      expect(res.status).toBe(200);
     });
   });
 

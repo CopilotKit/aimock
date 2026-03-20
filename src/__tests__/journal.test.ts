@@ -181,6 +181,111 @@ describe("Journal", () => {
     });
   });
 
+  describe("fixture match counting", () => {
+    it("incrementFixtureMatchCount increments siblings with same criteria but different sequenceIndex", () => {
+      const journal = new Journal();
+      const f0: Fixture = {
+        match: { userMessage: "hello", sequenceIndex: 0 },
+        response: { content: "First" },
+      };
+      const f1: Fixture = {
+        match: { userMessage: "hello", sequenceIndex: 1 },
+        response: { content: "Second" },
+      };
+      const allFixtures = [f0, f1];
+
+      journal.incrementFixtureMatchCount(f0, allFixtures);
+
+      expect(journal.getFixtureMatchCount(f0)).toBe(1);
+      expect(journal.getFixtureMatchCount(f1)).toBe(1);
+    });
+
+    it("incrementFixtureMatchCount does NOT treat fixtures differing on a field as siblings", () => {
+      const journal = new Journal();
+      const f0: Fixture = {
+        match: { userMessage: "hello", sequenceIndex: 0 },
+        response: { content: "First" },
+      };
+      const f1: Fixture = {
+        match: { userMessage: "goodbye", sequenceIndex: 1 },
+        response: { content: "Second" },
+      };
+      const allFixtures = [f0, f1];
+
+      journal.incrementFixtureMatchCount(f0, allFixtures);
+
+      expect(journal.getFixtureMatchCount(f0)).toBe(1);
+      expect(journal.getFixtureMatchCount(f1)).toBe(0);
+    });
+
+    it("incrementFixtureMatchCount without allFixtures does not increment siblings", () => {
+      const journal = new Journal();
+      const f0: Fixture = {
+        match: { userMessage: "hello", sequenceIndex: 0 },
+        response: { content: "First" },
+      };
+      const f1: Fixture = {
+        match: { userMessage: "hello", sequenceIndex: 1 },
+        response: { content: "Second" },
+      };
+
+      journal.incrementFixtureMatchCount(f0);
+
+      expect(journal.getFixtureMatchCount(f0)).toBe(1);
+      expect(journal.getFixtureMatchCount(f1)).toBe(0);
+    });
+
+    it("clearMatchCounts clears the map", () => {
+      const journal = new Journal();
+      const f: Fixture = {
+        match: { userMessage: "hello" },
+        response: { content: "Hi" },
+      };
+
+      journal.incrementFixtureMatchCount(f);
+      expect(journal.getFixtureMatchCount(f)).toBe(1);
+
+      journal.clearMatchCounts();
+      expect(journal.getFixtureMatchCount(f)).toBe(0);
+    });
+
+    it("RegExp-based sequenced fixtures are correctly grouped as siblings", () => {
+      const journal = new Journal();
+      const f0: Fixture = {
+        match: { userMessage: /hel+o/, sequenceIndex: 0 },
+        response: { content: "First" },
+      };
+      const f1: Fixture = {
+        match: { userMessage: /hel+o/, sequenceIndex: 1 },
+        response: { content: "Second" },
+      };
+      const allFixtures = [f0, f1];
+
+      journal.incrementFixtureMatchCount(f0, allFixtures);
+
+      expect(journal.getFixtureMatchCount(f0)).toBe(1);
+      expect(journal.getFixtureMatchCount(f1)).toBe(1);
+    });
+
+    it("RegExp fixtures with different patterns are NOT siblings", () => {
+      const journal = new Journal();
+      const f0: Fixture = {
+        match: { userMessage: /hello/, sequenceIndex: 0 },
+        response: { content: "First" },
+      };
+      const f1: Fixture = {
+        match: { userMessage: /world/, sequenceIndex: 1 },
+        response: { content: "Second" },
+      };
+      const allFixtures = [f0, f1];
+
+      journal.incrementFixtureMatchCount(f0, allFixtures);
+
+      expect(journal.getFixtureMatchCount(f0)).toBe(1);
+      expect(journal.getFixtureMatchCount(f1)).toBe(0);
+    });
+  });
+
   describe("clear", () => {
     it("empties the journal", () => {
       const journal = new Journal();

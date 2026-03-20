@@ -84,6 +84,24 @@ const ERROR_FIXTURE: Fixture = {
   },
 };
 
+const JSON_MODE_FIXTURE: Fixture = {
+  match: { userMessage: "json-output", responseFormat: "json_object" },
+  response: { content: '{"answer":42,"items":["a","b"]}' },
+};
+
+const EMBEDDING_FIXTURE: Fixture = {
+  match: { inputText: "embed-this" },
+  response: { embedding: [0.1, -0.2, 0.3, 0.4, -0.5] },
+};
+
+const EMBEDDING_ERROR_FIXTURE: Fixture = {
+  match: { inputText: "embed-error" },
+  response: {
+    error: { message: "Rate limited", type: "rate_limit_error" },
+    status: 429,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Shared server instance
 // ---------------------------------------------------------------------------
@@ -91,10 +109,20 @@ const ERROR_FIXTURE: Fixture = {
 let instance: ServerInstance;
 
 beforeAll(async () => {
-  instance = await createServer([TEXT_FIXTURE, TOOL_FIXTURE, ERROR_FIXTURE], {
-    port: 0,
-    chunkSize: 100,
-  });
+  instance = await createServer(
+    [
+      TEXT_FIXTURE,
+      TOOL_FIXTURE,
+      ERROR_FIXTURE,
+      JSON_MODE_FIXTURE,
+      EMBEDDING_FIXTURE,
+      EMBEDDING_ERROR_FIXTURE,
+    ],
+    {
+      port: 0,
+      chunkSize: 100,
+    },
+  );
 });
 
 afterAll(async () => {
@@ -181,6 +209,33 @@ describe("OpenAI Chat Completions conformance", () => {
       expect(typeof json.usage.prompt_tokens).toBe("number");
       expect(typeof json.usage.completion_tokens).toBe("number");
       expect(typeof json.usage.total_tokens).toBe("number");
+    });
+
+    it("structured output: response_format json_object routes to correct fixture and returns valid JSON content", async () => {
+      const res = await httpPost(chatPath(), {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "json-output" }],
+        stream: false,
+        response_format: { type: "json_object" },
+      });
+      const json = JSON.parse(res.body);
+      expect(json.choices[0].finish_reason).toBe("stop");
+      const content = json.choices[0].message.content;
+      // Content must be valid JSON
+      const parsed = JSON.parse(content);
+      expect(parsed).toEqual({ answer: 42, items: ["a", "b"] });
+    });
+
+    it("structured output: request without response_format does not match json_object fixture", async () => {
+      // The json-output fixture requires responseFormat: "json_object"
+      // A request without response_format should NOT match it
+      const res = await httpPost(chatPath(), {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "json-output" }],
+        stream: false,
+      });
+      // Should 404 since the only fixture matching "json-output" requires responseFormat
+      expect(res.status).toBe(404);
     });
 
     it("tool call: finish_reason is tool_calls with properly structured tool_calls array", async () => {
@@ -785,7 +840,198 @@ describe("Google Gemini conformance", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Cross-provider invariants
+// 5. OpenAI Embeddings API conformance
+// ---------------------------------------------------------------------------
+
+describe("OpenAI Embeddings API conformance", () => {
+  const embeddingsPath = () => `${instance.url}/v1/embeddings`;
+
+  describe("with fixture match", () => {
+    it("has all required top-level fields", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-this text",
+      });
+      const json = JSON.parse(res.body);
+      expect(json).toHaveProperty("object");
+      expect(json).toHaveProperty("data");
+      expect(json).toHaveProperty("model");
+      expect(json).toHaveProperty("usage");
+    });
+
+    it("object is list", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-this text",
+      });
+      const json = JSON.parse(res.body);
+      expect(json.object).toBe("list");
+    });
+
+    it("data[0] has object embedding, index 0, and embedding array", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-this text",
+      });
+      const json = JSON.parse(res.body);
+      expect(json.data).toHaveLength(1);
+      const item = json.data[0];
+      expect(item.object).toBe("embedding");
+      expect(item.index).toBe(0);
+      expect(Array.isArray(item.embedding)).toBe(true);
+      expect(item.embedding).toEqual([0.1, -0.2, 0.3, 0.4, -0.5]);
+    });
+
+    it("usage has prompt_tokens and total_tokens as numbers", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-this text",
+      });
+      const json = JSON.parse(res.body);
+      expect(typeof json.usage.prompt_tokens).toBe("number");
+      expect(typeof json.usage.total_tokens).toBe("number");
+    });
+
+    it("preserves the requested model name", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-large",
+        input: "embed-this",
+      });
+      const json = JSON.parse(res.body);
+      expect(json.model).toBe("text-embedding-3-large");
+    });
+
+    it("returns error fixture with proper status", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-error text",
+      });
+      expect(res.status).toBe(429);
+      const json = JSON.parse(res.body);
+      expect(json.error.message).toBe("Rate limited");
+    });
+  });
+
+  describe("with deterministic fallback (no fixture match)", () => {
+    it("returns 200 with a deterministic embedding when no fixture matches", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "no-fixture-for-this-input",
+      });
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.body);
+      expect(json.object).toBe("list");
+      expect(json.data).toHaveLength(1);
+      expect(json.data[0].embedding.length).toBe(1536); // default dimensions
+    });
+
+    it("deterministic fallback respects custom dimensions", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "no-fixture-for-this",
+        dimensions: 256,
+      });
+      const json = JSON.parse(res.body);
+      expect(json.data[0].embedding.length).toBe(256);
+    });
+
+    it("same input produces same deterministic embedding", async () => {
+      const input = "deterministic-test-input";
+      const res1 = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input,
+      });
+      const res2 = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input,
+      });
+      const json1 = JSON.parse(res1.body);
+      const json2 = JSON.parse(res2.body);
+      expect(json1.data[0].embedding).toEqual(json2.data[0].embedding);
+    });
+
+    it("all embedding values are numbers between -1 and 1", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "value-range-test",
+      });
+      const json = JSON.parse(res.body);
+      for (const val of json.data[0].embedding) {
+        expect(typeof val).toBe("number");
+        expect(val).toBeGreaterThanOrEqual(-1);
+        expect(val).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+
+  describe("array input", () => {
+    it("returns one embedding per input string", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: ["first input", "second input", "third input"],
+      });
+      const json = JSON.parse(res.body);
+      expect(json.data).toHaveLength(3);
+      expect(json.data[0].index).toBe(0);
+      expect(json.data[1].index).toBe(1);
+      expect(json.data[2].index).toBe(2);
+    });
+
+    it("fixture match with array input uses combined text", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: ["embed-this", "some other text"],
+      });
+      const json = JSON.parse(res.body);
+      // Should match the embedding fixture since combined input contains "embed-this"
+      expect(json.data[0].embedding).toEqual([0.1, -0.2, 0.3, 0.4, -0.5]);
+    });
+  });
+
+  describe("error handling", () => {
+    it("returns 400 for malformed JSON", async () => {
+      const res = await new Promise<{ status: number; headers: any; body: string }>(
+        (resolve, reject) => {
+          const req = http.request(
+            embeddingsPath(),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+            },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on("data", (c) => chunks.push(c));
+              res.on("end", () =>
+                resolve({
+                  status: res.statusCode!,
+                  headers: res.headers,
+                  body: Buffer.concat(chunks).toString(),
+                }),
+              );
+            },
+          );
+          req.on("error", reject);
+          req.write("not json");
+          req.end();
+        },
+      );
+      expect(res.status).toBe(400);
+      const json = JSON.parse(res.body);
+      expect(json.error.message).toBe("Malformed JSON");
+    });
+
+    it("Content-Type is application/json", async () => {
+      const res = await httpPost(embeddingsPath(), {
+        model: "text-embedding-3-small",
+        input: "embed-this",
+      });
+      expect(res.headers["content-type"]).toContain("application/json");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Cross-provider invariants
 // ---------------------------------------------------------------------------
 
 describe("Cross-provider invariants", () => {

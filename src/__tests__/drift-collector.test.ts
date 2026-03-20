@@ -46,6 +46,7 @@ interface ProviderMapping {
   builderFile: string;
   builderFunctions: string[];
   typesFile: string | null;
+  sdkShapesFile?: string;
 }
 
 const PROVIDER_MAP: Record<string, ProviderMapping> = {
@@ -123,6 +124,12 @@ const PROVIDER_MAP: Record<string, ProviderMapping> = {
     builderFile: "src/ws-gemini-live.ts",
     builderFunctions: ["handleWebSocketGeminiLive"],
     typesFile: null,
+  },
+  "OpenAI Embeddings": {
+    builderFile: "src/helpers.ts",
+    builderFunctions: ["buildEmbeddingResponse", "generateDeterministicEmbedding"],
+    typesFile: null,
+    sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
   },
 };
 

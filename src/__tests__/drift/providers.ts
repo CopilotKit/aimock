@@ -375,6 +375,36 @@ export async function geminiStreaming(
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI Embeddings
+// ---------------------------------------------------------------------------
+
+export async function openaiEmbeddings(
+  config: ProviderConfig,
+  input: string | string[],
+): Promise<FetchResult> {
+  const body = {
+    model: "text-embedding-3-small",
+    input,
+  };
+
+  const res = await fetchWithRetry("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await res.text();
+  return {
+    status: res.status,
+    body: parseJsonResponse(raw, res.status, "OpenAI Embeddings"),
+    raw,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Model listing
 // ---------------------------------------------------------------------------
 

@@ -185,3 +185,32 @@ describe.skipIf(!GOOGLE_API_KEY)("Google Gemini drift", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Canary: track Gemini Embeddings API shape
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GOOGLE_API_KEY)("Gemini Embeddings canary", () => {
+  it("canary: verify embeddings endpoint exists and response shape", async () => {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${GOOGLE_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: { parts: [{ text: "test" }] } }),
+      },
+    );
+    if (res.status === 200) {
+      const body = (await res.json()) as Record<string, unknown>;
+      // Log the shape so drift is visible in CI output
+      console.log("[CANARY] Gemini Embeddings response keys:", Object.keys(body));
+      const embedding = body.embedding as { values?: unknown[] } | undefined;
+      if (embedding?.values) {
+        console.log("[CANARY] Gemini Embeddings dimension:", embedding.values.length);
+      }
+    } else {
+      console.warn(`[CANARY] Gemini Embeddings returned ${res.status}`);
+    }
+    expect(true).toBe(true);
+  });
+});

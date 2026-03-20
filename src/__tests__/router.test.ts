@@ -418,6 +418,171 @@ describe("matchFixture — AND logic", () => {
 });
 
 // ---------------------------------------------------------------------------
+// matchFixture — inputText (embedding matching)
+// ---------------------------------------------------------------------------
+
+describe("matchFixture — inputText (string)", () => {
+  it("matches when embeddingInput includes the string", () => {
+    const fixture = makeFixture({ inputText: "hello" });
+    const req = { ...makeReq(), embeddingInput: "say hello world" } as ChatCompletionRequest & {
+      embeddingInput: string;
+    };
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when embeddingInput does not include the string", () => {
+    const fixture = makeFixture({ inputText: "goodbye" });
+    const req = { ...makeReq(), embeddingInput: "hello" } as ChatCompletionRequest & {
+      embeddingInput: string;
+    };
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when embeddingInput is not present", () => {
+    const fixture = makeFixture({ inputText: "hello" });
+    expect(matchFixture([fixture], makeReq())).toBeNull();
+  });
+});
+
+describe("matchFixture — inputText (RegExp)", () => {
+  it("matches when embeddingInput satisfies the regexp", () => {
+    const fixture = makeFixture({ inputText: /^hello/i });
+    const req = { ...makeReq(), embeddingInput: "Hello world" } as ChatCompletionRequest & {
+      embeddingInput: string;
+    };
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when the regexp does not match", () => {
+    const fixture = makeFixture({ inputText: /^goodbye/i });
+    const req = { ...makeReq(), embeddingInput: "hello world" } as ChatCompletionRequest & {
+      embeddingInput: string;
+    };
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchFixture — responseFormat
+// ---------------------------------------------------------------------------
+
+describe("matchFixture — responseFormat", () => {
+  it("matches when response_format.type equals the fixture responseFormat", () => {
+    const fixture = makeFixture({ responseFormat: "json_object" });
+    const req = makeReq({ response_format: { type: "json_object" } });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when response_format.type differs", () => {
+    const fixture = makeFixture({ responseFormat: "json_object" });
+    const req = makeReq({ response_format: { type: "text" } });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when response_format is not present in the request", () => {
+    const fixture = makeFixture({ responseFormat: "json_object" });
+    const req = makeReq();
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches json_schema type", () => {
+    const fixture = makeFixture({ responseFormat: "json_schema" });
+    const req = makeReq({
+      response_format: { type: "json_schema", json_schema: { name: "test" } },
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("combines with userMessage using AND logic", () => {
+    const fixture = makeFixture({ userMessage: "hello", responseFormat: "json_object" });
+    const matchingReq = makeReq({
+      messages: [{ role: "user", content: "hello world" }],
+      response_format: { type: "json_object" },
+    });
+    const wrongFormat = makeReq({
+      messages: [{ role: "user", content: "hello world" }],
+    });
+    const wrongMessage = makeReq({
+      messages: [{ role: "user", content: "goodbye" }],
+      response_format: { type: "json_object" },
+    });
+
+    expect(matchFixture([fixture], matchingReq)).toBe(fixture);
+    expect(matchFixture([fixture], wrongFormat)).toBeNull();
+    expect(matchFixture([fixture], wrongMessage)).toBeNull();
+  });
+
+  it("fixture without responseFormat matches requests with or without response_format", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const withFormat = makeReq({
+      messages: [{ role: "user", content: "hello" }],
+      response_format: { type: "json_object" },
+    });
+    const withoutFormat = makeReq({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(matchFixture([fixture], withFormat)).toBe(fixture);
+    expect(matchFixture([fixture], withoutFormat)).toBe(fixture);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchFixture — sequenceIndex
+// ---------------------------------------------------------------------------
+
+describe("matchFixture — sequenceIndex", () => {
+  it("matches when matchCounts equals sequenceIndex", () => {
+    const fixture = makeFixture({ userMessage: "hello", sequenceIndex: 0 });
+    const counts = new Map<Fixture, number>();
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([fixture], req, counts)).toBe(fixture);
+  });
+
+  it("skips when matchCounts does not equal sequenceIndex", () => {
+    const fixture = makeFixture({ userMessage: "hello", sequenceIndex: 0 });
+    const counts = new Map<Fixture, number>([[fixture, 1]]);
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([fixture], req, counts)).toBeNull();
+  });
+
+  it("falls through to next fixture when sequenceIndex does not match", () => {
+    const seq0 = makeFixture({ userMessage: "hello", sequenceIndex: 0 }, { content: "first" });
+    const fallback = makeFixture({ userMessage: "hello" }, { content: "fallback" });
+    const counts = new Map<Fixture, number>([[seq0, 1]]);
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([seq0, fallback], req, counts)).toBe(fallback);
+  });
+
+  it("matches second fixture in sequence when count is 1", () => {
+    const seq0 = makeFixture({ userMessage: "hello", sequenceIndex: 0 }, { content: "first" });
+    const seq1 = makeFixture({ userMessage: "hello", sequenceIndex: 1 }, { content: "second" });
+    // Both fixtures have count 1 (as they would after the first match increments the group)
+    const counts = new Map<Fixture, number>([
+      [seq0, 1],
+      [seq1, 1],
+    ]);
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    // seq0 skipped (count 1 != sequenceIndex 0), seq1 matches (count 1 == sequenceIndex 1)
+    expect(matchFixture([seq0, seq1], req, counts)).toBe(seq1);
+  });
+
+  it("sequenceIndex is ignored when matchCounts is not provided", () => {
+    const fixture = makeFixture({ userMessage: "hello", sequenceIndex: 5 });
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    // Without matchCounts, sequenceIndex check is skipped entirely
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("undefined sequenceIndex always matches regardless of matchCounts", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const counts = new Map<Fixture, number>([[fixture, 42]]);
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([fixture], req, counts)).toBe(fixture);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // matchFixture — first-match-wins
 // ---------------------------------------------------------------------------
 
