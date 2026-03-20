@@ -356,6 +356,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -381,6 +382,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -397,6 +399,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -410,6 +413,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -426,6 +430,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -445,6 +450,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -461,6 +467,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -474,6 +481,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "multi-tool" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -500,6 +508,7 @@ describe("POST /v1/responses (streaming)", () => {
     const res = await post(`${instance.url}/v1/responses`, {
       model: "gpt-4",
       input: [{ role: "user", content: "bigchunk" }],
+      stream: true,
     });
 
     const events = parseResponsesSSEEvents(res.body);
@@ -564,6 +573,42 @@ describe("POST /v1/responses (non-streaming)", () => {
     expect(body.output).toHaveLength(2);
     expect(body.output[0].name).toBe("get_weather");
     expect(body.output[1].name).toBe("get_time");
+  });
+});
+
+describe("POST /v1/responses (default non-streaming)", () => {
+  it("returns JSON response when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      // stream field intentionally omitted
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("response");
+    expect(body.status).toBe("completed");
+    expect(body.output[0].content[0].text).toBe("Hi there!");
+  });
+
+  it("returns JSON tool call response when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "weather" }],
+      // stream field intentionally omitted
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("response");
+    expect(body.output[0].type).toBe("function_call");
+    expect(body.output[0].name).toBe("get_weather");
   });
 });
 

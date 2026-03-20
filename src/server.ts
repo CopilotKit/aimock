@@ -208,7 +208,7 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    if (body.stream === false) {
+    if (body.stream !== true) {
       const completion = buildTextCompletion(response.content, body.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));
@@ -240,7 +240,7 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
-    if (body.stream === false) {
+    if (body.stream !== true) {
       const completion = buildToolCallCompletion(response.toolCalls, body.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));

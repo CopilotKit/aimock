@@ -580,7 +580,7 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    if (responsesReq.stream === false) {
+    if (responsesReq.stream !== true) {
       const body = buildTextResponse(response.content, completionReq.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -612,7 +612,7 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    if (responsesReq.stream === false) {
+    if (responsesReq.stream !== true) {
       const body = buildToolCallResponse(response.toolCalls, completionReq.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));

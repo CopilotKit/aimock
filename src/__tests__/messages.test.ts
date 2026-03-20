@@ -358,6 +358,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -383,6 +384,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -401,6 +403,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -417,6 +420,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -433,6 +437,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -466,6 +471,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -487,6 +493,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -502,6 +509,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "multi-tool" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -526,6 +534,7 @@ describe("POST /v1/messages (streaming)", () => {
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
       messages: [{ role: "user", content: "bigchunk" }],
+      stream: true,
     });
 
     const events = parseClaudeSSEEvents(res.body);
@@ -597,6 +606,44 @@ describe("POST /v1/messages (non-streaming)", () => {
     expect(body.content).toHaveLength(2);
     expect(body.content[0].name).toBe("get_weather");
     expect(body.content[1].name).toBe("get_time");
+  });
+});
+
+describe("POST /v1/messages (default non-streaming)", () => {
+  it("returns JSON response when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hello" }],
+      // stream field intentionally omitted
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.type).toBe("message");
+    expect(body.role).toBe("assistant");
+    expect(body.content[0].text).toBe("Hi there!");
+  });
+
+  it("returns JSON tool call response when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "weather" }],
+      // stream field intentionally omitted
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.type).toBe("message");
+    expect(body.content[0].type).toBe("tool_use");
+    expect(body.content[0].name).toBe("get_weather");
   });
 });
 
