@@ -82,16 +82,228 @@
 
         <h2>Three-Way Comparison</h2>
         <p>Each drift test compares three sources:</p>
-        <ol>
-          <li>
-            <strong>SDK Types</strong> &mdash; what the TypeScript SDK says the response shape
-            should be
-          </li>
-          <li>
-            <strong>Real API</strong> &mdash; what the provider actually returns for a live request
-          </li>
-          <li><strong>llmock</strong> &mdash; what the mock produces for the same request</li>
-        </ol>
+
+        <style>
+          .triangle-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin: 2.5rem auto 1rem;
+            aspect-ratio: 1.3 / 1;
+          }
+          .triangle-wrapper svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+          }
+          .tri-node {
+            position: absolute;
+            background: var(--bg-card);
+            border: 2px solid;
+            border-radius: 12px;
+            padding: 1rem 1.25rem;
+            text-align: center;
+            width: 170px;
+            z-index: 1;
+          }
+          .tri-node h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.3rem;
+          }
+          .tri-node p {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            line-height: 1.4;
+          }
+          .tri-node .node-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+          }
+          .tri-node.sdk {
+            border-color: var(--blue);
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+          }
+          .tri-node.sdk .node-icon {
+            color: var(--blue);
+          }
+          .tri-node.real {
+            border-color: var(--accent);
+            bottom: 0;
+            left: 0;
+          }
+          .tri-node.real .node-icon {
+            color: var(--accent);
+          }
+          .tri-node.mock {
+            border-color: var(--purple);
+            bottom: 0;
+            right: 0;
+          }
+          .tri-node.mock .node-icon {
+            color: var(--purple);
+          }
+          .diagnosis-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-top: 2.5rem;
+          }
+          .diagnosis-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+          }
+          .diagnosis-card .diag-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.4rem;
+          }
+          .diagnosis-card .diag-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+          }
+          .diagnosis-card h4 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+          .diagnosis-card p {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+          }
+        </style>
+
+        <!-- Triangle diagram -->
+        <div class="triangle-wrapper">
+          <svg viewBox="0 0 600 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- SDK → Real (left edge) -->
+            <line
+              x1="245"
+              y1="105"
+              x2="130"
+              y2="280"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="127,274 137,278 133,286" fill="var(--border)" />
+            <!-- SDK → Mock (right edge) -->
+            <line
+              x1="355"
+              y1="105"
+              x2="470"
+              y2="280"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="473,274 463,278 467,286" fill="var(--border)" />
+            <!-- Real ↔ Mock (bottom edge) -->
+            <line
+              x1="195"
+              y1="355"
+              x2="405"
+              y2="355"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="200,349 190,355 200,361" fill="var(--border)" />
+            <polygon points="400,349 410,355 400,361" fill="var(--border)" />
+            <!-- Edge labels -->
+            <rect x="131" y="182" width="85" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="173"
+              y="196"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              SDK = Real?
+            </text>
+            <rect x="360" y="182" width="90" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="405"
+              y="196"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              SDK = Mock?
+            </text>
+            <rect x="255" y="338" width="90" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="300"
+              y="352"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              Real = Mock?
+            </text>
+          </svg>
+          <div class="tri-node sdk">
+            <div class="node-icon">{ }</div>
+            <h3>SDK Types</h3>
+            <p>What TypeScript types say the shape should be</p>
+          </div>
+          <div class="tri-node real">
+            <div class="node-icon">&#8644;</div>
+            <h3>Real API</h3>
+            <p>What OpenAI, Claude, Gemini actually return</p>
+          </div>
+          <div class="tri-node mock">
+            <div class="node-icon">&#9881;</div>
+            <h3>llmock</h3>
+            <p>What the mock produces for the same request</p>
+          </div>
+        </div>
+
+        <!-- Diagnosis cards -->
+        <div class="diagnosis-grid">
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--error)"></div>
+              <h4>Mock doesn't match real</h4>
+            </div>
+            <p>
+              llmock needs updating &mdash; test fails immediately. The SDK comparison tells us why
+              it drifted.
+            </p>
+          </div>
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--warning)"></div>
+              <h4>Provider changed, SDK is behind</h4>
+            </div>
+            <p>
+              Early warning &mdash; the real API has new fields that neither the SDK nor llmock know
+              about yet.
+            </p>
+          </div>
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--accent)"></div>
+              <h4>All three agree</h4>
+            </div>
+            <p>No drift &mdash; the mock matches reality and the SDK types are current.</p>
+          </div>
+        </div>
 
         <h2>Running Drift Tests</h2>
 
