@@ -1,4 +1,5 @@
 import type {
+  ChaosConfig,
   EmbeddingFixtureOpts,
   Fixture,
   FixtureMatch,
@@ -150,6 +151,20 @@ export class LLMock {
     if (this.serverInstance) {
       this.serverInstance.journal.clearMatchCounts();
     }
+    return this;
+  }
+
+  // ---- Chaos ----
+
+  setChaos(config: ChaosConfig): this {
+    this.options.chaos = config;
+    if (this.serverInstance) this.serverInstance.defaults.chaos = config;
+    return this;
+  }
+
+  clearChaos(): this {
+    delete this.options.chaos;
+    if (this.serverInstance) delete this.serverInstance.defaults.chaos;
     return this;
   }
 

@@ -1145,6 +1145,79 @@ describe("Cross-provider invariants", () => {
     }
   });
 
+  it("streaming request with error fixture returns JSON error, not SSE", async () => {
+    const base = instance.url;
+
+    const [chat, responses, claude, gemini] = await Promise.all([
+      httpPost(`${base}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1/responses`, {
+        model: "gpt-4",
+        input: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1/messages`, {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+        contents: [{ role: "user", parts: [{ text: "error-test" }] }],
+      }),
+    ]);
+
+    for (const res of [chat, responses, claude, gemini]) {
+      expect(res.status).toBe(429);
+      // Error responses should be JSON, not SSE
+      expect(res.headers["content-type"]).toContain("application/json");
+      const json = JSON.parse(res.body);
+      expect(json).toHaveProperty("error");
+    }
+  });
+
+  it("error format conforms to each provider's native format", async () => {
+    const base = instance.url;
+
+    const [chat, claude, gemini] = await Promise.all([
+      httpPost(`${base}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "error-test" }],
+        stream: false,
+      }),
+      httpPost(`${base}/v1/messages`, {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "error-test" }],
+        stream: false,
+      }),
+      httpPost(`${base}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        contents: [{ role: "user", parts: [{ text: "error-test" }] }],
+      }),
+    ]);
+
+    // OpenAI format: { error: { message, type } }
+    const chatJson = JSON.parse(chat.body);
+    expect(chatJson.error.message).toBe("Rate limited");
+    expect(chatJson.error.type).toBe("rate_limit_error");
+    expect(chatJson.type).toBeUndefined(); // no top-level type
+
+    // Anthropic format: { type: "error", error: { type, message } }
+    const claudeJson = JSON.parse(claude.body);
+    expect(claudeJson.type).toBe("error");
+    expect(claudeJson.error.type).toBe("rate_limit_error");
+    expect(claudeJson.error.message).toBe("Rate limited");
+
+    // Gemini format: { error: { code, message, status } }
+    const geminiJson = JSON.parse(gemini.body);
+    expect(geminiJson.error.code).toBe(429);
+    expect(geminiJson.error.message).toBe("Rate limited");
+    expect(geminiJson.error.status).toBe("rate_limit_error");
+  });
+
   it("all providers return 404 with JSON error body when no fixture matches", async () => {
     const base = instance.url;
 
@@ -1175,5 +1248,325 @@ describe("Cross-provider invariants", () => {
       const json = JSON.parse(res.body);
       expect(json).toHaveProperty("error");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error fixture with sequenceIndex
+// ---------------------------------------------------------------------------
+
+describe("error fixture with sequenceIndex", () => {
+  let srv: ServerInstance;
+
+  const SEQ_OK_0: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 0 },
+    response: { content: "Step 0 OK" },
+  };
+
+  const SEQ_ERR_1: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 1 },
+    response: {
+      error: { message: "Temporary failure", type: "server_error" },
+      status: 503,
+    },
+  };
+
+  const SEQ_OK_2: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 2 },
+    response: { content: "Step 2 OK" },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([SEQ_OK_0, SEQ_ERR_1, SEQ_OK_2], { port: 0 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("step 0 succeeds, step 1 returns error, step 2 succeeds again", async () => {
+    // Step 0: success
+    const res0 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res0.status).toBe(200);
+    const json0 = JSON.parse(res0.body);
+    expect(json0.choices[0].message.content).toBe("Step 0 OK");
+
+    // Step 1: error
+    const res1 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res1.status).toBe(503);
+    const json1 = JSON.parse(res1.body);
+    expect(json1.error.message).toBe("Temporary failure");
+    expect(json1.error.type).toBe("server_error");
+
+    // Step 2: success again
+    const res2 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res2.status).toBe(200);
+    const json2 = JSON.parse(res2.body);
+    expect(json2.choices[0].message.content).toBe("Step 2 OK");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Output: streaming with response_format json_object
+// ---------------------------------------------------------------------------
+
+describe("streaming with response_format json_object", () => {
+  let srv: ServerInstance;
+
+  const JSON_STREAM_FIXTURE: Fixture = {
+    match: { userMessage: "stream-json", responseFormat: "json_object" },
+    response: { content: '{"result":"ok","count":7}' },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([JSON_STREAM_FIXTURE], { port: 0, chunkSize: 5 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("returns SSE chunks that reassemble to valid JSON content", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "stream-json" }],
+      stream: true,
+      response_format: { type: "json_object" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/event-stream");
+
+    const events = parseDataOnlySSE(res.body);
+    expect(events.length).toBeGreaterThan(0);
+
+    // Reassemble content from all delta chunks
+    let assembled = "";
+    for (const evt of events) {
+      const delta = (evt as { choices?: { delta?: { content?: string } }[] }).choices?.[0]?.delta;
+      if (delta?.content) {
+        assembled += delta.content;
+      }
+    }
+
+    // Must reassemble to valid JSON matching fixture content
+    const parsed = JSON.parse(assembled);
+    expect(parsed).toEqual({ result: "ok", count: 7 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Output: json_schema with schema in request
+// ---------------------------------------------------------------------------
+
+describe("json_schema with schema in request", () => {
+  let srv: ServerInstance;
+
+  const JSON_SCHEMA_FIXTURE: Fixture = {
+    match: { userMessage: "schema-test", responseFormat: "json_schema" },
+    response: { content: '{"name":"test-output"}' },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([JSON_SCHEMA_FIXTURE], { port: 0 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("matches fixture when request includes response_format type json_schema with schema object", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "schema-test" }],
+      stream: false,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "test", schema: { type: "object" } },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.choices[0].message.content).toBe('{"name":"test-output"}');
+  });
+
+  it("does not match fixture when response_format type differs", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "schema-test" }],
+      stream: false,
+      response_format: { type: "json_object" },
+    });
+
+    // json_object != json_schema, so no match
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error.type).toBe("invalid_request_error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Output: responseFormat + model + userMessage combined matching
+// ---------------------------------------------------------------------------
+
+describe("responseFormat + model + userMessage combined matching", () => {
+  let srv: ServerInstance;
+
+  const COMBO_A: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_object" },
+    response: { content: "combo-A" },
+  };
+
+  const COMBO_B: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4o", responseFormat: "json_object" },
+    response: { content: "combo-B" },
+  };
+
+  const COMBO_C: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_schema" },
+    response: { content: "combo-C" },
+  };
+
+  const COMBO_D: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4o", responseFormat: "json_schema" },
+    response: { content: "combo-D" },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([COMBO_A, COMBO_B, COMBO_C, COMBO_D], { port: 0 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("routes to correct fixture based on all three criteria", async () => {
+    const combos: Array<{ model: string; rfType: string; expected: string }> = [
+      { model: "gpt-4", rfType: "json_object", expected: "combo-A" },
+      { model: "gpt-4o", rfType: "json_object", expected: "combo-B" },
+      { model: "gpt-4", rfType: "json_schema", expected: "combo-C" },
+      { model: "gpt-4o", rfType: "json_schema", expected: "combo-D" },
+    ];
+
+    for (const { model, rfType, expected } of combos) {
+      const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+        model,
+        messages: [{ role: "user", content: "combo" }],
+        stream: false,
+        response_format: { type: rfType },
+      });
+
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.body);
+      expect(json.choices[0].message.content).toBe(expected);
+    }
+  });
+
+  it("returns 404 when userMessage matches but model and responseFormat do not", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "claude-3",
+      messages: [{ role: "user", content: "combo" }],
+      stream: false,
+      response_format: { type: "json_object" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error.type).toBe("invalid_request_error");
+  });
+
+  it("returns 404 when model and responseFormat match but userMessage does not", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "something-else" }],
+      stream: false,
+      response_format: { type: "json_object" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error.type).toBe("invalid_request_error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured Output: malformed response_format object
+// ---------------------------------------------------------------------------
+
+describe("malformed response_format object", () => {
+  let srv: ServerInstance;
+
+  const NORMAL_FIXTURE: Fixture = {
+    match: { userMessage: "malformed-rf-test" },
+    response: { content: "matched-without-rf" },
+  };
+
+  const RF_FIXTURE: Fixture = {
+    match: { userMessage: "malformed-rf-test", responseFormat: "json_object" },
+    response: { content: "matched-with-rf" },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([RF_FIXTURE, NORMAL_FIXTURE], { port: 0 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("response_format with missing type does not match responseFormat-gated fixture", async () => {
+    // response_format: {} has no type, so req.response_format.type is undefined
+    // RF_FIXTURE requires responseFormat: "json_object" — should not match
+    // NORMAL_FIXTURE has no responseFormat constraint — should match
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "malformed-rf-test" }],
+      stream: false,
+      response_format: {},
+    });
+
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.choices[0].message.content).toBe("matched-without-rf");
+  });
+
+  it("response_format with wrong type value (number) does not match responseFormat-gated fixture", async () => {
+    // response_format: { type: 123 } — type is a number, not a string
+    // RF_FIXTURE requires "json_object" — should not match
+    // NORMAL_FIXTURE has no responseFormat constraint — should match
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "malformed-rf-test" }],
+      stream: false,
+      response_format: { type: 123 },
+    });
+
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.choices[0].message.content).toBe("matched-without-rf");
+  });
+
+  it("response_format with unrecognized type string does not match responseFormat-gated fixture", async () => {
+    const res = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "malformed-rf-test" }],
+      stream: false,
+      response_format: { type: "not_a_real_format" },
+    });
+
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    // Falls through to NORMAL_FIXTURE since "not_a_real_format" != "json_object"
+    expect(json.choices[0].message.content).toBe("matched-without-rf");
   });
 });

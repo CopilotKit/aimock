@@ -8,6 +8,7 @@
 
 import type * as http from "node:http";
 import type {
+  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
@@ -27,6 +28,7 @@ import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { applyChaos } from "./chaos.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
 
@@ -376,7 +378,7 @@ export async function handleGemini(
   streaming: boolean,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger },
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   const { logger } = defaults;
@@ -417,6 +419,16 @@ export async function handleGemini(
     journal.incrementFixtureMatchCount(fixture, fixtures);
   }
 
+  if (
+    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    })
+  )
+    return;
+
   if (!fixture) {
     journal.add({
       method: req.method ?? "POST",
@@ -453,7 +465,15 @@ export async function handleGemini(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    // Gemini-style error format: { error: { code, message, status } }
+    const geminiError = {
+      error: {
+        code: status,
+        message: response.error.message,
+        status: response.error.type ?? "ERROR",
+      },
+    };
+    writeErrorResponse(res, status, JSON.stringify(geminiError));
     return;
   }
 

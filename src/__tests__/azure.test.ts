@@ -271,6 +271,54 @@ describe("Azure OpenAI: journal recording", () => {
   });
 });
 
+describe("Azure OpenAI: streaming", () => {
+  it("streaming through Azure deployment path", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "stream-test" },
+        response: { content: "Azure streamed!" },
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    const { status, body } = await httpPost(
+      `${instance.url}/openai/deployments/my-gpt4/chat/completions?api-version=2024-02-01`,
+      {
+        model: "gpt-4",
+        stream: true,
+        messages: [{ role: "user", content: "stream-test" }],
+      },
+    );
+
+    expect(status).toBe(200);
+
+    // Parse SSE events
+    const events: unknown[] = [];
+    for (const line of body.split("\n")) {
+      if (line.startsWith("data: ") && line !== "data: [DONE]") {
+        events.push(JSON.parse(line.slice(6)));
+      }
+    }
+
+    expect(events.length).toBeGreaterThanOrEqual(3);
+
+    // All chunks should have chat.completion.chunk object type
+    for (const event of events) {
+      const ev = event as { object: string };
+      expect(ev.object).toBe("chat.completion.chunk");
+    }
+
+    // Content should be present across the chunks
+    const contentParts = events
+      .map((e) => (e as { choices: [{ delta: { content?: string } }] }).choices[0].delta.content)
+      .filter(Boolean);
+    expect(contentParts.join("")).toBe("Azure streamed!");
+
+    // Body ends with [DONE]
+    expect(body).toContain("data: [DONE]");
+  });
+});
+
 describe("Azure OpenAI: 404 when no fixture matches", () => {
   it("returns 404 when no fixture matches the request", async () => {
     const fixtures: Fixture[] = [

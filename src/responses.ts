@@ -8,6 +8,7 @@
 
 import type * as http from "node:http";
 import type {
+  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
@@ -28,6 +29,7 @@ import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { applyChaos } from "./chaos.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
@@ -496,7 +498,7 @@ export async function handleResponses(
   raw: string,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger },
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   setCorsHeaders(res);
@@ -530,6 +532,16 @@ export async function handleResponses(
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);
   }
+
+  if (
+    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    })
+  )
+    return;
 
   if (!fixture) {
     journal.add({

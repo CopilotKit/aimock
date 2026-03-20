@@ -1,5 +1,5 @@
 import * as http from "node:http";
-import type { Fixture, ChatCompletionRequest, MockServerOptions } from "./types.js";
+import type { Fixture, ChatCompletionRequest, ChaosConfig, MockServerOptions } from "./types.js";
 import { Journal } from "./journal.js";
 import { matchFixture } from "./router.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
@@ -24,11 +24,13 @@ import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
+import { applyChaos } from "./chaos.js";
 
 export interface ServerInstance {
   server: http.Server;
   journal: Journal;
   url: string;
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig };
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
@@ -91,7 +93,7 @@ async function handleCompletions(
   res: http.ServerResponse,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger },
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
   modelFallback?: string,
 ): Promise<void> {
   setCorsHeaders(res);
@@ -158,6 +160,21 @@ async function handleCompletions(
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);
   }
+
+  const method = req.method ?? "POST";
+  const path = req.url ?? COMPLETIONS_PATH;
+  const flatHeaders = flattenHeaders(req.headers);
+
+  // Apply chaos before normal response handling
+  if (
+    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
+      method,
+      path,
+      headers: flatHeaders,
+      body,
+    })
+  )
+    return;
 
   if (!fixture) {
     journal.add({
@@ -297,6 +314,7 @@ export async function createServer(
     latency: options?.latency ?? 0,
     chunkSize: Math.max(1, options?.chunkSize ?? DEFAULT_CHUNK_SIZE),
     logger,
+    chaos: options?.chaos,
   };
 
   const journal = new Journal();
@@ -680,7 +698,7 @@ export async function createServer(
         return;
       }
       const url = `http://${addr.address}:${addr.port}`;
-      resolve({ server, journal, url });
+      resolve({ server, journal, url, defaults });
     });
   });
 }

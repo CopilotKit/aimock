@@ -194,6 +194,38 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].disconnectAfterMs).toBe(1000);
   });
 
+  it("streamingProfile passthrough from JSON", () => {
+    const filePath = writeJson(tmpDir, "streaming-profile.json", {
+      fixtures: [
+        {
+          match: { userMessage: "profile" },
+          response: { content: "Hello!" },
+          streamingProfile: { ttft: 50, tps: 100, jitter: 0.1 },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].streamingProfile).toEqual({ ttft: 50, tps: 100, jitter: 0.1 });
+  });
+
+  it("chaos config passthrough from JSON", () => {
+    const filePath = writeJson(tmpDir, "chaos.json", {
+      fixtures: [
+        {
+          match: { userMessage: "chaos" },
+          response: { content: "Hello!" },
+          chaos: { dropRate: 0.5 },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].chaos).toEqual({ dropRate: 0.5 });
+  });
+
   it("passes through sequenceIndex from JSON fixtures", () => {
     const filePath = writeJson(tmpDir, "sequence.json", {
       fixtures: [
@@ -580,6 +612,47 @@ describe("validateFixtures", () => {
     expect(
       results.some((r) => r.severity === "error" && r.message.includes("not a valid HTTP status")),
     ).toBe(true);
+  });
+
+  it("accepts status code at lower boundary (100)", () => {
+    const fixtures = [
+      makeFixture({ response: { error: { message: "err", type: "e" }, status: 100 } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const statusErrors = results.filter(
+      (r) => r.severity === "error" && r.message.includes("not a valid HTTP status"),
+    );
+    expect(statusErrors).toHaveLength(0);
+  });
+
+  it("rejects status code below lower boundary (99)", () => {
+    const fixtures = [
+      makeFixture({ response: { error: { message: "err", type: "e" }, status: 99 } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("not a valid HTTP status")),
+    ).toBe(true);
+  });
+
+  it("accepts status code at upper boundary (599)", () => {
+    const fixtures = [
+      makeFixture({ response: { error: { message: "err", type: "e" }, status: 599 } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const statusErrors = results.filter(
+      (r) => r.severity === "error" && r.message.includes("not a valid HTTP status"),
+    );
+    expect(statusErrors).toHaveLength(0);
+  });
+
+  it("error status accepted when omitted (defaults to 500 at runtime)", () => {
+    const fixtures = [makeFixture({ response: { error: { message: "err", type: "e" } } })];
+    const results = validateFixtures(fixtures);
+    const statusErrors = results.filter(
+      (r) => r.severity === "error" && r.message.includes("not a valid HTTP status"),
+    );
+    expect(statusErrors).toHaveLength(0);
   });
 
   it("error: negative latency", () => {

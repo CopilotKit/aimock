@@ -661,6 +661,26 @@ describe("POST /v1/messages (error handling)", () => {
     expect(body.error.message).toBe("Rate limited");
   });
 
+  it("returns error in Anthropic format: { type: 'error', error: { type, message } }", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "fail" }],
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    // Anthropic wraps errors as { type: "error", error: { type, message } }
+    expect(body.type).toBe("error");
+    expect(body.error).toBeDefined();
+    expect(body.error.type).toBe("rate_limit_error");
+    expect(body.error.message).toBe("Rate limited");
+    // Should NOT have OpenAI-style fields at the top level
+    expect(body.status).toBeUndefined();
+    expect(body.error.code).toBeUndefined();
+  });
+
   it("returns 404 when no fixture matches", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/messages`, {
@@ -741,6 +761,36 @@ describe("POST /v1/messages (journal)", () => {
       { role: "system", content: "Be nice" },
       { role: "user", content: "hello" },
     ]);
+  });
+});
+
+describe("POST /v1/messages (error field preservation)", () => {
+  it("error type and message fields are preserved in Anthropic format", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "fail" }],
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    // Anthropic format: { type: "error", error: { type, message } }
+    expect(body.type).toBe("error");
+    expect(body.error.message).toBe("Rate limited");
+    expect(body.error.type).toBe("rate_limit_error");
+  });
+
+  it("Content-Type is application/json on error responses", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/messages`, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "fail" }],
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.headers["content-type"]).toBe("application/json");
   });
 });
 
