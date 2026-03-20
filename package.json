@@ -27,7 +27,6 @@
     "dist",
     "fixtures",
     ".claude-plugin",
-    ".claude",
     "skills"
   ],
   "publishConfig": {
