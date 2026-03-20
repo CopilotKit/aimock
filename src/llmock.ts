@@ -1,4 +1,10 @@
-import type { Fixture, FixtureMatch, FixtureResponse, MockServerOptions } from "./types.js";
+import type {
+  Fixture,
+  FixtureMatch,
+  FixtureResponse,
+  MockServerOptions,
+  StreamingProfile,
+} from "./types.js";
 import { createServer, type ServerInstance } from "./server.js";
 import { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
 import { Journal } from "./journal.js";
@@ -60,6 +66,7 @@ export class LLMock {
       chunkSize?: number;
       truncateAfterChunks?: number;
       disconnectAfterMs?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     return this.addFixture({
@@ -77,6 +84,7 @@ export class LLMock {
       chunkSize?: number;
       truncateAfterChunks?: number;
       disconnectAfterMs?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     return this.on({ userMessage: pattern }, response, opts);
@@ -88,6 +96,7 @@ export class LLMock {
     opts?: {
       latency?: number;
       chunkSize?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     return this.on({ inputText: pattern }, response, opts);
@@ -101,6 +110,7 @@ export class LLMock {
       chunkSize?: number;
       truncateAfterChunks?: number;
       disconnectAfterMs?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     const content = typeof jsonContent === "string" ? jsonContent : JSON.stringify(jsonContent);
@@ -115,6 +125,7 @@ export class LLMock {
       chunkSize?: number;
       truncateAfterChunks?: number;
       disconnectAfterMs?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     return this.on({ toolName: name }, response, opts);
@@ -128,6 +139,7 @@ export class LLMock {
       chunkSize?: number;
       truncateAfterChunks?: number;
       disconnectAfterMs?: number;
+      streamingProfile?: StreamingProfile;
     },
   ): this {
     return this.on({ toolCallId: id }, response, opts);
@@ -220,7 +232,7 @@ export class LLMock {
     }
     const { server } = this.serverInstance;
     await new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
+      server.close((err: Error | undefined) => (err ? reject(err) : resolve()));
     });
     this.serverInstance = null;
   }
