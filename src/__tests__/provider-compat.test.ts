@@ -71,6 +71,55 @@ describe("Mistral compatibility", () => {
   });
 });
 
+describe("Groq streaming compatibility", () => {
+  it("Groq streaming through /openai/v1/chat/completions", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "stream-groq" },
+        response: { content: "Groq streamed!" },
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    const { status, body } = await httpPost(
+      `${instance.url}/openai/v1/chat/completions`,
+      {
+        model: "llama-3.3-70b-versatile",
+        stream: true,
+        messages: [{ role: "user", content: "stream-groq" }],
+      },
+      { Authorization: "Bearer mock-groq-key" },
+    );
+
+    expect(status).toBe(200);
+
+    // Parse SSE events
+    const events: unknown[] = [];
+    for (const line of body.split("\n")) {
+      if (line.startsWith("data: ") && line !== "data: [DONE]") {
+        events.push(JSON.parse(line.slice(6)));
+      }
+    }
+
+    expect(events.length).toBeGreaterThanOrEqual(3);
+
+    // All chunks should have chat.completion.chunk object type
+    for (const event of events) {
+      const ev = event as { object: string };
+      expect(ev.object).toBe("chat.completion.chunk");
+    }
+
+    // Content should be present across the chunks
+    const contentParts = events
+      .map((e) => (e as { choices: [{ delta: { content?: string } }] }).choices[0].delta.content)
+      .filter(Boolean);
+    expect(contentParts.join("")).toBe("Groq streamed!");
+
+    // Body ends with [DONE]
+    expect(body).toContain("data: [DONE]");
+  });
+});
+
 describe("Groq compatibility", () => {
   // Groq uses /openai/v1/chat/completions prefix
   it("handles Groq-style request via /openai/v1/chat/completions prefix", async () => {
