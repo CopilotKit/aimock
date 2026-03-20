@@ -78,5 +78,7 @@ export type {
   SSEToolCallDelta,
   MockServerOptions,
   StreamingProfile,
+  FixtureOpts,
+  EmbeddingFixtureOpts,
   ToolCallMessage,
 } from "./types.js";

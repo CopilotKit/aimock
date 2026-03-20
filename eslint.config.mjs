@@ -5,7 +5,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   prettier,
-  { ignores: ["dist/", "node_modules/", "fixtures/"] },
+  { ignores: ["dist/", "node_modules/", "fixtures/", ".worktrees/"] },
   {
     files: ["*.config.{js,mjs,ts,cjs}"],
     languageOptions: { globals: { module: "readonly", require: "readonly" } },

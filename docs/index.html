@@ -945,16 +945,6 @@
           transform: translateY(0);
         }
       }
-      @keyframes sseLine {
-        from {
-          opacity: 0;
-          transform: translateX(-8px);
-        }
-        to {
-          opacity: 1;
-          transform: translateX(0);
-        }
-      }
       @keyframes blink {
         50% {
           opacity: 0;
@@ -1046,8 +1036,8 @@
         <ul class="nav-links">
           <li><a href="#features">Features</a></li>
           <li><a href="#examples">Examples</a></li>
-          <li><a href="#reliability">Reliability</a></li>
           <li><a href="#comparison">Comparison</a></li>
+          <li><a href="#reliability">Reliability</a></li>
           <li><a href="docs.html">Docs</a></li>
           <li>
             <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
@@ -1068,7 +1058,16 @@
       <div class="container">
         <div class="hero-badge">
           <span class="dot"></span>
-          Zero dependencies &middot; Node.js builtins only
+          Zero dependencies &middot; Node.js builtins only &middot;
+          <a
+            href="https://www.npmjs.com/package/@copilotkit/llmock"
+            target="_blank"
+            style="display: inline-flex; align-items: center; vertical-align: middle"
+            ><img
+              src="https://img.shields.io/npm/v/@copilotkit/llmock?style=flat-square&color=e8e8f0&labelColor=2a2a3a&label=Version"
+              alt="npm version"
+              style="height: 16px"
+          /></a>
         </div>
 
         <h1>Deterministic <span class="highlight">mock LLM</span> server for testing</h1>
@@ -1079,9 +1078,7 @@
         </p>
 
         <div class="hero-actions">
-          <a href="https://github.com/CopilotKit/llmock#readme" class="btn btn-primary">
-            Get Started
-          </a>
+          <a href="docs.html" class="btn btn-primary"> Get Started </a>
           <a
             href="https://www.npmjs.com/package/@copilotkit/llmock"
             class="btn btn-secondary"
@@ -1447,185 +1444,6 @@
       </div>
     </section>
 
-    <!-- ═══ Reliability / Drift Detection ═══════════════════════════ -->
-    <section id="reliability" class="reveal">
-      <div class="container">
-        <span class="section-label">Reliability</span>
-        <h2 class="section-title">Verified against real APIs. Every day.</h2>
-        <p class="section-desc">
-          A mock that doesn't match reality is worse than no mock &mdash; your tests pass, but
-          production breaks. llmock runs three-way drift detection that compares SDK types, real API
-          responses, and mock output to catch shape mismatches before you do.
-        </p>
-
-        <!-- Triangle diagram -->
-        <div class="triangle-wrapper">
-          <svg viewBox="0 0 600 420" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <!-- SDK → Real (left edge) -->
-            <line
-              x1="245"
-              y1="105"
-              x2="130"
-              y2="280"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="127,274 137,278 133,286" fill="var(--border)" />
-            <!-- SDK → Mock (right edge) -->
-            <line
-              x1="355"
-              y1="105"
-              x2="470"
-              y2="280"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="473,274 463,278 467,286" fill="var(--border)" />
-            <!-- Real ↔ Mock (bottom edge) -->
-            <line
-              x1="195"
-              y1="355"
-              x2="405"
-              y2="355"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="200,349 190,355 200,361" fill="var(--border)" />
-            <polygon points="400,349 410,355 400,361" fill="var(--border)" />
-            <!-- Edge labels (horizontal, centered on each line) -->
-            <rect x="131" y="182" width="85" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="173"
-              y="196"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              SDK = Real?
-            </text>
-            <rect x="360" y="182" width="90" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="405"
-              y="196"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              SDK = Mock?
-            </text>
-            <rect x="255" y="338" width="90" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="300"
-              y="352"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              Real = Mock?
-            </text>
-          </svg>
-          <div class="tri-node sdk">
-            <div class="node-icon">{ }</div>
-            <h3>SDK Types</h3>
-            <p>What TypeScript types say the shape should be</p>
-          </div>
-          <div class="tri-node real">
-            <div class="node-icon">&#8644;</div>
-            <h3>Real API</h3>
-            <p>What OpenAI, Claude, Gemini actually return</p>
-          </div>
-          <div class="tri-node mock">
-            <div class="node-icon">&#9881;</div>
-            <h3>llmock</h3>
-            <p>What the mock produces for the same request</p>
-          </div>
-        </div>
-
-        <!-- Diagnosis cards -->
-        <div class="diagnosis-grid">
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--error)"></div>
-              <h4>Mock doesn't match real</h4>
-            </div>
-            <p>
-              llmock needs updating &mdash; test fails immediately. The SDK comparison tells us why
-              it drifted.
-            </p>
-          </div>
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--warning)"></div>
-              <h4>Provider changed, SDK is behind</h4>
-            </div>
-            <p>
-              Early warning &mdash; the real API has new fields that neither the SDK nor llmock know
-              about yet.
-            </p>
-          </div>
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--accent)"></div>
-              <h4>All three agree</h4>
-            </div>
-            <p>No drift &mdash; the mock matches reality and the SDK types are current.</p>
-          </div>
-        </div>
-
-        <!-- Drift report snippet -->
-        <div class="drift-report">
-          <div class="report-header">$ pnpm test:drift</div>
-          <span class="severity-critical">[critical]</span>
-          <span class="drift-label">LLMOCK DRIFT</span> &mdash; field in SDK + real API but missing
-          from mock<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >choices[].message.refusal</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;null &nbsp;&nbsp;
-          <span class="field-label">Real:</span> null &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
-          <div class="divider"></div>
-          <span class="severity-critical">[critical]</span>
-          <span class="drift-label">TYPE MISMATCH</span> &mdash; real API and mock disagree on
-          type<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >content[].input</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;object &nbsp;&nbsp;
-          <span class="field-label">Real:</span> object &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> string<br />
-          <div class="divider"></div>
-          <span class="severity-warning">[warning]</span>
-          <span class="drift-label">PROVIDER ADDED FIELD</span> &mdash; in real API but not in SDK
-          or mock<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >choices[].message.annotations</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;absent&gt;
-          &nbsp;&nbsp; <span class="field-label">Real:</span> array &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
-          <div class="divider"></div>
-          <span class="severity-ok" style="font-size: 0.85rem">&#10003;</span>
-          <span class="report-summary"
-            >2 critical (test fails) &middot; 1 warning (logged) &middot; detected before any user
-            reported it</span
-          >
-        </div>
-
-        <!-- CI footer -->
-        <div class="ci-footer">
-          <div class="ci-badge"><span class="dot"></span> Daily CI</div>
-          <span class="ci-text">Drift tests across 4 providers run automatically every day.</span>
-        </div>
-      </div>
-    </section>
-
     <!-- ═══ Comparison ═══════════════════════════════════════════════ -->
     <section id="comparison" class="comparison reveal">
       <div class="container">
@@ -1887,6 +1705,185 @@
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Reliability / Drift Detection ═══════════════════════════ -->
+    <section id="reliability" class="reveal">
+      <div class="container">
+        <span class="section-label">Reliability</span>
+        <h2 class="section-title">Verified against real APIs. Every day.</h2>
+        <p class="section-desc">
+          A mock that doesn't match reality is worse than no mock &mdash; your tests pass, but
+          production breaks. llmock runs three-way drift detection that compares SDK types, real API
+          responses, and mock output to catch shape mismatches before you do.
+        </p>
+
+        <!-- Triangle diagram -->
+        <div class="triangle-wrapper">
+          <svg viewBox="0 0 600 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- SDK → Real (left edge) -->
+            <line
+              x1="245"
+              y1="105"
+              x2="130"
+              y2="280"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="127,274 137,278 133,286" fill="var(--border)" />
+            <!-- SDK → Mock (right edge) -->
+            <line
+              x1="355"
+              y1="105"
+              x2="470"
+              y2="280"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="473,274 463,278 467,286" fill="var(--border)" />
+            <!-- Real ↔ Mock (bottom edge) -->
+            <line
+              x1="195"
+              y1="355"
+              x2="405"
+              y2="355"
+              stroke="var(--border)"
+              stroke-width="1.5"
+              stroke-dasharray="6 4"
+            />
+            <polygon points="200,349 190,355 200,361" fill="var(--border)" />
+            <polygon points="400,349 410,355 400,361" fill="var(--border)" />
+            <!-- Edge labels (horizontal, centered on each line) -->
+            <rect x="131" y="182" width="85" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="173"
+              y="196"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              SDK = Real?
+            </text>
+            <rect x="360" y="182" width="90" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="405"
+              y="196"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              SDK = Mock?
+            </text>
+            <rect x="255" y="338" width="90" height="20" rx="4" fill="var(--bg-deep)" />
+            <text
+              x="300"
+              y="352"
+              text-anchor="middle"
+              fill="var(--text-dim)"
+              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
+              font-size="11"
+            >
+              Real = Mock?
+            </text>
+          </svg>
+          <div class="tri-node sdk">
+            <div class="node-icon">{ }</div>
+            <h3>SDK Types</h3>
+            <p>What TypeScript types say the shape should be</p>
+          </div>
+          <div class="tri-node real">
+            <div class="node-icon">&#8644;</div>
+            <h3>Real API</h3>
+            <p>What OpenAI, Claude, Gemini actually return</p>
+          </div>
+          <div class="tri-node mock">
+            <div class="node-icon">&#9881;</div>
+            <h3>llmock</h3>
+            <p>What the mock produces for the same request</p>
+          </div>
+        </div>
+
+        <!-- Diagnosis cards -->
+        <div class="diagnosis-grid">
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--error)"></div>
+              <h4>Mock doesn't match real</h4>
+            </div>
+            <p>
+              llmock needs updating &mdash; test fails immediately. The SDK comparison tells us why
+              it drifted.
+            </p>
+          </div>
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--warning)"></div>
+              <h4>Provider changed, SDK is behind</h4>
+            </div>
+            <p>
+              Early warning &mdash; the real API has new fields that neither the SDK nor llmock know
+              about yet.
+            </p>
+          </div>
+          <div class="diagnosis-card">
+            <div class="diag-header">
+              <div class="diag-dot" style="background: var(--accent)"></div>
+              <h4>All three agree</h4>
+            </div>
+            <p>No drift &mdash; the mock matches reality and the SDK types are current.</p>
+          </div>
+        </div>
+
+        <!-- Drift report snippet -->
+        <div class="drift-report">
+          <div class="report-header">$ pnpm test:drift</div>
+          <span class="severity-critical">[critical]</span>
+          <span class="drift-label">LLMOCK DRIFT</span> &mdash; field in SDK + real API but missing
+          from mock<br />
+          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
+            >choices[].message.refusal</span
+          ><br />
+          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;null &nbsp;&nbsp;
+          <span class="field-label">Real:</span> null &nbsp;&nbsp;
+          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
+          <div class="divider"></div>
+          <span class="severity-critical">[critical]</span>
+          <span class="drift-label">TYPE MISMATCH</span> &mdash; real API and mock disagree on
+          type<br />
+          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
+            >content[].input</span
+          ><br />
+          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;object &nbsp;&nbsp;
+          <span class="field-label">Real:</span> object &nbsp;&nbsp;
+          <span class="field-label">Mock:</span> string<br />
+          <div class="divider"></div>
+          <span class="severity-warning">[warning]</span>
+          <span class="drift-label">PROVIDER ADDED FIELD</span> &mdash; in real API but not in SDK
+          or mock<br />
+          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
+            >choices[].message.annotations</span
+          ><br />
+          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;absent&gt;
+          &nbsp;&nbsp; <span class="field-label">Real:</span> array &nbsp;&nbsp;
+          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
+          <div class="divider"></div>
+          <span class="severity-ok" style="font-size: 0.85rem">&#10003;</span>
+          <span class="report-summary"
+            >2 critical (test fails) &middot; 1 warning (logged) &middot; detected before any user
+            reported it</span
+          >
+        </div>
+
+        <!-- CI footer -->
+        <div class="ci-footer">
+          <div class="ci-badge"><span class="dot"></span> Daily CI</div>
+          <span class="ci-text">Drift tests across 4 providers run automatically every day.</span>
         </div>
       </div>
     </section>

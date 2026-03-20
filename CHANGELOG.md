@@ -1,5 +1,38 @@
 # @copilotkit/llmock
 
+## 1.5.0
+
+### Minor Changes
+
+- Embeddings API: `POST /v1/embeddings` endpoint, `onEmbedding()` convenience method, `inputText` match field, `EmbeddingResponse` type, deterministic fallback embeddings from input hash, Azure embedding routing
+- Structured output / JSON mode: `responseFormat` match field, `onJsonOutput()` convenience method
+- Sequential responses: `sequenceIndex` match field for stateful multi-turn fixtures, per-fixture-group match counting, `resetMatchCounts()` method
+- Streaming physics: `StreamingProfile` type with `ttft`, `tps`, `jitter` fields for realistic timing simulation
+- AWS Bedrock: `POST /model/{modelId}/invoke` endpoint, Anthropic Messages format translation
+- Azure OpenAI: provider routing for `/openai/deployments/{id}/chat/completions` and `/openai/deployments/{id}/embeddings`
+- Health & models endpoints: `GET /health`, `GET /ready`, `GET /v1/models` (auto-populated from fixtures)
+- Docker & Helm: Dockerfile, Helm chart for Kubernetes deployment
+- Documentation website: full docs site at llmock.copilotkit.dev with feature pages and competitive comparison matrix
+- Automated drift remediation: `scripts/drift-report-collector.ts` and `scripts/fix-drift.ts` for CI-driven drift fixes
+- CI automation: competitive matrix update workflow, drift fix workflow
+- `FixtureOpts` and `EmbeddingFixtureOpts` type aliases exported for external consumers
+
+### Patch Changes
+
+- Fix Gemini Live handler crash on malformed `clientContent.turns` and `toolResponse.functionResponses`
+- Add `isClosed` guard before WebSocket finalization events (prevents writes to closed connections)
+- Default to non-streaming for Claude Messages API and Responses API (matching real API defaults)
+- Fix `streamingProfile` missing from convenience method opts types (`on`, `onMessage`, etc.)
+- Fix skills/ symlink direction so npm pack includes the write-fixtures skill
+- Fix `.claude` removed from package.json files (was dead weight — symlink doesn't ship)
+- Add `.worktrees/` to eslint ignores
+- Remove dead `@keyframes sseLine` CSS from docs site
+- Fix watcher cleanup on error (clear debounce timer, null guard)
+- Fix empty-reload guard (keep previous fixtures when reload produces 0)
+- README rewritten as concise overview with links to docs site
+- Write-fixtures skill updated for all v1.5.0 features
+- Docs site: Get Started links to docs, comparison above reliability, npm version badge
+
 ## 1.4.0
 
 ### Minor Changes

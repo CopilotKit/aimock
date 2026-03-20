@@ -103,6 +103,9 @@ export interface Fixture {
   streamingProfile?: StreamingProfile;
 }
 
+export type FixtureOpts = Omit<Fixture, "match" | "response">;
+export type EmbeddingFixtureOpts = Pick<FixtureOpts, "latency" | "chunkSize" | "streamingProfile">;
+
 // Fixture file format (JSON on disk)
 
 export interface FixtureFile {
