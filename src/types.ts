@@ -91,6 +91,12 @@ export interface StreamingProfile {
   jitter?: number; // Random variance factor (0-1), default 0
 }
 
+export interface ChaosConfig {
+  dropRate?: number;
+  malformedRate?: number;
+  disconnectRate?: number;
+}
+
 // Fixture
 
 export interface Fixture {
@@ -101,10 +107,14 @@ export interface Fixture {
   truncateAfterChunks?: number;
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
+  chaos?: ChaosConfig;
 }
 
 export type FixtureOpts = Omit<Fixture, "match" | "response">;
-export type EmbeddingFixtureOpts = Pick<FixtureOpts, "latency" | "chunkSize" | "streamingProfile">;
+export type EmbeddingFixtureOpts = Pick<
+  FixtureOpts,
+  "latency" | "chunkSize" | "streamingProfile" | "chaos"
+>;
 
 // Fixture file format (JSON on disk)
 
@@ -129,6 +139,7 @@ export interface FixtureFileEntry {
   truncateAfterChunks?: number;
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
+  chaos?: ChaosConfig;
 }
 
 // Request journal
@@ -145,6 +156,7 @@ export interface JournalEntry {
     fixture: Fixture | null;
     interrupted?: boolean;
     interruptReason?: string;
+    chaosAction?: "drop" | "malformed" | "disconnect";
   };
 }
 
@@ -210,4 +222,5 @@ export interface MockServerOptions {
   chunkSize?: number;
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "info" | "debug";
+  chaos?: ChaosConfig;
 }

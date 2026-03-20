@@ -19,6 +19,9 @@ Options:
   -w, --watch               Watch fixture path for changes and reload
       --log-level <level>   Log verbosity: silent, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
+      --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
+      --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
+      --chaos-disconnect <rate> Probability (0-1) of destroying connection
       --help                Show this help message
 `.trim();
 
@@ -32,6 +35,9 @@ const { values } = parseArgs({
     watch: { type: "boolean", short: "w", default: false },
     "log-level": { type: "string", default: "info" },
     "validate-on-load": { type: "boolean", default: false },
+    "chaos-drop": { type: "string" },
+    "chaos-malformed": { type: "string" },
+    "chaos-disconnect": { type: "string" },
     help: { type: "boolean", default: false },
   },
   strict: true,
@@ -73,6 +79,43 @@ if (Number.isNaN(chunkSize) || chunkSize < 1) {
 }
 
 const logger = new Logger(logLevel);
+
+// Parse chaos config from CLI flags
+import type { ChaosConfig } from "./types.js";
+let chaos: ChaosConfig | undefined;
+{
+  const dropStr = values["chaos-drop"];
+  const malformedStr = values["chaos-malformed"];
+  const disconnectStr = values["chaos-disconnect"];
+
+  if (dropStr !== undefined || malformedStr !== undefined || disconnectStr !== undefined) {
+    chaos = {};
+    if (dropStr !== undefined) {
+      const val = parseFloat(dropStr);
+      if (isNaN(val) || val < 0 || val > 1) {
+        console.error(`Invalid chaos-drop: ${dropStr} (must be 0-1)`);
+        process.exit(1);
+      }
+      chaos.dropRate = val;
+    }
+    if (malformedStr !== undefined) {
+      const val = parseFloat(malformedStr);
+      if (isNaN(val) || val < 0 || val > 1) {
+        console.error(`Invalid chaos-malformed: ${malformedStr} (must be 0-1)`);
+        process.exit(1);
+      }
+      chaos.malformedRate = val;
+    }
+    if (disconnectStr !== undefined) {
+      const val = parseFloat(disconnectStr);
+      if (isNaN(val) || val < 0 || val > 1) {
+        console.error(`Invalid chaos-disconnect: ${disconnectStr} (must be 0-1)`);
+        process.exit(1);
+      }
+      chaos.disconnectRate = val;
+    }
+  }
+}
 
 async function main() {
   // Load fixtures from path (detect file vs directory)
@@ -127,6 +170,7 @@ async function main() {
     latency,
     chunkSize,
     logLevel,
+    chaos,
   });
 
   logger.info(`llmock server listening on ${instance.url}`);

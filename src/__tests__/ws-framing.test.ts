@@ -262,6 +262,46 @@ describe("frame parsing", () => {
     expect(msg).toBe("hello");
   });
 
+  it("handles fragmented messages (continuation frames)", async () => {
+    const { server, port, wsPromise } = createTestServer();
+    const { socket, response } = rawConnect(port());
+    trackCleanup(server, socket);
+
+    await response;
+    const ws = await wsPromise;
+
+    const received = new Promise<string>((resolve) => {
+      ws.on("message", resolve);
+    });
+
+    // Split "hello world" across 3 frames:
+    //   Frame 1: opcode=0x1 (text), FIN=0, payload="hello"
+    //   Frame 2: opcode=0x0 (continuation), FIN=0, payload=" wor"
+    //   Frame 3: opcode=0x0 (continuation), FIN=1, payload="ld"
+
+    function createMaskedFragmentFrame(opcode: number, fin: boolean, payload: Buffer): Buffer {
+      const maskKey = randomBytes(4);
+      const masked = Buffer.from(payload);
+      for (let i = 0; i < masked.length; i++) {
+        masked[i] ^= maskKey[i % 4];
+      }
+      const header = Buffer.alloc(2);
+      header[0] = (fin ? 0x80 : 0x00) | opcode;
+      header[1] = 0x80 | payload.length;
+      return Buffer.concat([header, maskKey, masked]);
+    }
+
+    // First frame: text opcode, FIN=0
+    socket.write(createMaskedFragmentFrame(0x1, false, Buffer.from("hello")));
+    // Continuation frame: opcode=0, FIN=0
+    socket.write(createMaskedFragmentFrame(0x0, false, Buffer.from(" wor")));
+    // Final continuation frame: opcode=0, FIN=1
+    socket.write(createMaskedFragmentFrame(0x0, true, Buffer.from("ld")));
+
+    const msg = await received;
+    expect(msg).toBe("hello world");
+  });
+
   it("parses a medium text frame (126-65535 bytes, extended 16-bit length)", async () => {
     const { server, port, wsPromise } = createTestServer();
     const { socket, response } = rawConnect(port());

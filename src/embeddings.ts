@@ -7,7 +7,7 @@
  */
 
 import type * as http from "node:http";
-import type { ChatCompletionRequest, Fixture } from "./types.js";
+import type { ChaosConfig, ChatCompletionRequest, Fixture } from "./types.js";
 import {
   isEmbeddingResponse,
   isErrorResponse,
@@ -19,6 +19,7 @@ import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { applyChaos } from "./chaos.js";
 
 // ─── Embeddings API request types ──────────────────────────────────────────
 
@@ -38,7 +39,7 @@ export async function handleEmbeddings(
   raw: string,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger },
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   const { logger } = defaults;
@@ -90,6 +91,16 @@ export async function handleEmbeddings(
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);
   }
+
+  if (
+    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+    })
+  )
+    return;
 
   if (fixture) {
     const response = fixture.response;

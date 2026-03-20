@@ -572,6 +572,46 @@ describe("Gemini error handling", () => {
   });
 });
 
+// ─── Error format conformance ────────────────────────────────────────────────
+
+describe("Gemini error format conformance", () => {
+  it("returns error in Gemini format: { error: { code, message, status } }", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "fail" }] }],
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    // Gemini wraps errors as { error: { code, message, status } }
+    expect(body.error).toBeDefined();
+    expect(body.error.code).toBe(429);
+    expect(body.error.message).toBe("Rate limited");
+    expect(body.error.status).toBe("rate_limit_error");
+    // Should NOT have OpenAI-style fields
+    expect(body.error.type).toBeUndefined();
+    expect(body.status).toBeUndefined();
+  });
+});
+
+// ─── Error field preservation ────────────────────────────────────────────────
+
+describe("Gemini error field preservation", () => {
+  it("error type and code fields are preserved", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "fail" }] }],
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    // Gemini format: { error: { code: <httpStatus>, message, status: <type> } }
+    expect(body.error.code).toBe(429);
+    expect(body.error.message).toBe("Rate limited");
+    expect(body.error.status).toBe("rate_limit_error");
+  });
+});
+
 // ─── Routing ────────────────────────────────────────────────────────────────
 
 describe("Gemini routing", () => {

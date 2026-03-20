@@ -548,27 +548,36 @@ describe("LLMock", () => {
   });
 
   describe("onToolCall convenience", () => {
-    it("registers a fixture matching a tool name", async () => {
+    it("onToolCall live server returns tool call response", async () => {
       mock = new LLMock();
-      mock.onToolCall("get_weather", { content: "sunny" });
+      mock.onToolCall("get_weather", {
+        toolCalls: [{ name: "get_weather", arguments: JSON.stringify({ city: "SF" }) }],
+      });
       await mock.start();
 
-      await post(mock.url, {
+      const res = await post(mock.url, {
         model: "gpt-4",
-        messages: [
+        messages: [{ role: "user", content: "What is the weather?" }],
+        tools: [
           {
-            role: "assistant",
-            content: null,
-            tool_calls: [
-              { id: "tc1", type: "function", function: { name: "get_weather", arguments: "{}" } },
-            ],
+            type: "function",
+            function: {
+              name: "get_weather",
+              description: "Get weather",
+              parameters: { type: "object", properties: { city: { type: "string" } } },
+            },
           },
-          { role: "tool", content: "result", tool_call_id: "tc1" },
         ],
+        stream: false,
       });
-      // The fixture match for toolName is checked against the last assistant message's tool_calls
-      // This may or may not match depending on router logic, but the fixture should be registered
-      expect(mock).toBeInstanceOf(LLMock);
+
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.data);
+      expect(json.choices[0].message.tool_calls).toBeDefined();
+      expect(json.choices[0].message.tool_calls[0].function.name).toBe("get_weather");
+      expect(JSON.parse(json.choices[0].message.tool_calls[0].function.arguments)).toEqual({
+        city: "SF",
+      });
     });
 
     it("returns this for chaining", () => {
@@ -642,6 +651,31 @@ describe("LLMock", () => {
     it("returns this for chaining", () => {
       mock = new LLMock();
       expect(mock.onToolResult("call_123", { content: "r" })).toBe(mock);
+    });
+
+    it("onToolResult matches tool result messages and returns fixture", async () => {
+      mock = new LLMock();
+      mock.onToolResult("call_abc", { content: "tool result response" });
+      await mock.start();
+
+      const res = await post(mock.url, {
+        model: "gpt-4",
+        messages: [
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              { id: "call_abc", type: "function", function: { name: "lookup", arguments: "{}" } },
+            ],
+          },
+          { role: "tool", content: "42", tool_call_id: "call_abc" },
+        ],
+        stream: false,
+      });
+
+      expect(res.status).toBe(200);
+      const json = JSON.parse(res.data);
+      expect(json.choices[0].message.content).toBe("tool result response");
     });
   });
 
@@ -900,6 +934,51 @@ describe("LLMock", () => {
     it("throws before server is started", () => {
       mock = new LLMock();
       expect(() => mock!.port).toThrow("Server not started");
+    });
+  });
+
+  describe("error status defaults", () => {
+    it("error status defaults to 500 when omitted", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "err" },
+        response: { error: { message: "boom", type: "server_error" } },
+      });
+      await mock.start();
+
+      const res = await post(mock.url, chatBody("err", false));
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe("setChaos / clearChaos", () => {
+    it("setChaos sets server-level chaos config", async () => {
+      mock = new LLMock();
+      mock.onMessage("hi", { content: "Hello" });
+      mock.setChaos({ dropRate: 1.0 });
+      await mock.start();
+
+      const res = await post(mock.url, chatBody("hi"));
+      expect(res.status).toBe(500);
+      const body = JSON.parse(res.data);
+      expect(body.error.code).toBe("chaos_drop");
+    });
+
+    it("clearChaos removes chaos config", async () => {
+      mock = new LLMock();
+      mock.onMessage("hi", { content: "Hello" });
+      mock.setChaos({ dropRate: 1.0 });
+      mock.clearChaos();
+      await mock.start();
+
+      const res = await post(mock.url, chatBody("hi"));
+      expect(res.status).toBe(200);
+      expect(res.data).toContain("Hello");
+    });
+
+    it("setChaos returns this for chaining", () => {
+      mock = new LLMock();
+      expect(mock.setChaos({ dropRate: 0.5 })).toBe(mock);
     });
   });
 

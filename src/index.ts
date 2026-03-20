@@ -55,6 +55,10 @@ export type { InterruptionControl } from "./interruption.js";
 export { writeSSEStream, writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 export type { StreamOptions } from "./sse-writer.js";
 
+// Chaos
+export { evaluateChaos, applyChaos } from "./chaos.js";
+export type { ChaosAction } from "./chaos.js";
+
 // Types
 export type {
   ChatMessage,
@@ -76,6 +80,7 @@ export type {
   SSEChoice,
   SSEDelta,
   SSEToolCallDelta,
+  ChaosConfig,
   MockServerOptions,
   StreamingProfile,
   FixtureOpts,

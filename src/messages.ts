@@ -8,6 +8,7 @@
 
 import type * as http from "node:http";
 import type {
+  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
@@ -28,6 +29,7 @@ import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { applyChaos } from "./chaos.js";
 
 // ─── Claude Messages API request types ──────────────────────────────────────
 
@@ -428,7 +430,7 @@ export async function handleMessages(
   raw: string,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger },
+  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   const { logger } = defaults;
@@ -467,6 +469,16 @@ export async function handleMessages(
     journal.incrementFixtureMatchCount(fixture, fixtures);
   }
 
+  if (
+    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+    })
+  )
+    return;
+
   if (!fixture) {
     journal.add({
       method: req.method ?? "POST",
@@ -502,7 +514,15 @@ export async function handleMessages(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    // Anthropic-style error format: { type: "error", error: { type, message } }
+    const anthropicError = {
+      type: "error",
+      error: {
+        type: response.error.type ?? "api_error",
+        message: response.error.message,
+      },
+    };
+    writeErrorResponse(res, status, JSON.stringify(anthropicError));
     return;
   }
 

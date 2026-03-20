@@ -192,6 +192,29 @@ describe("POST /model/{modelId}/invoke (error handling)", () => {
     expect(body.error.message).toBe("Rate limited");
   });
 
+  it("returns error in Anthropic format: { type: 'error', error: { type, message } }", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "fail" }],
+      },
+    );
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    // Bedrock uses Anthropic Messages format for errors
+    expect(body.type).toBe("error");
+    expect(body.error).toBeDefined();
+    expect(body.error.type).toBe("rate_limit_error");
+    expect(body.error.message).toBe("Rate limited");
+    // Should NOT have OpenAI-style fields
+    expect(body.status).toBeUndefined();
+    expect(body.error.code).toBeUndefined();
+  });
+
   it("returns 404 when no fixture matches", async () => {
     instance = await createServer(allFixtures);
     const res = await post(
