@@ -11,6 +11,7 @@ import type * as http from "node:http";
 import type { ChaosConfig, ChatCompletionRequest, Fixture } from "./types.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
+import type { MetricsRegistry } from "./metrics.js";
 
 export type ChaosAction = "drop" | "malformed" | "disconnect";
 
@@ -106,9 +107,14 @@ export function applyChaos(
   rawHeaders: http.IncomingHttpHeaders,
   journal: Journal,
   context: ChaosJournalContext,
+  registry?: MetricsRegistry,
 ): boolean {
   const action = evaluateChaos(fixture, serverDefaults, rawHeaders);
   if (!action) return false;
+
+  if (registry) {
+    registry.incrementCounter("llmock_chaos_triggered_total", { action });
+  }
 
   switch (action) {
     case "drop": {

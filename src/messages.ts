@@ -30,6 +30,7 @@ import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { proxyAndRecord } from "./recorder.js";
 
 // ─── Claude Messages API request types ──────────────────────────────────────
 
@@ -480,19 +481,50 @@ export async function handleMessages(
     return;
 
   if (!fixture) {
+    if (defaults.record) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        completionReq,
+        "anthropic",
+        req.url ?? "/v1/messages",
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path: req.url ?? "/v1/messages",
+          headers: flattenHeaders(req.headers),
+          body: completionReq,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/messages"}`,
+      );
+    }
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: { status: strictStatus, fixture: null },
     });
     writeErrorResponse(
       res,
-      404,
+      strictStatus,
       JSON.stringify({
         error: {
-          message: "No fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
         },
       }),

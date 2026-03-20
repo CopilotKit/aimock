@@ -24,7 +24,35 @@ export type { ResponsesSSEEvent } from "./responses.js";
 export { handleMessages } from "./messages.js";
 export { handleGemini } from "./gemini.js";
 export { handleEmbeddings } from "./embeddings.js";
-export { handleBedrock, bedrockToCompletionRequest } from "./bedrock.js";
+export { handleBedrock, bedrockToCompletionRequest, handleBedrockStream } from "./bedrock.js";
+
+// Bedrock Converse
+export {
+  handleConverse,
+  handleConverseStream,
+  converseToCompletionRequest,
+} from "./bedrock-converse.js";
+
+// AWS Event Stream
+export {
+  encodeEventStreamFrame,
+  encodeEventStreamMessage,
+  writeEventStream,
+} from "./aws-event-stream.js";
+
+// Metrics
+export { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
+export type { MetricsRegistry } from "./metrics.js";
+
+// NDJSON
+export { writeNDJSONStream } from "./ndjson-writer.js";
+export type { NDJSONStreamOptions } from "./ndjson-writer.js";
+
+// Ollama
+export { handleOllama, handleOllamaGenerate, ollamaToCompletionRequest } from "./ollama.js";
+
+// Cohere
+export { handleCohere, cohereToCompletionRequest } from "./cohere.js";
 
 // WebSocket
 export { WebSocketConnection, upgradeToWebSocket, computeAcceptKey } from "./ws-framing.js";

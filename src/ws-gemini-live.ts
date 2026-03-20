@@ -171,7 +171,7 @@ export function handleWebSocketGeminiLive(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
 ): void {
   const { logger } = defaults;
   const session: SessionState = {
@@ -206,7 +206,7 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
   session: SessionState,
 ): Promise<void> {
   let parsed: GeminiLiveMessage;
@@ -303,6 +303,11 @@ async function processMessage(
   }
 
   if (!fixture) {
+    if (defaults.strict) {
+      defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      ws.close(1008, "Strict mode: no fixture matched");
+      return;
+    }
     journal.add({
       method: "WS",
       path,

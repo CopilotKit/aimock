@@ -20,6 +20,7 @@ import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { proxyAndRecord } from "./recorder.js";
 
 // ─── Embeddings API request types ──────────────────────────────────────────
 
@@ -151,6 +152,55 @@ export async function handleEmbeddings(
           message:
             "Fixture response did not match any known embedding type (must have embedding or error)",
           type: "server_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // No fixture match — try record-and-replay proxy if configured
+  if (defaults.record) {
+    const proxied = await proxyAndRecord(
+      req,
+      res,
+      syntheticReq,
+      "openai",
+      req.url ?? "/v1/embeddings",
+      fixtures,
+      defaults,
+      raw,
+    );
+    if (proxied) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/embeddings",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: res.statusCode ?? 200, fixture: null },
+      });
+      return;
+    }
+  }
+
+  if (defaults.strict) {
+    logger.error(
+      `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/embeddings"}`,
+    );
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 503, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      503,
+      JSON.stringify({
+        error: {
+          message: "Strict mode: no fixture matched",
+          type: "invalid_request_error",
+          code: "no_fixture_match",
         },
       }),
     );

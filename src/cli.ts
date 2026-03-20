@@ -6,6 +6,7 @@ import { createServer } from "./server.js";
 import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "./fixture-loader.js";
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
+import type { ChaosConfig } from "./types.js";
 
 const HELP = `
 Usage: llmock [options]
@@ -81,7 +82,6 @@ if (Number.isNaN(chunkSize) || chunkSize < 1) {
 const logger = new Logger(logLevel);
 
 // Parse chaos config from CLI flags
-import type { ChaosConfig } from "./types.js";
 let chaos: ChaosConfig | undefined;
 {
   const dropStr = values["chaos-drop"];

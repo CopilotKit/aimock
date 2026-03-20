@@ -6,6 +6,7 @@ import type {
   FixtureOpts,
   FixtureResponse,
   MockServerOptions,
+  RecordConfig,
 } from "./types.js";
 import { createServer, type ServerInstance } from "./server.js";
 import { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
@@ -165,6 +166,20 @@ export class LLMock {
   clearChaos(): this {
     delete this.options.chaos;
     if (this.serverInstance) delete this.serverInstance.defaults.chaos;
+    return this;
+  }
+
+  // ---- Recording ----
+
+  enableRecording(config: RecordConfig): this {
+    this.options.record = config;
+    if (this.serverInstance) this.serverInstance.defaults.record = config;
+    return this;
+  }
+
+  disableRecording(): this {
+    delete this.options.record;
+    if (this.serverInstance) delete this.serverInstance.defaults.record;
     return this;
   }
 

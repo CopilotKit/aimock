@@ -215,6 +215,11 @@ export interface ChatCompletionMessage {
 
 // Server options
 
+export interface RecordConfig {
+  providers: Record<string, string | undefined>;
+  fixturePath?: string;
+}
+
 export interface MockServerOptions {
   port?: number;
   host?: string;
@@ -223,4 +228,10 @@ export interface MockServerOptions {
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "info" | "debug";
   chaos?: ChaosConfig;
+  /** Enable Prometheus-compatible /metrics endpoint. */
+  metrics?: boolean;
+  /** Strict mode: return 503 instead of 404 when no fixture matches. */
+  strict?: boolean;
+  /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
+  record?: RecordConfig;
 }
