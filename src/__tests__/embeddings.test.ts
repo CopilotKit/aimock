@@ -433,3 +433,231 @@ describe("POST /v1/embeddings (CORS)", () => {
     expect(res.headers["access-control-allow-origin"]).toBe("*");
   });
 });
+
+// ---------------------------------------------------------------------------
+// encoding_format: base64
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/embeddings (encoding_format: base64)", () => {
+  it("accepts encoding_format base64 and returns float array regardless", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "base64 format test",
+      encoding_format: "base64",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("list");
+    expect(body.data).toHaveLength(1);
+    // LLMock does not implement base64 encoding — it returns float arrays
+    // regardless of encoding_format. This documents the actual behavior.
+    expect(body.data[0].embedding).toHaveLength(1536);
+    expect(typeof body.data[0].embedding[0]).toBe("number");
+  });
+
+  it("returns same embedding values whether encoding_format is float or base64", async () => {
+    instance = await createServer([]);
+    const resFloat = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "same input for both",
+      encoding_format: "float",
+    });
+    const resBase64 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "same input for both",
+      encoding_format: "base64",
+    });
+
+    const bodyFloat = JSON.parse(resFloat.body);
+    const bodyBase64 = JSON.parse(resBase64.body);
+    // Both return identical float arrays — encoding_format is ignored
+    expect(bodyFloat.data[0].embedding).toEqual(bodyBase64.data[0].embedding);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// empty input string
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/embeddings (empty input string)", () => {
+  it("returns a deterministic embedding for an empty string input", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].embedding).toHaveLength(1536);
+    // Should be deterministic — same empty string gives same result
+    expect(typeof body.data[0].embedding[0]).toBe("number");
+  });
+
+  it("produces the same embedding on repeated calls with empty input", async () => {
+    instance = await createServer([]);
+    const res1 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "",
+    });
+    const res2 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "",
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.data[0].embedding).toEqual(body2.data[0].embedding);
+  });
+
+  it("empty string produces a different embedding than non-empty string", async () => {
+    instance = await createServer([]);
+    const resEmpty = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "",
+    });
+    const resNonEmpty = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "hello",
+    });
+
+    const bodyEmpty = JSON.parse(resEmpty.body);
+    const bodyNonEmpty = JSON.parse(resNonEmpty.body);
+    expect(bodyEmpty.data[0].embedding).not.toEqual(bodyNonEmpty.data[0].embedding);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sequential embedding responses
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/embeddings (sequential embedding responses)", () => {
+  it("advances through sequenced fixtures using sequenceIndex + inputText", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { inputText: "query", sequenceIndex: 0 },
+        response: { embedding: [0.1, 0.2, 0.3] },
+      },
+      {
+        match: { inputText: "query", sequenceIndex: 1 },
+        response: { embedding: [0.4, 0.5, 0.6] },
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    // First request: should match sequenceIndex 0
+    const res0 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "query text",
+    });
+    expect(res0.status).toBe(200);
+    const body0 = JSON.parse(res0.body);
+    expect(body0.data[0].embedding).toEqual([0.1, 0.2, 0.3]);
+
+    // Second request: should match sequenceIndex 1
+    const res1 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "query text",
+    });
+    expect(res1.status).toBe(200);
+    const body1 = JSON.parse(res1.body);
+    expect(body1.data[0].embedding).toEqual([0.4, 0.5, 0.6]);
+  });
+
+  it("falls back to deterministic after exhausting sequenced fixtures", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { inputText: "once", sequenceIndex: 0 },
+        response: { embedding: [0.9, 0.8, 0.7] },
+      },
+    ];
+    instance = await createServer(fixtures);
+
+    // First request: matches sequenceIndex 0
+    const res0 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "once upon a time",
+    });
+    expect(res0.status).toBe(200);
+    const body0 = JSON.parse(res0.body);
+    expect(body0.data[0].embedding).toEqual([0.9, 0.8, 0.7]);
+
+    // Second request: no sequenceIndex 1 fixture, falls through to deterministic
+    const res1 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "once upon a time",
+    });
+    expect(res1.status).toBe(200);
+    const body1 = JSON.parse(res1.body);
+    expect(body1.data[0].embedding).toHaveLength(1536);
+    expect(body1.data[0].embedding).not.toEqual([0.9, 0.8, 0.7]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unicode input handling
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/embeddings (Unicode input handling)", () => {
+  it("generates deterministic embeddings for emoji input", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "\u{1F600}\u{1F680}\u{2728}",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].embedding).toHaveLength(1536);
+  });
+
+  it("generates deterministic embeddings for CJK characters", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "\u4F60\u597D\u4E16\u754C",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].embedding).toHaveLength(1536);
+  });
+
+  it("is deterministic for repeated Unicode input", async () => {
+    instance = await createServer([]);
+    const unicodeInput = "\u{1F600} \u4F60\u597D \u00E9\u00E8\u00EA";
+    const res1 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: unicodeInput,
+    });
+    const res2 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: unicodeInput,
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.data[0].embedding).toEqual(body2.data[0].embedding);
+  });
+
+  it("produces different embeddings for different Unicode inputs", async () => {
+    instance = await createServer([]);
+    const res1 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "\u4F60\u597D",
+    });
+    const res2 = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "\u3053\u3093\u306B\u3061\u306F",
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.data[0].embedding).not.toEqual(body2.data[0].embedding);
+  });
+});
