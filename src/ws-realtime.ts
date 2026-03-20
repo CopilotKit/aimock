@@ -426,6 +426,8 @@ async function handleResponseCreate(
 
     interruption?.cleanup();
 
+    if (ws.isClosed) return;
+
     // response.text.done
     ws.send(
       evt("response.text.done", {
@@ -584,6 +586,8 @@ async function handleResponseCreate(
     }
 
     interruption?.cleanup();
+
+    if (ws.isClosed) return;
 
     // response.done
     ws.send(
