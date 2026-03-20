@@ -354,6 +354,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       expect(res.headers["content-type"]).toContain("text/event-stream");
     });
@@ -362,6 +363,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       expect(res.body).not.toContain("[DONE]");
       const events = parseTypedSSE(res.body);
@@ -377,6 +379,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const types = events.map((e) => e.type);
@@ -399,6 +402,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const created = events.find((e) => e.type === "response.created")!;
@@ -412,6 +416,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const deltas = events.filter((e) => e.type === "response.output_text.delta");
@@ -425,6 +430,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const completed = events.find((e) => e.type === "response.completed")!;
@@ -436,6 +442,7 @@ describe("OpenAI Responses API conformance", () => {
       const res = await httpPost(responsesPath(), {
         model: "gpt-4",
         input: [{ role: "user", content: "weather" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const itemAdded = events.find(
@@ -574,6 +581,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       expect(res.headers["content-type"]).toContain("text/event-stream");
     });
@@ -583,6 +591,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       expect(res.body).not.toContain("[DONE]");
       const events = parseTypedSSE(res.body);
@@ -594,6 +603,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const types = events.map((e) => e.type);
@@ -610,6 +620,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const start = events.find((e) => e.type === "message_start")!;
@@ -625,6 +636,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const blockStart = events.find((e) => e.type === "content_block_start")!;
@@ -637,6 +649,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const deltas = events.filter((e) => e.type === "content_block_delta");
@@ -652,6 +665,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const msgDelta = events.find((e) => e.type === "message_delta")!;
@@ -663,6 +677,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
       const stop = events.find((e) => e.type === "message_stop")!;
@@ -675,6 +690,7 @@ describe("Anthropic Claude Messages API conformance", () => {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "weather" }],
+        stream: true,
       });
       const events = parseTypedSSE(res.body);
 
@@ -1047,11 +1063,13 @@ describe("Cross-provider invariants", () => {
       httpPost(`${base}/v1/responses`, {
         model: "gpt-4",
         input: [{ role: "user", content: "hello" }],
+        stream: true,
       }),
       httpPost(`${base}/v1/messages`, {
         model: "claude-3-5-sonnet-20241022",
         max_tokens: 1024,
         messages: [{ role: "user", content: "hello" }],
+        stream: true,
       }),
       httpPost(`${base}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
         contents: [{ role: "user", parts: [{ text: "hello" }] }],

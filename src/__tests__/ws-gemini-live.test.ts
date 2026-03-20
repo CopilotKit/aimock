@@ -367,6 +367,86 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 
+  it("returns error for clientContent with missing turns", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent without turns
+    ws.send(JSON.stringify({ clientContent: {} }));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Missing 'turns' in clientContent");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
+  it("returns error for clientContent with non-array turns", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent with turns as a string instead of array
+    ws.send(JSON.stringify({ clientContent: { turns: "not-an-array" } }));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Missing 'turns' in clientContent");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
+  it("returns error for toolResponse with missing functionResponses", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send toolResponse without functionResponses
+    ws.send(JSON.stringify({ toolResponse: {} }));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Missing 'functionResponses' in toolResponse");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
+  it("returns error for toolResponse with non-array functionResponses", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send toolResponse with functionResponses as a string
+    ws.send(JSON.stringify({ toolResponse: { functionResponses: "not-an-array" } }));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Missing 'functionResponses' in toolResponse");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
   it("returns error when message sent before setup", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);

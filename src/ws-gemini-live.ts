@@ -244,8 +244,35 @@ async function processMessage(
   let newMessages: ChatMessage[];
 
   if (parsed.clientContent) {
+    if (!parsed.clientContent.turns || !Array.isArray(parsed.clientContent.turns)) {
+      ws.send(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message: "Missing 'turns' in clientContent",
+            status: "INVALID_ARGUMENT",
+          },
+        }),
+      );
+      return;
+    }
     newMessages = geminiTurnsToMessages(parsed.clientContent.turns);
   } else if (parsed.toolResponse) {
+    if (
+      !parsed.toolResponse.functionResponses ||
+      !Array.isArray(parsed.toolResponse.functionResponses)
+    ) {
+      ws.send(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message: "Missing 'functionResponses' in toolResponse",
+            status: "INVALID_ARGUMENT",
+          },
+        }),
+      );
+      return;
+    }
     newMessages = toolResponseToMessages(parsed.toolResponse);
   } else {
     ws.send(

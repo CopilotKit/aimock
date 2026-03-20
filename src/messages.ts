@@ -515,7 +515,7 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    if (claudeReq.stream === false) {
+    if (claudeReq.stream !== true) {
       const body = buildClaudeTextResponse(response.content, completionReq.model);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -547,7 +547,7 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    if (claudeReq.stream === false) {
+    if (claudeReq.stream !== true) {
       const body = buildClaudeToolCallResponse(response.toolCalls, completionReq.model, logger);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));

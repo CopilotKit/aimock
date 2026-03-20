@@ -213,6 +213,7 @@ describe("POST /v1/chat/completions", () => {
     const res = await post(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "hello" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -242,6 +243,7 @@ describe("POST /v1/chat/completions", () => {
     const res = await post(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "weather" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -312,6 +314,7 @@ describe("POST /v1/chat/completions", () => {
     const res = await post(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "bigchunk" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -348,6 +351,7 @@ describe("POST /v1/chat/completions", () => {
     const res = await post(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "small" }],
+      stream: true,
     });
 
     expect(res.status).toBe(200);
@@ -374,6 +378,23 @@ describe("POST /v1/chat/completions (non-streaming)", () => {
     expect(body.object).toBe("chat.completion");
     expect(body.model).toBe("gpt-4");
     expect(body.choices).toHaveLength(1);
+    expect(body.choices[0].message.role).toBe("assistant");
+    expect(body.choices[0].message.content).toBe("Hi there!");
+    expect(body.choices[0].finish_reason).toBe("stop");
+  });
+
+  it("returns JSON when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.object).toBe("chat.completion");
     expect(body.choices[0].message.role).toBe("assistant");
     expect(body.choices[0].message.content).toBe("Hi there!");
     expect(body.choices[0].finish_reason).toBe("stop");
@@ -775,6 +796,7 @@ describe("handleCompletions catch handler", () => {
               JSON.stringify({
                 model: "gpt-4",
                 messages: [{ role: "user", content: "slow" }],
+                stream: true,
               }),
             ),
           },
@@ -795,6 +817,7 @@ describe("handleCompletions catch handler", () => {
         JSON.stringify({
           model: "gpt-4",
           messages: [{ role: "user", content: "slow" }],
+          stream: true,
         }),
       );
       req.end();
@@ -806,6 +829,7 @@ describe("handleCompletions catch handler", () => {
     const res = await post(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "quick" }],
+      stream: true,
     });
     expect(res.status).toBe(200);
     expect(res.body).toContain("data: [DONE]");
@@ -824,6 +848,7 @@ describe("concurrent request handling", () => {
     const body = {
       model: "gpt-4",
       messages: [{ role: "user", content: "concurrent" }],
+      stream: true,
     };
 
     // Fire 10 requests in parallel
@@ -1005,6 +1030,7 @@ describe("stream interruption", () => {
     const res = await postPartial(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "truncate-me" }],
+      stream: true,
     });
 
     // The body should NOT contain [DONE] since we interrupted
@@ -1053,6 +1079,7 @@ describe("stream interruption", () => {
     await postPartial(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "journal-int" }],
+      stream: true,
     });
 
     // Give server a moment to finish the async handler
@@ -1075,6 +1102,7 @@ describe("stream interruption", () => {
     const res = await postPartial(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "disconnect-me" }],
+      stream: true,
     });
 
     // Should be a partial stream
@@ -1108,6 +1136,7 @@ describe("stream interruption", () => {
     const res = await postPartial(`${instance.url}/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "tool-truncate" }],
+      stream: true,
     });
 
     // No [DONE] — stream was cut short
