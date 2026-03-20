@@ -1,5 +1,11 @@
 # @copilotkit/llmock
 
+## 1.5.1
+
+### Patch Changes
+
+- Fix documentation URLs from `llmock.com` to `llmock.copilotkit.dev`
+
 ## 1.5.0
 
 ### Minor Changes
