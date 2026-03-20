@@ -358,6 +358,62 @@ describe("POST /v1/embeddings (fixture matching)", () => {
   });
 });
 
+describe("POST /v1/embeddings (error with various status codes)", () => {
+  it("returns 401 for authentication error fixture", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { inputText: "auth-fail" },
+        response: {
+          error: {
+            message: "Invalid API key",
+            type: "authentication_error",
+            code: "invalid_api_key",
+          },
+          status: 401,
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "auth-fail request",
+    });
+
+    expect(res.status).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Invalid API key");
+    expect(body.error.type).toBe("authentication_error");
+    expect(body.error.code).toBe("invalid_api_key");
+  });
+
+  it("returns 503 for service unavailable error fixture", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { inputText: "service-down" },
+        response: {
+          error: {
+            message: "Service unavailable",
+            type: "server_error",
+            code: "service_unavailable",
+          },
+          status: 503,
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "service-down request",
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Service unavailable");
+    expect(body.error.type).toBe("server_error");
+    expect(body.error.code).toBe("service_unavailable");
+  });
+});
+
 describe("POST /v1/embeddings (error handling)", () => {
   it("returns 400 for malformed JSON", async () => {
     instance = await createServer([]);

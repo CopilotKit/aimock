@@ -1145,6 +1145,79 @@ describe("Cross-provider invariants", () => {
     }
   });
 
+  it("streaming request with error fixture returns JSON error, not SSE", async () => {
+    const base = instance.url;
+
+    const [chat, responses, claude, gemini] = await Promise.all([
+      httpPost(`${base}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1/responses`, {
+        model: "gpt-4",
+        input: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1/messages`, {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "error-test" }],
+        stream: true,
+      }),
+      httpPost(`${base}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+        contents: [{ role: "user", parts: [{ text: "error-test" }] }],
+      }),
+    ]);
+
+    for (const res of [chat, responses, claude, gemini]) {
+      expect(res.status).toBe(429);
+      // Error responses should be JSON, not SSE
+      expect(res.headers["content-type"]).toContain("application/json");
+      const json = JSON.parse(res.body);
+      expect(json).toHaveProperty("error");
+    }
+  });
+
+  it("error format conforms to each provider's native format", async () => {
+    const base = instance.url;
+
+    const [chat, claude, gemini] = await Promise.all([
+      httpPost(`${base}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "error-test" }],
+        stream: false,
+      }),
+      httpPost(`${base}/v1/messages`, {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "error-test" }],
+        stream: false,
+      }),
+      httpPost(`${base}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        contents: [{ role: "user", parts: [{ text: "error-test" }] }],
+      }),
+    ]);
+
+    // OpenAI format: { error: { message, type } }
+    const chatJson = JSON.parse(chat.body);
+    expect(chatJson.error.message).toBe("Rate limited");
+    expect(chatJson.error.type).toBe("rate_limit_error");
+    expect(chatJson.type).toBeUndefined(); // no top-level type
+
+    // Anthropic format: { type: "error", error: { type, message } }
+    const claudeJson = JSON.parse(claude.body);
+    expect(claudeJson.type).toBe("error");
+    expect(claudeJson.error.type).toBe("rate_limit_error");
+    expect(claudeJson.error.message).toBe("Rate limited");
+
+    // Gemini format: { error: { code, message, status } }
+    const geminiJson = JSON.parse(gemini.body);
+    expect(geminiJson.error.code).toBe(429);
+    expect(geminiJson.error.message).toBe("Rate limited");
+    expect(geminiJson.error.status).toBe("rate_limit_error");
+  });
+
   it("all providers return 404 with JSON error body when no fixture matches", async () => {
     const base = instance.url;
 
@@ -1175,6 +1248,73 @@ describe("Cross-provider invariants", () => {
       const json = JSON.parse(res.body);
       expect(json).toHaveProperty("error");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error fixture with sequenceIndex
+// ---------------------------------------------------------------------------
+
+describe("error fixture with sequenceIndex", () => {
+  let srv: ServerInstance;
+
+  const SEQ_OK_0: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 0 },
+    response: { content: "Step 0 OK" },
+  };
+
+  const SEQ_ERR_1: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 1 },
+    response: {
+      error: { message: "Temporary failure", type: "server_error" },
+      status: 503,
+    },
+  };
+
+  const SEQ_OK_2: Fixture = {
+    match: { userMessage: "seq-error-test", sequenceIndex: 2 },
+    response: { content: "Step 2 OK" },
+  };
+
+  beforeAll(async () => {
+    srv = await createServer([SEQ_OK_0, SEQ_ERR_1, SEQ_OK_2], { port: 0 });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((r) => srv.server.close(() => r()));
+  });
+
+  it("step 0 succeeds, step 1 returns error, step 2 succeeds again", async () => {
+    // Step 0: success
+    const res0 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res0.status).toBe(200);
+    const json0 = JSON.parse(res0.body);
+    expect(json0.choices[0].message.content).toBe("Step 0 OK");
+
+    // Step 1: error
+    const res1 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res1.status).toBe(503);
+    const json1 = JSON.parse(res1.body);
+    expect(json1.error.message).toBe("Temporary failure");
+    expect(json1.error.type).toBe("server_error");
+
+    // Step 2: success again
+    const res2 = await httpPost(`${srv.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "seq-error-test" }],
+      stream: false,
+    });
+    expect(res2.status).toBe(200);
+    const json2 = JSON.parse(res2.body);
+    expect(json2.choices[0].message.content).toBe("Step 2 OK");
   });
 });
 

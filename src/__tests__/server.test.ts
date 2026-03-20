@@ -407,6 +407,73 @@ describe("POST /v1/chat/completions", () => {
   });
 });
 
+describe("POST /v1/chat/completions (error status codes)", () => {
+  it("error status defaults to 500 when status omitted from ErrorResponse", async () => {
+    const noStatusErrorFixture: Fixture = {
+      match: { userMessage: "no-status-error" },
+      response: {
+        error: { message: "Internal failure", type: "server_error" },
+        // status intentionally omitted
+      },
+    };
+    instance = await createServer([noStatusErrorFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "no-status-error" }],
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Internal failure");
+  });
+
+  it("error with status 401 returns correct status", async () => {
+    const authErrorFixture: Fixture = {
+      match: { userMessage: "auth-error" },
+      response: {
+        error: { message: "Unauthorized", type: "authentication_error", code: "invalid_api_key" },
+        status: 401,
+      },
+    };
+    instance = await createServer([authErrorFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "auth-error" }],
+    });
+
+    expect(res.status).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Unauthorized");
+    expect(body.error.type).toBe("authentication_error");
+    expect(body.error.code).toBe("invalid_api_key");
+  });
+
+  it("error with status 503 returns correct status", async () => {
+    const unavailableFixture: Fixture = {
+      match: { userMessage: "service-down" },
+      response: {
+        error: {
+          message: "Service unavailable",
+          type: "server_error",
+          code: "service_unavailable",
+        },
+        status: 503,
+      },
+    };
+    instance = await createServer([unavailableFixture]);
+    const res = await post(`${instance.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "service-down" }],
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Service unavailable");
+    expect(body.error.type).toBe("server_error");
+    expect(body.error.code).toBe("service_unavailable");
+  });
+});
+
 describe("POST /v1/chat/completions (non-streaming)", () => {
   it("returns text response as JSON when stream=false", async () => {
     instance = await createServer(allFixtures);
