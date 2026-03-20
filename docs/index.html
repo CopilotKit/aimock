@@ -815,13 +815,16 @@
       }
 
       /* ─── Comparison Table ───────────────────────────────────────── */
+      .comparison-table-wrap {
+        margin-top: 3rem;
+      }
       .comparison-table {
         width: 100%;
-        margin-top: 3rem;
-        border-collapse: collapse;
+        border-collapse: separate;
+        border-spacing: 0;
         font-size: 0.9rem;
       }
-      .comparison-table th {
+      .comparison-table thead th {
         text-align: left;
         padding: 1rem 1.25rem;
         font-family: var(--font-mono);
@@ -831,9 +834,19 @@
         letter-spacing: 0.08em;
         border-bottom: 2px solid var(--border-bright);
         color: var(--text-secondary);
+        position: sticky;
+        top: 56px;
+        background: var(--bg-deep);
+        z-index: 10;
       }
-      .comparison-table th:nth-child(2) {
+      .comparison-table thead th:nth-child(2) {
         color: var(--accent);
+      }
+      .comparison-table thead th a {
+        text-decoration: none;
+      }
+      .comparison-table thead th a:hover {
+        text-decoration: underline;
       }
       .comparison-table td {
         padding: 0.85rem 1.25rem;
@@ -971,6 +984,11 @@
         opacity: 1;
         transform: translateY(0);
       }
+      /* Remove transform from comparison section so sticky headers work
+         (transform creates a new containing block that breaks sticky) */
+      .comparison.reveal.visible {
+        transform: none;
+      }
 
       /* ─── Responsive ─────────────────────────────────────────────── */
       @media (max-width: 900px) {
@@ -1029,8 +1047,8 @@
           <li><a href="#features">Features</a></li>
           <li><a href="#examples">Examples</a></li>
           <li><a href="#reliability">Reliability</a></li>
-          <li><a href="#comparison">vs MSW</a></li>
-          <li><a href="#claude-code">Claude Code</a></li>
+          <li><a href="#comparison">Comparison</a></li>
+          <li><a href="docs.html">Docs</a></li>
           <li>
             <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -1193,6 +1211,14 @@
             <p>
               OpenAI Responses, OpenAI Realtime, and Gemini Live over WebSocket. Same fixtures, real
               RFC 6455 framing, zero dependencies. Text + tool calls.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">🎛️</div>
+            <h3>Streaming Physics</h3>
+            <p>
+              Simulate realistic streaming timing with TTFT, TPS, and jitter. Test loading states
+              and streaming UX under real-world conditions.
             </p>
           </div>
         </div>
@@ -1604,10 +1630,10 @@
     <section id="comparison" class="comparison reveal">
       <div class="container">
         <span class="section-label">Comparison</span>
-        <h2 class="section-title">llmock vs MSW</h2>
+        <h2 class="section-title">How llmock compares</h2>
         <p class="section-desc">
-          MSW is great for in-process API mocking. llmock is for when multiple processes need to hit
-          the same LLM endpoint.
+          llmock is purpose-built for LLM API testing. Here's how it stacks up against
+          general-purpose and LLM-specific mocking tools.
         </p>
 
         <div class="arch-diagram">
@@ -1638,82 +1664,230 @@
           <span class="process">CopilotKit runtime</span>
         </div>
 
-        <table class="comparison-table">
-          <thead>
-            <tr>
-              <th>Capability</th>
-              <th>llmock</th>
-              <th>MSW</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Cross-process interception</td>
-              <td class="yes">Real server ✓</td>
-              <td class="no">In-process only</td>
-            </tr>
-            <tr>
-              <td>Chat Completions SSE</td>
-              <td class="yes">Built-in ✓</td>
-              <td class="manual">Manual — build data/[DONE] yourself</td>
-            </tr>
-            <tr>
-              <td>Responses API SSE</td>
-              <td class="yes">Built-in ✓</td>
-              <td class="manual">Manual — MSW sse() uses wrong format</td>
-            </tr>
-            <tr>
-              <td>Claude Messages API SSE</td>
-              <td class="yes">Built-in ✓</td>
-              <td class="manual">Manual — build event/data SSE yourself</td>
-            </tr>
-            <tr>
-              <td>Gemini streaming</td>
-              <td class="yes">Built-in ✓</td>
-              <td class="manual">Manual — build data SSE yourself</td>
-            </tr>
-            <tr>
-              <td>WebSocket APIs (Realtime, Gemini Live*)</td>
-              <td class="yes">Built-in ✓</td>
-              <td class="no">No</td>
-            </tr>
-            <tr>
-              <td>Multi-provider support</td>
-              <td class="yes">OpenAI + Claude + Gemini ✓</td>
-              <td class="no">Provider-agnostic (manual)</td>
-            </tr>
-            <tr>
-              <td>Fixture files (JSON)</td>
-              <td class="yes">Yes ✓</td>
-              <td class="no">No — handlers are code-only</td>
-            </tr>
-            <tr>
-              <td>Request journal</td>
-              <td class="yes">Yes ✓</td>
-              <td class="no">No — track manually</td>
-            </tr>
-            <tr>
-              <td>Non-streaming responses</td>
-              <td class="yes">Yes ✓</td>
-              <td class="yes">Yes ✓</td>
-            </tr>
-            <tr>
-              <td>Error injection (one-shot)</td>
-              <td class="yes">Yes ✓</td>
-              <td class="yes">Yes (server.use)</td>
-            </tr>
-            <tr>
-              <td>CLI server</td>
-              <td class="yes">Yes ✓</td>
-              <td class="no">No</td>
-            </tr>
-            <tr>
-              <td>Dependencies</td>
-              <td class="yes">Zero</td>
-              <td class="no">~300KB</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="comparison-table-wrap">
+          <table class="comparison-table">
+            <thead>
+              <tr>
+                <th>Capability</th>
+                <th>
+                  <a
+                    href="https://github.com/CopilotKit/llmock"
+                    target="_blank"
+                    style="color: var(--accent)"
+                    >llmock</a
+                  >
+                </th>
+                <th>
+                  <a href="https://mswjs.io/" target="_blank" style="color: var(--text-secondary)"
+                    >MSW</a
+                  >
+                </th>
+                <th>
+                  <a
+                    href="https://github.com/vidaiUK/VidaiMock"
+                    target="_blank"
+                    style="color: var(--text-secondary)"
+                    >VidaiMock</a
+                  >
+                </th>
+                <th>
+                  <a
+                    href="https://github.com/dwmkerr/mock-llm"
+                    target="_blank"
+                    style="color: var(--text-secondary)"
+                    >mock-llm</a
+                  >
+                </th>
+                <th>
+                  <a
+                    href="https://github.com/piyook/llm-mock"
+                    target="_blank"
+                    style="color: var(--text-secondary)"
+                    >piyook/llm-mock</a
+                  >
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Cross-process interception</td>
+                <td class="yes">Real server ✓</td>
+                <td class="no">In-process only</td>
+                <td class="yes">Yes</td>
+                <td class="yes">Yes (Docker)</td>
+                <td class="yes">Yes</td>
+              </tr>
+              <tr>
+                <td>Chat Completions SSE</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="manual">Manual</td>
+                <td class="yes">Yes</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Responses API SSE</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="manual">Manual</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Claude Messages API</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="manual">Manual</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Gemini streaming</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="manual">Manual</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>WebSocket APIs</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Multi-provider support</td>
+                <td class="yes">OpenAI + Claude + Gemini + compatible ✓</td>
+                <td class="no">Manual</td>
+                <td class="yes">OpenAI + Claude + Gemini + Bedrock</td>
+                <td class="manual">OpenAI only</td>
+                <td class="manual">OpenAI only</td>
+              </tr>
+              <tr>
+                <td>Embeddings API</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+              </tr>
+              <tr>
+                <td>Structured output / JSON mode</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">Manual</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Sequential / stateful responses</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="manual">Manual</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Fixture files</td>
+                <td class="yes">JSON ✓</td>
+                <td class="no">Code-only</td>
+                <td class="manual">Python config</td>
+                <td class="manual">YAML config</td>
+                <td class="manual">JSON templates</td>
+              </tr>
+              <tr>
+                <td>Programmatic API (test helpers)</td>
+                <td class="yes">Yes (TypeScript/JS) ✓</td>
+                <td class="yes">Yes (TypeScript/JS)</td>
+                <td class="yes">Yes (Python)</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Request journal</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">Manual</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Error injection (one-shot)</td>
+                <td class="yes">Yes ✓</td>
+                <td class="yes">Yes</td>
+                <td class="manual">Partial</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Docker image</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Helm chart</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Drift detection</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Azure OpenAI</td>
+                <td class="yes">Yes ✓</td>
+                <td class="manual">Manual</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>AWS Bedrock</td>
+                <td class="yes">Yes (non-streaming) ✓</td>
+                <td class="manual">Manual</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>CLI server</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="yes">Yes</td>
+              </tr>
+              <tr>
+                <td>GET /v1/models</td>
+                <td class="yes">Yes ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Dependencies</td>
+                <td class="yes">Zero</td>
+                <td class="no">~300KB</td>
+                <td class="no">Python + deps</td>
+                <td class="no">Docker required</td>
+                <td class="manual">Minimal</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -1790,7 +1964,13 @@
           <a
             href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
             target="_blank"
-            >CopilotKit test suite</a
+            >test suite</a
+          >
+          and
+          <a
+            href="https://github.com/CopilotKit/CopilotKit/search?q=fixtures+path%3A**%2Ffixtures&amp;type=code"
+            target="_blank"
+            >fixture files</a
           >
           for real-world examples.
         </p>
@@ -1810,7 +1990,7 @@
             <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
           </li>
           <li>
-            <a href="https://github.com/CopilotKit/llmock#readme" target="_blank">Docs</a>
+            <a href="docs.html">Docs</a>
           </li>
           <li>
             <a href="https://github.com/CopilotKit/llmock/issues" target="_blank">Issues</a>

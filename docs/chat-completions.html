@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat Completions — llmock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>Getting Started</h3>
+          <a href="docs.html">Overview</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Providers</h3>
+          <a href="chat-completions.html" class="active">Chat Completions (OpenAI)</a>
+          <a href="responses-api.html">Responses API (OpenAI)</a>
+          <a href="claude-messages.html">Claude Messages</a>
+          <a href="gemini.html">Gemini</a><a href="azure-openai.html">Azure OpenAI</a
+          ><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="compatible-providers.html">Compatible Providers</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Features</h3>
+          <a href="embeddings.html">Embeddings</a>
+          <a href="structured-output.html">Structured Output</a>
+          <a href="sequential-responses.html">Sequential Responses</a>
+          <a href="fixtures.html">Fixtures</a>
+          <a href="error-injection.html">Error Injection</a>
+          <a href="streaming-physics.html">Streaming Physics</a>
+          <a href="websocket.html">WebSocket APIs</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Deployment</h3>
+          <a href="docker.html">Docker &amp; Helm</a>
+          <a href="drift-detection.html">Drift Detection</a>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <h1>OpenAI Chat Completions</h1>
+        <p class="lead">
+          The <code>POST /v1/chat/completions</code> endpoint supports both streaming (SSE) and
+          non-streaming JSON responses, including text content and tool calls. This is the most
+          commonly used endpoint.
+        </p>
+
+        <h2>Endpoint</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Format</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td>/v1/chat/completions</td>
+              <td>SSE (stream: true) or JSON (stream: false)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Unit Test: Text Response</h2>
+        <p>
+          Using the programmatic API with vitest, register a fixture and assert on the response.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            text-response.test.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+<span class="kw">import</span> { <span class="fn">describe</span>, <span class="fn">it</span>, <span class="fn">expect</span>, <span class="fn">beforeAll</span>, <span class="fn">afterAll</span> } <span class="kw">from</span> <span class="str">"vitest"</span>;
+
+<span class="kw">let</span> <span class="op">mock</span>: <span class="type">LLMock</span>;
+
+<span class="fn">beforeAll</span>(<span class="kw">async</span> () <span class="kw">=&gt;</span> {
+  <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+});
+
+<span class="fn">afterAll</span>(<span class="kw">async</span> () <span class="kw">=&gt;</span> {
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
+});
+
+<span class="fn">it</span>(<span class="str">"non-streaming text response"</span>, <span class="kw">async</span> () <span class="kw">=&gt;</span> {
+  <span class="op">mock</span>.<span class="fn">on</span>({ <span class="prop">userMessage</span>: <span class="str">"hello"</span> }, { <span class="prop">content</span>: <span class="str">"Hello! How can I help?"</span> });
+
+  <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/chat/completions`</span>, {
+    <span class="prop">method</span>: <span class="str">"POST"</span>,
+    <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+    <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+      <span class="prop">model</span>: <span class="str">"gpt-4"</span>,
+      <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"hello"</span> }],
+      <span class="prop">stream</span>: <span class="kw">false</span>,
+    }),
+  });
+
+  <span class="kw">const</span> <span class="op">body</span> = <span class="kw">await</span> <span class="op">res</span>.<span class="fn">json</span>();
+  <span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">choices</span>[<span class="num">0</span>].<span class="prop">message</span>.<span class="prop">content</span>).<span class="fn">toBe</span>(<span class="str">"Hello! How can I help?"</span>);
+  <span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">object</span>).<span class="fn">toBe</span>(<span class="str">"chat.completion"</span>);
+  <span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">id</span>).<span class="fn">toMatch</span>(<span class="str">/^chatcmpl-/</span>);
+});</code></pre>
+        </div>
+
+        <h2>Unit Test: Tool Calls</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">tool-calls.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="fn">it</span>(<span class="str">"returns tool call in streaming mode"</span>, <span class="kw">async</span> () <span class="kw">=&gt;</span> {
+  <span class="op">mock</span>.<span class="fn">on</span>(
+    { <span class="prop">userMessage</span>: <span class="str">"weather"</span> },
+    { <span class="prop">toolCalls</span>: [{ <span class="prop">name</span>: <span class="str">"get_weather"</span>, <span class="prop">arguments</span>: <span class="str">'{"city":"SF"}'</span> }] }
+  );
+
+  <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/chat/completions`</span>, {
+    <span class="prop">method</span>: <span class="str">"POST"</span>,
+    <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+    <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+      <span class="prop">model</span>: <span class="str">"gpt-4"</span>,
+      <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"what is the weather?"</span> }],
+      <span class="prop">stream</span>: <span class="kw">true</span>,
+    }),
+  });
+
+  <span class="kw">const</span> <span class="op">text</span> = <span class="kw">await</span> <span class="op">res</span>.<span class="fn">text</span>();
+  <span class="fn">expect</span>(<span class="op">text</span>).<span class="fn">toContain</span>(<span class="str">"get_weather"</span>);
+  <span class="fn">expect</span>(<span class="op">text</span>).<span class="fn">toContain</span>(<span class="str">"data: [DONE]"</span>);
+});</code></pre>
+        </div>
+
+        <h2>Integration Test: Streaming SSE</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            streaming-integration.test.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="fn">createServer</span>, <span class="kw">type</span> <span class="type">ServerInstance</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock/server"</span>;
+
+<span class="kw">const</span> <span class="op">instance</span> = <span class="kw">await</span> <span class="fn">createServer</span>(
+  [{ <span class="prop">match</span>: { <span class="prop">userMessage</span>: <span class="str">"hello"</span> }, <span class="prop">response</span>: { <span class="prop">content</span>: <span class="str">"Hello! How can I help?"</span> } }],
+  { <span class="prop">port</span>: <span class="num">0</span>, <span class="prop">chunkSize</span>: <span class="num">10</span> }
+);
+
+<span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">httpPost</span>(<span class="str">`${instance.url}/v1/chat/completions`</span>, {
+  <span class="prop">model</span>: <span class="str">"gpt-4"</span>,
+  <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"hello"</span> }],
+  <span class="prop">stream</span>: <span class="kw">true</span>,
+});
+
+<span class="cm">// Parse SSE chunks</span>
+<span class="kw">const</span> <span class="op">chunks</span> = <span class="op">res</span>.<span class="prop">body</span>
+  .<span class="fn">split</span>(<span class="str">"\n\n"</span>)
+  .<span class="fn">filter</span>(<span class="op">b</span> <span class="kw">=&gt;</span> <span class="op">b</span>.<span class="fn">startsWith</span>(<span class="str">"data: "</span>) &amp;&amp; !<span class="op">b</span>.<span class="fn">includes</span>(<span class="str">"[DONE]"</span>))
+  .<span class="fn">map</span>(<span class="op">b</span> <span class="kw">=&gt;</span> <span class="type">JSON</span>.<span class="fn">parse</span>(<span class="op">b</span>.<span class="fn">slice</span>(<span class="num">6</span>)));
+
+<span class="cm">// First chunk has the role</span>
+<span class="fn">expect</span>(<span class="op">chunks</span>[<span class="num">0</span>].<span class="prop">choices</span>[<span class="num">0</span>].<span class="prop">delta</span>.<span class="prop">role</span>).<span class="fn">toBe</span>(<span class="str">"assistant"</span>);
+
+<span class="cm">// Reassemble content</span>
+<span class="kw">const</span> <span class="op">content</span> = <span class="op">chunks</span>.<span class="fn">map</span>(<span class="op">c</span> <span class="kw">=&gt;</span> <span class="op">c</span>.<span class="prop">choices</span>[<span class="num">0</span>].<span class="prop">delta</span>.<span class="prop">content</span> ?? <span class="str">""</span>).<span class="fn">join</span>(<span class="str">""</span>);
+<span class="fn">expect</span>(<span class="op">content</span>).<span class="fn">toBe</span>(<span class="str">"Hello! How can I help?"</span>);
+
+<span class="cm">// Last chunk has finish_reason</span>
+<span class="fn">expect</span>(<span class="op">chunks</span>.<span class="fn">at</span>(-<span class="num">1</span>).<span class="prop">choices</span>[<span class="num">0</span>].<span class="prop">finish_reason</span>).<span class="fn">toBe</span>(<span class="str">"stop"</span>);</code></pre>
+        </div>
+
+        <h2>JSON Fixture</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">fixtures/chat.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"hello"</span> },
+      <span class="key">"response"</span>: { <span class="key">"content"</span>: <span class="str">"Hello! How can I help?"</span> }
+    },
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"weather"</span> },
+      <span class="key">"response"</span>: {
+        <span class="key">"toolCalls"</span>: [{
+          <span class="key">"name"</span>: <span class="str">"get_weather"</span>,
+          <span class="key">"arguments"</span>: <span class="str">"{\"city\":\"SF\"}"</span>
+        }]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h2>Response Format</h2>
+
+        <h3>Non-streaming (stream: false)</h3>
+        <p>Returns a single JSON object matching the OpenAI <code>ChatCompletion</code> type:</p>
+        <ul>
+          <li><code>id</code> &mdash; starts with <code>chatcmpl-</code></li>
+          <li><code>object</code> &mdash; <code>"chat.completion"</code></li>
+          <li><code>created</code> &mdash; Unix timestamp</li>
+          <li><code>model</code> &mdash; echoes the requested model</li>
+          <li><code>choices[0].message.content</code> &mdash; the response text</li>
+          <li><code>choices[0].message.refusal</code> &mdash; always <code>null</code></li>
+          <li>
+            <code>choices[0].finish_reason</code> &mdash; <code>"stop"</code> or
+            <code>"tool_calls"</code>
+          </li>
+          <li><code>usage</code> &mdash; token counts (zeroed in mock)</li>
+        </ul>
+
+        <h3>Streaming (stream: true)</h3>
+        <p>
+          Returns <code>text/event-stream</code> with <code>data: {json}\n\n</code> lines, ending
+          with <code>data: [DONE]\n\n</code>. Each chunk matches the OpenAI
+          <code>ChatCompletionChunk</code> type with <code>delta</code> instead of
+          <code>message</code>.
+        </p>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>

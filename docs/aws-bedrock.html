@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AWS Bedrock &mdash; llmock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>Getting Started</h3>
+          <a href="docs.html">Overview</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Providers</h3>
+          <a href="chat-completions.html">Chat Completions (OpenAI)</a
+          ><a href="responses-api.html">Responses API (OpenAI)</a
+          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
+          ><a href="azure-openai.html">Azure OpenAI</a
+          ><a href="aws-bedrock.html" class="active">AWS Bedrock</a
+          ><a href="compatible-providers.html">Compatible Providers</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Features</h3>
+          <a href="embeddings.html">Embeddings</a
+          ><a href="structured-output.html">Structured Output</a
+          ><a href="sequential-responses.html">Sequential Responses</a
+          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="streaming-physics.html">Streaming Physics</a
+          ><a href="websocket.html">WebSocket APIs</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Deployment</h3>
+          <a href="docker.html">Docker &amp; Helm</a
+          ><a href="drift-detection.html">Drift Detection</a>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <h1>AWS Bedrock</h1>
+        <p class="lead">
+          llmock supports the AWS Bedrock Claude invoke endpoint. Point the AWS SDK at your llmock
+          instance and fixtures match against the Bedrock-format requests, returning Anthropic
+          Messages API responses &mdash; the same format Bedrock uses for Claude models.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>Phase 1:</strong> Non-streaming invoke only. Streaming via
+            <code>invoke-with-response-stream</code> is planned for a future release.
+          </p>
+        </div>
+
+        <h2>How It Works</h2>
+        <p>
+          AWS Bedrock uses a URL pattern of
+          <code>/model/{modelId}/invoke</code> to call foundation models. The request body uses the
+          Anthropic Messages format with an additional <code>anthropic_version</code> field, and
+          does <em>not</em> include a <code>model</code> field in the body (the model is in the
+          URL).
+        </p>
+        <p>
+          llmock detects the Bedrock URL pattern, extracts the model ID, translates the request to
+          the internal fixture-matching format, and returns the response in the Anthropic Messages
+          API format &mdash; which is identical to the Bedrock Claude response format.
+        </p>
+
+        <h2>URL Pattern</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Bedrock URL</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST /model/{modelId}/invoke</code></td>
+              <td>Non-streaming invoke (supported)</td>
+            </tr>
+            <tr>
+              <td><code>POST /model/{modelId}/invoke-with-response-stream</code></td>
+              <td>Streaming invoke (planned)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Request Format</h2>
+        <p>
+          Bedrock Claude requests use the Anthropic Messages format. The
+          <code>anthropic_version</code> field is accepted but not validated. The model is taken
+          from the URL path, not the request body.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            bedrock request body <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"anthropic_version"</span>: <span class="str">"bedrock-2023-05-31"</span>,
+  <span class="prop">"max_tokens"</span>: <span class="num">512</span>,
+  <span class="prop">"messages"</span>: [
+    { <span class="prop">"role"</span>: <span class="str">"user"</span>, <span class="prop">"content"</span>: <span class="str">"Hello"</span> }
+  ],
+  <span class="prop">"system"</span>: <span class="str">"You are helpful"</span>
+}</code></pre>
+        </div>
+
+        <h2>Response Format</h2>
+        <p>
+          Bedrock Claude responses are identical to the Anthropic Messages API non-streaming
+          responses:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">text response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"id"</span>: <span class="str">"msg_..."</span>,
+  <span class="prop">"type"</span>: <span class="str">"message"</span>,
+  <span class="prop">"role"</span>: <span class="str">"assistant"</span>,
+  <span class="prop">"content"</span>: [{ <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Hello!"</span> }],
+  <span class="prop">"stop_reason"</span>: <span class="str">"end_turn"</span>,
+  <span class="prop">"stop_sequence"</span>: <span class="kw">null</span>,
+  <span class="prop">"usage"</span>: { <span class="prop">"input_tokens"</span>: <span class="num">10</span>, <span class="prop">"output_tokens"</span>: <span class="num">5</span> }
+}</code></pre>
+        </div>
+
+        <h2>Model Resolution</h2>
+        <p>
+          The model ID is extracted from the URL path. This is used both for fixture matching and
+          included in the response body. Bedrock model IDs typically look like:
+        </p>
+        <ul>
+          <li><code>anthropic.claude-3-5-sonnet-20241022-v2:0</code></li>
+          <li><code>anthropic.claude-3-haiku-20240307-v1:0</code></li>
+          <li><code>anthropic.claude-3-opus-20240229-v1:0</code></li>
+        </ul>
+        <p>Write fixtures that match by Bedrock model ID:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            fixture matching by Bedrock model ID <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"match"</span>: {
+    <span class="prop">"model"</span>: <span class="str">"anthropic.claude-3-5-sonnet-20241022-v2:0"</span>,
+    <span class="prop">"userMessage"</span>: <span class="str">"hello"</span>
+  },
+  <span class="prop">"response"</span>: {
+    <span class="prop">"content"</span>: <span class="str">"Hello from Bedrock!"</span>
+  }
+}</code></pre>
+        </div>
+
+        <h2>SDK Configuration</h2>
+        <p>To point the AWS SDK Bedrock Runtime client at llmock, configure the endpoint URL:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">bedrock-sdk.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">import</span> { <span class="type">BedrockRuntimeClient</span>, <span class="type">InvokeModelCommand</span> } <span class="kw">from</span> <span class="str">"@aws-sdk/client-bedrock-runtime"</span>;
+
+<span class="kw">const</span> <span class="op">client</span> = <span class="kw">new</span> <span class="type">BedrockRuntimeClient</span>({
+  <span class="prop">region</span>: <span class="str">"us-east-1"</span>,
+  <span class="prop">endpoint</span>: <span class="str">"http://localhost:4005"</span>,  <span class="cm">// llmock URL</span>
+  <span class="prop">credentials</span>: { <span class="prop">accessKeyId</span>: <span class="str">"mock"</span>, <span class="prop">secretAccessKey</span>: <span class="str">"mock"</span> },
+});
+
+<span class="kw">const</span> <span class="op">response</span> = <span class="kw">await</span> <span class="op">client</span>.<span class="fn">send</span>(<span class="kw">new</span> <span class="type">InvokeModelCommand</span>({
+  <span class="prop">modelId</span>: <span class="str">"anthropic.claude-3-5-sonnet-20241022-v2:0"</span>,
+  <span class="prop">contentType</span>: <span class="str">"application/json"</span>,
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+    <span class="prop">anthropic_version</span>: <span class="str">"bedrock-2023-05-31"</span>,
+    <span class="prop">max_tokens</span>: <span class="num">512</span>,
+    <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"Hello"</span> }],
+  }),
+}));</code></pre>
+        </div>
+
+        <h2>Fixture Examples</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            text response fixture <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
+      <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"Hi there!"</span> }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"weather"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [{
+          <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+          <span class="prop">"arguments"</span>: <span class="str">"{\"city\":\"SF\"}"</span>
+        }]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            Fixtures are shared across all providers. The same fixture file works for OpenAI, Claude
+            Messages, Gemini, Azure, and Bedrock endpoints &mdash; llmock translates each provider's
+            request format to a common internal format before matching.
+          </p>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>
