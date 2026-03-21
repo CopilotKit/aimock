@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import http from "node:http";
+import * as metricsModule from "../metrics.js";
 import { createMetricsRegistry, normalizePathLabel, type MetricsRegistry } from "../metrics.js";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture, ChatCompletionRequest } from "../types.js";
@@ -598,5 +599,69 @@ describe("integration: /metrics endpoint", () => {
     instance = await createServer(fixtures, { metrics: true });
     const res = await httpGet(`${instance.url}/metrics`);
     expect(res.body).toContain("llmock_fixtures_loaded{} 2");
+  });
+
+  it("metrics endpoint remains responsive after normal requests", async () => {
+    // Baseline: verify normal request flow with metrics enabled continues to succeed.
+    // The res.on("finish") callback is wrapped in try-catch so that any exception
+    // thrown by registry operations is swallowed rather than propagated as an unhandled
+    // EventEmitter error that would crash the process.
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "hello" },
+        response: { content: "hi" },
+      },
+    ];
+    instance = await createServer(fixtures, { metrics: true });
+
+    const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
+    expect(res.status).toBe(200);
+
+    // Server remains reachable and metrics endpoint still responds after the request
+    const metricsRes = await httpGet(`${instance.url}/metrics`);
+    expect(metricsRes.status).toBe(200);
+    expect(metricsRes.body).toContain("llmock_requests_total");
+  });
+
+  it("continues serving requests when metrics registry throws (try-catch guards EventEmitter crash)", async () => {
+    // Exercise the catch path in the res.on("finish") callback by making the registry's
+    // incrementCounter throw on the second call. The server must still respond 200 to the
+    // second request — the exception must be swallowed, not propagated.
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "hello" },
+        response: { content: "hi" },
+      },
+    ];
+
+    // Spy on createMetricsRegistry so we can inject a faulty registry.
+    const realRegistry = createMetricsRegistry();
+    let callCount = 0;
+    const faultyRegistry: MetricsRegistry = {
+      ...realRegistry,
+      incrementCounter(name, labels) {
+        callCount += 1;
+        if (callCount >= 2) {
+          throw new Error("simulated registry failure");
+        }
+        realRegistry.incrementCounter(name, labels);
+      },
+    };
+
+    const spy = vi
+      .spyOn(metricsModule, "createMetricsRegistry")
+      .mockReturnValueOnce(faultyRegistry);
+
+    instance = await createServer(fixtures, { metrics: true });
+    spy.mockRestore();
+
+    // First request: metrics work normally (callCount becomes 1, no throw)
+    const res1 = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
+    expect(res1.status).toBe(200);
+
+    // Second request: incrementCounter throws (callCount becomes 2+). The server must
+    // still return 200 — proof that the catch block in res.on("finish") swallows the error.
+    const res2 = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
+    expect(res2.status).toBe(200);
   });
 });
