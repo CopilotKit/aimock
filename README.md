@@ -79,7 +79,7 @@ MSW can't intercept any of those calls. llmock can — it's a real server on a r
 - **[Streaming physics](https://llmock.copilotkit.dev/streaming-physics.html)** — Configurable `ttft`, `tps`, and `jitter` for realistic timing
 - **[WebSocket APIs](https://llmock.copilotkit.dev/websocket.html)** — OpenAI Responses WS, Realtime API, and Gemini Live
 - **[Error injection](https://llmock.copilotkit.dev/error-injection.html)** — One-shot errors, rate limiting, and provider-specific error formats
-- **[Chaos testing](https://llmock.copilotkit.dev/chaos.html)** — Probabilistic failure injection: 500 errors, malformed JSON, mid-stream disconnects
+- **[Chaos testing](https://llmock.copilotkit.dev/chaos-testing.html)** — Probabilistic failure injection: 500 errors, malformed JSON, mid-stream disconnects
 - **[Prometheus metrics](https://llmock.copilotkit.dev/metrics.html)** — Request counts, latencies, and fixture match rates at `/metrics`
 - **[Request journal](https://llmock.copilotkit.dev/docs.html)** — Record, inspect, and assert on every request
 - **[Fixture validation](https://llmock.copilotkit.dev/fixtures.html)** — Schema validation at load time with `--validate-on-load`
