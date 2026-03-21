@@ -54,6 +54,8 @@
           ><a href="responses-api.html">Responses API (OpenAI)</a
           ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
           ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html" class="active">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -62,8 +64,11 @@
           ><a href="structured-output.html">Structured Output</a
           ><a href="sequential-responses.html">Sequential Responses</a
           ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
           ><a href="streaming-physics.html">Streaming Physics</a
           ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -114,6 +119,19 @@
               <td>vLLM</td>
               <td><code>/v1/chat/completions</code></td>
               <td>Standard OpenAI-compatible endpoint</td>
+            </tr>
+            <tr>
+              <td>Cohere</td>
+              <td><code>/v1/chat/completions</code></td>
+              <td>
+                OpenAI-compatible endpoint; see <a href="cohere.html">Cohere page</a> for native
+                endpoints
+              </td>
+            </tr>
+            <tr>
+              <td>Vertex AI</td>
+              <td><code>/v1/projects/.../models/:model:*</code></td>
+              <td>Uses Gemini handler; see <a href="vertex-ai.html">Vertex AI page</a></td>
             </tr>
           </tbody>
         </table>
@@ -278,6 +296,15 @@
             <code>/openai/v1/embeddings</code> and <code>/openai/v1/models</code> &mdash; any
             <code>/openai/</code>-prefixed path is transparently routed to the corresponding
             <code>/v1/</code> endpoint.
+          </p>
+        </div>
+
+        <div class="info-box">
+          <p>
+            <strong>Ollama native endpoints:</strong> In addition to the OpenAI-compatible endpoint
+            listed above, Ollama has its own native <code>/api/chat</code> and
+            <code>/api/generate</code> endpoints. llmock supports these natively &mdash; see the
+            <a href="ollama.html">Ollama page</a> for details on the native endpoint format.
           </p>
         </div>
       </main>

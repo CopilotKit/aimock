@@ -55,6 +55,8 @@
           ><a href="claude-messages.html">Claude Messages</a
           ><a href="gemini.html" class="active">Gemini</a
           ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -63,8 +65,11 @@
           ><a href="structured-output.html">Structured Output</a
           ><a href="sequential-responses.html">Sequential Responses</a
           ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
           ><a href="streaming-physics.html">Streaming Physics</a
           ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -190,6 +195,26 @@
             specification.
           </p>
         </div>
+
+        <h2>Vertex AI</h2>
+        <p>
+          Google Cloud's <strong>Vertex AI</strong> provides access to Gemini models through a
+          different URL pattern than the AI Studio API. llmock supports Vertex AI requests using the
+          same Gemini handler &mdash; the URL pattern is different, but the request and response
+          formats are identical.
+        </p>
+        <p>Vertex AI URLs follow the pattern:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Vertex AI URL pattern <span class="lang-tag">text</span>
+          </div>
+          <pre><code>POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent
+POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent</code></pre>
+        </div>
+        <p>
+          The same fixtures work for both Gemini AI Studio and Vertex AI endpoints. See the
+          <a href="vertex-ai.html">Vertex AI</a> page for configuration details.
+        </p>
       </main>
     </div>
     <footer class="docs-footer">

@@ -54,6 +54,8 @@
           ><a href="responses-api.html">Responses API (OpenAI)</a
           ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
           ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -62,8 +64,11 @@
           ><a href="structured-output.html">Structured Output</a
           ><a href="sequential-responses.html">Sequential Responses</a
           ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
           ><a href="streaming-physics.html">Streaming Physics</a
           ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -183,6 +188,46 @@ helm install llmock ./charts/llmock \
           The deployment includes liveness and readiness probes using TCP socket checks on the
           service port. Liveness starts after 5 seconds; readiness after 2 seconds.
         </p>
+
+        <h2>CLI Configuration (v1.7.0)</h2>
+        <p>
+          Starting in v1.7.0, the <code>aimock</code> CLI supports a <code>--config</code> flag for
+          loading server configuration from a JSON or YAML file. This allows you to configure chaos
+          testing, recording, metrics, and other options without command-line flags:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Docker with config <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>docker run -p 4010:4010 \
+  -v $(pwd)/fixtures:/fixtures \
+  -v $(pwd)/config.json:/config.json \
+  llmock --config /config.json</code></pre>
+        </div>
+
+        <h2>v1.6.0 Features</h2>
+        <p>The Docker image supports all v1.6.0 features out of the box:</p>
+        <ul>
+          <li>
+            <strong>Chaos testing</strong> &mdash; configure via
+            <code>--chaos-error-rate</code> flag or config file
+          </li>
+          <li>
+            <strong>Prometheus metrics</strong> &mdash; exposed at <code>/metrics</code> when
+            enabled with <code>--metrics</code>
+          </li>
+          <li>
+            <strong>Record &amp; replay</strong> &mdash; proxy to real APIs with
+            <code>--record</code> flag
+          </li>
+          <li>
+            <strong>Strict mode</strong> &mdash; return 503 for unmatched requests with
+            <code>--strict</code>
+          </li>
+          <li><strong>Streaming physics</strong> &mdash; TTFT, TPS, and jitter simulation</li>
+          <li><strong>AWS Bedrock streaming</strong> &mdash; Event Stream binary protocol</li>
+          <li><strong>Converse API</strong> &mdash; Bedrock Converse and Converse-stream</li>
+        </ul>
       </main>
     </div>
     <footer class="docs-footer">

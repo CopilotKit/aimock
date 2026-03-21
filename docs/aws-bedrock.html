@@ -54,7 +54,8 @@
           ><a href="responses-api.html">Responses API (OpenAI)</a
           ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
           ><a href="azure-openai.html">Azure OpenAI</a
-          ><a href="aws-bedrock.html" class="active">AWS Bedrock</a
+          ><a href="aws-bedrock.html" class="active">AWS Bedrock</a><a href="ollama.html">Ollama</a
+          ><a href="cohere.html">Cohere</a><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -63,8 +64,11 @@
           ><a href="structured-output.html">Structured Output</a
           ><a href="sequential-responses.html">Sequential Responses</a
           ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
           ><a href="streaming-physics.html">Streaming Physics</a
           ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -76,33 +80,36 @@
       <main class="docs-content">
         <h1>AWS Bedrock</h1>
         <p class="lead">
-          llmock supports the AWS Bedrock Claude invoke endpoint. Point the AWS SDK at your llmock
-          instance and fixtures match against the Bedrock-format requests, returning Anthropic
-          Messages API responses &mdash; the same format Bedrock uses for Claude models.
+          llmock supports the AWS Bedrock Claude invoke and Converse API endpoints &mdash; both
+          streaming and non-streaming. Point the AWS SDK at your llmock instance and fixtures match
+          against the Bedrock-format requests, returning responses in the authentic Bedrock format
+          including AWS Event Stream binary framing for streaming.
         </p>
-
-        <div class="info-box">
-          <p>
-            <strong>Phase 1:</strong> Non-streaming invoke only. Streaming via
-            <code>invoke-with-response-stream</code> is planned for a future release.
-          </p>
-        </div>
 
         <h2>How It Works</h2>
         <p>
-          AWS Bedrock uses a URL pattern of
-          <code>/model/{modelId}/invoke</code> to call foundation models. The request body uses the
-          Anthropic Messages format with an additional <code>anthropic_version</code> field, and
-          does <em>not</em> include a <code>model</code> field in the body (the model is in the
-          URL).
+          AWS Bedrock uses URL patterns like
+          <code>/model/{modelId}/invoke</code> and
+          <code>/model/{modelId}/invoke-with-response-stream</code> to call foundation models. The
+          request body uses the Anthropic Messages format with an additional
+          <code>anthropic_version</code> field, and does <em>not</em> include a
+          <code>model</code> field in the body (the model is in the URL).
         </p>
         <p>
           llmock detects the Bedrock URL pattern, extracts the model ID, translates the request to
           the internal fixture-matching format, and returns the response in the Anthropic Messages
-          API format &mdash; which is identical to the Bedrock Claude response format.
+          API format &mdash; which is identical to the Bedrock Claude response format. For
+          streaming, responses use the AWS Event Stream binary framing protocol.
+        </p>
+        <p>
+          llmock also supports the <strong>Converse API</strong> (<code
+            >/model/{modelId}/converse</code
+          >
+          and <code>/model/{modelId}/converse-stream</code>), which uses a different
+          request/response format with camelCase field names.
         </p>
 
-        <h2>URL Pattern</h2>
+        <h2>URL Patterns</h2>
         <table class="endpoint-table">
           <thead>
             <tr>
@@ -113,11 +120,19 @@
           <tbody>
             <tr>
               <td><code>POST /model/{modelId}/invoke</code></td>
-              <td>Non-streaming invoke (supported)</td>
+              <td>Non-streaming Claude invoke</td>
             </tr>
             <tr>
               <td><code>POST /model/{modelId}/invoke-with-response-stream</code></td>
-              <td>Streaming invoke (planned)</td>
+              <td>Streaming Claude invoke (AWS Event Stream binary)</td>
+            </tr>
+            <tr>
+              <td><code>POST /model/{modelId}/converse</code></td>
+              <td>Converse API (non-streaming)</td>
+            </tr>
+            <tr>
+              <td><code>POST /model/{modelId}/converse-stream</code></td>
+              <td>Converse API (streaming, AWS Event Stream binary)</td>
             </tr>
           </tbody>
         </table>
@@ -245,6 +260,118 @@
             request format to a common internal format before matching.
           </p>
         </div>
+
+        <h2>Streaming (invoke-with-response-stream)</h2>
+        <p>
+          The <code>invoke-with-response-stream</code> endpoint returns responses using the
+          <strong>AWS Event Stream binary protocol</strong>. llmock implements this protocol
+          natively &mdash; each response chunk is encoded as a binary frame with CRC32 checksums,
+          headers, and a JSON payload, exactly as the real Bedrock service sends them.
+        </p>
+        <p>Streaming events follow the Bedrock Claude streaming sequence:</p>
+        <ul>
+          <li>
+            <code>messageStart</code> &mdash; opens the message with <code>role: "assistant"</code>
+          </li>
+          <li><code>contentBlockStart</code> &mdash; begins a content block</li>
+          <li>
+            <code>contentBlockDelta</code> &mdash; delivers text chunks (<code>text_delta</code>) or
+            tool input (<code>input_json_delta</code>)
+          </li>
+          <li><code>contentBlockStop</code> &mdash; closes the content block</li>
+          <li>
+            <code>messageStop</code> &mdash; closes the message with a <code>stopReason</code>
+          </li>
+        </ul>
+
+        <div class="code-block">
+          <div class="code-block-header">streaming SDK usage <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">import</span> { <span class="type">BedrockRuntimeClient</span>, <span class="type">InvokeModelWithResponseStreamCommand</span> } <span class="kw">from</span> <span class="str">"@aws-sdk/client-bedrock-runtime"</span>;
+
+<span class="kw">const</span> <span class="op">client</span> = <span class="kw">new</span> <span class="type">BedrockRuntimeClient</span>({
+  <span class="prop">region</span>: <span class="str">"us-east-1"</span>,
+  <span class="prop">endpoint</span>: <span class="str">"http://localhost:4005"</span>,
+  <span class="prop">credentials</span>: { <span class="prop">accessKeyId</span>: <span class="str">"mock"</span>, <span class="prop">secretAccessKey</span>: <span class="str">"mock"</span> },
+});
+
+<span class="kw">const</span> <span class="op">response</span> = <span class="kw">await</span> <span class="op">client</span>.<span class="fn">send</span>(<span class="kw">new</span> <span class="type">InvokeModelWithResponseStreamCommand</span>({
+  <span class="prop">modelId</span>: <span class="str">"anthropic.claude-3-5-sonnet-20241022-v2:0"</span>,
+  <span class="prop">contentType</span>: <span class="str">"application/json"</span>,
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+    <span class="prop">anthropic_version</span>: <span class="str">"bedrock-2023-05-31"</span>,
+    <span class="prop">max_tokens</span>: <span class="num">512</span>,
+    <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"Hello"</span> }],
+  }),
+}));</code></pre>
+        </div>
+
+        <h2>AWS Event Stream Binary Format</h2>
+        <p>
+          Unlike SSE-based streaming used by OpenAI and Claude, AWS Bedrock streaming uses a
+          <strong>binary event stream protocol</strong>. Each frame has the following layout:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            binary frame layout <span class="lang-tag">text</span>
+          </div>
+          <pre><code>[total_length: 4B uint32-BE]
+[headers_length: 4B uint32-BE]
+[prelude_crc32: 4B CRC32 of first 8 bytes]
+[headers: variable-length string key-value pairs]
+[payload: raw JSON bytes]
+[message_crc32: 4B CRC32 of entire frame minus last 4 bytes]</code></pre>
+        </div>
+        <p>
+          llmock encodes these frames with proper CRC32 checksums, so the AWS SDK can decode them
+          natively. The <code>:event-type</code> header in each frame carries the event name (e.g.
+          <code>chunk</code>), and the <code>:content-type</code> header is set to
+          <code>application/json</code>.
+        </p>
+
+        <h2>Converse API</h2>
+        <p>
+          The Converse API is AWS Bedrock's provider-agnostic conversation interface. It uses
+          camelCase field names and a different request structure than the Claude-native invoke
+          endpoints. llmock supports both <code>/model/{modelId}/converse</code> (non-streaming) and
+          <code>/model/{modelId}/converse-stream</code> (streaming via Event Stream binary).
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            converse request body <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"messages"</span>: [
+    {
+      <span class="prop">"role"</span>: <span class="str">"user"</span>,
+      <span class="prop">"content"</span>: [{ <span class="prop">"text"</span>: <span class="str">"Hello"</span> }]
+    }
+  ],
+  <span class="prop">"system"</span>: [{ <span class="prop">"text"</span>: <span class="str">"You are helpful"</span> }],
+  <span class="prop">"inferenceConfig"</span>: { <span class="prop">"maxTokens"</span>: <span class="num">512</span> }
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">converse response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"output"</span>: {
+    <span class="prop">"message"</span>: {
+      <span class="prop">"role"</span>: <span class="str">"assistant"</span>,
+      <span class="prop">"content"</span>: [{ <span class="prop">"text"</span>: <span class="str">"Hello!"</span> }]
+    }
+  },
+  <span class="prop">"stopReason"</span>: <span class="str">"end_turn"</span>,
+  <span class="prop">"usage"</span>: { <span class="prop">"inputTokens"</span>: <span class="num">0</span>, <span class="prop">"outputTokens"</span>: <span class="num">0</span>, <span class="prop">"totalTokens"</span>: <span class="num">0</span> }
+}</code></pre>
+        </div>
+
+        <p>
+          The Converse API also supports tool calls via <code>toolUse</code> and
+          <code>toolResult</code> content blocks, and tool definitions via the
+          <code>toolConfig</code> field. llmock translates all of these to the unified internal
+          format for fixture matching.
+        </p>
       </main>
     </div>
     <footer class="docs-footer">
