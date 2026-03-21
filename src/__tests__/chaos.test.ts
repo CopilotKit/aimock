@@ -157,6 +157,66 @@ describe("evaluateChaos", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unit tests: evaluateChaos — header value clamping and validation
+// ---------------------------------------------------------------------------
+
+describe("evaluateChaos — header value clamping and validation", () => {
+  it("ignores NaN header value (e.g., 'banana') and does not trigger chaos", () => {
+    // "banana" parses to NaN via parseFloat — should be ignored, not crash
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "banana",
+    };
+    // Run 20 times — none should trigger (NaN ignored means no rate set)
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBeNull();
+    }
+  });
+
+  it("clamps header drop value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "2.0",
+    };
+    // Run 20 times — every one must trigger since clamped to 1.0
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("drop");
+    }
+  });
+
+  it("clamps header drop value < 0 to 0 (never triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "-1.0",
+    };
+    // Run 50 times — none should trigger since clamped to 0
+    for (let i = 0; i < 50; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBeNull();
+    }
+  });
+
+  it("clamps header malformed value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-malformed": "5.0",
+    };
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("malformed");
+    }
+  });
+
+  it("clamps header disconnect value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-disconnect": "99.0",
+    };
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("disconnect");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration tests: chaos through HTTP server
 // ---------------------------------------------------------------------------
 
@@ -254,6 +314,20 @@ describe("chaos integration: rate 0 never fires", () => {
     for (const res of results) {
       expect(res.status).toBe(200);
     }
+  });
+});
+
+describe("chaos integration: disconnect", () => {
+  it("destroys connection when disconnectRate is 1.0", async () => {
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "hello" }, response: { content: "Hi there" } },
+    ];
+    instance = await createServer(fixtures, { chaos: { disconnectRate: 1.0 } });
+
+    // The server destroys the connection — httpPost should reject
+    await expect(
+      httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello")),
+    ).rejects.toThrow();
   });
 });
 

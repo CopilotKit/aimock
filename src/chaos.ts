@@ -2,7 +2,7 @@
  * Chaos testing support for LLMock.
  *
  * Provides probabilistic failure injection — requests can be dropped (500),
- * returned with malformed JSON, or have the connection destroyed mid-flight.
+ * returned with malformed JSON, or have the connection forcibly disconnected.
  *
  * Precedence: per-request headers > fixture-level config > server-level defaults.
  */
@@ -40,24 +40,54 @@ function resolveChaosConfig(
 
     if (typeof dropHeader === "string") {
       const val = parseFloat(dropHeader);
-      if (!isNaN(val)) base.dropRate = val;
+      if (isNaN(val)) {
+        console.warn(`[chaos] x-llmock-chaos-drop: invalid value "${dropHeader}", ignoring`);
+      } else {
+        if (val < 0 || val > 1) {
+          console.warn(`[chaos] x-llmock-chaos-drop: value ${val} out of range [0,1], clamping`);
+        }
+        base.dropRate = Math.min(1, Math.max(0, val));
+      }
     }
     if (typeof malformedHeader === "string") {
       const val = parseFloat(malformedHeader);
-      if (!isNaN(val)) base.malformedRate = val;
+      if (isNaN(val)) {
+        console.warn(
+          `[chaos] x-llmock-chaos-malformed: invalid value "${malformedHeader}", ignoring`,
+        );
+      } else {
+        if (val < 0 || val > 1) {
+          console.warn(
+            `[chaos] x-llmock-chaos-malformed: value ${val} out of range [0,1], clamping`,
+          );
+        }
+        base.malformedRate = Math.min(1, Math.max(0, val));
+      }
     }
     if (typeof disconnectHeader === "string") {
       const val = parseFloat(disconnectHeader);
-      if (!isNaN(val)) base.disconnectRate = val;
+      if (isNaN(val)) {
+        console.warn(
+          `[chaos] x-llmock-chaos-disconnect: invalid value "${disconnectHeader}", ignoring`,
+        );
+      } else {
+        if (val < 0 || val > 1) {
+          console.warn(
+            `[chaos] x-llmock-chaos-disconnect: value ${val} out of range [0,1], clamping`,
+          );
+        }
+        base.disconnectRate = Math.min(1, Math.max(0, val));
+      }
     }
   }
 
-  // Clamp all rates to [0, 1]
-  if (base.dropRate !== undefined) base.dropRate = Math.max(0, Math.min(1, base.dropRate));
+  // Clamp all resolved rates to [0, 1] regardless of source.
+  // Header values are already clamped above; this covers fixture-level and server defaults.
+  if (base.dropRate !== undefined) base.dropRate = Math.min(1, Math.max(0, base.dropRate));
   if (base.malformedRate !== undefined)
-    base.malformedRate = Math.max(0, Math.min(1, base.malformedRate));
+    base.malformedRate = Math.min(1, Math.max(0, base.malformedRate));
   if (base.disconnectRate !== undefined)
-    base.disconnectRate = Math.max(0, Math.min(1, base.disconnectRate));
+    base.disconnectRate = Math.min(1, Math.max(0, base.disconnectRate));
 
   return base;
 }
