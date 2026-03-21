@@ -1651,3 +1651,36 @@ describe("collapseOllamaNDJSON with tool_calls", () => {
     expect(result.toolCalls![1].arguments).toBe('{"tz":"PST"}');
   });
 });
+
+// ---------------------------------------------------------------------------
+// decodeEventStreamFrames bounds check (totalLength > buf.length)
+// ---------------------------------------------------------------------------
+
+describe("decodeEventStreamFrames bounds check", () => {
+  it("returns truncated when totalLength exceeds buffer size", () => {
+    // Build a 20-byte buffer where totalLength field is set to 9999
+    const buf = Buffer.alloc(20, 0);
+    buf.writeUInt32BE(9999, 0); // totalLength = 9999 (far beyond buffer size)
+    buf.writeUInt32BE(0, 4); // headersLength = 0
+    // Leave CRC bytes as 0 — bounds check fires before CRC check
+    const result = collapseBedrockEventStream(buf);
+    expect(result.truncated).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collapseStreamingResponse: bedrock SSE case
+// ---------------------------------------------------------------------------
+
+describe("collapseStreamingResponse bedrock SSE", () => {
+  it('dispatches text/event-stream with "bedrock" to Anthropic SSE collapse', () => {
+    const body = [
+      `event: content_block_delta`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "bedrock-sse" } })}`,
+      "",
+    ].join("\n");
+    const result = collapseStreamingResponse("text/event-stream", "bedrock", body);
+    expect(result).not.toBeNull();
+    expect(result!.content).toBe("bedrock-sse");
+  });
+});

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { evaluateChaos } from "../chaos.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -582,5 +582,36 @@ describe("fixture-level chaos on non-OpenAI provider", () => {
     expect(res.status).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.error.code).toBe("chaos_drop");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// logLevel: "silent" — invalid chaos headers must not throw or output warnings
+// ---------------------------------------------------------------------------
+
+describe("chaos with logLevel silent: invalid header is ignored gracefully", () => {
+  it("proceeds normally and does not throw when x-llmock-chaos-drop is not a number", async () => {
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "hello" }, response: { content: "Hi there" } },
+    ];
+    instance = await createServer(fixtures, { logLevel: "silent" });
+
+    // "notanumber" parses to NaN — should be silently ignored, request proceeds normally
+    const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"), {
+      "X-LLMock-Chaos-Drop": "notanumber",
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].message.content).toBe("Hi there");
+  });
+
+  it("does not call console.warn when evaluateChaos is called without a logger and header is invalid", () => {
+    // When evaluateChaos is used directly (public API) without a logger, invalid header values
+    // must not produce console.warn output — the caller has no logger to suppress it.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // "notanumber" parses to NaN — old code would call console.warn; new code uses logger?.warn (no-op)
+    evaluateChaos(null, undefined, { "x-llmock-chaos-drop": "notanumber" });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

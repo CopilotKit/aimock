@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -2646,6 +2646,71 @@ async function setupUpstreamAndRecorder(
     fixturePath: tmpDir,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Body accumulation timeout
+// ---------------------------------------------------------------------------
+
+describe("makeUpstreamRequest body timeout", () => {
+  let fastRawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (fastRawServer) {
+      await new Promise<void>((resolve) => fastRawServer!.close(() => resolve()));
+      fastRawServer = undefined;
+    }
+  });
+
+  it("calls res.setTimeout on the upstream IncomingMessage for body accumulation guard", async () => {
+    // Fast upstream that responds immediately — we just want to verify setTimeout is called
+    fastRawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { content: "ok", role: "assistant" }, finish_reason: "stop" }],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => fastRawServer!.listen(0, "127.0.0.1", resolve));
+    const { port } = fastRawServer!.address() as { port: number };
+
+    const setTimeoutSpy = vi.spyOn(http.IncomingMessage.prototype, "setTimeout");
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-timeout-"));
+    const record: RecordConfig = {
+      providers: { openai: `http://127.0.0.1:${port}` },
+      fixturePath: tmpDir,
+    };
+    const logger = new Logger("silent");
+    const fixtures: Fixture[] = [];
+
+    const { req, res } = createMockReqRes();
+    // Provide a minimal writable res so proxyAndRecord can write the response
+    const chunks: Buffer[] = [];
+    Object.assign(res, {
+      writeHead: () => res,
+      end: (data?: Buffer | string) => {
+        if (data) chunks.push(typeof data === "string" ? Buffer.from(data) : data);
+        return res;
+      },
+      setHeader: () => res,
+    });
+
+    await proxyAndRecord(
+      req,
+      res,
+      { model: "gpt-4", messages: [{ role: "user", content: "hello" }] },
+      "openai",
+      "/v1/chat/completions",
+      fixtures,
+      { record, logger },
+    );
+
+    // Verify res.setTimeout was called with the 30-second body accumulation timeout
+    expect(setTimeoutSpy).toHaveBeenCalledWith(30_000, expect.any(Function));
+    setTimeoutSpy.mockRestore();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Binary EventStream relay preserves data integrity
