@@ -7,12 +7,15 @@
  */
 
 import { crc32 } from "node:zlib";
-import type { ToolCall } from "./types.js";
+import type { RecordProviderKey, ToolCall } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Result type shared by all collapse functions
 // ---------------------------------------------------------------------------
 
+// TODO: Consider making this a discriminated union ({ type: "text"; content: string }
+// | { type: "toolCalls"; toolCalls: ToolCall[] } | { type: "empty" }) to prevent
+// ambiguous results and simplify downstream consumers.
 export interface CollapseResult {
   content?: string;
   toolCalls?: ToolCall[];
@@ -602,10 +605,11 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
 /**
  * Collapse a streaming response body into a non-streaming fixture response.
  * Returns null if the content type is not a known streaming format.
+ * Falls back to OpenAI SSE parsing for unrecognized provider keys with text/event-stream.
  */
 export function collapseStreamingResponse(
   contentType: string,
-  providerKey: string,
+  providerKey: RecordProviderKey,
   body: string | Buffer,
 ): CollapseResult | null {
   const ct = contentType.toLowerCase();
@@ -634,8 +638,9 @@ export function collapseStreamingResponse(
       case "cohere":
         return collapseCohereSSE(str);
       default:
-        // Unknown provider — fall back to OpenAI SSE format.
-        // TODO: log at debug level when provider is not recognized
+        console.warn(
+          `[stream-collapse] unknown SSE provider "${providerKey}", falling back to OpenAI SSE format`,
+        );
         return collapseOpenAISSE(str);
     }
   }

@@ -695,7 +695,11 @@ describe("collapseStreamingResponse", () => {
 
   it('dispatches text/event-stream with "unknown-provider" to OpenAI collapse (fallback)', () => {
     const body = `data: ${JSON.stringify({ id: "c1", choices: [{ delta: { content: "fallback-hi" } }] })}\n\ndata: [DONE]\n\n`;
-    const result = collapseStreamingResponse("text/event-stream", "unknown-provider", body);
+    const result = collapseStreamingResponse(
+      "text/event-stream",
+      "unknown-provider" as never,
+      body,
+    );
     expect(result).not.toBeNull();
     expect(result!.content).toBe("fallback-hi");
   });
@@ -721,6 +725,18 @@ describe("collapseStreamingResponse", () => {
     const result = collapseStreamingResponse("text/event-stream", "openai", buf);
     expect(result).not.toBeNull();
     expect(result!.content).toBe("buf-hi");
+  });
+
+  it("unknown SSE provider key falls back to OpenAI SSE format", () => {
+    const openaiSse = 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n';
+    // "unknown-provider" is not in RecordProviderKey; "as never" lets us test the runtime default branch
+    const result = collapseStreamingResponse(
+      "text/event-stream",
+      "unknown-provider" as never,
+      openaiSse,
+    );
+    expect(result).not.toBeNull();
+    expect(result?.content).toBe("hello");
   });
 });
 

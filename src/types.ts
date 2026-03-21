@@ -250,6 +250,8 @@ export interface MockServerOptions {
 
 // Handler defaults — the common shape passed from server.ts to every handler
 
+// TODO: Consider adding a resolveChunkSize(fixture, defaults) helper to centralize
+// the Math.max(1, fixture.chunkSize ?? defaults.chunkSize) pattern used by all handlers.
 export interface HandlerDefaults {
   latency: number;
   chunkSize: number;
