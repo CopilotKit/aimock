@@ -431,7 +431,7 @@ llmock --strict -f ./fixtures
 ```
 
 - `--record` enables proxy-on-miss. Requires at least one `--provider-*` flag.
-- `--strict` returns a 503 error for unmatched requests instead of proxying, even if `--record` is set. Use this in CI to ensure all requests hit fixtures.
+- `--strict` returns a 503 error when no fixture matches AND no proxy is configured (or the proxy attempt fails), instead of silently returning a 404. The proxy is still tried first when `--record` is set. Use this in CI to prevent unmatched requests from slipping through as silent 404s.
 - Provider flags: `--provider-openai`, `--provider-anthropic`, `--provider-gemini`, `--provider-vertexai`, `--provider-bedrock`, `--provider-azure`, `--provider-ollama`, `--provider-cohere`.
 
 ### How it works
