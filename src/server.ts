@@ -433,9 +433,7 @@ export async function createServer(
             elapsed,
           );
         } catch (err) {
-          logger.debug(
-            `Metrics instrumentation error: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          defaults.logger.warn("metrics instrumentation error", err);
         }
       });
     }
