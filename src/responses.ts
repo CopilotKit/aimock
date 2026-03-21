@@ -8,10 +8,10 @@
 
 import type * as http from "node:http";
 import type {
-  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  HandlerDefaults,
   StreamingProfile,
   ToolCall,
   ToolDefinition,
@@ -28,8 +28,8 @@ import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { proxyAndRecord } from "./recorder.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
@@ -498,7 +498,7 @@ export async function handleResponses(
   raw: string,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
+  defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   setCorsHeaders(res);
@@ -534,29 +534,68 @@ export async function handleResponses(
   }
 
   if (
-    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/responses",
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    })
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/responses",
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      defaults.registry,
+    )
   )
     return;
 
   if (!fixture) {
+    if (defaults.record) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        completionReq,
+        "openai",
+        req.url ?? "/v1/responses",
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path: req.url ?? "/v1/responses",
+          headers: flattenHeaders(req.headers),
+          body: completionReq,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      defaults.logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/responses"}`,
+      );
+    }
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: { status: strictStatus, fixture: null },
     });
     writeErrorResponse(
       res,
-      404,
+      strictStatus,
       JSON.stringify({
         error: {
-          message: "No fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
           code: "no_fixture_match",
         },

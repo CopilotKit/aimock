@@ -130,7 +130,7 @@ export function handleWebSocketRealtime(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
 ): void {
   const { logger } = defaults;
   const sessionId = generateId("sess");
@@ -176,7 +176,7 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
 ): Promise<void> {
@@ -246,7 +246,7 @@ async function handleResponseCreate(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
 ): Promise<void> {
@@ -266,6 +266,11 @@ async function handleResponseCreate(
   }
 
   if (!fixture) {
+    if (defaults.strict) {
+      defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      ws.close(1008, "Strict mode: no fixture matched");
+      return;
+    }
     journal.add({
       method: "WS",
       path: "/v1/realtime",

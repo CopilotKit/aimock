@@ -1,5 +1,10 @@
 import * as http from "node:http";
-import type { Fixture, ChatCompletionRequest, ChaosConfig, MockServerOptions } from "./types.js";
+import type {
+  Fixture,
+  ChatCompletionRequest,
+  HandlerDefaults,
+  MockServerOptions,
+} from "./types.js";
 import { Journal } from "./journal.js";
 import { matchFixture } from "./router.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
@@ -17,20 +22,25 @@ import {
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
 import { handleGemini } from "./gemini.js";
-import { handleBedrock } from "./bedrock.js";
+import { handleBedrock, handleBedrockStream } from "./bedrock.js";
+import { handleConverse, handleConverseStream } from "./bedrock-converse.js";
 import { handleEmbeddings } from "./embeddings.js";
+import { handleOllama, handleOllamaGenerate } from "./ollama.js";
+import { handleCohere } from "./cohere.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
+import { proxyAndRecord } from "./recorder.js";
 
 export interface ServerInstance {
   server: http.Server;
   journal: Journal;
   url: string;
-  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig };
+  defaults: HandlerDefaults;
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
@@ -40,11 +50,21 @@ const GEMINI_LIVE_PATH =
   "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const MESSAGES_PATH = "/v1/messages";
 const EMBEDDINGS_PATH = "/v1/embeddings";
+const COHERE_CHAT_PATH = "/v2/chat";
 const DEFAULT_CHUNK_SIZE = 20;
 
 const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
 const AZURE_DEPLOYMENT_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
 const BEDROCK_INVOKE_RE = /^\/model\/([^/]+)\/invoke$/;
+const BEDROCK_STREAM_RE = /^\/model\/([^/]+)\/invoke-with-response-stream$/;
+const BEDROCK_CONVERSE_RE = /^\/model\/([^/]+)\/converse$/;
+const BEDROCK_CONVERSE_STREAM_RE = /^\/model\/([^/]+)\/converse-stream$/;
+const VERTEX_AI_RE =
+  /^\/v1\/projects\/[^/]+\/locations\/[^/]+\/publishers\/google\/models\/([^/:]+):(generateContent|streamGenerateContent)$/;
+
+const OLLAMA_CHAT_PATH = "/api/chat";
+const OLLAMA_GENERATE_PATH = "/api/generate";
+const OLLAMA_TAGS_PATH = "/api/tags";
 
 const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
@@ -93,8 +113,9 @@ async function handleCompletions(
   res: http.ServerResponse,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
+  defaults: HandlerDefaults,
   modelFallback?: string,
+  providerKey?: string,
 ): Promise<void> {
   setCorsHeaders(res);
 
@@ -167,29 +188,71 @@ async function handleCompletions(
 
   // Apply chaos before normal response handling
   if (
-    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
-      method,
-      path,
-      headers: flatHeaders,
-      body,
-    })
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method,
+        path,
+        headers: flatHeaders,
+        body,
+      },
+      defaults.registry,
+    )
   )
     return;
 
   if (!fixture) {
+    // Try record-and-replay proxy if configured
+    if (defaults.record && providerKey) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        body,
+        providerKey,
+        req.url ?? COMPLETIONS_PATH,
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path: req.url ?? COMPLETIONS_PATH,
+          headers: flattenHeaders(req.headers),
+          body,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      defaults.logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
+      );
+    }
+
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
-      response: { status: 404, fixture: null },
+      response: { status: strictStatus, fixture: null },
     });
     writeErrorResponse(
       res,
-      404,
+      strictStatus,
       JSON.stringify({
         error: {
-          message: "No fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
           code: "no_fixture_match",
         },
@@ -310,14 +373,30 @@ export async function createServer(
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
   const logger = new Logger(options?.logLevel ?? "silent");
+  const registry = options?.metrics ? createMetricsRegistry() : undefined;
+  const serverOptions = options ?? {};
   const defaults = {
-    latency: options?.latency ?? 0,
-    chunkSize: Math.max(1, options?.chunkSize ?? DEFAULT_CHUNK_SIZE),
+    latency: serverOptions.latency ?? 0,
+    chunkSize: Math.max(1, serverOptions.chunkSize ?? DEFAULT_CHUNK_SIZE),
     logger,
-    chaos: options?.chaos,
+    get chaos() {
+      return serverOptions.chaos;
+    },
+    registry,
+    get record() {
+      return serverOptions.record;
+    },
+    get strict() {
+      return serverOptions.strict;
+    },
   };
 
   const journal = new Journal();
+
+  // Set initial fixtures-loaded gauge
+  if (registry) {
+    registry.setGauge("llmock_fixtures_loaded", {}, fixtures.length);
+  }
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
     // OPTIONS preflight
@@ -326,9 +405,33 @@ export async function createServer(
       return;
     }
 
+    // Record start time for metrics
+    const startTime = registry ? process.hrtime.bigint() : 0n;
+
     // Parse the URL pathname (strip query string)
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     let pathname = parsedUrl.pathname;
+
+    // Instrument response completion for metrics
+    if (registry) {
+      const rawPathname = pathname;
+      res.on("finish", () => {
+        const normalizedPath = normalizePathLabel(rawPathname);
+        const method = req.method ?? "UNKNOWN";
+        const status = String(res.statusCode);
+        registry.incrementCounter("llmock_requests_total", {
+          method,
+          path: normalizedPath,
+          status,
+        });
+        const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
+        registry.observeHistogram(
+          "llmock_request_duration_seconds",
+          { method, path: normalizedPath },
+          elapsed,
+        );
+      });
+    }
 
     // Azure OpenAI: /openai/deployments/{id}/{operation} → /v1/{operation} (chat/completions, embeddings)
     // Must be checked BEFORE the generic /openai/ prefix strip
@@ -358,6 +461,18 @@ export async function createServer(
       setCorsHeaders(res);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ready" }));
+      return;
+    }
+
+    // Prometheus metrics
+    if (pathname === "/metrics" && req.method === "GET") {
+      if (!registry) {
+        handleNotFound(res, "Not found");
+        return;
+      }
+      setCorsHeaders(res);
+      res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+      res.end(registry.serialize());
       return;
     }
 
@@ -435,8 +550,8 @@ export async function createServer(
           } else if (!res.writableEnded) {
             try {
               res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch {
-              /* */
+            } catch (writeErr) {
+              logger.debug("Failed to write error recovery response:", writeErr);
             }
             res.end();
           }
@@ -459,8 +574,32 @@ export async function createServer(
           } else if (!res.writableEnded) {
             try {
               res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch {
-              /* */
+            } catch (writeErr) {
+              logger.debug("Failed to write error recovery response:", writeErr);
+            }
+            res.end();
+          }
+        });
+      return;
+    }
+
+    // POST /v2/chat — Cohere v2 Chat API
+    if (pathname === COHERE_CHAT_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) => handleCohere(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            try {
+              res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            } catch (writeErr) {
+              logger.debug("Failed to write error recovery response:", writeErr);
             }
             res.end();
           }
@@ -540,8 +679,48 @@ export async function createServer(
           } else if (!res.writableEnded) {
             try {
               res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch {
-              /* */
+            } catch (writeErr) {
+              logger.debug("Failed to write error recovery response:", writeErr);
+            }
+            res.end();
+          }
+        });
+      return;
+    }
+
+    // POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model}:(generateContent|streamGenerateContent) — Vertex AI
+    const vertexMatch = pathname.match(VERTEX_AI_RE);
+    if (vertexMatch && req.method === "POST") {
+      const vertexModel = vertexMatch[1];
+      const streaming = vertexMatch[2] === "streamGenerateContent";
+      readBody(req)
+        .then((raw) =>
+          handleGemini(
+            req,
+            res,
+            raw,
+            vertexModel,
+            streaming,
+            fixtures,
+            journal,
+            defaults,
+            setCorsHeaders,
+            "vertexai",
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            try {
+              res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            } catch (writeErr) {
+              logger.debug("Failed to write error recovery response:", writeErr);
             }
             res.end();
           }
@@ -572,6 +751,165 @@ export async function createServer(
       return;
     }
 
+    // POST /model/{modelId}/invoke-with-response-stream — AWS Bedrock Claude streaming
+    const bedrockStreamMatch = pathname.match(BEDROCK_STREAM_RE);
+    if (bedrockStreamMatch && req.method === "POST") {
+      const bedrockModelId = bedrockStreamMatch[1];
+      readBody(req)
+        .then((raw) =>
+          handleBedrockStream(
+            req,
+            res,
+            raw,
+            bedrockModelId,
+            fixtures,
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /model/{modelId}/converse — AWS Bedrock Converse API
+    const converseMatch = pathname.match(BEDROCK_CONVERSE_RE);
+    if (converseMatch && req.method === "POST") {
+      const converseModelId = converseMatch[1];
+      readBody(req)
+        .then((raw) =>
+          handleConverse(
+            req,
+            res,
+            raw,
+            converseModelId,
+            fixtures,
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /model/{modelId}/converse-stream — AWS Bedrock Converse streaming API
+    const converseStreamMatch = pathname.match(BEDROCK_CONVERSE_STREAM_RE);
+    if (converseStreamMatch && req.method === "POST") {
+      const converseStreamModelId = converseStreamMatch[1];
+      readBody(req)
+        .then((raw) =>
+          handleConverseStream(
+            req,
+            res,
+            raw,
+            converseStreamModelId,
+            fixtures,
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /api/chat — Ollama Chat API
+    if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) => handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /api/generate — Ollama Generate API
+    if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) =>
+          handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // GET /api/tags — Ollama Models listing
+    if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
+      setCorsHeaders(res);
+      const modelIds = new Set<string>();
+      for (const f of fixtures) {
+        if (f.match.model && typeof f.match.model === "string") {
+          modelIds.add(f.match.model);
+        }
+      }
+      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
+      const models = ids.map((name) => ({
+        name,
+        model: name,
+        modified_at: new Date().toISOString(),
+        size: 0,
+        digest: "",
+        details: {},
+      }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ models }));
+      return;
+    }
+
     // POST /v1/chat/completions — Chat Completions API
     if (pathname !== COMPLETIONS_PATH) {
       handleNotFound(res, "Not found");
@@ -582,33 +920,40 @@ export async function createServer(
       return;
     }
 
-    handleCompletions(req, res, fixtures, journal, defaults, azureDeploymentId).catch(
-      (err: unknown) => {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({
-              error: {
-                message: msg,
-                type: "server_error",
-              },
-            }),
+    const completionsProvider = azureDeploymentId ? "azure" : "openai";
+    handleCompletions(
+      req,
+      res,
+      fixtures,
+      journal,
+      defaults,
+      azureDeploymentId,
+      completionsProvider,
+    ).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Internal error";
+      if (!res.headersSent) {
+        writeErrorResponse(
+          res,
+          500,
+          JSON.stringify({
+            error: {
+              message: msg,
+              type: "server_error",
+            },
+          }),
+        );
+      } else if (!res.writableEnded) {
+        // Headers already sent (SSE stream in progress) — write error event then close
+        try {
+          res.write(
+            `data: ${JSON.stringify({ error: { message: msg, type: "server_error" } })}\n\n`,
           );
-        } else if (!res.writableEnded) {
-          // Headers already sent (SSE stream in progress) — write error event then close
-          try {
-            res.write(
-              `data: ${JSON.stringify({ error: { message: msg, type: "server_error" } })}\n\n`,
-            );
-          } catch {
-            // write itself failed, nothing more we can do
-          }
-          res.end();
+        } catch (writeErr) {
+          logger.debug("Failed to write error recovery response:", writeErr);
         }
-      },
-    );
+        res.end();
+      }
+    });
   });
 
   // ─── WebSocket upgrade handling ──────────────────────────────────────────

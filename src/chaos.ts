@@ -8,11 +8,10 @@
  */
 
 import type * as http from "node:http";
-import type { ChaosConfig, ChatCompletionRequest, Fixture } from "./types.js";
+import type { ChaosAction, ChaosConfig, ChatCompletionRequest, Fixture } from "./types.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
-
-export type ChaosAction = "drop" | "malformed" | "disconnect";
+import type { MetricsRegistry } from "./metrics.js";
 
 /**
  * Resolve chaos config from headers, fixture, and server defaults.
@@ -52,6 +51,13 @@ function resolveChaosConfig(
       if (!isNaN(val)) base.disconnectRate = val;
     }
   }
+
+  // Clamp all rates to [0, 1]
+  if (base.dropRate !== undefined) base.dropRate = Math.max(0, Math.min(1, base.dropRate));
+  if (base.malformedRate !== undefined)
+    base.malformedRate = Math.max(0, Math.min(1, base.malformedRate));
+  if (base.disconnectRate !== undefined)
+    base.disconnectRate = Math.max(0, Math.min(1, base.disconnectRate));
 
   return base;
 }
@@ -106,9 +112,14 @@ export function applyChaos(
   rawHeaders: http.IncomingHttpHeaders,
   journal: Journal,
   context: ChaosJournalContext,
+  registry?: MetricsRegistry,
 ): boolean {
   const action = evaluateChaos(fixture, serverDefaults, rawHeaders);
   if (!action) return false;
+
+  if (registry) {
+    registry.incrementCounter("llmock_chaos_triggered_total", { action });
+  }
 
   switch (action) {
     case "drop": {

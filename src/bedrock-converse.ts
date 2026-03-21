@@ -1,13 +1,10 @@
 /**
- * AWS Bedrock Claude endpoint support.
+ * AWS Bedrock Converse API support.
  *
- * Handles POST /model/{modelId}/invoke and /invoke-with-response-stream
- * requests. Translates incoming Bedrock Claude format into the
- * ChatCompletionRequest format used by the fixture router, and converts
- * fixture responses back into the appropriate Bedrock response format
- * (JSON for invoke, AWS Event Stream binary encoding for streaming).
- *
- * See bedrock-converse.ts for /converse and /converse-stream support.
+ * Translates incoming Converse and Converse-stream requests (Bedrock Converse
+ * format) into the ChatCompletionRequest format used by the fixture router,
+ * and converts fixture responses back into Converse API format — either a
+ * single JSON response or an Event Stream binary stream.
  */
 
 import type * as http from "node:http";
@@ -20,7 +17,6 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
-  generateMessageId,
   generateToolUseId,
   isTextResponse,
   isToolCallResponse,
@@ -35,67 +31,45 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { buildBedrockStreamTextEvents, buildBedrockStreamToolCallEvents } from "./bedrock.js";
 
-// ─── Bedrock Claude request types ────────────────────────────────────────────
+// ─── Converse request types ─────────────────────────────────────────────────
 
-interface BedrockContentBlock {
-  type: string;
+interface ConverseContentBlock {
   text?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  tool_use_id?: string;
-  content?: string | BedrockContentBlock[];
-  is_error?: boolean;
+  toolUse?: { toolUseId: string; name: string; input: object };
+  toolResult?: { toolUseId: string; content: { text?: string }[] };
 }
 
-interface BedrockMessage {
+interface ConverseMessage {
   role: "user" | "assistant";
-  content: string | BedrockContentBlock[];
+  content: ConverseContentBlock[];
 }
 
-interface BedrockToolDef {
+interface ConverseToolSpec {
   name: string;
   description?: string;
-  input_schema?: object;
+  inputSchema?: object;
 }
 
-interface BedrockRequest {
-  anthropic_version?: string;
-  messages: BedrockMessage[];
-  system?: string | BedrockContentBlock[];
-  tools?: BedrockToolDef[];
-  tool_choice?: unknown;
-  max_tokens: number;
-  temperature?: number;
-  [key: string]: unknown;
+interface ConverseRequest {
+  messages: ConverseMessage[];
+  system?: { text: string }[];
+  inferenceConfig?: { maxTokens?: number; temperature?: number };
+  toolConfig?: { tools: { toolSpec: ConverseToolSpec }[] };
 }
 
-// ─── Input conversion: Bedrock → ChatCompletionRequest ──────────────────────
+// ─── Input conversion: Converse → ChatCompletionRequest ─────────────────────
 
-function extractTextContent(content: string | BedrockContentBlock[]): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text ?? "")
-    .join("");
-}
-
-export function bedrockToCompletionRequest(
-  req: BedrockRequest,
+export function converseToCompletionRequest(
+  req: ConverseRequest,
   modelId: string,
 ): ChatCompletionRequest {
   const messages: ChatMessage[] = [];
 
   // system field → system message
-  if (req.system) {
-    const systemText =
-      typeof req.system === "string"
-        ? req.system
-        : req.system
-            .filter((b) => b.type === "text")
-            .map((b) => b.text ?? "")
-            .join("");
+  if (req.system && req.system.length > 0) {
+    const systemText = req.system.map((s) => s.text).join("");
     if (systemText) {
       messages.push({ role: "system", content: systemText });
     }
@@ -103,79 +77,70 @@ export function bedrockToCompletionRequest(
 
   for (const msg of req.messages) {
     if (msg.role === "user") {
-      // Check for tool_result blocks
-      if (typeof msg.content !== "string" && Array.isArray(msg.content)) {
-        const toolResults = msg.content.filter((b) => b.type === "tool_result");
-        const textBlocks = msg.content.filter((b) => b.type === "text");
+      // Check for toolResult blocks
+      const toolResults = msg.content.filter((b) => b.toolResult);
+      const textBlocks = msg.content.filter((b) => b.text !== undefined && !b.toolResult);
 
-        if (toolResults.length > 0) {
-          for (const tr of toolResults) {
-            const resultContent =
-              typeof tr.content === "string"
-                ? tr.content
-                : Array.isArray(tr.content)
-                  ? tr.content
-                      .filter((b) => b.type === "text")
-                      .map((b) => b.text ?? "")
-                      .join("")
-                  : "";
-            messages.push({
-              role: "tool",
-              content: resultContent,
-              tool_call_id: tr.tool_use_id,
-            });
-          }
-          if (textBlocks.length > 0) {
-            messages.push({
-              role: "user",
-              content: textBlocks.map((b) => b.text ?? "").join(""),
-            });
-          }
-          continue;
-        }
-      }
-      messages.push({
-        role: "user",
-        content: extractTextContent(msg.content),
-      });
-    } else if (msg.role === "assistant") {
-      if (typeof msg.content === "string") {
-        messages.push({ role: "assistant", content: msg.content });
-      } else if (Array.isArray(msg.content)) {
-        const toolUseBlocks = msg.content.filter((b) => b.type === "tool_use");
-        const textContent = extractTextContent(msg.content);
-
-        if (toolUseBlocks.length > 0) {
+      if (toolResults.length > 0) {
+        for (const block of toolResults) {
+          const tr = block.toolResult!;
+          const resultContent = tr.content.map((c) => c.text ?? "").join("");
           messages.push({
-            role: "assistant",
-            content: textContent || null,
-            tool_calls: toolUseBlocks.map((b) => ({
-              id: b.id ?? generateToolUseId(),
-              type: "function" as const,
-              function: {
-                name: b.name ?? "",
-                arguments: typeof b.input === "string" ? b.input : JSON.stringify(b.input ?? {}),
-              },
-            })),
+            role: "tool",
+            content: resultContent,
+            tool_call_id: tr.toolUseId,
           });
-        } else {
-          messages.push({ role: "assistant", content: textContent || null });
         }
+        if (textBlocks.length > 0) {
+          messages.push({
+            role: "user",
+            content: textBlocks.map((b) => b.text ?? "").join(""),
+          });
+        }
+        continue;
+      }
+
+      // Plain user message
+      const text = msg.content
+        .filter((b) => b.text !== undefined)
+        .map((b) => b.text ?? "")
+        .join("");
+      messages.push({ role: "user", content: text });
+    } else if (msg.role === "assistant") {
+      const toolUseBlocks = msg.content.filter((b) => b.toolUse);
+      const textContent = msg.content
+        .filter((b) => b.text !== undefined)
+        .map((b) => b.text ?? "")
+        .join("");
+
+      if (toolUseBlocks.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: textContent || null,
+          tool_calls: toolUseBlocks.map((b) => ({
+            id: b.toolUse!.toolUseId,
+            type: "function" as const,
+            function: {
+              name: b.toolUse!.name,
+              arguments: JSON.stringify(b.toolUse!.input),
+            },
+          })),
+        });
       } else {
-        messages.push({ role: "assistant", content: null });
+        messages.push({ role: "assistant", content: textContent || null });
       }
     }
   }
 
   // Convert tools
   let tools: ToolDefinition[] | undefined;
-  if (req.tools && req.tools.length > 0) {
-    tools = req.tools.map((t) => ({
+  if (req.toolConfig?.tools && req.toolConfig.tools.length > 0) {
+    tools = req.toolConfig.tools.map((t) => ({
       type: "function" as const,
       function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
+        name: t.toolSpec.name,
+        description: t.toolSpec.description,
+        parameters: t.toolSpec.inputSchema,
       },
     }));
   }
@@ -184,62 +149,59 @@ export function bedrockToCompletionRequest(
     model: modelId,
     messages,
     stream: false,
-    temperature: req.temperature,
+    temperature: req.inferenceConfig?.temperature,
     tools,
   };
 }
 
 // ─── Response builders ──────────────────────────────────────────────────────
 
-function buildBedrockTextResponse(content: string, model: string): object {
+function buildConverseTextResponse(content: string): object {
   return {
-    id: generateMessageId(),
-    type: "message",
-    role: "assistant",
-    content: [{ type: "text", text: content }],
-    model,
-    stop_reason: "end_turn",
-    stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
+    output: {
+      message: {
+        role: "assistant",
+        content: [{ text: content }],
+      },
+    },
+    stopReason: "end_turn",
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   };
 }
 
-function buildBedrockToolCallResponse(
-  toolCalls: ToolCall[],
-  model: string,
-  logger: Logger,
-): object {
+function buildConverseToolCallResponse(toolCalls: ToolCall[], logger: Logger): object {
   return {
-    id: generateMessageId(),
-    type: "message",
-    role: "assistant",
-    content: toolCalls.map((tc) => {
-      let argsObj: unknown;
-      try {
-        argsObj = JSON.parse(tc.arguments || "{}");
-      } catch {
-        logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-        );
-        argsObj = {};
-      }
-      return {
-        type: "tool_use",
-        id: tc.id || generateToolUseId(),
-        name: tc.name,
-        input: argsObj,
-      };
-    }),
-    model,
-    stop_reason: "tool_use",
-    stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
+    output: {
+      message: {
+        role: "assistant",
+        content: toolCalls.map((tc) => {
+          let argsObj: unknown;
+          try {
+            argsObj = JSON.parse(tc.arguments || "{}");
+          } catch {
+            logger.warn(
+              `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+            );
+            argsObj = {};
+          }
+          return {
+            toolUse: {
+              toolUseId: tc.id || generateToolUseId(),
+              name: tc.name,
+              input: argsObj,
+            },
+          };
+        }),
+      },
+    },
+    stopReason: "tool_use",
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   };
 }
 
-// ─── Request handler ────────────────────────────────────────────────────────
+// ─── Request handlers ───────────────────────────────────────────────────────
 
-export async function handleBedrock(
+export async function handleConverse(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   raw: string,
@@ -252,11 +214,11 @@ export async function handleBedrock(
   const { logger } = defaults;
   setCorsHeaders(res);
 
-  const urlPath = req.url ?? `/model/${modelId}/invoke`;
+  const urlPath = req.url ?? `/model/${modelId}/converse`;
 
-  let bedrockReq: BedrockRequest;
+  let converseReq: ConverseRequest;
   try {
-    bedrockReq = JSON.parse(raw) as BedrockRequest;
+    converseReq = JSON.parse(raw) as ConverseRequest;
   } catch {
     journal.add({
       method: req.method ?? "POST",
@@ -278,7 +240,7 @@ export async function handleBedrock(
     return;
   }
 
-  if (!bedrockReq.messages || !Array.isArray(bedrockReq.messages)) {
+  if (!converseReq.messages || !Array.isArray(converseReq.messages)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -299,8 +261,7 @@ export async function handleBedrock(
     return;
   }
 
-  // Convert to ChatCompletionRequest for fixture matching
-  const completionReq = bedrockToCompletionRequest(bedrockReq, modelId);
+  const completionReq = converseToCompletionRequest(converseReq, modelId);
 
   const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
 
@@ -388,15 +349,7 @@ export async function handleBedrock(
       body: completionReq,
       response: { status, fixture },
     });
-    // Anthropic-style error format (Bedrock uses Claude): { type: "error", error: { type, message } }
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError));
+    writeErrorResponse(res, status, JSON.stringify(response));
     return;
   }
 
@@ -409,7 +362,7 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockTextResponse(response.content, completionReq.model);
+    const body = buildConverseTextResponse(response.content);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -424,7 +377,7 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockToolCallResponse(response.toolCalls, completionReq.model, logger);
+    const body = buildConverseToolCallResponse(response.toolCalls, logger);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -450,113 +403,7 @@ export async function handleBedrock(
   );
 }
 
-// ─── Streaming event builders ───────────────────────────────────────────────
-
-export function buildBedrockStreamTextEvents(
-  content: string,
-  chunkSize: number,
-): Array<{ eventType: string; payload: object }> {
-  const events: Array<{ eventType: string; payload: object }> = [];
-
-  events.push({
-    eventType: "messageStart",
-    payload: { role: "assistant" },
-  });
-
-  events.push({
-    eventType: "contentBlockStart",
-    payload: { contentBlockIndex: 0, start: {} },
-  });
-
-  for (let i = 0; i < content.length; i += chunkSize) {
-    const slice = content.slice(i, i + chunkSize);
-    events.push({
-      eventType: "contentBlockDelta",
-      payload: {
-        contentBlockIndex: 0,
-        delta: { type: "text_delta", text: slice },
-      },
-    });
-  }
-
-  events.push({
-    eventType: "contentBlockStop",
-    payload: { contentBlockIndex: 0 },
-  });
-
-  events.push({
-    eventType: "messageStop",
-    payload: { stopReason: "end_turn" },
-  });
-
-  return events;
-}
-
-export function buildBedrockStreamToolCallEvents(
-  toolCalls: ToolCall[],
-  chunkSize: number,
-  logger: Logger,
-): Array<{ eventType: string; payload: object }> {
-  const events: Array<{ eventType: string; payload: object }> = [];
-
-  events.push({
-    eventType: "messageStart",
-    payload: { role: "assistant" },
-  });
-
-  for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
-    const tc = toolCalls[tcIdx];
-    const toolUseId = tc.id || generateToolUseId();
-
-    events.push({
-      eventType: "contentBlockStart",
-      payload: {
-        contentBlockIndex: tcIdx,
-        start: {
-          toolUse: { toolUseId, name: tc.name },
-        },
-      },
-    });
-
-    let argsStr: string;
-    try {
-      const parsed = JSON.parse(tc.arguments || "{}");
-      argsStr = JSON.stringify(parsed);
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsStr = "{}";
-    }
-
-    for (let i = 0; i < argsStr.length; i += chunkSize) {
-      const slice = argsStr.slice(i, i + chunkSize);
-      events.push({
-        eventType: "contentBlockDelta",
-        payload: {
-          contentBlockIndex: tcIdx,
-          delta: { type: "input_json_delta", inputJSON: slice },
-        },
-      });
-    }
-
-    events.push({
-      eventType: "contentBlockStop",
-      payload: { contentBlockIndex: tcIdx },
-    });
-  }
-
-  events.push({
-    eventType: "messageStop",
-    payload: { stopReason: "tool_use" },
-  });
-
-  return events;
-}
-
-// ─── Streaming request handler ──────────────────────────────────────────────
-
-export async function handleBedrockStream(
+export async function handleConverseStream(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   raw: string,
@@ -569,11 +416,11 @@ export async function handleBedrockStream(
   const { logger } = defaults;
   setCorsHeaders(res);
 
-  const urlPath = req.url ?? `/model/${modelId}/invoke-with-response-stream`;
+  const urlPath = req.url ?? `/model/${modelId}/converse-stream`;
 
-  let bedrockReq: BedrockRequest;
+  let converseReq: ConverseRequest;
   try {
-    bedrockReq = JSON.parse(raw) as BedrockRequest;
+    converseReq = JSON.parse(raw) as ConverseRequest;
   } catch {
     journal.add({
       method: req.method ?? "POST",
@@ -595,7 +442,7 @@ export async function handleBedrockStream(
     return;
   }
 
-  if (!bedrockReq.messages || !Array.isArray(bedrockReq.messages)) {
+  if (!converseReq.messages || !Array.isArray(converseReq.messages)) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -616,7 +463,7 @@ export async function handleBedrockStream(
     return;
   }
 
-  const completionReq = bedrockToCompletionRequest(bedrockReq, modelId);
+  const completionReq = converseToCompletionRequest(converseReq, modelId);
 
   const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
 

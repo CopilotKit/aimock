@@ -11,11 +11,17 @@ import type {
   ChatCompletion,
 } from "./types.js";
 
+const REDACTED_HEADERS = new Set(["authorization", "x-api-key", "api-key"]);
+
 export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
   const flat: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue;
-    flat[key] = Array.isArray(value) ? value.join(", ") : value;
+    if (REDACTED_HEADERS.has(key.toLowerCase())) {
+      flat[key] = "[REDACTED]";
+    } else {
+      flat[key] = Array.isArray(value) ? value.join(", ") : value;
+    }
   }
   return flat;
 }

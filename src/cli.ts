@@ -6,6 +6,7 @@ import { createServer } from "./server.js";
 import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "./fixture-loader.js";
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
+import type { ChaosConfig, RecordConfig } from "./types.js";
 
 const HELP = `
 Usage: llmock [options]
@@ -19,6 +20,17 @@ Options:
   -w, --watch               Watch fixture path for changes and reload
       --log-level <level>   Log verbosity: silent, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
+      --metrics             Enable Prometheus metrics at GET /metrics
+      --record              Record mode: proxy unmatched requests to real APIs
+      --strict              Strict mode: fail on unmatched requests
+      --provider-openai <url>     Upstream URL for OpenAI (used with --record)
+      --provider-anthropic <url>  Upstream URL for Anthropic
+      --provider-gemini <url>     Upstream URL for Gemini
+      --provider-vertexai <url>   Upstream URL for Vertex AI
+      --provider-bedrock <url>    Upstream URL for Bedrock
+      --provider-azure <url>      Upstream URL for Azure OpenAI
+      --provider-ollama <url>     Upstream URL for Ollama
+      --provider-cohere <url>     Upstream URL for Cohere
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
@@ -35,6 +47,17 @@ const { values } = parseArgs({
     watch: { type: "boolean", short: "w", default: false },
     "log-level": { type: "string", default: "info" },
     "validate-on-load": { type: "boolean", default: false },
+    metrics: { type: "boolean", default: false },
+    record: { type: "boolean", default: false },
+    strict: { type: "boolean", default: false },
+    "provider-openai": { type: "string" },
+    "provider-anthropic": { type: "string" },
+    "provider-gemini": { type: "string" },
+    "provider-vertexai": { type: "string" },
+    "provider-bedrock": { type: "string" },
+    "provider-azure": { type: "string" },
+    "provider-ollama": { type: "string" },
+    "provider-cohere": { type: "string" },
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
@@ -81,7 +104,6 @@ if (Number.isNaN(chunkSize) || chunkSize < 1) {
 const logger = new Logger(logLevel);
 
 // Parse chaos config from CLI flags
-import type { ChaosConfig } from "./types.js";
 let chaos: ChaosConfig | undefined;
 {
   const dropStr = values["chaos-drop"];
@@ -115,6 +137,27 @@ let chaos: ChaosConfig | undefined;
       chaos.disconnectRate = val;
     }
   }
+}
+
+// Parse record config from CLI flags
+let record: RecordConfig | undefined;
+if (values.record) {
+  const providers: RecordConfig["providers"] = {};
+  if (values["provider-openai"]) providers.openai = values["provider-openai"];
+  if (values["provider-anthropic"]) providers.anthropic = values["provider-anthropic"];
+  if (values["provider-gemini"]) providers.gemini = values["provider-gemini"];
+  if (values["provider-vertexai"]) providers.vertexai = values["provider-vertexai"];
+  if (values["provider-bedrock"]) providers.bedrock = values["provider-bedrock"];
+  if (values["provider-azure"]) providers.azure = values["provider-azure"];
+  if (values["provider-ollama"]) providers.ollama = values["provider-ollama"];
+  if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
+
+  if (Object.keys(providers).length === 0) {
+    console.error("Error: --record requires at least one --provider-* flag");
+    process.exit(1);
+  }
+
+  record = { providers, fixturePath: resolve(fixturePath, "recorded") };
 }
 
 async function main() {
@@ -171,6 +214,9 @@ async function main() {
     chunkSize,
     logLevel,
     chaos,
+    metrics: values.metrics,
+    record,
+    strict: values.strict,
   });
 
   logger.info(`llmock server listening on ${instance.url}`);
