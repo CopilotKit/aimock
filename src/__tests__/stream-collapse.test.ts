@@ -824,6 +824,50 @@ describe("collapseBedrockEventStream message CRC validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// CRC mismatch truncation warnings
+// ---------------------------------------------------------------------------
+
+describe("decodeEventStreamFrames truncation warnings", () => {
+  it("sets truncated when prelude CRC is bad", () => {
+    const goodFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockDelta: { delta: { text: "Good" } },
+    });
+    const badFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockDelta: { delta: { text: "Bad" } },
+    });
+    // Corrupt the prelude CRC (bytes 8–11) of the bad frame
+    const badFrameBuf = Buffer.from(badFrame);
+    badFrameBuf.writeUInt32BE(0xdeadbeef, 8);
+
+    const buf = Buffer.concat([goodFrame, badFrameBuf]);
+    const result = collapseBedrockEventStream(buf);
+
+    // Good frame still processed; bad frame causes truncation
+    expect(result.content).toBe("Good");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("sets truncated when message CRC is bad", () => {
+    const goodFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockDelta: { delta: { text: "Hello" } },
+    });
+    const badFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockDelta: { delta: { text: "World" } },
+    });
+    // Corrupt the message CRC (last 4 bytes) of the bad frame
+    const badFrameBuf = Buffer.from(badFrame);
+    badFrameBuf.writeUInt32BE(0xdeadbeef, badFrameBuf.length - 4);
+
+    const buf = Buffer.concat([goodFrame, badFrameBuf]);
+    const result = collapseBedrockEventStream(buf);
+
+    // Good frame still processed; bad frame causes truncation
+    expect(result.content).toBe("Hello");
+    expect(result.truncated).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Multiple tool calls: Anthropic, Cohere, Bedrock
 // ---------------------------------------------------------------------------
 
