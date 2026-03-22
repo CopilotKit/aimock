@@ -183,6 +183,10 @@ async function main() {
   }
 
   if (fixtures.length === 0) {
+    if (validateOnLoad || values.strict) {
+      console.error("Error: No fixtures loaded and validation/strict mode is enabled — aborting.");
+      process.exit(1);
+    }
     console.warn("Warning: No fixtures loaded. The server will return 404 for all requests.");
   }
 

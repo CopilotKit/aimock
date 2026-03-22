@@ -393,6 +393,20 @@ export async function createServer(
     },
   };
 
+  // Validate chaos config rates
+  if (options?.chaos) {
+    const chaosRates = [
+      { name: "dropRate", value: options.chaos.dropRate },
+      { name: "malformedRate", value: options.chaos.malformedRate },
+      { name: "disconnectRate", value: options.chaos.disconnectRate },
+    ];
+    for (const { name, value } of chaosRates) {
+      if (value !== undefined && (value < 0 || value > 1)) {
+        logger.warn(`Chaos ${name} (${value}) is outside 0-1 range — will be clamped at runtime`);
+      }
+    }
+  }
+
   const journal = new Journal();
 
   // Set initial fixtures-loaded gauge

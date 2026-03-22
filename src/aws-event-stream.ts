@@ -111,7 +111,9 @@ export function encodeEventStreamMessage(eventType: string, jsonPayload: object)
  * Write a sequence of event-stream frames to an HTTP response with optional
  * timing control. Mirrors the writeSSEStream pattern from sse-writer.ts.
  *
- * Returns `true` when all events are written, or `false` if interrupted.
+ * Returns `true` when all events are written (including when the response
+ * was already ended before writing began), or `false` if interrupted by
+ * the provided abort signal.
  */
 export async function writeEventStream(
   res: http.ServerResponse,

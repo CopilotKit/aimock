@@ -35,7 +35,7 @@ import { proxyAndRecord } from "./recorder.js";
 // ─── Claude Messages API request types ──────────────────────────────────────
 
 interface ClaudeContentBlock {
-  type: string;
+  type: "text" | "tool_use" | "tool_result" | "image" | "document";
   text?: string;
   id?: string;
   name?: string;

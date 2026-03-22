@@ -46,7 +46,7 @@ import { proxyAndRecord } from "./recorder.js";
 // ─── Bedrock Claude request types ────────────────────────────────────────────
 
 interface BedrockContentBlock {
-  type: string;
+  type: "text" | "tool_use" | "tool_result" | "image" | "document";
   text?: string;
   id?: string;
   name?: string;

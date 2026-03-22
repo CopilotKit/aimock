@@ -121,6 +121,9 @@ export async function proxyAndRecord(
     if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
       defaults.logger.warn(`${collapsed.droppedChunks} chunk(s) dropped during stream collapse`);
     }
+    if (collapsed.content === "" && (!collapsed.toolCalls || collapsed.toolCalls.length === 0)) {
+      defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
+    }
     if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
       if (collapsed.content) {
         defaults.logger.warn(
@@ -138,7 +141,7 @@ export async function proxyAndRecord(
       parsedResponse = JSON.parse(upstreamBody);
     } catch {
       // Not JSON — could be an unknown format
-      defaults.logger.warn("Upstream response is not valid JSON — saving raw response");
+      defaults.logger.warn("Upstream response is not valid JSON — saving as error fixture");
     }
     fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus);
   }
@@ -167,13 +170,20 @@ export async function proxyAndRecord(
     // Ensure fixture directory exists
     fs.mkdirSync(fixturePath, { recursive: true });
 
+    // Collect warnings for the fixture file
+    const warnings: string[] = [];
+    if (isEmptyMatch) {
+      warnings.push("Empty match criteria — this fixture will not match any request");
+    }
+    if (collapsed?.truncated) {
+      warnings.push("Stream response was truncated — fixture may be incomplete");
+    }
+
     // Auth headers are forwarded to upstream but excluded from saved fixtures for security
-    const fileContent = isEmptyMatch
-      ? {
-          fixtures: [fixture],
-          _warning: "Empty match criteria — this fixture will not match any request",
-        }
-      : { fixtures: [fixture] };
+    const fileContent: Record<string, unknown> = { fixtures: [fixture] };
+    if (warnings.length > 0) {
+      fileContent._warning = warnings.join("; ");
+    }
     fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
     writtenToDisk = true;
   } catch (err) {
