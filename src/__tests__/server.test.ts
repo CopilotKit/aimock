@@ -789,7 +789,7 @@ describe("journal", () => {
     );
 
     const entry = instance.journal.getLast();
-    expect(entry!.headers["authorization"]).toBe("Bearer sk-test");
+    expect(entry!.headers["authorization"]).toBe("[REDACTED]");
   });
 });
 
@@ -1016,7 +1016,7 @@ describe("header forwarding in journal", () => {
 
     const entry = instance.journal.getLast();
     expect(entry).not.toBeNull();
-    expect(entry!.headers["authorization"]).toBe("Bearer test-key");
+    expect(entry!.headers["authorization"]).toBe("[REDACTED]");
     expect(entry!.headers["x-custom-header"]).toBe("custom-value");
     expect(entry!.headers["content-type"]).toBe("application/json");
   });
@@ -1055,7 +1055,7 @@ describe("header forwarding in journal", () => {
 
     const entries = JSON.parse(res.body);
     expect(entries).toHaveLength(1);
-    expect(entries[0].headers["authorization"]).toBe("Bearer api-key-123");
+    expect(entries[0].headers["authorization"]).toBe("[REDACTED]");
     expect(entries[0].headers["x-request-id"]).toBe("req-abc-def");
     expect(entries[0].headers["content-type"]).toBe("application/json");
     expect(entries[0].headers["host"]).toBeDefined();
@@ -1075,8 +1075,8 @@ describe("header forwarding in journal", () => {
 
     const entries = instance.journal.getAll();
     expect(entries).toHaveLength(2);
-    expect(entries[0].headers["authorization"]).toBe("Bearer key-one");
-    expect(entries[1].headers["authorization"]).toBe("Bearer key-two");
+    expect(entries[0].headers["authorization"]).toBe("[REDACTED]");
+    expect(entries[1].headers["authorization"]).toBe("[REDACTED]");
   });
 });
 

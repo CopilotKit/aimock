@@ -527,3 +527,41 @@ describe("bedrockToCompletionRequest", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// strict:true returns 503 for unmatched Bedrock request
+// ---------------------------------------------------------------------------
+
+describe("POST /model/{modelId}/invoke (strict mode)", () => {
+  it("returns 503 with strict message when no fixture matches in strict mode", async () => {
+    instance = await createServer(allFixtures, { strict: true });
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "nomatch" }],
+      },
+    );
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Strict mode: no fixture matched");
+  });
+
+  it("returns 200 when fixture matches even in strict mode", async () => {
+    instance = await createServer(allFixtures, { strict: true });
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "hello" }],
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.content[0].text).toBe("Hi there!");
+  });
+});

@@ -1,5 +1,14 @@
 # @copilotkit/llmock
 
+## 1.6.0
+
+### Minor Changes
+
+- Provider-specific endpoints: dedicated routes for Bedrock (`/model/{modelId}/invoke`), Ollama (`/api/chat`, `/api/generate`), Cohere (`/v2/chat`), and Azure OpenAI deployment-based routing (`/openai/deployments/{id}/chat/completions`)
+- Chaos injection: `ChaosConfig` type with `drop`, `malformed`, and `disconnect` actions; supports per-fixture chaos via `chaos` config on each fixture and server-wide chaos via `--chaos-drop`, `--chaos-malformed`, and `--chaos-disconnect` CLI flags
+- Metrics: `GET /metrics` endpoint exposing Prometheus text format with request counters and latency histograms per provider and route
+- Record-and-replay: `--record` flag and `proxyAndRecord` helper that proxies requests to real LLM APIs, collapses streaming responses, and writes fixture JSON to disk for future playback
+
 ## 1.5.1
 
 ### Patch Changes

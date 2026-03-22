@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Record &amp; Replay — llmock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>Getting Started</h3>
+          <a href="docs.html">Overview</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Providers</h3>
+          <a href="chat-completions.html">Chat Completions (OpenAI)</a
+          ><a href="responses-api.html">Responses API (OpenAI)</a
+          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
+          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
+          ><a href="compatible-providers.html">Compatible Providers</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Features</h3>
+          <a href="embeddings.html">Embeddings</a
+          ><a href="structured-output.html">Structured Output</a
+          ><a href="sequential-responses.html">Sequential Responses</a
+          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
+          ><a href="streaming-physics.html">Streaming Physics</a
+          ><a href="websocket.html">WebSocket APIs</a
+          ><a href="record-replay.html" class="active">Record &amp; Replay</a
+          ><a href="metrics.html">Prometheus Metrics</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Deployment</h3>
+          <a href="docker.html">Docker &amp; Helm</a
+          ><a href="drift-detection.html">Drift Detection</a>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <h1>Record &amp; Replay</h1>
+        <p class="lead">
+          VCR-style record-and-replay support. When a request doesn't match any fixture, llmock
+          proxies it to the real upstream provider, records the response as a fixture on disk and in
+          memory, then replays it on subsequent identical requests.
+        </p>
+
+        <h2>How It Works</h2>
+        <ol>
+          <li>Client sends a request to llmock</li>
+          <li>llmock attempts fixture matching as usual</li>
+          <li>
+            <strong>On miss:</strong> the request is forwarded to the configured upstream provider
+          </li>
+          <li>The upstream response is relayed back to the client immediately</li>
+          <li>
+            The response is collapsed (if streaming) and saved as a fixture to disk and memory
+          </li>
+          <li>Subsequent identical requests match the newly recorded fixture</li>
+        </ol>
+
+        <h2>Quick Start</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">CLI usage <span class="lang-tag">bash</span></div>
+          <pre><code>npx llmock --fixtures ./fixtures \
+  --record \
+  --provider-openai https://api.openai.com \
+  --provider-anthropic https://api.anthropic.com</code></pre>
+        </div>
+
+        <h2>CLI Flags</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Flag</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--record</code></td>
+              <td>Enable record mode (proxy-on-miss)</td>
+            </tr>
+            <tr>
+              <td><code>--strict</code></td>
+              <td>Strict mode: return 503 (not 404) on unmatched requests</td>
+            </tr>
+            <tr>
+              <td><code>--provider-openai &lt;url&gt;</code></td>
+              <td>Upstream URL for OpenAI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-anthropic &lt;url&gt;</code></td>
+              <td>Upstream URL for Anthropic</td>
+            </tr>
+            <tr>
+              <td><code>--provider-gemini &lt;url&gt;</code></td>
+              <td>Upstream URL for Gemini</td>
+            </tr>
+            <tr>
+              <td><code>--provider-vertexai &lt;url&gt;</code></td>
+              <td>Upstream URL for Vertex AI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-bedrock &lt;url&gt;</code></td>
+              <td>Upstream URL for Bedrock</td>
+            </tr>
+            <tr>
+              <td><code>--provider-azure &lt;url&gt;</code></td>
+              <td>Upstream URL for Azure OpenAI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-ollama &lt;url&gt;</code></td>
+              <td>Upstream URL for Ollama</td>
+            </tr>
+            <tr>
+              <td><code>--provider-cohere &lt;url&gt;</code></td>
+              <td>Upstream URL for Cohere</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Programmatic API</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Programmatic recording <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="cmt">// Enable recording with upstream providers</span>
+<span class="op">mock</span>.<span class="fn">enableRecording</span>({
+  <span class="prop">providers</span>: {
+    <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+    <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+  },
+  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+});
+
+<span class="cmt">// Make requests — unmatched ones are proxied and recorded</span>
+<span class="cmt">// ...</span>
+
+<span class="cmt">// Disable recording — recorded fixtures persist on disk</span>
+<span class="op">mock</span>.<span class="fn">disableRecording</span>();</code></pre>
+        </div>
+
+        <h2>Stream Collapsing</h2>
+        <p>
+          When the upstream provider returns a streaming response, llmock collapses it into a
+          non-streaming fixture. Six streaming formats are supported:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Provider</th>
+              <th>Content-Type</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI SSE</td>
+              <td>OpenAI, Azure</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Anthropic SSE</td>
+              <td>Anthropic</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Gemini SSE</td>
+              <td>Gemini, Vertex AI</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Cohere SSE</td>
+              <td>Cohere</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Ollama NDJSON</td>
+              <td>Ollama</td>
+              <td><code>application/x-ndjson</code></td>
+            </tr>
+            <tr>
+              <td>Bedrock EventStream</td>
+              <td>AWS Bedrock</td>
+              <td><code>application/vnd.amazon.eventstream</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The collapse extracts text content and tool calls from streaming chunks and produces a
+          simple <code>{ content }</code> or <code>{ toolCalls }</code> fixture response.
+        </p>
+
+        <h2>Auth Header Forwarding</h2>
+        <p>
+          When proxying to upstream providers, llmock forwards these headers from the original
+          request:
+        </p>
+        <ul>
+          <li><code>authorization</code></li>
+          <li><code>x-api-key</code></li>
+          <li><code>content-type</code></li>
+          <li><code>accept</code></li>
+        </ul>
+        <p>
+          <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture only
+          contains the match criteria (derived from the last user message) and the response content.
+        </p>
+
+        <h2>Strict Mode</h2>
+        <p>
+          When <code>--strict</code> is enabled, unmatched requests that cannot be proxied (no
+          upstream configured for that provider) return <strong>503 Service Unavailable</strong>
+          instead of the default 404. This is useful for CI environments where you want to catch
+          unexpected API calls.
+        </p>
+
+        <h2>Fixture Auto-Generation</h2>
+        <p>Recorded fixtures are saved to disk with timestamped filenames:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recorded fixture file <span class="lang-tag">json</span>
+          </div>
+          <pre><code><span class="cmt">// fixtures/recorded/openai-2025-01-15T10-30-00-000Z-0.json</span>
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "What is the weather?" },
+      "response": { "content": "I don't have real-time weather data..." }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <p>
+          Match criteria are derived from the original request: the last user message becomes
+          <code>userMessage</code>, or for embedding requests, the input becomes
+          <code>inputText</code>. If no match criteria can be derived (e.g., empty messages), the
+          fixture is saved to disk with a warning but not registered in memory.
+        </p>
+
+        <h2>Fixture Lifecycle</h2>
+        <ul>
+          <li>
+            <strong>On disk:</strong> Fixtures persist in the configured
+            <code>fixturePath</code> directory (default: <code>./fixtures/recorded</code>)
+          </li>
+          <li>
+            <strong>In memory:</strong> Recorded fixtures are immediately available for matching
+            subsequent requests in the same session
+          </li>
+          <li>
+            <strong>After restart:</strong> Load the recorded fixture directory to replay previous
+            recordings
+          </li>
+        </ul>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>

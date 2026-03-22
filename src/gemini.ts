@@ -8,10 +8,11 @@
 
 import type * as http from "node:http";
 import type {
-  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  HandlerDefaults,
+  RecordProviderKey,
   StreamingProfile,
   ToolCall,
   ToolDefinition,
@@ -29,6 +30,7 @@ import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { proxyAndRecord } from "./recorder.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
 
@@ -378,8 +380,9 @@ export async function handleGemini(
   streaming: boolean,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
+  defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
+  providerKey: RecordProviderKey = "gemini",
 ): Promise<void> {
   const { logger } = defaults;
   setCorsHeaders(res);
@@ -392,7 +395,7 @@ export async function handleGemini(
       method: req.method ?? "POST",
       path: req.url ?? `/v1beta/models/${model}:generateContent`,
       headers: flattenHeaders(req.headers),
-      body: {} as ChatCompletionRequest,
+      body: null,
       response: { status: 400, fixture: null },
     });
     writeErrorResponse(
@@ -420,31 +423,69 @@ export async function handleGemini(
   }
 
   if (
-    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
-      method: req.method ?? "POST",
-      path,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    })
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      defaults.registry,
+      defaults.logger,
+    )
   )
     return;
 
   if (!fixture) {
+    if (defaults.record) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        completionReq,
+        providerKey,
+        path,
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path,
+          headers: flattenHeaders(req.headers),
+          body: completionReq,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
+    }
     journal.add({
       method: req.method ?? "POST",
       path,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: { status: strictStatus, fixture: null },
     });
     writeErrorResponse(
       res,
-      404,
+      strictStatus,
       JSON.stringify({
         error: {
-          message: "No fixture matched",
-          code: 404,
-          status: "NOT_FOUND",
+          message: strictMessage,
+          code: strictStatus,
+          status: defaults.strict ? "UNAVAILABLE" : "NOT_FOUND",
         },
       }),
     );

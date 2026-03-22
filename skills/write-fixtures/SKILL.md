@@ -7,7 +7,7 @@ description: Use when writing test fixtures for @copilotkit/llmock — mock LLM 
 
 ## What llmock Is
 
-Zero-dependency mock LLM server. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI). Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs.
+Zero-dependency mock LLM server. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Vertex AI, Ollama, Cohere). Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs. Chaos testing and Prometheus metrics.
 
 ## Core Mental Model
 
@@ -72,6 +72,22 @@ The embedding vector is returned for each input in the request. If no embedding 
 ```typescript
 { error: { message: "Rate limited", type: "rate_limit_error" }, status: 429 }
 ```
+
+### Chaos (Failure Injection)
+
+The optional `chaos` field on a fixture enables probabilistic failure injection:
+
+```typescript
+{
+  chaos?: {
+    dropRate?: number;      // Probability (0-1) of returning a 500 error
+    malformedRate?: number; // Probability (0-1) of returning malformed JSON
+    disconnectRate?: number; // Probability (0-1) of disconnecting mid-stream
+  }
+}
+```
+
+Rates are evaluated per-request. When triggered, the chaos failure replaces the normal response.
 
 ## Common Patterns
 
@@ -212,6 +228,25 @@ mock.onMessage(
 );
 ```
 
+### Chaos testing (probabilistic failures)
+
+```typescript
+mock.addFixture({
+  match: { userMessage: "flaky" },
+  response: { content: "Sometimes works!" },
+  chaos: { dropRate: 0.3 },
+});
+```
+
+30% of requests matching this fixture will get a 500 error instead of the response. Can also use `malformedRate` (garbled JSON) or `disconnectRate` (connection dropped mid-stream).
+
+Server-level chaos applies to ALL requests:
+
+```typescript
+mock.setChaos({ dropRate: 0.1 }); // 10% of all requests fail
+mock.clearChaos(); // Remove server-level chaos
+```
+
 ### Error injection (one-shot)
 
 ```typescript
@@ -248,22 +283,32 @@ Load with `mock.loadFixtureFile("./fixtures/greetings.json")` or `mock.loadFixtu
 
 All providers share the same fixture pool — write fixtures once, they work for any endpoint.
 
-| Endpoint                                         | Provider      | Protocol  |
-| ------------------------------------------------ | ------------- | --------- |
-| `POST /v1/chat/completions`                      | OpenAI        | HTTP      |
-| `POST /v1/responses`                             | OpenAI        | HTTP + WS |
-| `POST /v1/messages`                              | Anthropic     | HTTP      |
-| `POST /v1/embeddings`                            | OpenAI        | HTTP      |
-| `POST /v1beta/models/{model}:{method}`           | Google Gemini | HTTP      |
-| `POST /model/{modelId}/invoke`                   | AWS Bedrock   | HTTP      |
-| `POST /openai/deployments/{id}/chat/completions` | Azure OpenAI  | HTTP      |
-| `POST /openai/deployments/{id}/embeddings`       | Azure OpenAI  | HTTP      |
-| `GET /health`                                    | —             | HTTP      |
-| `GET /ready`                                     | —             | HTTP      |
-| `GET /v1/models`                                 | OpenAI-compat | HTTP      |
-| `WS /v1/responses`                               | OpenAI        | WebSocket |
-| `WS /v1/realtime`                                | OpenAI        | WebSocket |
-| `WS /ws/google.ai...BidiGenerateContent`         | Gemini Live   | WebSocket |
+| Endpoint                                                                                 | Provider      | Protocol  |
+| ---------------------------------------------------------------------------------------- | ------------- | --------- |
+| `POST /v1/chat/completions`                                                              | OpenAI        | HTTP      |
+| `POST /v1/responses`                                                                     | OpenAI        | HTTP + WS |
+| `POST /v1/messages`                                                                      | Anthropic     | HTTP      |
+| `POST /v1/embeddings`                                                                    | OpenAI        | HTTP      |
+| `POST /v1beta/models/{model}:{method}`                                                   | Google Gemini | HTTP      |
+| `POST /model/{modelId}/invoke`                                                           | AWS Bedrock   | HTTP      |
+| `POST /openai/deployments/{id}/chat/completions`                                         | Azure OpenAI  | HTTP      |
+| `POST /openai/deployments/{id}/embeddings`                                               | Azure OpenAI  | HTTP      |
+| `GET /health`                                                                            | —             | HTTP      |
+| `GET /ready`                                                                             | —             | HTTP      |
+| `POST /model/{modelId}/invoke-with-response-stream`                                      | AWS Bedrock   | HTTP      |
+| `POST /model/{modelId}/converse`                                                         | AWS Bedrock   | HTTP      |
+| `POST /model/{modelId}/converse-stream`                                                  | AWS Bedrock   | HTTP      |
+| `POST /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent`       | Vertex AI     | HTTP      |
+| `POST /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:streamGenerateContent` | Vertex AI     | HTTP      |
+| `POST /api/chat`                                                                         | Ollama        | HTTP      |
+| `POST /api/generate`                                                                     | Ollama        | HTTP      |
+| `GET /api/tags`                                                                          | Ollama        | HTTP      |
+| `POST /v2/chat`                                                                          | Cohere        | HTTP      |
+| `GET /metrics`                                                                           | —             | HTTP      |
+| `GET /v1/models`                                                                         | OpenAI-compat | HTTP      |
+| `WS /v1/responses`                                                                       | OpenAI        | WebSocket |
+| `WS /v1/realtime`                                                                        | OpenAI        | WebSocket |
+| `WS /ws/google.ai...BidiGenerateContent`                                                 | Gemini Live   | WebSocket |
 
 ## Critical Gotchas
 
@@ -289,9 +334,19 @@ All providers share the same fixture pool — write fixtures once, they work for
 
 11. **Sequential response counts are tracked per fixture** — counts reset with `reset()` or `resetMatchCounts()`. The count increments after each match of that fixture group (all fixtures sharing the same non-`sequenceIndex` match fields).
 
-12. **Bedrock uses Anthropic Messages format internally** — the adapter normalizes Bedrock requests to `ChatCompletionRequest`, so the same fixtures work. Bedrock is non-streaming only.
+12. **Bedrock uses Anthropic Messages format internally** — the adapter normalizes Bedrock requests to `ChatCompletionRequest`, so the same fixtures work. Bedrock supports both non-streaming (`/invoke`, `/converse`) and streaming (`/invoke-with-response-stream`, `/converse-stream`) endpoints.
 
 13. **Azure OpenAI routes through the same handlers** — `/openai/deployments/{id}/chat/completions` maps to the completions handler, `/openai/deployments/{id}/embeddings` maps to the embeddings handler. Fixtures work unchanged.
+
+14. **Ollama defaults to streaming** — opposite of OpenAI. Set `stream: false` explicitly in the request for non-streaming responses.
+
+15. **Ollama tool call `arguments` is an object, not a JSON string** — unlike OpenAI where `arguments` is a JSON string, Ollama sends and expects a plain object.
+
+16. **Bedrock streaming uses binary Event Stream format** — not SSE. The `invoke-with-response-stream` and `converse-stream` endpoints use AWS Event Stream binary encoding.
+
+17. **Vertex AI routes to the same handler as consumer Gemini** — the same fixtures work for both Vertex AI (`/v1/projects/.../models/{m}:generateContent`) and consumer Gemini (`/v1beta/models/{model}:generateContent`).
+
+18. **Cohere requires `model` field** — returns 400 if `model` is missing from the request body.
 
 ## Debugging Fixture Mismatches
 
@@ -351,7 +406,67 @@ const mock = await LLMock.create({ port: 0 }); // creates + starts in one call
 | `getRequests()`                         | All journal entries                         |
 | `getLastRequest()`                      | Most recent journal entry                   |
 | `clearRequests()`                       | Clear journal only                          |
+| `setChaos(opts)`                        | Set server-level chaos rates                |
+| `clearChaos()`                          | Remove server-level chaos                   |
 | `url` / `baseUrl`                       | Server URL (throws if not started)          |
 | `port`                                  | Server port number                          |
 
 Sequential responses use `on()` with `sequenceIndex` in the match — there is no dedicated convenience method.
+
+## Record-and-Replay (VCR Mode)
+
+llmock supports a VCR-style record-and-replay workflow: unmatched requests are proxied to real provider APIs, and the responses are saved as standard llmock fixture files for deterministic replay.
+
+### CLI usage
+
+```bash
+# Record mode: proxy unmatched requests to real OpenAI and Anthropic APIs
+llmock --record \
+  --provider-openai https://api.openai.com \
+  --provider-anthropic https://api.anthropic.com \
+  -f ./fixtures
+
+# Strict mode: fail on unmatched requests (no proxying, no catch-all 404)
+llmock --strict -f ./fixtures
+```
+
+- `--record` enables proxy-on-miss. Requires at least one `--provider-*` flag.
+- `--strict` returns a 503 error when no fixture matches AND no proxy is configured (or the proxy attempt fails), instead of silently returning a 404. The proxy is still tried first when `--record` is set. Use this in CI to prevent unmatched requests from slipping through as silent 404s.
+- Provider flags: `--provider-openai`, `--provider-anthropic`, `--provider-gemini`, `--provider-vertexai`, `--provider-bedrock`, `--provider-azure`, `--provider-ollama`, `--provider-cohere`.
+
+### How it works
+
+1. **Existing fixtures are served first** — the router checks all loaded fixtures before considering the proxy.
+2. **Misses are proxied** — if no fixture matches and recording is enabled, the request is forwarded to the real provider API.
+3. **Auth headers are forwarded but NOT saved** — `Authorization`, `x-api-key`, and `api-key` headers are passed through to the upstream provider, but stripped from the recorded fixture.
+4. **Responses are saved as standard fixtures** — recorded files land in `{fixturePath}/recorded/` and use the same JSON format as hand-written fixtures. Nothing special about them.
+5. **Streaming responses are collapsed** — SSE streams are collapsed into a single text or tool-call response for the fixture. The original streaming format is preserved in the live proxy response.
+6. **Loud logging** — every proxy hit logs at `warn` level so you can see exactly which requests are being forwarded.
+
+### Programmatic API
+
+```typescript
+const mock = new LLMock({ port: 0 });
+await mock.start();
+
+// Enable recording at runtime
+mock.enableRecording({
+  providers: {
+    openai: "https://api.openai.com",
+    anthropic: "https://api.anthropic.com",
+  },
+  fixturePath: "./fixtures/recorded",
+});
+
+// ... run tests that hit real APIs for uncovered cases ...
+
+// Disable recording (back to fixture-only mode)
+mock.disableRecording();
+```
+
+### Workflow
+
+1. **Bootstrap**: Run your test suite with `--record` and provider URLs. All requests that don't match existing fixtures are proxied and recorded.
+2. **Review**: Check the recorded fixtures in `{fixturePath}/recorded/`. Edit or reorganize as needed.
+3. **Lock down**: Run your test suite with `--strict` to ensure every request hits a fixture. No network calls escape.
+4. **Maintain**: When APIs change, delete stale fixtures and re-record.

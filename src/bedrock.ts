@@ -1,18 +1,28 @@
 /**
- * AWS Bedrock Claude invoke endpoint support.
+ * AWS Bedrock Claude endpoint support — invoke and invoke-with-response-stream.
  *
- * Translates incoming POST /model/{modelId}/invoke requests (Bedrock Claude
- * format) into the ChatCompletionRequest format used by the fixture router,
- * and converts fixture responses back into the Anthropic Messages API
- * non-streaming format (which Bedrock Claude SDKs expect as the response body).
+ * Handles four Bedrock endpoint families (split across two modules):
+ *
+ *   This file (bedrock.ts):
+ *     - POST /model/{modelId}/invoke                  — non-streaming invoke
+ *     - POST /model/{modelId}/invoke-with-response-stream — binary EventStream streaming
+ *
+ *   bedrock-converse.ts:
+ *     - POST /model/{modelId}/converse                — Converse API (non-streaming)
+ *     - POST /model/{modelId}/converse-stream         — Converse API (EventStream streaming)
+ *
+ * Translates incoming Bedrock Claude format into the ChatCompletionRequest
+ * format used by the fixture router, and converts fixture responses back into
+ * the appropriate Bedrock response format (JSON for invoke, AWS Event Stream
+ * binary encoding for streaming).
  */
 
 import type * as http from "node:http";
 import type {
-  ChaosConfig,
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  HandlerDefaults,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
@@ -26,14 +36,17 @@ import {
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
+import { writeEventStream } from "./aws-event-stream.js";
+import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
+import { proxyAndRecord } from "./recorder.js";
 
 // ─── Bedrock Claude request types ────────────────────────────────────────────
 
 interface BedrockContentBlock {
-  type: string;
+  type: "text" | "tool_use" | "tool_result" | "image" | "document";
   text?: string;
   id?: string;
   name?: string;
@@ -240,7 +253,7 @@ export async function handleBedrock(
   modelId: string,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; logger: Logger; chaos?: ChaosConfig },
+  defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   const { logger } = defaults;
@@ -256,7 +269,7 @@ export async function handleBedrock(
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
-      body: {} as ChatCompletionRequest,
+      body: null,
       response: { status: 400, fixture: null },
     });
     writeErrorResponse(
@@ -277,7 +290,7 @@ export async function handleBedrock(
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
-      body: {} as ChatCompletionRequest,
+      body: null,
       response: { status: 400, fixture: null },
     });
     writeErrorResponse(
@@ -303,29 +316,67 @@ export async function handleBedrock(
   }
 
   if (
-    applyChaos(res, fixture, defaults.chaos, req.headers, journal, {
-      method: req.method ?? "POST",
-      path: urlPath,
-      headers: flattenHeaders(req.headers),
-      body: completionReq,
-    })
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      defaults.registry,
+      defaults.logger,
+    )
   )
     return;
 
   if (!fixture) {
+    if (defaults.record) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        completionReq,
+        "bedrock",
+        urlPath,
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path: urlPath,
+          headers: flattenHeaders(req.headers),
+          body: completionReq,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: { status: strictStatus, fixture: null },
     });
     writeErrorResponse(
       res,
-      404,
+      strictStatus,
       JSON.stringify({
         error: {
-          message: "No fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
         },
       }),
@@ -384,6 +435,339 @@ export async function handleBedrock(
     const body = buildBedrockToolCallResponse(response.toolCalls, completionReq.model, logger);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
+    return;
+  }
+
+  // Unknown response type
+  journal.add({
+    method: req.method ?? "POST",
+    path: urlPath,
+    headers: flattenHeaders(req.headers),
+    body: completionReq,
+    response: { status: 500, fixture },
+  });
+  writeErrorResponse(
+    res,
+    500,
+    JSON.stringify({
+      error: {
+        message: "Fixture response did not match any known type",
+        type: "server_error",
+      },
+    }),
+  );
+}
+
+// ─── Streaming event builders ───────────────────────────────────────────────
+
+export function buildBedrockStreamTextEvents(
+  content: string,
+  chunkSize: number,
+): Array<{ eventType: string; payload: object }> {
+  const events: Array<{ eventType: string; payload: object }> = [];
+
+  events.push({
+    eventType: "messageStart",
+    payload: { role: "assistant" },
+  });
+
+  events.push({
+    eventType: "contentBlockStart",
+    payload: { contentBlockIndex: 0, start: {} },
+  });
+
+  for (let i = 0; i < content.length; i += chunkSize) {
+    const slice = content.slice(i, i + chunkSize);
+    events.push({
+      eventType: "contentBlockDelta",
+      payload: {
+        contentBlockIndex: 0,
+        delta: { type: "text_delta", text: slice },
+      },
+    });
+  }
+
+  events.push({
+    eventType: "contentBlockStop",
+    payload: { contentBlockIndex: 0 },
+  });
+
+  events.push({
+    eventType: "messageStop",
+    payload: { stopReason: "end_turn" },
+  });
+
+  return events;
+}
+
+export function buildBedrockStreamToolCallEvents(
+  toolCalls: ToolCall[],
+  chunkSize: number,
+  logger: Logger,
+): Array<{ eventType: string; payload: object }> {
+  const events: Array<{ eventType: string; payload: object }> = [];
+
+  events.push({
+    eventType: "messageStart",
+    payload: { role: "assistant" },
+  });
+
+  for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+    const tc = toolCalls[tcIdx];
+    const toolUseId = tc.id || generateToolUseId();
+
+    events.push({
+      eventType: "contentBlockStart",
+      payload: {
+        contentBlockIndex: tcIdx,
+        start: {
+          toolUse: { toolUseId, name: tc.name },
+        },
+      },
+    });
+
+    let argsStr: string;
+    try {
+      const parsed = JSON.parse(tc.arguments || "{}");
+      argsStr = JSON.stringify(parsed);
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsStr = "{}";
+    }
+
+    for (let i = 0; i < argsStr.length; i += chunkSize) {
+      const slice = argsStr.slice(i, i + chunkSize);
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: tcIdx,
+          delta: { type: "input_json_delta", inputJSON: slice },
+        },
+      });
+    }
+
+    events.push({
+      eventType: "contentBlockStop",
+      payload: { contentBlockIndex: tcIdx },
+    });
+  }
+
+  events.push({
+    eventType: "messageStop",
+    payload: { stopReason: "tool_use" },
+  });
+
+  return events;
+}
+
+// ─── Streaming request handler ──────────────────────────────────────────────
+
+export async function handleBedrockStream(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  raw: string,
+  modelId: string,
+  fixtures: Fixture[],
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+): Promise<void> {
+  const { logger } = defaults;
+  setCorsHeaders(res);
+
+  const urlPath = req.url ?? `/model/${modelId}/invoke-with-response-stream`;
+
+  let bedrockReq: BedrockRequest;
+  try {
+    bedrockReq = JSON.parse(raw) as BedrockRequest;
+  } catch {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Malformed JSON",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (!bedrockReq.messages || !Array.isArray(bedrockReq.messages)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Invalid request: messages array is required",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  const completionReq = bedrockToCompletionRequest(bedrockReq, modelId);
+
+  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+
+  if (fixture) {
+    journal.incrementFixtureMatchCount(fixture, fixtures);
+  }
+
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+      },
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  if (!fixture) {
+    if (defaults.record) {
+      const proxied = await proxyAndRecord(
+        req,
+        res,
+        completionReq,
+        "bedrock",
+        urlPath,
+        fixtures,
+        defaults,
+        raw,
+      );
+      if (proxied) {
+        journal.add({
+          method: req.method ?? "POST",
+          path: urlPath,
+          headers: flattenHeaders(req.headers),
+          body: completionReq,
+          response: { status: res.statusCode ?? 200, fixture: null },
+        });
+        return;
+      }
+    }
+    const strictStatus = defaults.strict ? 503 : 404;
+    const strictMessage = defaults.strict
+      ? "Strict mode: no fixture matched"
+      : "No fixture matched";
+    if (defaults.strict) {
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+    }
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: strictStatus, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      strictStatus,
+      JSON.stringify({
+        error: {
+          message: strictMessage,
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  const response = fixture.response;
+  const latency = fixture.latency ?? defaults.latency;
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  // Error response
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status, fixture },
+    });
+    writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Text response — stream as Event Stream
+  if (isTextResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const events = buildBedrockStreamTextEvents(response.content, chunkSize);
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await writeEventStream(res, events, {
+      latency,
+      streamingProfile: fixture.streamingProfile,
+      signal: interruption?.signal,
+      onChunkSent: interruption?.tick,
+    });
+    if (!completed) {
+      if (!res.writableEnded) res.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
+    return;
+  }
+
+  // Tool call response — stream as Event Stream
+  if (isToolCallResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const events = buildBedrockStreamToolCallEvents(response.toolCalls, chunkSize, logger);
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await writeEventStream(res, events, {
+      latency,
+      streamingProfile: fixture.streamingProfile,
+      signal: interruption?.signal,
+      onChunkSent: interruption?.tick,
+    });
+    if (!completed) {
+      if (!res.writableEnded) res.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
     return;
   }
 

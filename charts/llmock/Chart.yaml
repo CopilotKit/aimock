@@ -3,4 +3,4 @@ name: llmock
 description: Deterministic mock LLM server for testing (OpenAI, Anthropic, Gemini)
 type: application
 version: 0.1.0
-appVersion: "1.4.0"
+appVersion: "1.6.0"

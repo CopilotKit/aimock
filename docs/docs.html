@@ -6,7 +6,7 @@
     <title>Documentation — llmock</title>
     <meta
       name="description"
-      content="llmock documentation — fixture-driven mock LLM server for OpenAI, Anthropic, and Gemini APIs."
+      content="llmock documentation — fixture-driven mock LLM server for OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Ollama, Cohere, and Vertex AI APIs."
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -61,7 +61,8 @@
           <a href="responses-api.html">Responses API (OpenAI)</a>
           <a href="claude-messages.html">Claude Messages</a>
           <a href="gemini.html">Gemini</a><a href="azure-openai.html">Azure OpenAI</a
-          ><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="aws-bedrock.html">AWS Bedrock</a><a href="ollama.html">Ollama</a
+          ><a href="cohere.html">Cohere</a><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -71,8 +72,11 @@
           <a href="sequential-responses.html">Sequential Responses</a>
           <a href="fixtures.html">Fixtures</a>
           <a href="error-injection.html">Error Injection</a>
+          <a href="chaos-testing.html">Chaos Testing</a>
           <a href="streaming-physics.html">Streaming Physics</a>
           <a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -204,6 +208,51 @@ npx llmock --fixtures ./fixtures --port 5555
               <td>OpenAI</td>
               <td>JSON</td>
             </tr>
+            <tr>
+              <td>POST /openai/v1/chat/completions</td>
+              <td>Groq / OpenAI-Compatible</td>
+              <td>HTTP SSE / JSON</td>
+            </tr>
+            <tr>
+              <td>POST /model/{modelId}/invoke</td>
+              <td>AWS Bedrock</td>
+              <td>JSON</td>
+            </tr>
+            <tr>
+              <td>POST /model/{modelId}/invoke-with-response-stream</td>
+              <td>AWS Bedrock</td>
+              <td>AWS Event Stream (binary)</td>
+            </tr>
+            <tr>
+              <td>POST /model/{modelId}/converse</td>
+              <td>AWS Bedrock</td>
+              <td>JSON</td>
+            </tr>
+            <tr>
+              <td>POST /model/{modelId}/converse-stream</td>
+              <td>AWS Bedrock</td>
+              <td>AWS Event Stream (binary)</td>
+            </tr>
+            <tr>
+              <td>POST /v1/projects/.../models/:model:*</td>
+              <td>Vertex AI</td>
+              <td>HTTP SSE / JSON</td>
+            </tr>
+            <tr>
+              <td>POST /api/chat</td>
+              <td>Ollama</td>
+              <td>NDJSON / JSON</td>
+            </tr>
+            <tr>
+              <td>POST /api/generate</td>
+              <td>Ollama</td>
+              <td>NDJSON / JSON</td>
+            </tr>
+            <tr>
+              <td>POST /v2/chat</td>
+              <td>Cohere</td>
+              <td>HTTP SSE / JSON</td>
+            </tr>
           </tbody>
         </table>
 
@@ -255,13 +304,46 @@ npx llmock --fixtures ./fixtures --port 5555
             <h3>Error Injection</h3>
             <p>One-shot errors, stream truncation, and disconnect simulation.</p>
           </a>
+          <a href="chaos-testing.html" class="feature-link">
+            <span class="badge badge-red">New</span>
+            <h3>Chaos Testing</h3>
+            <p>
+              Probabilistic failure injection &mdash; random errors, latency spikes, stream
+              corruption.
+            </p>
+          </a>
           <a href="websocket.html" class="feature-link">
             <span class="badge badge-blue">Core</span>
             <h3>WebSocket APIs</h3>
             <p>Realtime, Responses, and Gemini Live over WebSocket.</p>
           </a>
+          <a href="record-replay.html" class="feature-link">
+            <span class="badge badge-purple">New</span>
+            <h3>Record &amp; Replay</h3>
+            <p>Proxy to real APIs, record responses as fixtures, then replay deterministically.</p>
+          </a>
+          <a href="metrics.html" class="feature-link">
+            <span class="badge badge-blue">New</span>
+            <h3>Prometheus Metrics</h3>
+            <p>Expose request counts, latencies, and fixture match rates via /metrics endpoint.</p>
+          </a>
+          <a href="ollama.html" class="feature-link">
+            <span class="badge badge-green">Provider</span>
+            <h3>Ollama</h3>
+            <p>Native Ollama /api/chat and /api/generate endpoints.</p>
+          </a>
+          <a href="cohere.html" class="feature-link">
+            <span class="badge badge-green">Provider</span>
+            <h3>Cohere</h3>
+            <p>Cohere Chat API with native and OpenAI-compatible endpoints.</p>
+          </a>
+          <a href="vertex-ai.html" class="feature-link">
+            <span class="badge badge-blue">Provider</span>
+            <h3>Vertex AI</h3>
+            <p>Google Cloud Vertex AI endpoints using the Gemini handler.</p>
+          </a>
           <a href="docker.html" class="feature-link">
-            <span class="badge badge-amber">New</span>
+            <span class="badge badge-amber">Ops</span>
             <h3>Docker &amp; Helm</h3>
             <p>Container image and Kubernetes Helm chart deployment.</p>
           </a>
@@ -288,7 +370,9 @@ npx llmock --fixtures ./fixtures --port 5555
               <td>new LLMock(opts?)</td>
               <td>
                 Create instance. Options: <code>port</code>, <code>host</code>,
-                <code>latency</code>, <code>chunkSize</code>, <code>logLevel</code>
+                <code>latency</code>, <code>chunkSize</code>, <code>logLevel</code>,
+                <code>chaos</code>, <code>record</code>, <code>strict</code>, <code>metrics</code>,
+                <code>streamingProfile</code>
               </td>
             </tr>
             <tr>

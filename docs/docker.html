@@ -54,6 +54,8 @@
           ><a href="responses-api.html">Responses API (OpenAI)</a
           ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
           ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
           ><a href="compatible-providers.html">Compatible Providers</a>
         </div>
         <div class="sidebar-section">
@@ -62,8 +64,11 @@
           ><a href="structured-output.html">Structured Output</a
           ><a href="sequential-responses.html">Sequential Responses</a
           ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
           ><a href="streaming-physics.html">Streaming Physics</a
           ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
         </div>
         <div class="sidebar-section">
           <h3>Deployment</h3>
@@ -162,7 +167,7 @@ helm install llmock ./charts/llmock \
   <span class="prop">port</span>: <span class="num">4010</span>
 
 <span class="prop">fixtures</span>:
-  <span class="prop">mountPath</span>: <span class="str">/fixtures</span>
+  <span class="prop">mountPath</span>: <span class="str">/app/fixtures</span>
   <span class="prop">existingClaim</span>: <span class="str">""</span>  <span class="cm"># Use a PVC for fixture files</span>
 
 <span class="prop">resources</span>: {}
@@ -175,14 +180,39 @@ helm install llmock ./charts/llmock \
         <p>
           To load custom fixtures in Kubernetes, create a PersistentVolumeClaim with your fixture
           JSON files and set <code>fixtures.existingClaim</code> in your values. The chart mounts
-          the PVC at <code>fixtures.mountPath</code> (default <code>/fixtures</code>).
+          the PVC at <code>fixtures.mountPath</code> (default <code>/app/fixtures</code>).
         </p>
 
         <h3>Health Checks</h3>
         <p>
-          The deployment includes liveness and readiness probes using TCP socket checks on the
-          service port. Liveness starts after 5 seconds; readiness after 2 seconds.
+          The deployment includes liveness and readiness probes using <code>httpGet</code> on
+          <code>/health</code> (liveness, starts after 5 seconds) and <code>/ready</code>
+          (readiness, starts after 2 seconds).
         </p>
+
+        <h2>v1.6.0 Features</h2>
+        <p>The Docker image supports all v1.6.0 features out of the box:</p>
+        <ul>
+          <li>
+            <strong>Chaos testing</strong> &mdash; configure via <code>--chaos-drop</code>,
+            <code>--chaos-malformed</code>, and <code>--chaos-disconnect</code> flags
+          </li>
+          <li>
+            <strong>Prometheus metrics</strong> &mdash; exposed at <code>/metrics</code> when
+            enabled with <code>--metrics</code>
+          </li>
+          <li>
+            <strong>Record &amp; replay</strong> &mdash; proxy to real APIs with
+            <code>--record</code> flag
+          </li>
+          <li>
+            <strong>Strict mode</strong> &mdash; return 503 for unmatched requests with
+            <code>--strict</code>
+          </li>
+          <li><strong>Streaming physics</strong> &mdash; TTFT, TPS, and jitter simulation</li>
+          <li><strong>AWS Bedrock streaming</strong> &mdash; Event Stream binary protocol</li>
+          <li><strong>Converse API</strong> &mdash; Bedrock Converse and Converse-stream</li>
+        </ul>
       </main>
     </div>
     <footer class="docs-footer">

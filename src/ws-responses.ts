@@ -57,7 +57,7 @@ export function handleWebSocketResponses(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
 ): void {
   const { logger } = defaults;
   // Serialize message processing to prevent event interleaving
@@ -82,7 +82,7 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger },
+  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
 ): Promise<void> {
   let parsed: unknown;
   try {
@@ -143,6 +143,11 @@ async function processMessage(
   }
 
   if (!fixture) {
+    if (defaults.strict) {
+      defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      ws.close(1008, "Strict mode: no fixture matched");
+      return;
+    }
     journal.add({
       method: "WS",
       path: "/v1/responses",

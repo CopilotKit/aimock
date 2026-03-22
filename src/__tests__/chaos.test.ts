@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { evaluateChaos } from "../chaos.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -126,6 +126,94 @@ describe("evaluateChaos", () => {
     const result = evaluateChaos(null, undefined, headers);
     expect(result).toBe("drop");
   });
+
+  it("clamps rate > 1 to 1.0 (always triggers)", () => {
+    // dropRate 5.0 should be clamped to 1.0, so it always triggers
+    const fixture: Fixture = {
+      match: { userMessage: "hello" },
+      response: { content: "hi" },
+      chaos: { dropRate: 5.0 },
+    };
+    // Run 20 times — every single one must return "drop"
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(fixture, undefined, undefined);
+      expect(result).toBe("drop");
+    }
+  });
+
+  it("clamps negative rate to 0 (never triggers)", () => {
+    // dropRate -1.0 should be clamped to 0, so it never triggers
+    const fixture: Fixture = {
+      match: { userMessage: "hello" },
+      response: { content: "hi" },
+      chaos: { dropRate: -1.0 },
+    };
+    // Run 50 times — none should trigger
+    for (let i = 0; i < 50; i++) {
+      const result = evaluateChaos(fixture, undefined, undefined);
+      expect(result).toBeNull();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: evaluateChaos — header value clamping and validation
+// ---------------------------------------------------------------------------
+
+describe("evaluateChaos — header value clamping and validation", () => {
+  it("ignores NaN header value (e.g., 'banana') and does not trigger chaos", () => {
+    // "banana" parses to NaN via parseFloat — should be ignored, not crash
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "banana",
+    };
+    // Run 20 times — none should trigger (NaN ignored means no rate set)
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBeNull();
+    }
+  });
+
+  it("clamps header drop value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "2.0",
+    };
+    // Run 20 times — every one must trigger since clamped to 1.0
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("drop");
+    }
+  });
+
+  it("clamps header drop value < 0 to 0 (never triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-drop": "-1.0",
+    };
+    // Run 50 times — none should trigger since clamped to 0
+    for (let i = 0; i < 50; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBeNull();
+    }
+  });
+
+  it("clamps header malformed value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-malformed": "5.0",
+    };
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("malformed");
+    }
+  });
+
+  it("clamps header disconnect value > 1 to 1.0 (always triggers)", () => {
+    const headers: http.IncomingHttpHeaders = {
+      "x-llmock-chaos-disconnect": "99.0",
+    };
+    for (let i = 0; i < 20; i++) {
+      const result = evaluateChaos(null, undefined, headers);
+      expect(result).toBe("disconnect");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +314,20 @@ describe("chaos integration: rate 0 never fires", () => {
     for (const res of results) {
       expect(res.status).toBe(200);
     }
+  });
+});
+
+describe("chaos integration: disconnect", () => {
+  it("destroys connection when disconnectRate is 1.0", async () => {
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "hello" }, response: { content: "Hi there" } },
+    ];
+    instance = await createServer(fixtures, { chaos: { disconnectRate: 1.0 } });
+
+    // The server destroys the connection — httpPost should reject
+    await expect(
+      httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello")),
+    ).rejects.toThrow();
   });
 });
 
@@ -480,5 +582,36 @@ describe("fixture-level chaos on non-OpenAI provider", () => {
     expect(res.status).toBe(500);
     const body = JSON.parse(res.body);
     expect(body.error.code).toBe("chaos_drop");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// logLevel: "silent" — invalid chaos headers must not throw or output warnings
+// ---------------------------------------------------------------------------
+
+describe("chaos with logLevel silent: invalid header is ignored gracefully", () => {
+  it("proceeds normally and does not throw when x-llmock-chaos-drop is not a number", async () => {
+    const fixtures: Fixture[] = [
+      { match: { userMessage: "hello" }, response: { content: "Hi there" } },
+    ];
+    instance = await createServer(fixtures, { logLevel: "silent" });
+
+    // "notanumber" parses to NaN — should be silently ignored, request proceeds normally
+    const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"), {
+      "X-LLMock-Chaos-Drop": "notanumber",
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.choices[0].message.content).toBe("Hi there");
+  });
+
+  it("does not call console.warn when evaluateChaos is called without a logger and header is invalid", () => {
+    // When evaluateChaos is used directly (public API) without a logger, invalid header values
+    // must not produce console.warn output — the caller has no logger to suppress it.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // "notanumber" parses to NaN — old code would call console.warn; new code uses logger?.warn (no-op)
+    evaluateChaos(null, undefined, { "x-llmock-chaos-drop": "notanumber" });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

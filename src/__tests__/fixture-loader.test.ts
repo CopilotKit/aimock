@@ -685,6 +685,86 @@ describe("validateFixtures", () => {
     ).toBe(true);
   });
 
+  it("error: streamingProfile.ttft is negative", () => {
+    const fixtures = [makeFixture({ streamingProfile: { ttft: -1 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("ttft"))).toBe(true);
+  });
+
+  it("no error: streamingProfile.ttft is 0", () => {
+    const fixtures = [makeFixture({ streamingProfile: { ttft: 0 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.filter((r) => r.message.includes("ttft"))).toHaveLength(0);
+  });
+
+  it("error: streamingProfile.tps is 0", () => {
+    const fixtures = [makeFixture({ streamingProfile: { tps: 0 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("tps"))).toBe(true);
+  });
+
+  it("error: streamingProfile.tps is negative", () => {
+    const fixtures = [makeFixture({ streamingProfile: { tps: -5 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("tps"))).toBe(true);
+  });
+
+  it("error: streamingProfile.jitter is negative", () => {
+    const fixtures = [makeFixture({ streamingProfile: { jitter: -0.1 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("jitter"))).toBe(true);
+  });
+
+  it("error: streamingProfile.jitter is > 1", () => {
+    const fixtures = [makeFixture({ streamingProfile: { jitter: 1.5 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("jitter"))).toBe(true);
+  });
+
+  it("no error: streamingProfile with valid values", () => {
+    const fixtures = [makeFixture({ streamingProfile: { ttft: 100, tps: 50, jitter: 0.1 } })];
+    expect(validateFixtures(fixtures)).toHaveLength(0);
+  });
+
+  it("error: chaos.dropRate is > 1", () => {
+    const fixtures = [makeFixture({ chaos: { dropRate: 1.5 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("dropRate"))).toBe(
+      true,
+    );
+  });
+
+  it("error: chaos.dropRate is negative", () => {
+    const fixtures = [makeFixture({ chaos: { dropRate: -0.1 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("dropRate"))).toBe(
+      true,
+    );
+  });
+
+  it("error: chaos.malformedRate is > 1", () => {
+    const fixtures = [makeFixture({ chaos: { malformedRate: 2.0 } })];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "error" && r.message.includes("malformedRate"))).toBe(
+      true,
+    );
+  });
+
+  it("error: chaos.disconnectRate is > 1", () => {
+    const fixtures = [makeFixture({ chaos: { disconnectRate: 5.0 } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("disconnectRate")),
+    ).toBe(true);
+  });
+
+  it("no error: chaos with boundary values (0 and 1)", () => {
+    const fixtures = [
+      makeFixture({ chaos: { dropRate: 0, malformedRate: 1, disconnectRate: 0.5 } }),
+    ];
+    expect(validateFixtures(fixtures)).toHaveLength(0);
+  });
+
   // --- Warning checks ---
 
   it("warning: duplicate userMessage", () => {

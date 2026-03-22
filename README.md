@@ -1,6 +1,6 @@
 # @copilotkit/llmock [![Unit Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml) [![Drift Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml) [![npm version](https://img.shields.io/npm/v/@copilotkit/llmock)](https://www.npmjs.com/package/@copilotkit/llmock)
 
-Deterministic mock LLM server for testing. A real HTTP server on a real port — not an in-process interceptor — so every process in your stack (Playwright, Next.js, agent workers, microservices) can point at it via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` and get reproducible, instant responses. Streams SSE in real OpenAI, Claude, Gemini, Bedrock, and Azure API formats, driven entirely by fixtures. Zero runtime dependencies.
+Deterministic mock LLM server for testing. A real HTTP server on a real port — not an in-process interceptor — so every process in your stack (Playwright, Next.js, agent workers, microservices) can point at it via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` and get reproducible, instant responses. Streams SSE in real OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, and Cohere API formats, driven entirely by fixtures. Zero runtime dependencies.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ MSW can't intercept any of those calls. llmock can — it's a real server on a r
 **Use llmock when:**
 
 - Multiple processes need to hit the same mock (E2E tests, agent frameworks, microservices)
-- You want multi-provider SSE format out of the box (OpenAI, Claude, Gemini)
+- You want multi-provider SSE format out of the box (OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere)
 - You prefer defining fixtures as JSON files rather than code
 - You need a standalone CLI server
 
@@ -72,17 +72,20 @@ MSW can't intercept any of those calls. llmock can — it's a real server on a r
 
 ## Features
 
-- **[Multi-provider support](https://llmock.copilotkit.dev/compatible-providers.html)** — [OpenAI Chat Completions](https://llmock.copilotkit.dev/chat-completions.html), [OpenAI Responses](https://llmock.copilotkit.dev/responses-api.html), [Anthropic Claude](https://llmock.copilotkit.dev/claude-messages.html), [Google Gemini](https://llmock.copilotkit.dev/gemini.html), [AWS Bedrock](https://llmock.copilotkit.dev/aws-bedrock.html), [Azure OpenAI](https://llmock.copilotkit.dev/azure-openai.html)
+- **[Multi-provider support](https://llmock.copilotkit.dev/compatible-providers.html)** — [OpenAI Chat Completions](https://llmock.copilotkit.dev/chat-completions.html), [OpenAI Responses](https://llmock.copilotkit.dev/responses-api.html), [Anthropic Claude](https://llmock.copilotkit.dev/claude-messages.html), [Google Gemini](https://llmock.copilotkit.dev/gemini.html), [AWS Bedrock](https://llmock.copilotkit.dev/aws-bedrock.html) (streaming + Converse), [Azure OpenAI](https://llmock.copilotkit.dev/azure-openai.html), [Vertex AI](https://llmock.copilotkit.dev/vertex-ai.html), [Ollama](https://llmock.copilotkit.dev/ollama.html), [Cohere](https://llmock.copilotkit.dev/cohere.html)
 - **[Embeddings API](https://llmock.copilotkit.dev/embeddings.html)** — OpenAI-compatible embedding responses with configurable dimensions
 - **[Structured output / JSON mode](https://llmock.copilotkit.dev/structured-output.html)** — `response_format`, `json_schema`, and function calling
 - **[Sequential responses](https://llmock.copilotkit.dev/sequential-responses.html)** — Stateful multi-turn fixtures that return different responses on each call
 - **[Streaming physics](https://llmock.copilotkit.dev/streaming-physics.html)** — Configurable `ttft`, `tps`, and `jitter` for realistic timing
 - **[WebSocket APIs](https://llmock.copilotkit.dev/websocket.html)** — OpenAI Responses WS, Realtime API, and Gemini Live
 - **[Error injection](https://llmock.copilotkit.dev/error-injection.html)** — One-shot errors, rate limiting, and provider-specific error formats
+- **[Chaos testing](https://llmock.copilotkit.dev/chaos-testing.html)** — Probabilistic failure injection: 500 errors, malformed JSON, mid-stream disconnects
+- **[Prometheus metrics](https://llmock.copilotkit.dev/metrics.html)** — Request counts, latencies, and fixture match rates at `/metrics`
 - **[Request journal](https://llmock.copilotkit.dev/docs.html)** — Record, inspect, and assert on every request
 - **[Fixture validation](https://llmock.copilotkit.dev/fixtures.html)** — Schema validation at load time with `--validate-on-load`
 - **CLI with hot-reload** — Standalone server with `--watch` for live fixture editing
 - **[Docker + Helm](https://llmock.copilotkit.dev/docker.html)** — Container image and Helm chart for CI/CD pipelines
+- **Record-and-replay** — VCR-style proxy-on-miss records real API responses as fixtures for deterministic replay
 - **[Drift detection](https://llmock.copilotkit.dev/drift-detection.html)** — Daily CI runs against real APIs to catch response format changes
 - **Claude Code integration** — `/write-fixtures` skill teaches your AI assistant how to write fixtures correctly
 
@@ -92,17 +95,24 @@ MSW can't intercept any of those calls. llmock can — it's a real server on a r
 llmock [options]
 ```
 
-| Option               | Short | Default      | Description                               |
-| -------------------- | ----- | ------------ | ----------------------------------------- |
-| `--port`             | `-p`  | `4010`       | Port to listen on                         |
-| `--host`             | `-h`  | `127.0.0.1`  | Host to bind to                           |
-| `--fixtures`         | `-f`  | `./fixtures` | Path to fixtures directory or file        |
-| `--latency`          | `-l`  | `0`          | Latency between SSE chunks (ms)           |
-| `--chunk-size`       | `-c`  | `20`         | Characters per SSE chunk                  |
-| `--watch`            | `-w`  |              | Watch fixture path for changes and reload |
-| `--log-level`        |       | `info`       | Log verbosity: `silent`, `info`, `debug`  |
-| `--validate-on-load` |       |              | Validate fixture schemas at startup       |
-| `--help`             |       |              | Show help                                 |
+| Option               | Short | Default      | Description                                 |
+| -------------------- | ----- | ------------ | ------------------------------------------- |
+| `--port`             | `-p`  | `4010`       | Port to listen on                           |
+| `--host`             | `-h`  | `127.0.0.1`  | Host to bind to                             |
+| `--fixtures`         | `-f`  | `./fixtures` | Path to fixtures directory or file          |
+| `--latency`          | `-l`  | `0`          | Latency between SSE chunks (ms)             |
+| `--chunk-size`       | `-c`  | `20`         | Characters per SSE chunk                    |
+| `--watch`            | `-w`  |              | Watch fixture path for changes and reload   |
+| `--log-level`        |       | `info`       | Log verbosity: `silent`, `info`, `debug`    |
+| `--validate-on-load` |       |              | Validate fixture schemas at startup         |
+| `--chaos-drop`       |       | `0`          | Chaos: probability of 500 errors (0-1)      |
+| `--chaos-malformed`  |       | `0`          | Chaos: probability of malformed JSON (0-1)  |
+| `--chaos-disconnect` |       | `0`          | Chaos: probability of disconnect (0-1)      |
+| `--metrics`          |       |              | Enable Prometheus metrics at /metrics       |
+| `--record`           |       |              | Record mode: proxy unmatched to real APIs   |
+| `--strict`           |       |              | Strict mode: fail on unmatched requests     |
+| `--provider-*`       |       |              | Upstream URL per provider (with `--record`) |
+| `--help`             |       |              | Show help                                   |
 
 ```bash
 # Start with bundled example fixtures
@@ -113,6 +123,12 @@ llmock -p 8080 -f ./my-fixtures
 
 # Simulate slow responses
 llmock --latency 100 --chunk-size 5
+
+# Record mode: proxy unmatched requests to real APIs and save as fixtures
+llmock --record --provider-openai https://api.openai.com --provider-anthropic https://api.anthropic.com
+
+# Strict mode in CI: fail if any request doesn't match a fixture
+llmock --strict -f ./fixtures
 ```
 
 ## Documentation

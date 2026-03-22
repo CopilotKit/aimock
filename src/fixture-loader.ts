@@ -254,6 +254,54 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
         message: "disconnectAfterMs must be >= 0",
       });
     }
+    if (f.streamingProfile !== undefined) {
+      const sp = f.streamingProfile;
+      if (sp.ttft !== undefined && sp.ttft < 0) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "streamingProfile.ttft must be >= 0",
+        });
+      }
+      if (sp.tps !== undefined && sp.tps <= 0) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "streamingProfile.tps must be > 0",
+        });
+      }
+      if (sp.jitter !== undefined && (sp.jitter < 0 || sp.jitter > 1)) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "streamingProfile.jitter must be between 0 and 1",
+        });
+      }
+    }
+    if (f.chaos !== undefined) {
+      const ch = f.chaos;
+      if (ch.dropRate !== undefined && (ch.dropRate < 0 || ch.dropRate > 1)) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "chaos.dropRate must be between 0 and 1",
+        });
+      }
+      if (ch.malformedRate !== undefined && (ch.malformedRate < 0 || ch.malformedRate > 1)) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "chaos.malformedRate must be between 0 and 1",
+        });
+      }
+      if (ch.disconnectRate !== undefined && (ch.disconnectRate < 0 || ch.disconnectRate > 1)) {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "chaos.disconnectRate must be between 0 and 1",
+        });
+      }
+    }
 
     // --- Warning checks ---
 

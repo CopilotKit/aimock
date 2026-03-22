@@ -6,7 +6,7 @@
     <title>llmock — Deterministic mock LLM server for testing</title>
     <meta
       name="description"
-      content="Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini — drop-in replacement for your test suite."
+      content="Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini, AWS Bedrock, Azure, Ollama, Cohere, Vertex AI — drop-in replacement for your test suite."
     />
 
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
@@ -1218,6 +1218,30 @@
               and streaming UX under real-world conditions.
             </p>
           </div>
+          <div class="feature-card">
+            <div class="feature-icon red">🎲</div>
+            <h3>Chaos Testing</h3>
+            <p>
+              Probabilistic failure injection &mdash; random errors, latency spikes, and stream
+              corruption for resilience testing.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">📊</div>
+            <h3>Prometheus Metrics</h3>
+            <p>
+              Expose request counts, latencies, and fixture match rates via a /metrics endpoint.
+              Grafana-ready.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">🔴</div>
+            <h3>Record &amp; Replay</h3>
+            <p>
+              Proxy to real APIs, record responses as fixtures, then replay them deterministically
+              in tests.
+            </p>
+          </div>
         </div>
       </div>
     </section>
@@ -1577,9 +1601,13 @@
               </tr>
               <tr>
                 <td>Multi-provider support</td>
-                <td class="yes">OpenAI + Claude + Gemini + compatible ✓</td>
+                <td class="yes">
+                  OpenAI + Claude + Gemini + Bedrock + Azure + Ollama + Cohere + Vertex AI ✓
+                </td>
                 <td class="no">Manual</td>
-                <td class="yes">OpenAI + Claude + Gemini + Bedrock</td>
+                <td class="yes">
+                  OpenAI + Claude + Gemini + Bedrock + Azure + Vertex + Cohere + more
+                </td>
                 <td class="manual">OpenAI only</td>
                 <td class="manual">OpenAI only</td>
               </tr>
@@ -1604,14 +1632,14 @@
                 <td class="yes">Built-in ✓</td>
                 <td class="manual">Manual</td>
                 <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="yes">Yes</td>
                 <td class="no">No</td>
               </tr>
               <tr>
                 <td>Fixture files</td>
                 <td class="yes">JSON ✓</td>
                 <td class="no">Code-only</td>
-                <td class="manual">Python config</td>
+                <td class="manual">Tera templates</td>
                 <td class="manual">YAML config</td>
                 <td class="manual">JSON templates</td>
               </tr>
@@ -1619,7 +1647,7 @@
                 <td>Programmatic API (test helpers)</td>
                 <td class="yes">Yes (TypeScript/JS) ✓</td>
                 <td class="yes">Yes (TypeScript/JS)</td>
-                <td class="yes">Yes (Python)</td>
+                <td class="no">No (binary only)</td>
                 <td class="no">No</td>
                 <td class="no">No</td>
               </tr>
@@ -1652,7 +1680,7 @@
                 <td class="yes">Yes ✓</td>
                 <td class="no">No</td>
                 <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="yes">Yes</td>
                 <td class="no">No</td>
               </tr>
               <tr>
@@ -1673,7 +1701,7 @@
               </tr>
               <tr>
                 <td>AWS Bedrock</td>
-                <td class="yes">Yes (non-streaming) ✓</td>
+                <td class="yes">Yes (streaming + Converse) ✓</td>
                 <td class="manual">Manual</td>
                 <td class="yes">Yes</td>
                 <td class="no">No</td>
@@ -1683,7 +1711,7 @@
                 <td>CLI server</td>
                 <td class="yes">Yes ✓</td>
                 <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="yes">Yes</td>
                 <td class="yes">Yes</td>
                 <td class="yes">Yes</td>
               </tr>
@@ -1696,11 +1724,43 @@
                 <td class="no">No</td>
               </tr>
               <tr>
+                <td>Chaos testing</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Record &amp; replay</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Prometheus metrics</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
+                <td>Streaming physics</td>
+                <td class="yes">Built-in ✓</td>
+                <td class="no">No</td>
+                <td class="yes">Yes</td>
+                <td class="no">No</td>
+                <td class="no">No</td>
+              </tr>
+              <tr>
                 <td>Dependencies</td>
                 <td class="yes">Zero</td>
                 <td class="no">~300KB</td>
-                <td class="no">Python + deps</td>
-                <td class="no">Docker required</td>
+                <td class="yes">Zero (Rust binary)</td>
+                <td class="no">Node.js + Express</td>
                 <td class="manual">Minimal</td>
               </tr>
             </tbody>

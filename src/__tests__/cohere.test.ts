@@ -1,0 +1,996 @@
+import { describe, it, expect, afterEach } from "vitest";
+import * as http from "node:http";
+import type { Fixture } from "../types.js";
+import { createServer, type ServerInstance } from "../server.js";
+import { cohereToCompletionRequest } from "../cohere.js";
+
+// --- helpers ---
+
+function post(
+  url: string,
+  body: unknown,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+function postRaw(url: string, raw: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(raw),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(raw);
+    req.end();
+  });
+}
+
+function postWithHeaders(
+  url: string,
+  body: unknown,
+  extraHeaders: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+          ...extraHeaders,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+interface SSEEvent {
+  event: string;
+  data: Record<string, unknown>;
+}
+
+function parseSSEEvents(body: string): SSEEvent[] {
+  const events: SSEEvent[] = [];
+  const blocks = body.split("\n\n").filter((b) => b.trim() !== "");
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    let eventType = "";
+    let dataStr = "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        eventType = line.slice(7);
+      } else if (line.startsWith("data: ")) {
+        dataStr = line.slice(6);
+      }
+    }
+    if (eventType && dataStr) {
+      events.push({ event: eventType, data: JSON.parse(dataStr) as Record<string, unknown> });
+    }
+  }
+  return events;
+}
+
+// --- fixtures ---
+
+const textFixture: Fixture = {
+  match: { userMessage: "hello" },
+  response: { content: "The capital of France is Paris." },
+};
+
+const toolFixture: Fixture = {
+  match: { userMessage: "weather" },
+  response: {
+    toolCalls: [
+      {
+        name: "get_weather",
+        arguments: '{"city":"SF"}',
+      },
+    ],
+  },
+};
+
+const errorFixture: Fixture = {
+  match: { userMessage: "fail" },
+  response: {
+    error: {
+      message: "Rate limited",
+      type: "rate_limit_error",
+    },
+    status: 429,
+  },
+};
+
+const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture];
+
+// --- tests ---
+
+let instance: ServerInstance | null = null;
+
+afterEach(async () => {
+  if (instance) {
+    await new Promise<void>((resolve) => {
+      instance!.server.close(() => resolve());
+    });
+    instance = null;
+  }
+});
+
+// ─── Unit tests: cohereToCompletionRequest ──────────────────────────────────
+
+describe("cohereToCompletionRequest", () => {
+  it("converts basic user message", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(result.model).toBe("command-r-plus");
+    expect(result.messages).toEqual([{ role: "user", content: "hello" }]);
+  });
+
+  it("converts system message", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        { role: "system", content: "Be helpful" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    expect(result.messages[0]).toEqual({ role: "system", content: "Be helpful" });
+    expect(result.messages[1]).toEqual({ role: "user", content: "hello" });
+  });
+
+  it("converts tool message with tool_call_id", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        {
+          role: "tool",
+          content: '{"temp":72}',
+          tool_call_id: "call_abc",
+        },
+      ],
+    });
+    expect(result.messages[0]).toEqual({
+      role: "tool",
+      content: '{"temp":72}',
+      tool_call_id: "call_abc",
+    });
+  });
+
+  it("converts tools", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Get weather",
+            parameters: { type: "object", properties: { city: { type: "string" } } },
+          },
+        },
+      ],
+    });
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools![0]).toEqual({
+      type: "function",
+      function: {
+        name: "get_weather",
+        description: "Get weather",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+    });
+  });
+
+  it("passes through stream field", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    });
+    expect(result.stream).toBe(true);
+  });
+
+  it("returns undefined tools when none provided", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(result.tools).toBeUndefined();
+  });
+});
+
+// ─── Unit tests: cohereToCompletionRequest (assistant message) ───────────────
+
+describe("cohereToCompletionRequest (assistant message)", () => {
+  it("converts assistant message", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "Hi there" },
+      ],
+    });
+    expect(result.messages[1]).toEqual({ role: "assistant", content: "Hi there" });
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (non-streaming text) ─────────────────
+
+describe("POST /v2/chat (non-streaming text)", () => {
+  it("returns text response with all required fields", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.id).toMatch(/^msg_/);
+    expect(body.finish_reason).toBe("COMPLETE");
+    expect(body.message.role).toBe("assistant");
+    expect(body.message.content).toEqual([
+      { type: "text", text: "The capital of France is Paris." },
+    ]);
+    expect(body.message.tool_calls).toEqual([]);
+    expect(body.message.tool_plan).toBe("");
+    expect(body.message.citations).toEqual([]);
+    expect(body.usage.billed_units).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      search_units: 0,
+      classifications: 0,
+    });
+    expect(body.usage.tokens).toEqual({ input_tokens: 0, output_tokens: 0 });
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (non-streaming tool call) ─────────────
+
+describe("POST /v2/chat (non-streaming tool call)", () => {
+  it("returns tool call with TOOL_CALL finish_reason", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "weather" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.finish_reason).toBe("TOOL_CALL");
+    expect(body.message.tool_calls).toHaveLength(1);
+    expect(body.message.tool_calls[0].id).toMatch(/^call_/);
+    expect(body.message.tool_calls[0].type).toBe("function");
+    expect(body.message.tool_calls[0].function.name).toBe("get_weather");
+    expect(body.message.tool_calls[0].function.arguments).toBe('{"city":"SF"}');
+    expect(body.message.content).toEqual([]);
+    expect(body.usage).toBeDefined();
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (streaming text) ─────────────────────
+
+describe("POST /v2/chat (streaming text)", () => {
+  it("produces correct event sequence", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/event-stream");
+
+    const events = parseSSEEvents(res.body);
+    expect(events.length).toBeGreaterThanOrEqual(5);
+
+    // message-start
+    expect(events[0].event).toBe("message-start");
+    expect(events[0].data.type).toBe("message-start");
+    const msgStart = events[0].data.delta as Record<string, unknown>;
+    const startMsg = msgStart.message as Record<string, unknown>;
+    expect(startMsg.role).toBe("assistant");
+    expect(startMsg.content).toEqual([]);
+    expect(startMsg.tool_plan).toBe("");
+    expect(startMsg.tool_calls).toEqual([]);
+    expect(startMsg.citations).toEqual([]);
+
+    // content-start (type: "text" only, no text field)
+    expect(events[1].event).toBe("content-start");
+    expect(events[1].data.type).toBe("content-start");
+    expect(events[1].data.index).toBe(0);
+    const csDelta = events[1].data.delta as Record<string, unknown>;
+    const csMsg = csDelta.message as Record<string, unknown>;
+    const csContent = csMsg.content as Record<string, unknown>;
+    expect(csContent.type).toBe("text");
+    expect(csContent).not.toHaveProperty("text");
+
+    // content-delta(s)
+    const contentDeltas = events.filter((e) => e.event === "content-delta");
+    expect(contentDeltas.length).toBeGreaterThanOrEqual(1);
+    for (const cd of contentDeltas) {
+      expect(cd.data.type).toBe("content-delta");
+      expect(cd.data.index).toBe(0);
+      const delta = cd.data.delta as Record<string, unknown>;
+      const msg = delta.message as Record<string, unknown>;
+      const content = msg.content as Record<string, unknown>;
+      expect(content.type).toBe("text");
+      expect(typeof content.text).toBe("string");
+    }
+
+    // Reconstruct full text from deltas
+    const fullText = contentDeltas
+      .map((cd) => {
+        const delta = cd.data.delta as Record<string, unknown>;
+        const msg = delta.message as Record<string, unknown>;
+        const content = msg.content as Record<string, unknown>;
+        return content.text as string;
+      })
+      .join("");
+    expect(fullText).toBe("The capital of France is Paris.");
+
+    // content-end
+    const contentEnd = events.find((e) => e.event === "content-end");
+    expect(contentEnd).toBeDefined();
+    expect(contentEnd!.data.type).toBe("content-end");
+    expect(contentEnd!.data.index).toBe(0);
+
+    // message-end
+    const msgEnd = events[events.length - 1];
+    expect(msgEnd.event).toBe("message-end");
+    expect(msgEnd.data.type).toBe("message-end");
+    const endDelta = msgEnd.data.delta as Record<string, unknown>;
+    expect(endDelta.finish_reason).toBe("COMPLETE");
+    const usage = endDelta.usage as Record<string, unknown>;
+    expect(usage.billed_units).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      search_units: 0,
+      classifications: 0,
+    });
+    expect(usage.tokens).toEqual({ input_tokens: 0, output_tokens: 0 });
+  });
+
+  it("content-start has type:text only and no text field", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    const events = parseSSEEvents(res.body);
+    const contentStart = events.find((e) => e.event === "content-start");
+    expect(contentStart).toBeDefined();
+    const delta = contentStart!.data.delta as Record<string, unknown>;
+    const msg = delta.message as Record<string, unknown>;
+    const content = msg.content as Record<string, unknown>;
+    expect(content.type).toBe("text");
+    expect(Object.keys(content)).toEqual(["type"]);
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (streaming tool calls) ────────────────
+
+describe("POST /v2/chat (streaming tool calls)", () => {
+  it("produces correct tool call event sequence", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "weather" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    const events = parseSSEEvents(res.body);
+
+    // message-start
+    expect(events[0].event).toBe("message-start");
+
+    // tool-plan-delta
+    const planDelta = events.find((e) => e.event === "tool-plan-delta");
+    expect(planDelta).toBeDefined();
+    expect(planDelta!.data.type).toBe("tool-plan-delta");
+    const planMsg = (planDelta!.data.delta as Record<string, unknown>).message as Record<
+      string,
+      unknown
+    >;
+    expect(typeof planMsg.tool_plan).toBe("string");
+
+    // tool-call-start
+    const tcStart = events.find((e) => e.event === "tool-call-start");
+    expect(tcStart).toBeDefined();
+    expect(tcStart!.data.type).toBe("tool-call-start");
+    expect(tcStart!.data.index).toBe(0);
+    const tcStartDelta = tcStart!.data.delta as Record<string, unknown>;
+    const tcStartMsg = tcStartDelta.message as Record<string, unknown>;
+    const tcStartCalls = tcStartMsg.tool_calls as Record<string, unknown>;
+    expect(tcStartCalls.id).toMatch(/^call_/);
+    expect(tcStartCalls.type).toBe("function");
+    const tcStartFn = tcStartCalls.function as Record<string, unknown>;
+    expect(tcStartFn.name).toBe("get_weather");
+    expect(tcStartFn.arguments).toBe("");
+
+    // tool-call-delta(s)
+    const tcDeltas = events.filter((e) => e.event === "tool-call-delta");
+    expect(tcDeltas.length).toBeGreaterThanOrEqual(1);
+    const argsAccum = tcDeltas
+      .map((e) => {
+        const delta = e.data.delta as Record<string, unknown>;
+        const msg = delta.message as Record<string, unknown>;
+        const calls = msg.tool_calls as Record<string, unknown>;
+        const fn = calls.function as Record<string, unknown>;
+        return fn.arguments as string;
+      })
+      .join("");
+    expect(argsAccum).toBe('{"city":"SF"}');
+
+    // tool-call-end
+    const tcEnd = events.find((e) => e.event === "tool-call-end");
+    expect(tcEnd).toBeDefined();
+    expect(tcEnd!.data.type).toBe("tool-call-end");
+    expect(tcEnd!.data.index).toBe(0);
+
+    // message-end with TOOL_CALL
+    const msgEnd = events[events.length - 1];
+    expect(msgEnd.event).toBe("message-end");
+    const endDelta = msgEnd.data.delta as Record<string, unknown>;
+    expect(endDelta.finish_reason).toBe("TOOL_CALL");
+    expect(endDelta.usage).toBeDefined();
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (message-end usage) ───────────────────
+
+describe("POST /v2/chat (message-end usage)", () => {
+  it("includes usage with both billed_units and tokens", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    const events = parseSSEEvents(res.body);
+    const msgEnd = events.find((e) => e.event === "message-end");
+    expect(msgEnd).toBeDefined();
+    const delta = msgEnd!.data.delta as Record<string, unknown>;
+    const usage = delta.usage as Record<string, unknown>;
+    expect(usage.billed_units).toBeDefined();
+    expect(usage.tokens).toBeDefined();
+    const billedUnits = usage.billed_units as Record<string, unknown>;
+    expect(billedUnits.input_tokens).toBe(0);
+    expect(billedUnits.output_tokens).toBe(0);
+    expect(billedUnits.search_units).toBe(0);
+    expect(billedUnits.classifications).toBe(0);
+    const tokens = usage.tokens as Record<string, unknown>;
+    expect(tokens.input_tokens).toBe(0);
+    expect(tokens.output_tokens).toBe(0);
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (validation) ──────────────────────────
+
+describe("POST /v2/chat (validation)", () => {
+  it("returns 400 when model is missing", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("model is required");
+  });
+
+  it("returns 400 when messages array is missing", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r",
+    });
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Invalid request: messages array is required");
+  });
+
+  it("returns 400 for malformed JSON", async () => {
+    instance = await createServer(allFixtures);
+    const res = await postRaw(`${instance.url}/v2/chat`, "{not valid");
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Malformed JSON");
+  });
+
+  it("returns 404 when no fixture matches", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "nomatch" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("No fixture matched");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (streaming profile) ───────────────────
+
+describe("POST /v2/chat (streaming profile)", () => {
+  it("applies streaming profile latency", async () => {
+    const slowFixture: Fixture = {
+      match: { userMessage: "slow" },
+      response: { content: "AB" },
+      chunkSize: 1,
+      streamingProfile: { ttft: 50, tps: 20, jitter: 0 },
+    };
+    instance = await createServer([slowFixture]);
+
+    const start = Date.now();
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "slow" }],
+      stream: true,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    // Should have noticeable delay from streaming profile
+    expect(elapsed).toBeGreaterThanOrEqual(80);
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (interruption) ────────────────────────
+
+describe("POST /v2/chat (interruption)", () => {
+  it("truncates after specified number of chunks", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate" },
+      response: { content: "ABCDEFGHIJ" },
+      chunkSize: 1,
+      truncateAfterChunks: 3,
+    };
+    instance = await createServer([truncFixture]);
+
+    const res = await new Promise<{ aborted: boolean; body: string }>((resolve) => {
+      const data = JSON.stringify({
+        model: "command-r-plus",
+        messages: [{ role: "user", content: "truncate" }],
+        stream: true,
+      });
+      const parsed = new URL(`${instance!.url}/v2/chat`);
+      const chunks: Buffer[] = [];
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => {
+            resolve({ aborted: false, body: Buffer.concat(chunks).toString() });
+          });
+          res.on("aborted", () => {
+            resolve({ aborted: true, body: Buffer.concat(chunks).toString() });
+          });
+        },
+      );
+      req.on("error", () => {
+        resolve({ aborted: true, body: Buffer.concat(chunks).toString() });
+      });
+      req.write(data);
+      req.end();
+    });
+
+    // Stream was truncated — res.destroy() causes abrupt close
+    expect(res.aborted).toBe(true);
+
+    // Journal should record interruption
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (chaos) ──────────────────────────────
+
+describe("POST /v2/chat (chaos)", () => {
+  it("drops request when chaos drop header is set to 1.0", async () => {
+    instance = await createServer(allFixtures);
+    const res = await postWithHeaders(
+      `${instance.url}/v2/chat`,
+      {
+        model: "command-r-plus",
+        messages: [{ role: "user", content: "hello" }],
+        stream: false,
+      },
+      { "x-llmock-chaos-drop": "1.0" },
+    );
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("chaos_drop");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (error fixture) ───────────────────────
+
+describe("POST /v2/chat (error fixture)", () => {
+  it("returns error fixture with correct status", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "fail" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Rate limited");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (streaming default) ───────────────────
+
+describe("POST /v2/chat (streaming default)", () => {
+  it("20. returns non-streaming JSON when stream field is omitted", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      // stream field intentionally omitted — Cohere defaults to non-streaming
+    });
+
+    expect(res.status).toBe(200);
+    // Should be non-streaming JSON, NOT SSE
+    expect(res.headers["content-type"]).toBe("application/json");
+
+    const body = JSON.parse(res.body);
+    expect(body.id).toMatch(/^msg_/);
+    expect(body.finish_reason).toBe("COMPLETE");
+    expect(body.message.role).toBe("assistant");
+    expect(body.message.content).toEqual([
+      { type: "text", text: "The capital of France is Paris." },
+    ]);
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (multiple tool calls) ─────────────────
+
+describe("POST /v2/chat (multiple tool calls)", () => {
+  const multiToolFixture: Fixture = {
+    match: { userMessage: "multi-tool" },
+    response: {
+      toolCalls: [
+        { name: "get_weather", arguments: '{"city":"NYC"}' },
+        { name: "get_time", arguments: '{"tz":"EST"}' },
+      ],
+    },
+  };
+
+  it("21a. non-streaming returns 2 items in tool_calls array", async () => {
+    instance = await createServer([multiToolFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "multi-tool" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.finish_reason).toBe("TOOL_CALL");
+    expect(body.message.tool_calls).toHaveLength(2);
+    expect(body.message.tool_calls[0].function.name).toBe("get_weather");
+    expect(body.message.tool_calls[1].function.name).toBe("get_time");
+  });
+
+  it("21b. streaming produces 2 tool-call-start events", async () => {
+    instance = await createServer([multiToolFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "multi-tool" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/event-stream");
+
+    const events = parseSSEEvents(res.body);
+    const toolCallStarts = events.filter((e) => e.event === "tool-call-start");
+    expect(toolCallStarts).toHaveLength(2);
+
+    // First tool at index 0
+    expect(toolCallStarts[0].data.index).toBe(0);
+    const tc0Delta = toolCallStarts[0].data.delta as Record<string, unknown>;
+    const tc0Msg = tc0Delta.message as Record<string, unknown>;
+    const tc0Calls = tc0Msg.tool_calls as Record<string, unknown>;
+    const tc0Fn = tc0Calls.function as Record<string, unknown>;
+    expect(tc0Fn.name).toBe("get_weather");
+
+    // Second tool at index 1
+    expect(toolCallStarts[1].data.index).toBe(1);
+    const tc1Delta = toolCallStarts[1].data.delta as Record<string, unknown>;
+    const tc1Msg = tc1Delta.message as Record<string, unknown>;
+    const tc1Calls = tc1Msg.tool_calls as Record<string, unknown>;
+    const tc1Fn = tc1Calls.function as Record<string, unknown>;
+    expect(tc1Fn.name).toBe("get_time");
+
+    // message-end should have TOOL_CALL finish_reason
+    const msgEnd = events.find((e) => e.event === "message-end");
+    expect(msgEnd).toBeDefined();
+    const endDelta = msgEnd!.data.delta as Record<string, unknown>;
+    expect(endDelta.finish_reason).toBe("TOOL_CALL");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (malformed tool call arguments) ───────
+
+describe("POST /v2/chat (malformed tool call arguments)", () => {
+  it("falls back to empty string when arguments is not valid JSON", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "NOT VALID JSON" }],
+      },
+    };
+    instance = await createServer([badArgsFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "bad-args" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message.tool_calls).toHaveLength(1);
+    expect(body.message.tool_calls[0].function.name).toBe("fn");
+    // Cohere passes through the arguments string as-is (logs warning)
+    expect(body.message.tool_calls[0].function.arguments).toBe("NOT VALID JSON");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (strict mode) ────────────────────────
+
+describe("POST /v2/chat (strict mode)", () => {
+  it("returns 503 in strict mode with no fixtures", async () => {
+    instance = await createServer([], { strict: true });
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toContain("no fixture matched");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (unknown response type → 500) ─────────
+
+describe("POST /v2/chat (unknown response type)", () => {
+  it("returns 500 for a fixture with unrecognizable response shape", async () => {
+    const weirdFixture: Fixture = {
+      match: { userMessage: "weird" },
+      response: { embedding: [0.1, 0.2, 0.3] },
+    };
+    instance = await createServer([weirdFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "weird" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toContain("did not match any known type");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (error fixture no explicit status) ────
+
+describe("POST /v2/chat (error fixture no explicit status)", () => {
+  it("defaults to 500 when error fixture has no status", async () => {
+    const noStatusError: Fixture = {
+      match: { userMessage: "err-no-status" },
+      response: {
+        error: {
+          message: "Something went wrong",
+          type: "server_error",
+        },
+      },
+    };
+    instance = await createServer([noStatusError]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "err-no-status" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Something went wrong");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (CORS headers) ────────────────────────
+
+describe("POST /v2/chat (CORS headers)", () => {
+  it("includes CORS headers in response", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+
+    expect(res.headers["access-control-allow-origin"]).toBe("*");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (journal) ────────────────────────────
+
+describe("POST /v2/chat (journal)", () => {
+  it("records request in the journal", async () => {
+    instance = await createServer(allFixtures);
+    await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+
+    expect(instance.journal.size).toBe(1);
+    const entry = instance.journal.getLast();
+    expect(entry!.path).toBe("/v2/chat");
+    expect(entry!.response.status).toBe(200);
+    expect(entry!.response.fixture).toBe(textFixture);
+    expect(entry!.body.model).toBe("command-r-plus");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming tool call with explicit fixture id
+// ---------------------------------------------------------------------------
+
+describe("POST /v2/chat (streaming tool call with fixture-provided id)", () => {
+  const toolFixtureWithId: Fixture = {
+    match: { userMessage: "lookup" },
+    response: {
+      toolCalls: [
+        {
+          name: "search_db",
+          arguments: '{"query":"cats"}',
+          id: "call_fixture_custom_123",
+        },
+      ],
+    },
+  };
+
+  it("preserves fixture-provided tool call id in streaming events", async () => {
+    instance = await createServer([toolFixtureWithId]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "lookup" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/event-stream");
+
+    const events = parseSSEEvents(res.body);
+
+    // tool-call-start should carry the fixture-provided id
+    const tcStart = events.find((e) => e.event === "tool-call-start");
+    expect(tcStart).toBeDefined();
+    const tcStartDelta = tcStart!.data.delta as Record<string, unknown>;
+    const tcStartMsg = tcStartDelta.message as Record<string, unknown>;
+    const tcStartCalls = tcStartMsg.tool_calls as Record<string, unknown>;
+    expect(tcStartCalls.id).toBe("call_fixture_custom_123");
+    expect(tcStartCalls.type).toBe("function");
+    const tcStartFn = tcStartCalls.function as Record<string, unknown>;
+    expect(tcStartFn.name).toBe("search_db");
+
+    // tool-call-delta(s) should accumulate to the full arguments
+    const tcDeltas = events.filter((e) => e.event === "tool-call-delta");
+    expect(tcDeltas.length).toBeGreaterThanOrEqual(1);
+    const argsAccum = tcDeltas
+      .map((e) => {
+        const delta = e.data.delta as Record<string, unknown>;
+        const msg = delta.message as Record<string, unknown>;
+        const calls = msg.tool_calls as Record<string, unknown>;
+        const fn = calls.function as Record<string, unknown>;
+        return fn.arguments as string;
+      })
+      .join("");
+    expect(argsAccum).toBe('{"query":"cats"}');
+
+    // message-end with TOOL_CALL
+    const msgEnd = events.find((e) => e.event === "message-end");
+    expect(msgEnd).toBeDefined();
+    const endDelta = msgEnd!.data.delta as Record<string, unknown>;
+    expect(endDelta.finish_reason).toBe("TOOL_CALL");
+  });
+});
