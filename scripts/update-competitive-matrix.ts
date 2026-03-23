@@ -8,8 +8,9 @@
  * of new capabilities is found.
  *
  * Usage:
- *   npx tsx scripts/update-competitive-matrix.ts            # update in place
- *   npx tsx scripts/update-competitive-matrix.ts --dry-run   # show changes only
+ *   npx tsx scripts/update-competitive-matrix.ts                        # update in place
+ *   npx tsx scripts/update-competitive-matrix.ts --dry-run               # show changes only
+ *   npx tsx scripts/update-competitive-matrix.ts --summary out.md        # write markdown summary
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -339,6 +340,64 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
 
+// ── Summary Writing ──────────────────────────────────────────────────────────
+
+function parseSummaryArg(): string | null {
+  const idx = process.argv.indexOf("--summary");
+  if (idx === -1 || idx + 1 >= process.argv.length) return null;
+  return resolve(process.argv[idx + 1]);
+}
+
+function writeSummary(summaryPath: string, changes: DetectedChange[]): void {
+  let md: string;
+
+  if (changes.length === 0) {
+    md = "No competitive matrix changes detected this week.\n";
+  } else {
+    const lines: string[] = [];
+    lines.push("## Competitive Matrix Changes");
+    lines.push("");
+    lines.push("| Competitor | Capability | Change |");
+    lines.push("| --- | --- | --- |");
+    for (const ch of changes) {
+      lines.push(`| ${ch.competitor} | ${ch.capability} | ${ch.from} -> ${ch.to} |`);
+    }
+    lines.push("");
+
+    // Build mermaid flowchart grouped by competitor
+    const byCompetitor = new Map<string, string[]>();
+    for (const ch of changes) {
+      if (!byCompetitor.has(ch.competitor)) {
+        byCompetitor.set(ch.competitor, []);
+      }
+      byCompetitor.get(ch.competitor)!.push(ch.capability);
+    }
+
+    lines.push("```mermaid");
+    lines.push("flowchart LR");
+    let nodeCounter = 0;
+    for (const [competitor, capabilities] of byCompetitor) {
+      const subId = competitor.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const subLabel = competitor.replace(/"/g, "&quot;");
+      lines.push(`  subgraph ${subId}["${subLabel}"]`);
+      for (const cap of capabilities) {
+        const nodeId = `n${nodeCounter}`;
+        const capLabel = cap.replace(/"/g, "&quot;");
+        lines.push(`    ${nodeId}["${capLabel}"]`);
+        nodeCounter++;
+      }
+      lines.push("  end");
+    }
+    lines.push("```");
+    lines.push("");
+
+    md = lines.join("\n");
+  }
+
+  writeFileSync(summaryPath, md, "utf-8");
+  console.log(`\nSummary written to ${summaryPath}`);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -388,8 +447,11 @@ async function main(): Promise<void> {
   // 4. Compute changes
   const changes = computeChanges(html, matrix, competitorFeatures);
 
+  const summaryPath = parseSummaryArg();
+
   if (changes.length === 0) {
     console.log("\nNo changes detected. Competitive matrix is up to date.");
+    if (summaryPath) writeSummary(summaryPath, changes);
     return;
   }
 
@@ -397,6 +459,8 @@ async function main(): Promise<void> {
   for (const ch of changes) {
     console.log(`  ${ch.competitor} / ${ch.capability}: ${ch.from} -> ${ch.to}`);
   }
+
+  if (summaryPath) writeSummary(summaryPath, changes);
 
   if (DRY_RUN) {
     console.log("\n[DRY RUN] Would update docs/index.html with the above changes.");

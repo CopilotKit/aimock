@@ -25,7 +25,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Update competitive matrix
-        run: npx tsx scripts/update-competitive-matrix.ts
+        run: npx tsx scripts/update-competitive-matrix.ts --summary /tmp/matrix-summary.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -50,7 +50,7 @@ jobs:
           git push -u origin "$BRANCH"
           gh pr create \
             --title "Update competitive matrix" \
-            --body "Automated weekly update based on competitor README analysis." \
+            --body-file /tmp/matrix-summary.md \
             --base main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
