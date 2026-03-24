@@ -1,9 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
 import { crc32 } from "node:zlib";
-import type { Fixture } from "../types.js";
+import type { Fixture, HandlerDefaults } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { converseToCompletionRequest } from "../bedrock-converse.js";
+import {
+  converseToCompletionRequest,
+  handleConverse,
+  handleConverseStream,
+} from "../bedrock-converse.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 
 // --- helpers ---
 
@@ -1151,5 +1157,724 @@ describe("POST /model/{modelId}/converse (error fixture)", () => {
     expect(res.status).toBe(429);
     const body = JSON.parse(res.body);
     expect(body.error.message).toBe("Rate limited");
+  });
+});
+
+// ─── converseToCompletionRequest: edge case branches ─────────────────────────
+
+describe("converseToCompletionRequest (edge cases)", () => {
+  it("handles empty system array (no system message pushed)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+        system: [],
+      },
+      "model",
+    );
+    expect(result.messages[0]).toEqual({ role: "user", content: "hi" });
+  });
+
+  it("handles system with empty text (no system message pushed)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+        system: [{ text: "" }],
+      },
+      "model",
+    );
+    // Empty systemText → no system message
+    expect(result.messages[0]).toEqual({ role: "user", content: "hi" });
+  });
+
+  it("handles user text content blocks with missing text (text ?? '' fallback)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [{ text: undefined }],
+          },
+        ],
+      } as unknown as Parameters<typeof converseToCompletionRequest>[0],
+      "model",
+    );
+    expect(result.messages[0]).toEqual({ role: "user", content: "" });
+  });
+
+  it("handles assistant text-only messages (no toolUse blocks)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ text: "Just text" }],
+          },
+        ],
+      },
+      "model",
+    );
+    expect(result.messages[0]).toEqual({ role: "assistant", content: "Just text" });
+  });
+
+  it("handles assistant empty content (content: null)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [],
+          },
+        ],
+      },
+      "model",
+    );
+    expect(result.messages[0]).toEqual({ role: "assistant", content: null });
+  });
+
+  it("handles user tool result with missing text in content items (text ?? '' fallback)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                toolResult: {
+                  toolUseId: "toolu_x",
+                  content: [{ text: undefined }, { text: "result" }],
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as Parameters<typeof converseToCompletionRequest>[0],
+      "model",
+    );
+    expect(result.messages[0]).toEqual({
+      role: "tool",
+      content: "result",
+      tool_call_id: "toolu_x",
+    });
+  });
+
+  it("handles user tool results with text blocks alongside", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                toolResult: {
+                  toolUseId: "toolu_x",
+                  content: [{ text: "ok" }],
+                },
+              },
+              { text: "extra info" },
+            ],
+          },
+        ],
+      },
+      "model",
+    );
+    expect(result.messages[0]).toEqual({
+      role: "tool",
+      content: "ok",
+      tool_call_id: "toolu_x",
+    });
+    expect(result.messages[1]).toEqual({ role: "user", content: "extra info" });
+  });
+
+  it("omits tools when no toolConfig is provided", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+      },
+      "model",
+    );
+    expect(result.tools).toBeUndefined();
+  });
+
+  it("omits tools when toolConfig has empty tools array", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+        toolConfig: { tools: [] },
+      },
+      "model",
+    );
+    expect(result.tools).toBeUndefined();
+  });
+
+  it("handles inferenceConfig without temperature (undefined)", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+        inferenceConfig: { maxTokens: 100 },
+      },
+      "model",
+    );
+    expect(result.temperature).toBeUndefined();
+  });
+
+  it("handles assistant text blocks with missing text alongside toolUse (text ?? '')", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { text: undefined },
+              {
+                toolUse: {
+                  toolUseId: "toolu_123",
+                  name: "fn",
+                  input: {},
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as Parameters<typeof converseToCompletionRequest>[0],
+      "model",
+    );
+    expect(result.messages[0].tool_calls).toHaveLength(1);
+    // Empty text → content is null (falsy)
+    expect(result.messages[0].content).toBeNull();
+  });
+});
+
+// ─── Converse response edge cases ───────────────────────────────────────────
+
+describe("POST /model/{modelId}/converse (malformed tool call arguments)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("falls back to empty input for malformed JSON", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "NOT VALID" }],
+      },
+    };
+    instance = await createServer([badArgsFixture]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse`, {
+      messages: [{ role: "user", content: [{ text: "bad-args" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.output.message.content[0].toolUse.input).toEqual({});
+  });
+});
+
+describe("POST /model/{modelId}/converse (tool call with no id)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("generates tool use id when fixture provides none", async () => {
+    const noIdFixture: Fixture = {
+      match: { userMessage: "no-id-tool" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: '{"x":1}' }],
+      },
+    };
+    instance = await createServer([noIdFixture]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse`, {
+      messages: [{ role: "user", content: [{ text: "no-id-tool" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.output.message.content[0].toolUse.toolUseId).toMatch(/^toolu_/);
+  });
+});
+
+describe("POST /model/{modelId}/converse (tool call with empty arguments)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("defaults to {} when arguments is empty string", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse`, {
+      messages: [{ role: "user", content: [{ text: "empty-args" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.output.message.content[0].toolUse.input).toEqual({});
+  });
+});
+
+describe("POST /model/{modelId}/converse (error fixture no explicit status)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("defaults to 500 when error fixture has no status", async () => {
+    const noStatusError: Fixture = {
+      match: { userMessage: "err-no-status" },
+      response: {
+        error: {
+          message: "Something went wrong",
+          type: "server_error",
+        },
+      },
+    };
+    instance = await createServer([noStatusError]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse`, {
+      messages: [{ role: "user", content: [{ text: "err-no-status" }] }],
+    });
+
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("POST /model/{modelId}/converse-stream (error fixture no explicit status)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("defaults to 500 when error fixture has no status", async () => {
+    const noStatusError: Fixture = {
+      match: { userMessage: "err-no-status" },
+      response: {
+        error: {
+          message: "Something went wrong",
+          type: "server_error",
+        },
+      },
+    };
+    instance = await createServer([noStatusError]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
+      messages: [{ role: "user", content: [{ text: "err-no-status" }] }],
+    });
+
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("POST /model/{modelId}/invoke-with-response-stream (error fixture no explicit status)", () => {
+  const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+  it("defaults to 500 when streaming error fixture has no status", async () => {
+    const noStatusError: Fixture = {
+      match: { userMessage: "err-no-status" },
+      response: {
+        error: {
+          message: "Something went wrong",
+          type: "server_error",
+        },
+      },
+    };
+    instance = await createServer([noStatusError]);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/invoke-with-response-stream`, {
+      anthropic_version: "bedrock-2023-05-31",
+      max_tokens: 512,
+      messages: [{ role: "user", content: "err-no-status" }],
+    });
+
+    expect(res.status).toBe(500);
+  });
+});
+
+// ─── Direct handler tests for req.method/req.url fallback branches ──────────
+
+function createMockReq(overrides: Partial<http.IncomingMessage> = {}): http.IncomingMessage {
+  return {
+    method: undefined,
+    url: undefined,
+    headers: {},
+    ...overrides,
+  } as unknown as http.IncomingMessage;
+}
+
+function createMockRes(): http.ServerResponse & { _written: string; _status: number } {
+  const res = {
+    _written: "",
+    _status: 0,
+    writableEnded: false,
+    statusCode: 0,
+    writeHead(status: number) {
+      res._status = status;
+      res.statusCode = status;
+    },
+    setHeader() {},
+    write(data: string) {
+      res._written += data;
+      return true;
+    },
+    end(data?: string) {
+      if (data) res._written += data;
+      res.writableEnded = true;
+    },
+    destroy() {
+      res.writableEnded = true;
+    },
+  };
+  return res as unknown as http.ServerResponse & { _written: string; _status: number };
+}
+
+function createDefaults(overrides: Partial<HandlerDefaults> = {}): HandlerDefaults {
+  return {
+    latency: 0,
+    chunkSize: 100,
+    logger: new Logger("silent"),
+    ...overrides,
+  };
+}
+
+describe("handleConverse (direct handler call, method/url fallbacks)", () => {
+  it("uses fallback for text response with undefined method/url", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+    const raw = JSON.stringify({
+      messages: [{ role: "user", content: [{ text: "hi" }] }],
+    });
+
+    await handleConverse(req, res, raw, "model-id", [fixture], journal, createDefaults(), () => {});
+
+    expect(res._status).toBe(200);
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toContain("/model/model-id/converse");
+  });
+
+  it("uses fallback for malformed JSON", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(req, res, "{bad", "model-id", [], journal, createDefaults(), () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+  });
+
+  it("uses fallback for missing messages", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({}),
+      "model-id",
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback for no fixture match", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "x" }] }] }),
+      "model-id",
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback for strict mode", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "x" }] }] }),
+      "model-id",
+      [],
+      journal,
+      createDefaults({ strict: true }),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "err" },
+      response: { error: { message: "fail", type: "err" }, status: 500 },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "err" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for tool call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "tool" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for unknown response type", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverse(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "embed" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+});
+
+describe("handleConverseStream (direct handler call, method/url fallbacks)", () => {
+  it("uses fallback for text response with undefined method/url", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "hi" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toContain("/model/model-id/converse-stream");
+  });
+
+  it("uses fallback for malformed JSON in streaming", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      "{bad",
+      "model-id",
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+  });
+
+  it("uses fallback for missing messages in streaming", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({}),
+      "model-id",
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback for no fixture match in streaming", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "x" }] }] }),
+      "model-id",
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback for strict mode in streaming", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "x" }] }] }),
+      "model-id",
+      [],
+      journal,
+      createDefaults({ strict: true }),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error response in streaming", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "err" },
+      response: { error: { message: "fail", type: "err" }, status: 500 },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "err" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for tool call response in streaming", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "tool" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for unknown response type in streaming", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleConverseStream(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: [{ text: "embed" }] }] }),
+      "model-id",
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
   });
 });

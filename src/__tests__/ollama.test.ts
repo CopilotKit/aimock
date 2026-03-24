@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
-import type { Fixture } from "../types.js";
+import type { Fixture, HandlerDefaults } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { ollamaToCompletionRequest } from "../ollama.js";
+import { ollamaToCompletionRequest, handleOllama, handleOllamaGenerate } from "../ollama.js";
 import { writeNDJSONStream } from "../ndjson-writer.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 
 // --- helpers ---
 
@@ -1044,6 +1046,240 @@ describe("POST /api/chat (error fixture no explicit status)", () => {
   });
 });
 
+// ─── Integration tests: POST /api/chat (unknown response type) ──────────────
+
+describe("POST /api/chat (unknown response type)", () => {
+  it("returns 500 for embedding fixture", async () => {
+    const embeddingFixture: Fixture = {
+      match: { userMessage: "embed-chat" },
+      response: { embedding: [0.1, 0.2, 0.3] },
+    };
+    instance = await createServer([embeddingFixture]);
+    const res = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "embed-chat" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toContain("did not match any known type");
+  });
+});
+
+// ─── Integration tests: POST /api/chat (error fixture streaming) ────────────
+
+describe("POST /api/chat (error fixture streaming)", () => {
+  it("returns error fixture for streaming request too", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "fail" }],
+      // stream omitted → defaults to true
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Rate limited");
+  });
+});
+
+// ─── Integration tests: POST /api/generate (malformed JSON) ─────────────────
+
+describe("POST /api/generate (malformed JSON)", () => {
+  it("returns 400 for malformed JSON body", async () => {
+    instance = await createServer(allFixtures);
+    const res = await postRaw(`${instance.url}/api/generate`, "{not valid");
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Malformed JSON");
+  });
+});
+
+// ─── Integration tests: POST /api/generate (unknown response type streaming) ─
+
+describe("POST /api/generate (unknown response type streaming)", () => {
+  it("returns 500 for tool call fixture on /api/generate (streaming default)", async () => {
+    const tcFixture: Fixture = {
+      match: { userMessage: "tool-gen-stream" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: '{"x":1}' }],
+      },
+    };
+    instance = await createServer([tcFixture]);
+    const res = await post(`${instance.url}/api/generate`, {
+      model: "llama3",
+      prompt: "tool-gen-stream",
+      // stream omitted → defaults to true
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toContain("did not match any known type");
+  });
+});
+
+// ─── Integration tests: POST /api/generate (error fixture streaming) ────────
+
+describe("POST /api/generate (error fixture streaming)", () => {
+  it("returns error fixture for streaming generate request", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/api/generate`, {
+      model: "llama3",
+      prompt: "fail",
+      // stream omitted → defaults to true
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Rate limited");
+  });
+});
+
+// ─── Integration tests: POST /api/chat (streaming malformed tool call args) ──
+
+describe("POST /api/chat (streaming malformed tool call arguments)", () => {
+  it("falls back to empty object for malformed JSON in streaming", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-stream-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "NOT VALID JSON" }],
+      },
+    };
+    instance = await createServer([badArgsFixture]);
+    const res = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "bad-stream-args" }],
+      // stream omitted → defaults to true
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseNDJSON(res.body) as Array<{
+      message: { tool_calls?: Array<{ function: { arguments: unknown } }> };
+      done: boolean;
+    }>;
+    const toolChunk = chunks.find((c) => c.message.tool_calls && c.message.tool_calls.length > 0);
+    expect(toolChunk).toBeDefined();
+    expect(toolChunk!.message.tool_calls![0].function.arguments).toEqual({});
+  });
+});
+
+// ─── Integration tests: POST /api/chat (streaming tool call with empty args) ─
+
+describe("POST /api/chat (streaming tool call with empty arguments)", () => {
+  it("defaults to {} when arguments is empty string (streaming)", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-stream-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "empty-stream-args" }],
+      // stream omitted → defaults to true
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseNDJSON(res.body) as Array<{
+      message: { tool_calls?: Array<{ function: { arguments: unknown } }> };
+      done: boolean;
+    }>;
+    const toolChunk = chunks.find((c) => c.message.tool_calls && c.message.tool_calls.length > 0);
+    expect(toolChunk).toBeDefined();
+    expect(toolChunk!.message.tool_calls![0].function.arguments).toEqual({});
+  });
+});
+
+// ─── Integration tests: POST /api/generate (interruption) ───────────────────
+
+describe("POST /api/generate (interruption)", () => {
+  it("truncates after specified number of chunks", async () => {
+    const truncFixture: Fixture = {
+      match: { userMessage: "truncate-gen" },
+      response: { content: "ABCDEFGHIJ" },
+      chunkSize: 1,
+      truncateAfterChunks: 3,
+    };
+    instance = await createServer([truncFixture]);
+
+    const res = await new Promise<{ aborted: boolean; body: string }>((resolve) => {
+      const data = JSON.stringify({
+        model: "llama3",
+        prompt: "truncate-gen",
+        // stream omitted → defaults to true
+      });
+      const parsed = new URL(`${instance!.url}/api/generate`);
+      const chunks: Buffer[] = [];
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: parsed.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => {
+            resolve({ aborted: false, body: Buffer.concat(chunks).toString() });
+          });
+          res.on("aborted", () => {
+            resolve({ aborted: true, body: Buffer.concat(chunks).toString() });
+          });
+        },
+      );
+      req.on("error", () => {
+        resolve({ aborted: true, body: Buffer.concat(chunks).toString() });
+      });
+      req.write(data);
+      req.end();
+    });
+
+    expect(res.aborted).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+});
+
+// ─── Unit tests: ollamaToCompletionRequest edge cases ───────────────────────
+
+describe("ollamaToCompletionRequest (edge cases)", () => {
+  it("handles missing options (temperature and max_tokens undefined)", () => {
+    const result = ollamaToCompletionRequest({
+      model: "llama3",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(result.temperature).toBeUndefined();
+    expect(result.max_tokens).toBeUndefined();
+  });
+
+  it("handles stream undefined (passes through as undefined)", () => {
+    const result = ollamaToCompletionRequest({
+      model: "llama3",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(result.stream).toBeUndefined();
+  });
+
+  it("handles empty tools array (returns undefined)", () => {
+    const result = ollamaToCompletionRequest({
+      model: "llama3",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+    });
+    expect(result.tools).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // writeNDJSONStream with non-zero latency
 // ---------------------------------------------------------------------------
@@ -1110,5 +1346,491 @@ describe("writeNDJSONStream with non-zero latency", () => {
       expect(chunk.endsWith("\n")).toBe(true);
       expect(() => JSON.parse(chunk.trim())).not.toThrow();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct handler tests for req.method/req.url fallback branches
+// ---------------------------------------------------------------------------
+
+function createMockReq(overrides: Partial<http.IncomingMessage> = {}): http.IncomingMessage {
+  return {
+    method: undefined,
+    url: undefined,
+    headers: {},
+    ...overrides,
+  } as unknown as http.IncomingMessage;
+}
+
+function createMockRes(): http.ServerResponse & { _written: string; _status: number } {
+  const res = {
+    _written: "",
+    _status: 0,
+    writableEnded: false,
+    statusCode: 0,
+    writeHead(status: number) {
+      res._status = status;
+      res.statusCode = status;
+    },
+    setHeader() {},
+    write(data: string) {
+      res._written += data;
+      return true;
+    },
+    end(data?: string) {
+      if (data) res._written += data;
+      res.writableEnded = true;
+    },
+    destroy() {
+      res.writableEnded = true;
+    },
+  };
+  return res as unknown as http.ServerResponse & { _written: string; _status: number };
+}
+
+function createDefaults(overrides: Partial<HandlerDefaults> = {}): HandlerDefaults {
+  return {
+    latency: 0,
+    chunkSize: 100,
+    logger: new Logger("silent"),
+    ...overrides,
+  };
+}
+
+describe("handleOllama (direct handler call, method/url fallbacks)", () => {
+  it("uses fallback for non-streaming text response with undefined method/url", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    expect(res._status).toBe(200);
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/chat");
+  });
+
+  it("uses fallback for streaming text response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", messages: [{ role: "user", content: "hi" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/chat");
+  });
+
+  it("uses fallback for malformed JSON", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(req, res, "{bad", [], journal, createDefaults(), () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/chat");
+  });
+
+  it("uses fallback for missing messages", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({ model: "llama3" }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback for no fixture match", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "x" }],
+        stream: false,
+      }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback for strict mode", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "x" }],
+        stream: false,
+      }),
+      [],
+      journal,
+      createDefaults({ strict: true }),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "err" },
+      response: { error: { message: "fail", type: "err" }, status: 500 },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "err" }],
+        stream: false,
+      }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for non-streaming tool call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "tool" }],
+        stream: false,
+      }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for streaming tool call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", messages: [{ role: "user", content: "tool" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for unknown response type", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllama(
+      req,
+      res,
+      JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "embed" }],
+        stream: false,
+      }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+});
+
+describe("handleOllamaGenerate (direct handler call, method/url fallbacks)", () => {
+  it("uses fallback for non-streaming text response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "hi", stream: false }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    expect(res._status).toBe(200);
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/generate");
+  });
+
+  it("uses fallback for streaming text response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "hi" }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/generate");
+  });
+
+  it("uses fallback for malformed JSON", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(req, res, "{bad", [], journal, createDefaults(), () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/api/generate");
+  });
+
+  it("uses fallback for missing prompt", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3" }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback for no fixture match", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "x", stream: false }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback for strict mode", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "x", stream: false }),
+      [],
+      journal,
+      createDefaults({ strict: true }),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "err" },
+      response: { error: { message: "fail", type: "err" }, status: 500 },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "err", stream: false }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for unknown response type (non-streaming)", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "embed", stream: false }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for unknown response type (streaming)", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleOllamaGenerate(
+      req,
+      res,
+      JSON.stringify({ model: "llama3", prompt: "embed" }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
   });
 });

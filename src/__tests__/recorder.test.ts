@@ -2764,6 +2764,313 @@ describe("recorder streaming edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildFixtureResponse — additional format variants for branch coverage
+// ---------------------------------------------------------------------------
+
+describe("buildFixtureResponse additional format variants", () => {
+  let servers: http.Server[] = [];
+
+  afterEach(async () => {
+    for (const s of servers) {
+      await new Promise<void>((resolve) => s.close(() => resolve()));
+    }
+    servers = [];
+  });
+
+  function createRawUpstream(responseBody: object): Promise<{ url: string; server: http.Server }> {
+    return new Promise((resolve) => {
+      const srv = http.createServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(responseBody));
+      });
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address() as { port: number };
+        servers.push(srv);
+        resolve({ url: `http://127.0.0.1:${addr.port}`, server: srv });
+      });
+    });
+  }
+
+  it("detects Bedrock Converse format (output.message.content text)", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      output: {
+        message: {
+          role: "assistant",
+          content: [{ text: "Hello from Bedrock Converse" }],
+        },
+      },
+      stopReason: "end_turn",
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "bedrock converse test" }],
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as { fixtures: Array<{ response: { content?: string } }> };
+    expect(fixtureContent.fixtures[0].response.content).toBe("Hello from Bedrock Converse");
+  });
+
+  it("detects Bedrock Converse toolUse format", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      output: {
+        message: {
+          role: "assistant",
+          content: [
+            {
+              toolUse: {
+                name: "get_weather",
+                input: { city: "NYC" },
+              },
+            },
+          ],
+        },
+      },
+      stopReason: "tool_use",
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "bedrock converse tooluse test" }],
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { toolCalls?: Array<{ name: string; arguments: string }> };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls).toHaveLength(1);
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].name).toBe("get_weather");
+  });
+
+  it("detects Anthropic tool_use with string input", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_str",
+          name: "search",
+          input: '{"query":"hello"}',
+        },
+      ],
+      role: "assistant",
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { anthropic: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/messages`, {
+      model: "claude-3-sonnet",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "anthropic string input test" }],
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { toolCalls?: Array<{ name: string; arguments: string }> };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    // When input is a string, it's used as-is
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].arguments).toBe('{"query":"hello"}');
+  });
+
+  it("detects Gemini functionCall with string args", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  name: "search",
+                  args: '{"query":"hello"}',
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { gemini: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ parts: [{ text: "gemini string args test" }], role: "user" }],
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { toolCalls?: Array<{ name: string; arguments: string }> };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].arguments).toBe('{"query":"hello"}');
+  });
+
+  it("detects Ollama message.content as array format", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      model: "llama3",
+      message: {
+        role: "assistant",
+        content: [{ text: "Array content from Ollama" }],
+      },
+      done: true,
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { ollama: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "ollama array content test" }],
+      stream: false,
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as { fixtures: Array<{ response: { content?: string } }> };
+    expect(fixtureContent.fixtures[0].response.content).toBe("Array content from Ollama");
+  });
+
+  it("detects Ollama tool_calls with string arguments", async () => {
+    const { url: upstreamUrl } = await createRawUpstream({
+      model: "llama3",
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            function: {
+              name: "search",
+              arguments: '{"query":"test"}',
+            },
+          },
+        ],
+      },
+      done: true,
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { ollama: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "ollama string args test" }],
+      stream: false,
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { toolCalls?: Array<{ name: string; arguments: string }> };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].arguments).toBe('{"query":"test"}');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invalid upstream URL — 502 with proxy_error
+// ---------------------------------------------------------------------------
+
+describe("recorder invalid upstream URL", () => {
+  it("returns 502 for invalid upstream URL format", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      logLevel: "silent",
+      record: {
+        providers: { openai: "not-a-valid-url" },
+        fixturePath: tmpDir,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "invalid url test" }],
+    });
+
+    expect(resp.status).toBe(502);
+    const body = JSON.parse(resp.body);
+    expect(body.error.type).toBe("proxy_error");
+    expect(body.error.message).toContain("Invalid upstream URL");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

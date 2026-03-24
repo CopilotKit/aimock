@@ -1,8 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import { PassThrough } from "node:stream";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { responsesInputToMessages, responsesToCompletionRequest } from "../responses.js";
+import {
+  responsesInputToMessages,
+  responsesToCompletionRequest,
+  handleResponses,
+} from "../responses.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 
 // --- helpers ---
 
@@ -726,5 +733,625 @@ describe("POST /v1/responses (CORS)", () => {
     });
 
     expect(res.headers["access-control-allow-origin"]).toBe("*");
+  });
+});
+
+// ─── Branch coverage: ?? defaults and fallback paths ─────────────────────────
+
+describe("responsesInputToMessages (fallback branches)", () => {
+  it("generates call_id when function_call has no call_id", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          type: "function_call",
+          name: "do_thing",
+          arguments: '{"x":1}',
+          // call_id intentionally omitted
+        },
+      ],
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0].tool_calls![0].id).toMatch(/^call_/);
+  });
+
+  it("defaults name to empty string when function_call has no name", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          type: "function_call",
+          call_id: "call_abc",
+          // name intentionally omitted
+          arguments: '{"x":1}',
+        },
+      ],
+    });
+    expect(messages[0].tool_calls![0].function.name).toBe("");
+  });
+
+  it("defaults arguments to empty string when function_call has no arguments", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          type: "function_call",
+          call_id: "call_abc",
+          name: "do_thing",
+          // arguments intentionally omitted
+        },
+      ],
+    });
+    expect(messages[0].tool_calls![0].function.arguments).toBe("");
+  });
+
+  it("defaults output to empty string when function_call_output has no output", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          type: "function_call_output",
+          call_id: "call_abc",
+          // output intentionally omitted
+        },
+      ],
+    });
+    expect(messages[0].content).toBe("");
+  });
+
+  it("handles content parts with missing text (text ?? '')", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text" }, // text field missing
+          ] as Array<{ type: string; text?: string }>,
+        },
+      ],
+    });
+    expect(messages[0].content).toBe("");
+  });
+
+  it("handles output_text content parts", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [
+        {
+          role: "assistant",
+          content: [{ type: "output_text", text: "response text" }] as Array<{
+            type: string;
+            text?: string;
+          }>,
+        },
+      ],
+    });
+    expect(messages[0].content).toBe("response text");
+  });
+
+  it("handles system role input item", () => {
+    const messages = responsesInputToMessages({
+      model: "gpt-4",
+      input: [{ role: "system", content: "You are helpful" }],
+    });
+    expect(messages).toEqual([{ role: "system", content: "You are helpful" }]);
+  });
+});
+
+describe("responsesToCompletionRequest (tool filtering)", () => {
+  it("filters out non-function type tools", () => {
+    const result = responsesToCompletionRequest({
+      model: "gpt-4",
+      input: [{ role: "user", content: "hi" }],
+      tools: [
+        { type: "function", name: "real_tool", description: "a tool" },
+        { type: "web_search" as "function", name: "web", description: "search" },
+      ],
+    });
+    // Only the "function" type tool should be included
+    expect(result.tools).toHaveLength(1);
+    expect(result.tools![0].function.name).toBe("real_tool");
+  });
+});
+
+describe("POST /v1/responses (strict mode)", () => {
+  it("returns 503 when strict mode is enabled and no fixture matches", async () => {
+    instance = await createServer([], { strict: true });
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "unmatched" }],
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Strict mode: no fixture matched");
+    expect(body.error.code).toBe("no_fixture_match");
+  });
+});
+
+describe("POST /v1/responses (error response with default status)", () => {
+  it("defaults error status to 500 when status is omitted", async () => {
+    const errorNoStatus: Fixture = {
+      match: { userMessage: "error-no-status" },
+      response: {
+        error: {
+          message: "Something broke",
+          type: "server_error",
+        },
+      } as Fixture["response"],
+    };
+    instance = await createServer([errorNoStatus]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "error-no-status" }],
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Something broke");
+  });
+});
+
+describe("POST /v1/responses (latency and chunkSize defaults)", () => {
+  it("uses server default latency when fixture has no latency", async () => {
+    instance = await createServer([textFixture], { latency: 0 });
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const events = parseResponsesSSEEvents(res.body);
+    expect(events.length).toBeGreaterThan(0);
+  });
+
+  it("uses server default chunkSize when fixture has no chunkSize", async () => {
+    instance = await createServer([textFixture], { chunkSize: 3 });
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const events = parseResponsesSSEEvents(res.body);
+    const deltas = events.filter((e) => e.type === "response.output_text.delta");
+    // "Hi there!" = 9 chars, chunkSize 3 => 3 deltas
+    expect(deltas).toHaveLength(3);
+  });
+});
+
+describe("POST /v1/responses (tool call with explicit id)", () => {
+  it("uses explicit tool call id when provided", async () => {
+    const toolWithId: Fixture = {
+      match: { userMessage: "tool-with-id" },
+      response: {
+        toolCalls: [
+          {
+            id: "call_explicit_123",
+            name: "my_func",
+            arguments: '{"a":1}',
+          },
+        ],
+      },
+    };
+    instance = await createServer([toolWithId]);
+
+    // Non-streaming
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "tool-with-id" }],
+      stream: false,
+    });
+    const body = JSON.parse(res.body);
+    expect(body.output[0].call_id).toBe("call_explicit_123");
+  });
+
+  it("uses explicit tool call id in streaming mode", async () => {
+    const toolWithId: Fixture = {
+      match: { userMessage: "tool-with-id-stream" },
+      response: {
+        toolCalls: [
+          {
+            id: "call_explicit_456",
+            name: "my_func",
+            arguments: '{"a":1}',
+          },
+        ],
+      },
+    };
+    instance = await createServer([toolWithId]);
+
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "tool-with-id-stream" }],
+      stream: true,
+    });
+    const events = parseResponsesSSEEvents(res.body);
+    const itemAdded = events.find((e) => e.type === "response.output_item.added") as SSEEvent & {
+      item: { call_id: string };
+    };
+    expect(itemAdded.item.call_id).toBe("call_explicit_456");
+  });
+
+  it("generates tool call id when id is empty string", async () => {
+    const toolEmptyId: Fixture = {
+      match: { userMessage: "tool-empty-id" },
+      response: {
+        toolCalls: [
+          {
+            id: "",
+            name: "my_func",
+            arguments: '{"a":1}',
+          },
+        ],
+      },
+    };
+    instance = await createServer([toolEmptyId]);
+
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "tool-empty-id" }],
+      stream: false,
+    });
+    const body = JSON.parse(res.body);
+    // Empty string is falsy, so it should generate an id
+    expect(body.output[0].call_id).toMatch(/^call_/);
+  });
+});
+
+describe("POST /v1/responses (streaming interruption)", () => {
+  it("truncates text stream after specified chunks and records interruption", async () => {
+    const truncatedFixture: Fixture = {
+      match: { userMessage: "truncate-text" },
+      response: { content: "ABCDEFGHIJKLMNOP" },
+      chunkSize: 1,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncatedFixture]);
+    try {
+      await post(`${instance.url}/v1/responses`, {
+        model: "gpt-4",
+        input: [{ role: "user", content: "truncate-text" }],
+        stream: true,
+      });
+    } catch {
+      // Expected: socket hang up due to server destroying connection
+    }
+
+    // Wait briefly for journal to be updated
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("truncates tool call stream after specified chunks and records interruption", async () => {
+    const truncatedToolFixture: Fixture = {
+      match: { userMessage: "truncate-tool" },
+      response: {
+        toolCalls: [
+          {
+            name: "my_func",
+            arguments: '{"key":"value"}',
+          },
+        ],
+      },
+      chunkSize: 1,
+      truncateAfterChunks: 2,
+    };
+    instance = await createServer([truncatedToolFixture]);
+    try {
+      await post(`${instance.url}/v1/responses`, {
+        model: "gpt-4",
+        input: [{ role: "user", content: "truncate-tool" }],
+        stream: true,
+      });
+    } catch {
+      // Expected: socket hang up due to server destroying connection
+    }
+
+    await new Promise((r) => setTimeout(r, 50));
+    const entry = instance.journal.getLast();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+});
+
+describe("POST /v1/responses (streaming text — journal records tool call fixture)", () => {
+  it("records streaming tool call response in journal", async () => {
+    instance = await createServer(allFixtures);
+    await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "weather" }],
+      stream: true,
+    });
+
+    const entry = instance.journal.getLast();
+    expect(entry!.response.status).toBe(200);
+    expect(entry!.response.fixture).toBe(toolFixture);
+  });
+});
+
+// ─── Direct handler tests: covering ?? fallbacks on req.method/req.url ───────
+
+function createMockRes(): http.ServerResponse {
+  const res = new PassThrough() as unknown as http.ServerResponse;
+  let ended = false;
+  const headers: Record<string, string> = {};
+  res.setHeader = (name: string, value: string | number | readonly string[]) => {
+    headers[name.toLowerCase()] = String(value);
+    return res;
+  };
+  res.writeHead = (statusCode: number, hdrs?: Record<string, string>) => {
+    (res as { statusCode: number }).statusCode = statusCode;
+    if (hdrs) {
+      for (const [k, v] of Object.entries(hdrs)) {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+    return res;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  res.write = (chunk: string) => true;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  res.end = ((...args: unknown[]) => {
+    ended = true;
+    return res;
+  }) as typeof res.end;
+  Object.defineProperty(res, "writableEnded", { get: () => ended });
+  res.destroy = () => {
+    ended = true;
+    return res;
+  };
+  return res;
+}
+
+describe("handleResponses (direct call — ?? fallback branches)", () => {
+  it("uses fallback POST and /v1/responses when req.method and req.url are undefined", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "hello" }],
+      }),
+      [textFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback method/path on malformed JSON with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(mockReq, mockRes, "{bad", [], journal, defaults, () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback method/path on no-match with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "nomatch" }],
+      }),
+      [],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback method/path for error fixture with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "fail" }],
+      }),
+      [errorFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(429);
+  });
+
+  it("uses fallback for streaming text with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+      [textFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for streaming tool call with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "weather" }],
+        stream: true,
+      }),
+      [toolFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for unknown response type with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "badtype" }],
+      }),
+      [badResponseFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for strict mode no-match with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger, strict: true };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleResponses(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "gpt-4",
+        input: [{ role: "user", content: "nomatch" }],
+      }),
+      [],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/responses");
+    expect(entry!.response.status).toBe(503);
   });
 });

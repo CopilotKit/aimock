@@ -447,6 +447,411 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     ws.close();
   });
 
+  it("returns error for malformed JSON", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send("not valid json {{{}");
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Malformed JSON");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
+  it("returns error for unrecognized message type (no setup/clientContent/toolResponse)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send message with no recognized field
+    ws.send(JSON.stringify({ someUnknownField: true }));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(400);
+    expect(msg.error.message).toBe("Expected clientContent or toolResponse");
+    expect(msg.error.status).toBe("INVALID_ARGUMENT");
+
+    ws.close();
+  });
+
+  it("closes with 1008 in strict mode when no fixture matches", async () => {
+    instance = await createServer(allFixtures, { strict: true });
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("unknown-no-match-strict"));
+
+    await ws.waitForClose();
+  });
+
+  it("handles empty content text response", async () => {
+    const emptyFixture: Fixture = {
+      match: { userMessage: "empty-content" },
+      response: { content: "" },
+    };
+    instance = await createServer([emptyFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("empty-content"));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+    expect(msg.serverContent.modelTurn.parts[0].text).toBe("");
+    expect(msg.serverContent.turnComplete).toBe(true);
+
+    ws.close();
+  });
+
+  it("handles setup without model (uses default)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    // Send setup without model field
+    ws.send(JSON.stringify({ setup: {} }));
+
+    const raw = await ws.waitForMessages(1);
+    const msg = JSON.parse(raw[0]);
+    expect(msg).toEqual({ setupComplete: {} });
+
+    ws.close();
+  });
+
+  it("handles setup with tools", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(
+      JSON.stringify({
+        setup: {
+          model: "gemini-2.0-flash-exp",
+          tools: [
+            {
+              functionDeclarations: [
+                {
+                  name: "get_weather",
+                  description: "Gets weather",
+                  parameters: { type: "object" },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(1);
+    const msg = JSON.parse(raw[0]);
+    expect(msg).toEqual({ setupComplete: {} });
+
+    ws.close();
+  });
+
+  it("handles model turns with text in conversation history", async () => {
+    // Test conversion of model turns with text content
+    const multiTurnFixture: Fixture = {
+      match: { userMessage: "follow-up" },
+      response: { content: "Follow-up response" },
+    };
+    instance = await createServer([multiTurnFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent with both user and model turns
+    ws.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [
+            { role: "user", parts: [{ text: "first" }] },
+            { role: "model", parts: [{ text: "model reply" }] },
+            { role: "user", parts: [{ text: "follow-up" }] },
+          ],
+          turnComplete: true,
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles model turns with function calls in conversation history", async () => {
+    const afterFuncFixture: Fixture = {
+      match: { userMessage: "after-func" },
+      response: { content: "After function response" },
+    };
+    instance = await createServer([afterFuncFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent with model turn containing functionCall
+    ws.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [
+            { role: "user", parts: [{ text: "do something" }] },
+            {
+              role: "model",
+              parts: [{ functionCall: { name: "search", args: { q: "test" } } }],
+            },
+            {
+              role: "user",
+              parts: [
+                { functionResponse: { name: "search", response: "results", id: "call_1" } },
+                { text: "after-func" },
+              ],
+            },
+          ],
+          turnComplete: true,
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles toolResponse with non-string response values", async () => {
+    const toolResultFixture2: Fixture = {
+      match: { toolCallId: "call_gemini_search_0" },
+      response: { content: "Search result" },
+    };
+    instance = await createServer([toolResultFixture2]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send toolResponse where response is an object (not string)
+    ws.send(
+      JSON.stringify({
+        toolResponse: {
+          functionResponses: [
+            { name: "search", response: { results: ["a", "b"] }, id: "call_gemini_search_0" },
+          ],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles tool call with malformed JSON arguments in fixture", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-args" },
+      response: {
+        toolCalls: [{ name: "search", arguments: "not-json{{{" }],
+      },
+    };
+    instance = await createServer([badArgsFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("bad-args"));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    // Should still produce a toolCall with empty args object
+    expect(msg.toolCall).toBeDefined();
+    expect(msg.toolCall.functionCalls[0].name).toBe("search");
+    expect(msg.toolCall.functionCalls[0].args).toEqual({});
+
+    ws.close();
+  });
+
+  it("handles error fixture with default status 500", async () => {
+    const errorNoStatusFixture: Fixture = {
+      match: { userMessage: "error-no-status" },
+      response: {
+        error: { message: "Something went wrong", type: "server_error" },
+      },
+    };
+    instance = await createServer([errorNoStatusFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("error-no-status"));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(500);
+    expect(msg.error.message).toBe("Something went wrong");
+
+    ws.close();
+  });
+
+  it("handles turn with missing role (defaults to user)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent with turn missing role field
+    ws.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [{ parts: [{ text: "hello" }] }],
+          turnComplete: true,
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles user turn with functionResponse that has string response", async () => {
+    // Fixture that matches a tool call id
+    const toolResultFixtureStr: Fixture = {
+      match: { toolCallId: "call_gemini_search_0" },
+      response: { content: "Result processed" },
+    };
+    instance = await createServer([toolResultFixtureStr]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send clientContent with functionResponse where response is a string
+    ws.send(
+      JSON.stringify({
+        clientContent: {
+          turns: [
+            {
+              role: "user",
+              parts: [{ functionResponse: { name: "search", response: "string-result" } }],
+            },
+          ],
+          turnComplete: true,
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles toolResponse with fallback id and string response", async () => {
+    // Fixture matching on tool call id
+    const toolResultFixture3: Fixture = {
+      match: { toolCallId: "call_gemini_lookup_0" },
+      response: { content: "Lookup done" },
+    };
+    instance = await createServer([toolResultFixture3]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    // Send toolResponse without id (relies on fallback) and with string response
+    ws.send(
+      JSON.stringify({
+        toolResponse: {
+          functionResponses: [{ name: "lookup", response: "string-response-value" }],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles setup with tools that have empty functionDeclarations", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(
+      JSON.stringify({
+        setup: {
+          model: "gemini-2.0-flash-exp",
+          tools: [{}], // No functionDeclarations
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(1);
+    const msg = JSON.parse(raw[0]);
+    expect(msg).toEqual({ setupComplete: {} });
+
+    // Verify we can still send messages after setup with empty tools
+    ws.send(clientContentMsg("hello"));
+    const raw2 = await ws.waitForMessages(2);
+    const msg2 = JSON.parse(raw2[1]);
+    expect(msg2.serverContent).toBeDefined();
+
+    ws.close();
+  });
+
+  it("handles unknown response type gracefully", async () => {
+    const weirdFixture: Fixture = {
+      match: { userMessage: "weird-response-gemini" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: { unknownField: "value" } as any,
+    };
+    instance = await createServer([weirdFixture]);
+    const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
+
+    ws.send(setupMsg());
+    await ws.waitForMessages(1); // setupComplete
+
+    ws.send(clientContentMsg("weird-response-gemini"));
+
+    const raw = await ws.waitForMessages(2);
+    const msg = JSON.parse(raw[1]);
+    expect(msg.error).toBeDefined();
+    expect(msg.error.code).toBe(500);
+    expect(msg.error.message).toBe("Fixture response did not match any known type");
+    expect(msg.error.status).toBe("INTERNAL");
+
+    ws.close();
+  });
+
   it("returns error when message sent before setup", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, GEMINI_WS_PATH);
