@@ -1034,6 +1034,7 @@
       <div class="container">
         <a href="#" class="nav-brand"> <span class="prompt">$</span> llmock </a>
         <ul class="nav-links">
+          <li><a href="#usage">Usage</a></li>
           <li><a href="#features">Features</a></li>
           <li><a href="#examples">Examples</a></li>
           <li><a href="#comparison">Comparison</a></li>
@@ -1073,8 +1074,9 @@
         <h1>Deterministic <span class="highlight">mock LLM</span> server for testing</h1>
 
         <p class="hero-sub">
-          Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven responses.
-          Multi-provider mock — OpenAI, Claude, Gemini — any process on the machine can reach it.
+          Mock infrastructure for testing AI applications — LLM APIs, MCP tools, A2A agents, vector
+          databases, search, and more. Real HTTP server on a real port. Fixture-driven. Zero
+          dependencies. Any process on the machine can reach it.
         </p>
 
         <div class="hero-actions">
@@ -1142,44 +1144,120 @@
       </div>
     </header>
 
+    <!-- ═══ How You'll Use It ═════════════════════════════════════════ -->
+    <section id="usage" class="reveal">
+      <div class="container">
+        <span class="section-label">How you'll use it</span>
+        <h2 class="section-title">From unit tests to production CI</h2>
+        <p class="section-desc">Four ways to run llmock, depending on what you need.</p>
+
+        <div class="features-grid" style="grid-template-columns: repeat(2, 1fr)">
+          <div class="feature-card">
+            <div class="feature-icon green">⚡</div>
+            <h3>Unit Tests</h3>
+            <p>
+              In-process programmatic API. Start and stop in your test setup &mdash; Vitest, Jest,
+              Playwright, Mocha, anything. TypeScript/JavaScript.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">🔄</div>
+            <h3>Local Development</h3>
+            <p>
+              CLI with <code>--watch</code> for hot-reload. Edit fixtures, see changes instantly.
+              Point your app at the mock and iterate without real API calls.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">🏗️</div>
+            <h3>CI/CD</h3>
+            <p>
+              Docker image + <code>--strict</code> mode + record-and-replay. Deterministic,
+              zero-cost, no API keys needed in CI.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">🌐</div>
+            <h3>Cross-Language</h3>
+            <p>
+              Docker image as a standalone HTTP server. Python, Go, Rust, Ruby, Java &mdash; any
+              language that speaks HTTP can hit it.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ═══ Features ══════════════════════════════════════════════════ -->
     <section id="features" class="reveal">
       <div class="container">
         <span class="section-label">Why llmock</span>
         <h2 class="section-title">Stop paying for flaky tests</h2>
         <p class="section-desc">
-          Tests that hit real LLM APIs — OpenAI, Gemini, Anthropic — cost money, time out, and
-          produce non-deterministic results. llmock replaces those calls with immediate,
-          deterministic responses from a real HTTP server any process on the machine can reach.
+          Tests that hit real LLM APIs cost money, time out, and produce non-deterministic results.
+          llmock replaces those calls with immediate, deterministic responses from a real HTTP
+          server any process on the machine can reach.
         </p>
 
         <div class="features-grid">
           <div class="feature-card">
-            <div class="feature-icon green">⚡</div>
-            <h3>Real HTTP Server</h3>
+            <div class="feature-icon green">🔴</div>
+            <h3>Record &amp; Replay</h3>
             <p>
-              Runs on an actual port. Any process on the machine can reach it — Next.js, Mastra,
-              LangGraph, Agno, anything that speaks HTTP.
+              Proxy to real APIs, record responses as fixtures, then replay them deterministically
+              in tests. VCR-style workflow for zero-effort fixture creation.
             </p>
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">📡</div>
-            <h3>Authentic SSE Streams</h3>
+            <h3>13+ LLM Providers</h3>
             <p>
-              OpenAI, Claude, and Gemini APIs — authentic SSE format for each provider. Streaming
-              and non-streaming modes.
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere &mdash; authentic
+              SSE format for each provider. Streaming and non-streaming.
             </p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon purple">📁</div>
-            <h3>JSON Fixture Files</h3>
+            <div class="feature-icon purple">🔌</div>
+            <h3>MCP Protocol</h3>
             <p>
-              Define responses as JSON — one file per feature. Load a directory, load a file, or
-              register fixtures programmatically.
+              Mock MCP servers with tools, resources, prompts, and session management. Test tool
+              integrations without real MCP infrastructure.
             </p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon amber">🔧</div>
+            <div class="feature-icon amber">🤝</div>
+            <h3>A2A Protocol</h3>
+            <p>
+              Mock A2A agent-to-agent protocol. Agent cards, message routing, streaming tasks
+              &mdash; test multi-agent systems in isolation.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">📦</div>
+            <h3>Vector Databases</h3>
+            <p>
+              Mock Pinecone, Qdrant, and ChromaDB endpoints. Test RAG pipelines without running real
+              vector databases.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">🎲</div>
+            <h3>Chaos Testing</h3>
+            <p>
+              Probabilistic failure injection &mdash; random errors, latency spikes, and stream
+              corruption for resilience testing.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">📊</div>
+            <h3>Prometheus Metrics</h3>
+            <p>
+              Expose request counts, latencies, and fixture match rates via a /metrics endpoint.
+              Grafana-ready.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">🔧</div>
             <h3>Tool Call Support</h3>
             <p>
               Return tool calls with structured arguments. Match on tool names, tool result IDs, or
@@ -1187,11 +1265,19 @@
             </p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon red">💥</div>
-            <h3>Error Injection</h3>
+            <div class="feature-icon amber">🔌</div>
+            <h3>WebSocket APIs</h3>
             <p>
-              Queue one-shot errors — 429 rate limits, 503 outages, whatever. Fires once, then
-              auto-removes itself.
+              OpenAI Responses, OpenAI Realtime, and Gemini Live over WebSocket. Same fixtures, real
+              RFC 6455 framing, zero dependencies.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">🎛️</div>
+            <h3>Streaming Physics</h3>
+            <p>
+              Simulate realistic streaming timing with TTFT, TPS, and jitter. Test loading states
+              and streaming UX under real-world conditions.
             </p>
           </div>
           <div class="feature-card">
@@ -1200,46 +1286,6 @@
             <p>
               Every request recorded. Inspect messages, verify tool calls, assert on conversation
               history. HTTP and programmatic access.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon blue">🔌</div>
-            <h3>WebSocket APIs</h3>
-            <p>
-              OpenAI Responses, OpenAI Realtime, and Gemini Live over WebSocket. Same fixtures, real
-              RFC 6455 framing, zero dependencies. Text + tool calls.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon purple">🎛️</div>
-            <h3>Streaming Physics</h3>
-            <p>
-              Simulate realistic streaming timing with TTFT, TPS, and jitter. Test loading states
-              and streaming UX under real-world conditions.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon red">🎲</div>
-            <h3>Chaos Testing</h3>
-            <p>
-              Probabilistic failure injection &mdash; random errors, latency spikes, and stream
-              corruption for resilience testing.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon amber">📊</div>
-            <h3>Prometheus Metrics</h3>
-            <p>
-              Expose request counts, latencies, and fixture match rates via a /metrics endpoint.
-              Grafana-ready.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon green">🔴</div>
-            <h3>Record &amp; Replay</h3>
-            <p>
-              Proxy to real APIs, record responses as fixtures, then replay them deterministically
-              in tests.
             </p>
           </div>
         </div>
@@ -2019,13 +2065,13 @@
           without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn
           conversations across both v1 and v2 runtimes. See the
           <a
-            href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
+            href="https://github.com/ag-ui-protocol/ag-ui/blob/main/apps/dojo/e2e/llmock-setup.ts"
             target="_blank"
             >test suite</a
           >
           and
           <a
-            href="https://github.com/CopilotKit/CopilotKit/search?q=fixtures+path%3A**%2Ffixtures&amp;type=code"
+            href="https://github.com/ag-ui-protocol/ag-ui/tree/main/apps/dojo/e2e/fixtures"
             target="_blank"
             >fixture files</a
           >

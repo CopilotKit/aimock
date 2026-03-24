@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mount &amp; Composition — llmock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>Getting Started</h3>
+          <a href="docs.html">Overview</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Providers</h3>
+          <a href="chat-completions.html">Chat Completions (OpenAI)</a
+          ><a href="responses-api.html">Responses API (OpenAI)</a
+          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
+          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
+          ><a href="compatible-providers.html">Compatible Providers</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Features</h3>
+          <a href="embeddings.html">Embeddings</a
+          ><a href="structured-output.html">Structured Output</a
+          ><a href="sequential-responses.html">Sequential Responses</a
+          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
+          ><a href="streaming-physics.html">Streaming Physics</a
+          ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
+          <a href="mount.html" class="active">Mount &amp; Composition</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Tools</h3>
+          <a href="mcp-mock.html">MCPMock</a>
+          <a href="a2a-mock.html">A2AMock</a>
+          <a href="vector-mock.html">VectorMock</a>
+          <a href="services.html">Services</a>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Deployment</h3>
+          <a href="docker.html">Docker &amp; Helm</a>
+          <a href="aimock-cli.html">aimock CLI</a>
+          <a href="drift-detection.html">Drift Detection</a>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <h1>Mount &amp; Composition</h1>
+        <p class="lead">
+          Mount additional mock services onto a running LLMock server. All services share one port,
+          one health endpoint, and one request journal &mdash; no port juggling, no service
+          discovery.
+        </p>
+
+        <h2>Mountable Interface</h2>
+        <p>
+          Any object that implements the <code>Mountable</code> interface can be mounted onto
+          LLMock. The interface requires a single method:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Mountable interface <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">interface</span> Mountable {
+  <span class="cm">/** Handle an incoming HTTP request. Return true if handled. */</span>
+  handleRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: <span class="kw">string</span>,
+  ): Promise&lt;<span class="kw">boolean</span>&gt;;
+
+  <span class="cm">/** Optional: handle WebSocket upgrades. */</span>
+  handleUpgrade?(
+    socket: Socket,
+    head: Buffer,
+    pathname: <span class="kw">string</span>,
+  ): Promise&lt;<span class="kw">boolean</span>&gt;;
+
+  <span class="cm">/** Optional: health check. */</span>
+  health?(): { status: <span class="kw">string</span>; [key: <span class="kw">string</span>]: unknown };
+
+  <span class="cm">/** Optional: receive the shared journal instance. */</span>
+  setJournal?(journal: Journal): <span class="kw">void</span>;
+
+  <span class="cm">/** Optional: receive the base URL when mounted. */</span>
+  setBaseUrl?(url: <span class="kw">string</span>): <span class="kw">void</span>;
+}</code></pre>
+        </div>
+
+        <h2>LLMock.mount()</h2>
+        <p>
+          Mount a <code>Mountable</code> service at a path prefix. Requests matching the prefix are
+          forwarded to the service with the prefix stripped.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">mount() API <span class="lang-tag">typescript</span></div>
+          <pre><code><span class="kw">const</span> llm = <span class="kw">new</span> LLMock({ port: <span class="num">5555</span> });
+
+llm.mount(<span class="str">"/mcp"</span>, mcpMock);   <span class="cm">// MCP tools at /mcp</span>
+llm.mount(<span class="str">"/a2a"</span>, a2aMock);   <span class="cm">// A2A agents at /a2a</span>
+
+<span class="kw">await</span> llm.start();
+<span class="cm">// All protocols accessible on port 5555</span></code></pre>
+        </div>
+
+        <h3>Path Stripping</h3>
+        <p>
+          When a request arrives at a mounted path, the prefix is stripped before the service sees
+          it. For example, a request to <code>/mcp/tools/list</code> arrives at the MCP service with
+          pathname <code>/tools/list</code>.
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Incoming Request</th>
+              <th>Mount Prefix</th>
+              <th>Service Sees</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST /mcp/tools/list</code></td>
+              <td><code>/mcp</code></td>
+              <td><code>/tools/list</code></td>
+            </tr>
+            <tr>
+              <td><code>POST /a2a/agents/run</code></td>
+              <td><code>/a2a</code></td>
+              <td><code>/agents/run</code></td>
+            </tr>
+            <tr>
+              <td><code>GET /mcp</code></td>
+              <td><code>/mcp</code></td>
+              <td><code>/</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>WebSocket Upgrade Support</h3>
+        <p>
+          If a mounted service implements <code>handleUpgrade()</code>, WebSocket upgrade requests
+          matching the mount prefix are forwarded to it. This enables WebSocket-based protocols like
+          MCP over StreamableHTTP or custom agent protocols.
+        </p>
+
+        <h2>Unified Health Endpoint</h2>
+        <p>
+          The <code>GET /health</code> endpoint aggregates health from all mounted services. Each
+          service that implements <code>health()</code> is included in the response:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">Health response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"status"</span>: <span class="str">"ok"</span>,
+  <span class="prop">"services"</span>: {
+    <span class="prop">"llm"</span>: { <span class="prop">"status"</span>: <span class="str">"ok"</span>, <span class="prop">"fixtures"</span>: <span class="num">5</span> },
+    <span class="prop">"mcp"</span>: { <span class="prop">"status"</span>: <span class="str">"ok"</span>, <span class="prop">"tools"</span>: <span class="num">2</span>, <span class="prop">"resources"</span>: <span class="num">1</span>, <span class="prop">"prompts"</span>: <span class="num">0</span>, <span class="prop">"sessions"</span>: <span class="num">0</span> },
+    <span class="prop">"a2a"</span>: { <span class="prop">"status"</span>: <span class="str">"ok"</span>, <span class="prop">"agents"</span>: <span class="num">1</span>, <span class="prop">"tasks"</span>: <span class="num">0</span> }
+  }
+}</code></pre>
+        </div>
+        <p>
+          Each mounted service that implements <code>health()</code> contributes its status to the
+          response. The health endpoint always returns HTTP 200.
+        </p>
+
+        <h2>Shared Journal</h2>
+        <p>
+          All mounted services share the same request journal. Journal entries include a
+          <code>service</code> field indicating which service handled the request:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Journal entry <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">const</span> entries = mock.getRequests();
+<span class="cm">// [</span>
+<span class="cm">//   { service: "llm", method: "POST", path: "/v1/chat/completions", ... },</span>
+<span class="cm">//   { service: "/mcp", method: "POST", path: "/tools/list", ... },</span>
+<span class="cm">// ]</span></code></pre>
+        </div>
+
+        <h2>createMockSuite()</h2>
+        <p>
+          <code>createMockSuite()</code> provides a unified lifecycle for LLMock and all mounted
+          services. It creates the server, mounts services, and returns <code>start()</code> /
+          <code>stop()</code> / <code>reset()</code> methods that manage everything together.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            createMockSuite() <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { createMockSuite } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+
+<span class="kw">const</span> suite = <span class="kw">await</span> createMockSuite({
+  llm: { port: <span class="num">0</span> },
+  mcp: {},    <span class="cm">// enables MCPMock, mounted at /mcp</span>
+  a2a: {},    <span class="cm">// enables A2AMock, mounted at /a2a</span>
+  vector: {}, <span class="cm">// enables VectorMock, mounted at /vector</span>
+});
+
+<span class="kw">await</span> suite.start();
+<span class="cm">// suite.llm — the underlying LLMock instance</span>
+<span class="cm">// suite.mcp — MCPMock instance (if configured)</span>
+<span class="cm">// suite.a2a — A2AMock instance (if configured)</span>
+<span class="cm">// suite.vector — VectorMock instance (if configured)</span>
+
+<span class="cm">// In tests:</span>
+afterEach(() =&gt; suite.reset());     <span class="cm">// resets LLM fixtures + all service state</span>
+afterAll(() =&gt; suite.stop());       <span class="cm">// stops everything</span></code></pre>
+        </div>
+
+        <h2>Built-in Services</h2>
+        <p>
+          llmock ships with first-party mock services that implement the <code>Mountable</code>
+          interface:
+        </p>
+        <ul>
+          <li>
+            <a href="mcp-mock.html"><strong>MCPMock</strong></a> &mdash; Mock MCP tool server with
+            JSON-RPC dispatch, session management, and tool/resource/prompt support
+          </li>
+          <li>
+            <a href="a2a-mock.html"><strong>A2AMock</strong></a> &mdash; Mock A2A agent-to-agent
+            protocol server with agent cards, message routing, and streaming
+          </li>
+          <li>
+            <a href="vector-mock.html"><strong>VectorMock</strong></a> &mdash; Mock vector database
+            with Pinecone, Qdrant, and ChromaDB endpoints
+          </li>
+        </ul>
+        <p>
+          All implement the <code>Mountable</code> interface and work with <code>mount()</code>,
+          <code>createMockSuite()</code>, and the <a href="aimock-cli.html">aimock CLI</a>.
+        </p>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -69,11 +69,21 @@
           ><a href="websocket.html">WebSocket APIs</a
           ><a href="record-replay.html" class="active">Record &amp; Replay</a
           ><a href="metrics.html">Prometheus Metrics</a>
+          <a href="mount.html">Mount &amp; Composition</a>
         </div>
         <div class="sidebar-section">
+          <h3>Tools</h3>
+          <a href="mcp-mock.html">MCPMock</a>
+          <a href="a2a-mock.html">A2AMock</a>
+          <a href="vector-mock.html">VectorMock</a>
+          <a href="services.html">Services</a>
+        </div>
+
+        <div class="sidebar-section">
           <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
+          <a href="docker.html">Docker &amp; Helm</a>
+          <a href="aimock-cli.html">aimock CLI</a>
+          <a href="drift-detection.html">Drift Detection</a>
         </div>
       </aside>
 
@@ -303,6 +313,80 @@
             recordings
           </li>
         </ul>
+        <h2>Local Development Workflow</h2>
+        <p>
+          Record once against real APIs, then replay from fixtures for fast, offline development.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">Record then replay <span class="lang-tag">bash</span></div>
+          <pre><code># First run: record real API responses
+llmock --record --provider-openai https://api.openai.com -f ./fixtures
+
+# Subsequent runs: replay from recorded fixtures
+llmock -f ./fixtures</code></pre>
+        </div>
+
+        <h2>CI Pipeline Workflow</h2>
+        <p>
+          Use the Docker image in CI with <code>--strict</code> mode to ensure every request matches
+          a recorded fixture. No API keys needed, no flaky network calls.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            GitHub Actions example <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code>- name: Start aimock
+  run: |
+    docker run -d --name aimock \
+      -v ./fixtures:/fixtures \
+      -p 4010:4010 \
+      ghcr.io/copilotkit/aimock \
+      llmock --strict -f /fixtures
+
+- name: Run tests
+  env:
+    OPENAI_BASE_URL: http://localhost:4010/v1
+  run: pnpm test
+
+- name: Stop aimock
+  run: docker stop aimock</code></pre>
+        </div>
+
+        <h2>Building Fixture Sets</h2>
+        <p>A practical workflow for building and maintaining fixture sets:</p>
+        <ol>
+          <li>Run with <code>--record</code> against real APIs during development</li>
+          <li>Review recorded fixtures in <code>fixtures/recorded/</code></li>
+          <li>Move and rename to organized fixture directories</li>
+          <li>Switch to <code>--strict</code> mode in CI</li>
+          <li>Re-record when upstream APIs change (drift detection catches this)</li>
+        </ol>
+
+        <h2>Cross-Language Testing</h2>
+        <p>
+          The Docker image serves any language that speaks HTTP. Point your client at the mock
+          server's URL instead of the real API.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Any language, one server <span class="lang-tag">bash</span>
+          </div>
+          <pre><code># Docker image serves all languages
+docker run -d -p 4010:4010 ghcr.io/copilotkit/aimock llmock -f /fixtures
+
+# Python
+import openai
+client = openai.OpenAI(base_url="http://localhost:4010/v1", api_key="mock")
+
+# Go
+client := openai.NewClient(option.WithBaseURL("http://localhost:4010/v1"))
+
+# Rust
+let client = Client::new().with_base_url("http://localhost:4010/v1");</code></pre>
+        </div>
       </main>
     </div>
     <footer class="docs-footer">

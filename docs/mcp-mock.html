@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MCPMock — llmock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+    <div class="docs-layout">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>Getting Started</h3>
+          <a href="docs.html">Overview</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Providers</h3>
+          <a href="chat-completions.html">Chat Completions (OpenAI)</a
+          ><a href="responses-api.html">Responses API (OpenAI)</a
+          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
+          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
+          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
+          ><a href="vertex-ai.html">Vertex AI</a
+          ><a href="compatible-providers.html">Compatible Providers</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Features</h3>
+          <a href="embeddings.html">Embeddings</a
+          ><a href="structured-output.html">Structured Output</a
+          ><a href="sequential-responses.html">Sequential Responses</a
+          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
+          ><a href="chaos-testing.html">Chaos Testing</a
+          ><a href="streaming-physics.html">Streaming Physics</a
+          ><a href="websocket.html">WebSocket APIs</a>
+          <a href="record-replay.html">Record &amp; Replay</a>
+          <a href="metrics.html">Prometheus Metrics</a>
+          <a href="mount.html">Mount &amp; Composition</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Tools</h3>
+          <a href="mcp-mock.html" class="active">MCPMock</a>
+          <a href="a2a-mock.html">A2AMock</a>
+          <a href="vector-mock.html">VectorMock</a>
+          <a href="services.html">Services</a>
+        </div>
+        <div class="sidebar-section">
+          <h3>Deployment</h3>
+          <a href="docker.html">Docker &amp; Helm</a>
+          <a href="aimock-cli.html">aimock CLI</a>
+          <a href="drift-detection.html">Drift Detection</a>
+        </div>
+      </aside>
+
+      <main class="docs-content">
+        <h1>MCPMock</h1>
+        <p class="lead">
+          Mock MCP (Model Context Protocol) server for testing tool integrations. Implements the
+          Streamable HTTP transport with JSON-RPC dispatch, session management, and full
+          tools/resources/prompts support.
+        </p>
+
+        <h2>Quick Start</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Standalone mode <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { MCPMock } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+
+<span class="kw">const</span> mcp = <span class="kw">new</span> MCPMock();
+
+mcp.addTool({ name: <span class="str">"search"</span>, description: <span class="str">"Search the web"</span> });
+mcp.onToolCall(<span class="str">"search"</span>, (args) =&gt; {
+  <span class="kw">return</span> <span class="str">`Results for: ${(args as { query: string }).query}`</span>;
+});
+
+<span class="kw">const</span> url = <span class="kw">await</span> mcp.start();
+<span class="cm">// Point your MCP client at `url`</span></code></pre>
+        </div>
+
+        <h2>Mounted Mode</h2>
+        <p>
+          Mount MCPMock onto an LLMock server to share a single port with LLM mocking and other
+          services:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Mount on LLMock <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { LLMock, MCPMock } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+
+<span class="kw">const</span> llm = <span class="kw">new</span> LLMock({ port: <span class="num">5555</span> });
+<span class="kw">const</span> mcp = <span class="kw">new</span> MCPMock();
+
+mcp.addTool({ name: <span class="str">"calc"</span>, description: <span class="str">"Calculator"</span> });
+mcp.onToolCall(<span class="str">"calc"</span>, (args) =&gt; <span class="str">"42"</span>);
+
+llm.mount(<span class="str">"/mcp"</span>, mcp);
+<span class="kw">await</span> llm.start();
+<span class="cm">// MCP available at http://127.0.0.1:5555/mcp</span></code></pre>
+        </div>
+
+        <h2>Subpath Import</h2>
+        <p>MCPMock is also available via a dedicated subpath import for tree-shaking:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Subpath import <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { MCPMock } <span class="kw">from</span> <span class="str">"@copilotkit/llmock/mcp"</span>;</code></pre>
+        </div>
+
+        <h2>Tools</h2>
+        <p>Register tools and their handlers:</p>
+        <div class="code-block">
+          <div class="code-block-header">Tools API <span class="lang-tag">typescript</span></div>
+          <pre><code><span class="cm">// Register a tool definition</span>
+mcp.addTool({
+  name: <span class="str">"search"</span>,
+  description: <span class="str">"Search the web"</span>,
+  inputSchema: { type: <span class="str">"object"</span>, properties: { query: { type: <span class="str">"string"</span> } } },
+});
+
+<span class="cm">// Register a handler (returns string or MCPContent[])</span>
+mcp.onToolCall(<span class="str">"search"</span>, (args) =&gt; {
+  <span class="kw">const</span> { query } = args <span class="kw">as</span> { query: <span class="kw">string</span> };
+  <span class="kw">return</span> <span class="str">`Found 3 results for "${query}"`</span>;
+});
+
+<span class="cm">// Or return rich content</span>
+mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
+  { type: <span class="str">"text"</span>, text: <span class="str">"Hello"</span> },
+  { type: <span class="str">"image"</span>, data: <span class="str">"base64..."</span>, mimeType: <span class="str">"image/png"</span> },
+]);</code></pre>
+        </div>
+
+        <h2>Resources</h2>
+        <p>Register static resources that clients can read:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Resources API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code>mcp.addResource(
+  { uri: <span class="str">"file:///readme.md"</span>, name: <span class="str">"README"</span>, mimeType: <span class="str">"text/markdown"</span> },
+  { text: <span class="str">"# My Project\nWelcome!"</span> },
+);</code></pre>
+        </div>
+
+        <h2>Prompts</h2>
+        <p>Register prompt templates with optional handlers:</p>
+        <div class="code-block">
+          <div class="code-block-header">Prompts API <span class="lang-tag">typescript</span></div>
+          <pre><code>mcp.addPrompt(
+  { name: <span class="str">"summarize"</span>, arguments: [{ name: <span class="str">"text"</span>, required: <span class="kw">true</span> }] },
+  (args) =&gt; ({
+    messages: [
+      { role: <span class="str">"user"</span>, content: { type: <span class="str">"text"</span>, text: <span class="str">`Summarize: ${(args as { text: string }).text}`</span> } },
+    ],
+  }),
+);</code></pre>
+        </div>
+
+        <h2>Config File</h2>
+        <p>MCPMock can be configured via the aimock JSON config file:</p>
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"mcp"</span>: {
+    <span class="prop">"path"</span>: <span class="str">"/mcp"</span>,
+    <span class="prop">"tools"</span>: [
+      { <span class="prop">"name"</span>: <span class="str">"search"</span>, <span class="prop">"description"</span>: <span class="str">"Search"</span>, <span class="prop">"result"</span>: <span class="str">"Found it"</span> }
+    ],
+    <span class="prop">"resources"</span>: [
+      { <span class="prop">"uri"</span>: <span class="str">"file:///data.json"</span>, <span class="prop">"name"</span>: <span class="str">"Data"</span>, <span class="prop">"text"</span>: <span class="str">"{\"key\": \"value\"}"</span> }
+    ]
+  }
+}</code></pre>
+        </div>
+
+        <h2>Session Management</h2>
+        <p>
+          MCPMock implements full session management per the MCP Streamable HTTP spec. Each
+          <code>initialize</code> request creates a new session, and the session ID is returned via
+          the <code>Mcp-Session-Id</code> header. All subsequent requests must include this header.
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>initialize</code></td>
+              <td>Creates session, returns capabilities and session ID</td>
+            </tr>
+            <tr>
+              <td><code>tools/list</code></td>
+              <td>Lists all registered tools</td>
+            </tr>
+            <tr>
+              <td><code>tools/call</code></td>
+              <td>Calls a tool by name with arguments</td>
+            </tr>
+            <tr>
+              <td><code>resources/list</code></td>
+              <td>Lists all registered resources</td>
+            </tr>
+            <tr>
+              <td><code>resources/read</code></td>
+              <td>Reads a resource by URI</td>
+            </tr>
+            <tr>
+              <td><code>prompts/list</code></td>
+              <td>Lists all registered prompts</td>
+            </tr>
+            <tr>
+              <td><code>prompts/get</code></td>
+              <td>Gets a prompt by name with arguments</td>
+            </tr>
+            <tr>
+              <td><code>ping</code></td>
+              <td>Returns empty object (health check)</td>
+            </tr>
+            <tr>
+              <td><code>DELETE /</code></td>
+              <td>Destroys a session</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Inspection</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Inspection API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code>mcp.health();       <span class="cm">// { status: "ok", tools: 2, resources: 1, prompts: 0, sessions: 1 }</span>
+mcp.getSessions();  <span class="cm">// Map of active sessions</span>
+mcp.getRequests();  <span class="cm">// Journal entries (when mounted with shared journal)</span>
+mcp.reset();        <span class="cm">// Clears all tools, resources, prompts, and sessions</span></code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+  </body>
+</html>
