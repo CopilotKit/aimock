@@ -6,14 +6,22 @@ import type {
   FixtureOpts,
   FixtureResponse,
   MockServerOptions,
+  Mountable,
   RecordConfig,
 } from "./types.js";
 import { createServer, type ServerInstance } from "./server.js";
 import { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
 import { Journal } from "./journal.js";
+import type { SearchFixture, SearchResult } from "./search.js";
+import type { RerankFixture, RerankResult } from "./rerank.js";
+import type { ModerationFixture, ModerationResult } from "./moderation.js";
 
 export class LLMock {
   private fixtures: Fixture[] = [];
+  private searchFixtures: SearchFixture[] = [];
+  private rerankFixtures: RerankFixture[] = [];
+  private moderationFixtures: ModerationFixture[] = [];
+  private mounts: Array<{ path: string; handler: Mountable }> = [];
   private serverInstance: ServerInstance | null = null;
   private options: MockServerOptions;
 
@@ -94,6 +102,23 @@ export class LLMock {
     return this.on({ toolCallId: id }, response, opts);
   }
 
+  // ---- Service mock convenience methods ----
+
+  onSearch(pattern: string | RegExp, results: SearchResult[]): this {
+    this.searchFixtures.push({ match: pattern, results });
+    return this;
+  }
+
+  onRerank(pattern: string | RegExp, results: RerankResult[]): this {
+    this.rerankFixtures.push({ match: pattern, results });
+    return this;
+  }
+
+  onModerate(pattern: string | RegExp, result: ModerationResult): this {
+    this.moderationFixtures.push({ match: pattern, result });
+    return this;
+  }
+
   /**
    * Queue a one-shot error that will be returned for the next matching
    * request, then automatically removed. Implemented as an internal fixture
@@ -131,6 +156,21 @@ export class LLMock {
       }
       return result;
     };
+    return this;
+  }
+
+  // ---- Mounts ----
+
+  mount(path: string, handler: Mountable): this {
+    this.mounts.push({ path, handler });
+
+    // If server is already running, wire up journal and baseUrl immediately
+    // so late mounts behave identically to pre-start mounts.
+    if (this.serverInstance) {
+      if (handler.setJournal) handler.setJournal(this.serverInstance.journal);
+      if (handler.setBaseUrl) handler.setBaseUrl(this.serverInstance.url + path);
+    }
+
     return this;
   }
 
@@ -183,6 +223,9 @@ export class LLMock {
 
   reset(): this {
     this.clearFixtures();
+    this.searchFixtures.length = 0;
+    this.rerankFixtures.length = 0;
+    this.moderationFixtures.length = 0;
     if (this.serverInstance) {
       this.serverInstance.journal.clear();
     }
@@ -195,7 +238,11 @@ export class LLMock {
     if (this.serverInstance) {
       throw new Error("Server already started");
     }
-    this.serverInstance = await createServer(this.fixtures, this.options);
+    this.serverInstance = await createServer(this.fixtures, this.options, this.mounts, {
+      search: this.searchFixtures,
+      rerank: this.rerankFixtures,
+      moderation: this.moderationFixtures,
+    });
     return this.serverInstance.url;
   }
 
