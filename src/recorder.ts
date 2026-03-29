@@ -15,6 +15,7 @@ import { getLastMessageByRole, getTextContent } from "./router.js";
 import type { Logger } from "./logger.js";
 import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
+import { resolveUpstreamUrl } from "./url.js";
 
 /**
  * Proxy an unmatched request to the real upstream provider, record the
@@ -48,7 +49,7 @@ export async function proxyAndRecord(
   const fixturePath = record.fixturePath ?? "./fixtures/recorded";
   let target: URL;
   try {
-    target = new URL(pathname, upstreamUrl);
+    target = resolveUpstreamUrl(upstreamUrl, pathname);
   } catch {
     defaults.logger.error(`Invalid upstream URL for provider "${providerKey}": ${upstreamUrl}`);
     writeErrorResponse(
