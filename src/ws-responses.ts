@@ -12,6 +12,8 @@ import {
   responsesToCompletionRequest,
   buildTextStreamEvents,
   buildToolCallStreamEvents,
+  buildReasoningStreamEvents,
+  buildWebSearchStreamEvents,
   type ResponsesSSEEvent,
 } from "./responses.js";
 import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
@@ -194,7 +196,68 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
+
+    const allEvents: ResponsesSSEEvent[] = [];
+    let outputIndex = 0;
+
+    if (response.reasoning) {
+      allEvents.push(
+        ...buildReasoningStreamEvents(response.reasoning, completionReq.model, chunkSize),
+      );
+      outputIndex++;
+    }
+
+    if (response.webSearches && response.webSearches.length > 0) {
+      allEvents.push(...buildWebSearchStreamEvents(response.webSearches, outputIndex));
+      outputIndex += response.webSearches.length;
+    }
+
+    const textEvents = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
+
+    let events: ResponsesSSEEvent[];
+    if (allEvents.length > 0) {
+      const preambleEvents = textEvents.slice(0, 2);
+      const bodyEvents = textEvents.slice(2);
+      const adjustedBodyEvents = bodyEvents.map((e) => {
+        if (e.output_index !== undefined) {
+          return { ...e, output_index: outputIndex };
+        }
+        return e;
+      });
+
+      const completedEvent = adjustedBodyEvents[adjustedBodyEvents.length - 1];
+      if (completedEvent.type === "response.completed") {
+        const respObj = completedEvent.response as { output: object[] };
+        const reasoningItems: object[] = [];
+        if (response.reasoning) {
+          const reasoningDone = allEvents.find(
+            (e) =>
+              e.type === "response.output_item.done" &&
+              (e.item as { type: string })?.type === "reasoning",
+          );
+          if (reasoningDone) {
+            reasoningItems.push(reasoningDone.item as object);
+          }
+        }
+        const searchItems: object[] = [];
+        if (response.webSearches) {
+          const searchDones = allEvents.filter(
+            (e) =>
+              e.type === "response.output_item.done" &&
+              (e.item as { type: string })?.type === "web_search_call",
+          );
+          for (const sd of searchDones) {
+            searchItems.push(sd.item as object);
+          }
+        }
+        respObj.output = [...reasoningItems, ...searchItems, ...respObj.output];
+      }
+
+      events = [...preambleEvents, ...allEvents, ...adjustedBodyEvents];
+    } else {
+      events = textEvents;
+    }
+
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
       ws,

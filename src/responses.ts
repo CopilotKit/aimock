@@ -402,26 +402,155 @@ export function buildToolCallStreamEvents(
   return events;
 }
 
+// Reasoning event builders for Responses API
+
+export function buildReasoningStreamEvents(
+  reasoning: string,
+  model: string,
+  chunkSize: number,
+): ResponsesSSEEvent[] {
+  const reasoningId = generateId("rs");
+  const events: ResponsesSSEEvent[] = [];
+
+  events.push({
+    type: "response.output_item.added",
+    output_index: 0,
+    item: {
+      type: "reasoning",
+      id: reasoningId,
+      summary: [],
+    },
+  });
+
+  events.push({
+    type: "response.reasoning_summary_part.added",
+    output_index: 0,
+    summary_index: 0,
+    part: { type: "summary_text", text: "" },
+  });
+
+  for (let i = 0; i < reasoning.length; i += chunkSize) {
+    const slice = reasoning.slice(i, i + chunkSize);
+    events.push({
+      type: "response.reasoning_summary_text.delta",
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      delta: slice,
+    });
+  }
+
+  events.push({
+    type: "response.reasoning_summary_text.done",
+    output_index: 0,
+    summary_index: 0,
+    text: reasoning,
+  });
+
+  events.push({
+    type: "response.reasoning_summary_part.done",
+    output_index: 0,
+    summary_index: 0,
+    part: { type: "summary_text", text: reasoning },
+  });
+
+  events.push({
+    type: "response.output_item.done",
+    output_index: 0,
+    item: {
+      type: "reasoning",
+      id: reasoningId,
+      summary: [{ type: "summary_text", text: reasoning }],
+    },
+  });
+
+  return events;
+}
+
+// Web search event builders for Responses API
+
+export function buildWebSearchStreamEvents(
+  queries: string[],
+  startOutputIndex: number,
+): ResponsesSSEEvent[] {
+  const events: ResponsesSSEEvent[] = [];
+
+  for (let i = 0; i < queries.length; i++) {
+    const searchId = generateId("ws");
+    const outputIndex = startOutputIndex + i;
+
+    events.push({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: {
+        type: "web_search_call",
+        id: searchId,
+        status: "in_progress",
+        query: queries[i],
+      },
+    });
+
+    events.push({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item: {
+        type: "web_search_call",
+        id: searchId,
+        status: "completed",
+        query: queries[i],
+      },
+    });
+  }
+
+  return events;
+}
+
 // Non-streaming response builders
 
-function buildTextResponse(content: string, model: string): object {
+function buildTextResponse(
+  content: string,
+  model: string,
+  reasoning?: string,
+  webSearches?: string[],
+): object {
   const respId = responseId();
   const msgId = itemId();
+  const output: object[] = [];
+
+  if (reasoning) {
+    output.push({
+      type: "reasoning",
+      id: generateId("rs"),
+      summary: [{ type: "summary_text", text: reasoning }],
+    });
+  }
+
+  if (webSearches && webSearches.length > 0) {
+    for (const query of webSearches) {
+      output.push({
+        type: "web_search_call",
+        id: generateId("ws"),
+        status: "completed",
+        query,
+      });
+    }
+  }
+
+  output.push({
+    type: "message",
+    id: msgId,
+    status: "completed",
+    role: "assistant",
+    content: [{ type: "output_text", text: content }],
+  });
+
   return {
     id: respId,
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
     model,
     status: "completed",
-    output: [
-      {
-        type: "message",
-        id: msgId,
-        status: "completed",
-        role: "assistant",
-        content: [{ type: "output_text", text: content }],
-      },
-    ],
+    output,
     usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
   };
 }
@@ -633,24 +762,103 @@ export async function handleResponses(
       response: { status: 200, fixture },
     });
     if (responsesReq.stream !== true) {
-      const body = buildTextResponse(response.content, completionReq.model);
+      const body = buildTextResponse(
+        response.content,
+        completionReq.model,
+        response.reasoning,
+        response.webSearches,
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
-      const interruption = createInterruptionSignal(fixture);
-      const completed = await writeResponsesSSEStream(res, events, {
-        latency,
-        streamingProfile: fixture.streamingProfile,
-        signal: interruption?.signal,
-        onChunkSent: interruption?.tick,
-      });
-      if (!completed) {
-        if (!res.writableEnded) res.destroy();
-        journalEntry.response.interrupted = true;
-        journalEntry.response.interruptReason = interruption?.reason();
+      const allEvents: ResponsesSSEEvent[] = [];
+
+      let outputIndex = 0;
+
+      if (response.reasoning) {
+        allEvents.push(
+          ...buildReasoningStreamEvents(response.reasoning, completionReq.model, chunkSize),
+        );
+        outputIndex++;
       }
-      interruption?.cleanup();
+
+      if (response.webSearches && response.webSearches.length > 0) {
+        allEvents.push(...buildWebSearchStreamEvents(response.webSearches, outputIndex));
+        outputIndex += response.webSearches.length;
+      }
+
+      const textEvents = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
+
+      if (allEvents.length > 0) {
+        const preambleEvents = textEvents.slice(0, 2);
+        const bodyEvents = textEvents.slice(2);
+
+        const adjustedBodyEvents = bodyEvents.map((e) => {
+          if (e.output_index !== undefined) {
+            return { ...e, output_index: outputIndex };
+          }
+          return e;
+        });
+
+        const completedEvent = adjustedBodyEvents[adjustedBodyEvents.length - 1];
+        if (completedEvent.type === "response.completed") {
+          const respObj = completedEvent.response as {
+            output: object[];
+          };
+          const reasoningItems: object[] = [];
+          if (response.reasoning) {
+            const reasoningDone = allEvents.find(
+              (e) =>
+                e.type === "response.output_item.done" &&
+                (e.item as { type: string })?.type === "reasoning",
+            );
+            if (reasoningDone) {
+              reasoningItems.push(reasoningDone.item as object);
+            }
+          }
+          const searchItems: object[] = [];
+          if (response.webSearches) {
+            const searchDones = allEvents.filter(
+              (e) =>
+                e.type === "response.output_item.done" &&
+                (e.item as { type: string })?.type === "web_search_call",
+            );
+            for (const sd of searchDones) {
+              searchItems.push(sd.item as object);
+            }
+          }
+          respObj.output = [...reasoningItems, ...searchItems, ...respObj.output];
+        }
+
+        const events = [...preambleEvents, ...allEvents, ...adjustedBodyEvents];
+        const interruption = createInterruptionSignal(fixture);
+        const completed = await writeResponsesSSEStream(res, events, {
+          latency,
+          streamingProfile: fixture.streamingProfile,
+          signal: interruption?.signal,
+          onChunkSent: interruption?.tick,
+        });
+        if (!completed) {
+          if (!res.writableEnded) res.destroy();
+          journalEntry.response.interrupted = true;
+          journalEntry.response.interruptReason = interruption?.reason();
+        }
+        interruption?.cleanup();
+      } else {
+        const interruption = createInterruptionSignal(fixture);
+        const completed = await writeResponsesSSEStream(res, textEvents, {
+          latency,
+          streamingProfile: fixture.streamingProfile,
+          signal: interruption?.signal,
+          onChunkSent: interruption?.tick,
+        });
+        if (!completed) {
+          if (!res.writableEnded) res.destroy();
+          journalEntry.response.interrupted = true;
+          journalEntry.response.interruptReason = interruption?.reason();
+        }
+        interruption?.cleanup();
+      }
     }
     return;
   }
