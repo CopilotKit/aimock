@@ -154,6 +154,33 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
           message: "content is empty string",
         });
       }
+      if (response.reasoning !== undefined && typeof response.reasoning !== "string") {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "reasoning must be a string",
+        });
+      }
+      if (response.webSearches !== undefined) {
+        if (!Array.isArray(response.webSearches)) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: "webSearches must be an array of strings",
+          });
+        } else {
+          for (let j = 0; j < response.webSearches.length; j++) {
+            if (typeof response.webSearches[j] !== "string") {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `webSearches[${j}] is not a string`,
+              });
+              break;
+            }
+          }
+        }
+      }
     }
 
     // Tool call response checks

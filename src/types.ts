@@ -60,6 +60,8 @@ export interface FixtureMatch {
 
 export interface TextResponse {
   content: string;
+  reasoning?: string;
+  webSearches?: string[];
   role?: string;
   finishReason?: string;
 }
