@@ -146,8 +146,10 @@ export async function proxyAndRecord(
     fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus);
   }
 
-  // Build the match criteria from the original request
-  const fixtureMatch = buildFixtureMatch(request);
+  // Build the match criteria — apply optional transform before key extraction
+  const transform = record.matchKeyTransform ?? ((req: ChatCompletionRequest) => req);
+  const normalizedReq = transform(request);
+  const fixtureMatch = buildFixtureMatch(normalizedReq);
 
   // Build and save the fixture
   const fixture: Fixture = { match: fixtureMatch, response: fixtureResponse };

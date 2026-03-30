@@ -2797,3 +2797,178 @@ describe("recorder binary EventStream relay integrity", () => {
     expect(fixtureContent.fixtures[0].response.content).toBe("Binary integrity test");
   });
 });
+
+// ---------------------------------------------------------------------------
+// matchKeyTransform
+// ---------------------------------------------------------------------------
+
+describe("recorder matchKeyTransform", () => {
+  it("saves the transformed match key in the fixture file", async () => {
+    // Upstream responds to any user message containing "capital"
+    upstream = await createServer(
+      [{ match: { userMessage: "capital" }, response: { content: "Paris" } }],
+      { port: 0 },
+    );
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-transform-"));
+
+    // The transform strips the dynamic timestamp from the user message
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: upstream.url },
+        fixturePath: tmpDir,
+        matchKeyTransform: (req) => ({
+          ...req,
+          messages: req.messages.map((m) => ({
+            ...m,
+            content:
+              typeof m.content === "string"
+                ? m.content.replace(/\d{4}-\d{2}-\d{2}T[\d:.+Z-]+/g, "")
+                : m.content,
+          })),
+        }),
+      },
+    });
+
+    // Send a request with a dynamic timestamp in the user message
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        {
+          role: "user",
+          content: "What is the capital of France?\nTimestamp: 2026-03-30T13:19:38.000Z",
+        },
+      ],
+    });
+
+    expect(resp.status).toBe(200);
+    const body = JSON.parse(resp.body);
+    expect(body.choices[0].message.content).toBe("Paris");
+
+    // The saved fixture should use the transformed (timestamp-stripped) match key
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as FixtureFile;
+    expect(fixtureContent.fixtures[0].match.userMessage).toBe(
+      "What is the capital of France?\nTimestamp: ",
+    );
+  });
+
+  it("preserves the original response from upstream", async () => {
+    upstream = await createServer(
+      [{ match: { userMessage: "capital" }, response: { content: "Paris is the capital." } }],
+      { port: 0 },
+    );
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-transform-"));
+
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: upstream.url },
+        fixturePath: tmpDir,
+        matchKeyTransform: (req) => ({
+          ...req,
+          messages: req.messages.map((m) => ({
+            ...m,
+            content:
+              typeof m.content === "string" ? m.content.replace(/uuid=[a-f0-9-]+/g, "") : m.content,
+          })),
+        }),
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "What is the capital? uuid=550e8400-e29b-41d4-a716-446655440000" },
+      ],
+    });
+
+    expect(resp.status).toBe(200);
+    const body = JSON.parse(resp.body);
+    // The upstream response is preserved as-is
+    expect(body.choices[0].message.content).toBe("Paris is the capital.");
+
+    // The saved fixture response is also the original upstream response
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as FixtureFile;
+    expect((fixtureContent.fixtures[0].response as { content: string }).content).toBe(
+      "Paris is the capital.",
+    );
+  });
+
+  it("does not alter match key when no transform is configured", async () => {
+    upstream = await createServer(
+      [{ match: { userMessage: "capital" }, response: { content: "Paris" } }],
+      { port: 0 },
+    );
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-notransform-"));
+
+    // No matchKeyTransform
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: upstream.url },
+        fixturePath: tmpDir,
+      },
+    });
+
+    const message = "What is the capital? ts=2026-03-30T13:19:38.000Z";
+    await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: message }],
+    });
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as FixtureFile;
+    // Without a transform, the full original message is the match key
+    expect(fixtureContent.fixtures[0].match.userMessage).toBe(message);
+  });
+
+  it("applies transform to embedding requests", async () => {
+    upstream = await createServer(
+      [{ match: { inputText: "hello" }, response: { embedding: [0.1, 0.2, 0.3] } }],
+      { port: 0 },
+    );
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-transform-embed-"));
+
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: upstream.url },
+        fixturePath: tmpDir,
+        matchKeyTransform: (req) => ({
+          ...req,
+          embeddingInput: req.embeddingInput?.replace(/ \| session=[a-f0-9]+/, ""),
+        }),
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "hello world | session=abc123def",
+    });
+
+    expect(resp.status).toBe(200);
+    const body = JSON.parse(resp.body);
+    expect(body.data[0].embedding).toEqual([0.1, 0.2, 0.3]);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as FixtureFile;
+    // The transform stripped the session suffix from the embedding input
+    expect(fixtureContent.fixtures[0].match.inputText).toBe("hello world");
+  });
+});

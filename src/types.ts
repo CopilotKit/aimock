@@ -230,6 +230,11 @@ export type RecordProviderKey =
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
   fixturePath?: string;
+  /** Transform request before extracting match key during recording.
+   * Use to strip dynamic fields (timestamps, UUIDs) that change between runs.
+   * The transform is applied before the match key is derived from the request.
+   * Only affects recording — replay matching uses the stored (transformed) key. */
+  matchKeyTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
 }
 
 export interface MockServerOptions {
