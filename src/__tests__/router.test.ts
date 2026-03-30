@@ -601,3 +601,97 @@ describe("matchFixture — first-match-wins", () => {
     expect(matchFixture([noMatch, match], req)).toBe(match);
   });
 });
+
+// ---------------------------------------------------------------------------
+// matchFixture — requestTransform (4th parameter)
+// ---------------------------------------------------------------------------
+
+describe("matchFixture — requestTransform", () => {
+  const stripSystemMessages = (req: ChatCompletionRequest): ChatCompletionRequest => ({
+    ...req,
+    messages: req.messages.filter((m) => m.role !== "system"),
+  });
+
+  it("uses exact string match (===) when transform is provided", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    // Without transform: "say hello world" includes "hello" → match
+    const req = makeReq({ messages: [{ role: "user", content: "say hello world" }] });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+    // With identity transform: "say hello world" !== "hello" → no match
+    expect(matchFixture([fixture], req, undefined, (r) => r)).toBeNull();
+  });
+
+  it("matches exactly when transformed text equals fixture string", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([fixture], req, undefined, (r) => r)).toBe(fixture);
+  });
+
+  it("applies transform to extract effective request for matching", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "you are helpful" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    // Transform strips system messages — user message "hello" === "hello" → match
+    expect(matchFixture([fixture], req, undefined, stripSystemMessages)).toBe(fixture);
+  });
+
+  it("regexp matching still works with transform", () => {
+    const fixture = makeFixture({ userMessage: /^hello/i });
+    const req = makeReq({ messages: [{ role: "user", content: "Hello world" }] });
+    expect(matchFixture([fixture], req, undefined, (r) => r)).toBe(fixture);
+  });
+
+  it("regexp does not match when transform changes the text", () => {
+    const fixture = makeFixture({ userMessage: /^hello/ });
+    const transform = (req: ChatCompletionRequest): ChatCompletionRequest => ({
+      ...req,
+      messages: [{ role: "user", content: "transformed" }],
+    });
+    const req = makeReq({ messages: [{ role: "user", content: "hello world" }] });
+    expect(matchFixture([fixture], req, undefined, transform)).toBeNull();
+  });
+
+  it("transform applies to embedding inputText matching with exact comparison", () => {
+    const fixture = makeFixture({ inputText: "normalized text" });
+    const transform = (req: ChatCompletionRequest): ChatCompletionRequest => ({
+      ...req,
+      embeddingInput: "normalized text",
+    });
+    const req = {
+      ...makeReq(),
+      embeddingInput: "raw input with extra stuff",
+    } as ChatCompletionRequest;
+    // Without transform: "raw input with extra stuff" does not include "normalized text"
+    expect(matchFixture([fixture], req)).toBeNull();
+    // With transform: embeddingInput becomes "normalized text" === "normalized text"
+    expect(matchFixture([fixture], req, undefined, transform)).toBe(fixture);
+  });
+
+  it("without transform preserves includes behavior (backward compat)", () => {
+    const fixture = makeFixture({ userMessage: "hello" });
+    const req = makeReq({ messages: [{ role: "user", content: "say hello world" }] });
+    // No transform → includes match
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("predicate receives original (untransformed) request", () => {
+    let capturedReq: ChatCompletionRequest | null = null;
+    const original = makeReq({ model: "gpt-4o", temperature: 0.7 });
+    const fixture = makeFixture({
+      predicate: (r) => {
+        capturedReq = r;
+        return true;
+      },
+    });
+    const transform = (req: ChatCompletionRequest): ChatCompletionRequest => ({
+      ...req,
+      model: "transformed",
+    });
+    matchFixture([fixture], original, undefined, transform);
+    expect(capturedReq).toBe(original);
+  });
+});

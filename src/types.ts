@@ -246,6 +246,8 @@ export interface MockServerOptions {
   strict?: boolean;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
+  /** Transform requests before fixture matching (e.g. strip dynamic fields for deterministic matching). */
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler
@@ -260,4 +262,5 @@ export interface HandlerDefaults {
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
 }

@@ -86,7 +86,12 @@ export async function handleEmbeddings(
     embeddingInput: combinedInput,
   };
 
-  const fixture = matchFixture(fixtures, syntheticReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    syntheticReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

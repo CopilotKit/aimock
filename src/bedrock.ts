@@ -309,7 +309,12 @@ export async function handleBedrock(
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = bedrockToCompletionRequest(bedrockReq, modelId);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);
@@ -626,7 +631,12 @@ export async function handleBedrockStream(
 
   const completionReq = bedrockToCompletionRequest(bedrockReq, modelId);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

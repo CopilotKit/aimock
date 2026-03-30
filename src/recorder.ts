@@ -31,7 +31,11 @@ export async function proxyAndRecord(
   providerKey: RecordProviderKey,
   pathname: string,
   fixtures: Fixture[],
-  defaults: { record?: RecordConfig; logger: Logger },
+  defaults: {
+    record?: RecordConfig;
+    logger: Logger;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
   rawBody?: string,
 ): Promise<boolean> {
   const record = defaults.record;
@@ -146,8 +150,9 @@ export async function proxyAndRecord(
     fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus);
   }
 
-  // Build the match criteria from the original request
-  const fixtureMatch = buildFixtureMatch(request);
+  // Build the match criteria from the (possibly transformed) request
+  const normalizedReq = defaults.requestTransform ? defaults.requestTransform(request) : request;
+  const fixtureMatch = buildFixtureMatch(normalizedReq);
 
   // Build and save the fixture
   const fixture: Fixture = { match: fixtureMatch, response: fixtureResponse };
