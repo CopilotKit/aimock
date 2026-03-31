@@ -2368,6 +2368,161 @@ describe("buildFixtureResponse format detection", () => {
     expect(fixtureContent.fixtures[0].response.embedding).toEqual([0.1, 0.2, 0.3]);
   });
 
+  it("decodes base64-encoded embeddings when encoding_format is base64", async () => {
+    // Float32Array([0.5, 1.0, -0.25]) encoded as base64
+    const base64Embedding = "AAAAPwAAgD8AAIC+";
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: base64Embedding }],
+      model: "text-embedding-3-small",
+      usage: { prompt_tokens: 5, total_tokens: 5 },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "base64 embedding test",
+      encoding_format: "base64",
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { embedding?: number[] };
+      }>;
+    };
+    // Should decode base64 → Float32Array → number[]
+    expect(fixtureContent.fixtures[0].response.embedding).toEqual([0.5, 1, -0.25]);
+  });
+
+  it("does not decode base64 embedding when encoding_format is not set", async () => {
+    // Same base64 string but no encoding_format in request — should NOT decode
+    const base64Embedding = "AAAAPwAAgD8AAIC+";
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: base64Embedding }],
+      model: "text-embedding-3-small",
+      usage: { prompt_tokens: 5, total_tokens: 5 },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "base64 no format test",
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { error?: { type: string } };
+      }>;
+    };
+    // Without encoding_format, base64 string embedding is not an array →
+    // falls through to proxy_error
+    expect(fixtureContent.fixtures[0].response.error?.type).toBe("proxy_error");
+  });
+
+  it("still detects array embeddings when encoding_format is base64", async () => {
+    // Some upstream responses return array format even when base64 was requested
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: [0.5, 1.0, -0.25] }],
+      model: "text-embedding-3-small",
+      usage: { prompt_tokens: 5, total_tokens: 5 },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "array with base64 format test",
+      encoding_format: "base64",
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { embedding?: number[] };
+      }>;
+    };
+    // Array.isArray check comes first, so array embeddings work regardless of encoding_format
+    expect(fixtureContent.fixtures[0].response.embedding).toEqual([0.5, 1, -0.25]);
+  });
+
+  it("handles truncated base64 embedding gracefully (odd byte count)", async () => {
+    // 2 bytes decodes to 0 float32 elements — produces empty embedding, not a crash
+    const shortBase64 = Buffer.from([0x00, 0x01]).toString("base64");
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      object: "list",
+      data: [{ object: "embedding", index: 0, embedding: shortBase64 }],
+      model: "text-embedding-3-small",
+      usage: { prompt_tokens: 5, total_tokens: 5 },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llmock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "truncated base64 test",
+      encoding_format: "base64",
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: { embedding?: number[] };
+      }>;
+    };
+    // Truncated base64 decodes to empty array rather than crashing
+    expect(fixtureContent.fixtures[0].response.embedding).toEqual([]);
+  });
+
   it("preserves error code field from upstream error response", async () => {
     const { url: upstreamUrl } = await createRawUpstreamWithStatus(
       {
