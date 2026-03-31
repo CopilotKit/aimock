@@ -437,11 +437,12 @@ llmock --strict -f ./fixtures
 ### How it works
 
 1. **Existing fixtures are served first** — the router checks all loaded fixtures before considering the proxy.
-2. **Misses are proxied** — if no fixture matches and recording is enabled, the request is forwarded to the real provider API.
-3. **Auth headers are forwarded but NOT saved** — `Authorization`, `x-api-key`, and `api-key` headers are passed through to the upstream provider, but stripped from the recorded fixture.
+2. **Misses are proxied** — if no fixture matches and recording is enabled, the request is forwarded to the real provider API. Upstream URL path prefixes are preserved (e.g., `https://gateway.company.com/llm/v1` correctly proxies to `/llm/v1/chat/completions`).
+3. **All request headers are forwarded (auth headers NOT saved)** — all client request headers are passed through to the upstream provider, except hop-by-hop headers and `host`/`content-length`/`cookie`/`accept-encoding`. Auth headers (`Authorization`, `x-api-key`, `api-key`) are forwarded but stripped from the recorded fixture.
 4. **Responses are saved as standard fixtures** — recorded files land in `{fixturePath}/recorded/` and use the same JSON format as hand-written fixtures. Nothing special about them.
 5. **Streaming responses are collapsed** — SSE streams are collapsed into a single text or tool-call response for the fixture. The original streaming format is preserved in the live proxy response.
-6. **Loud logging** — every proxy hit logs at `warn` level so you can see exactly which requests are being forwarded.
+6. **Base64 embedding decoding** — when the upstream returns base64-encoded embeddings (the default `encoding_format` in Python's openai SDK), the recorder decodes them into float arrays so fixtures contain readable numeric data instead of opaque base64 strings.
+7. **Loud logging** — every proxy hit logs at `warn` level so you can see exactly which requests are being forwarded.
 
 ### Programmatic API
 
