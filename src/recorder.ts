@@ -161,7 +161,13 @@ export async function proxyAndRecord(
       // Not JSON — could be an unknown format
       defaults.logger.warn("Upstream response is not valid JSON — saving as error fixture");
     }
-    fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus);
+    let encodingFormat: string | undefined;
+    try {
+      encodingFormat = rawBody ? JSON.parse(rawBody).encoding_format : undefined;
+    } catch {
+      /* not JSON */
+    }
+    fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
   }
 
   // Build the match criteria from the original request
@@ -289,7 +295,11 @@ function makeUpstreamRequest(
  * Detect the response format from the parsed upstream JSON and convert
  * it into an llmock FixtureResponse.
  */
-function buildFixtureResponse(parsed: unknown, status: number): FixtureResponse {
+function buildFixtureResponse(
+  parsed: unknown,
+  status: number,
+  encodingFormat?: string,
+): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
     return {
@@ -318,6 +328,15 @@ function buildFixtureResponse(parsed: unknown, status: number): FixtureResponse 
     const first = obj.data[0] as Record<string, unknown>;
     if (Array.isArray(first.embedding)) {
       return { embedding: first.embedding as number[] };
+    }
+    if (typeof first.embedding === "string" && encodingFormat === "base64") {
+      try {
+        const buf = Buffer.from(first.embedding, "base64");
+        const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+        return { embedding: Array.from(floats) };
+      } catch {
+        // Corrupted base64 or non-float32 data — fall through to error
+      }
     }
   }
 
