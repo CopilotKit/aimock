@@ -17,6 +17,25 @@ import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 
+/** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
+const STRIP_HEADERS = new Set([
+  // Hop-by-hop (RFC 2616 §13.5.1)
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "te",
+  "trailer",
+  "upgrade",
+  "proxy-authorization",
+  "proxy-authenticate",
+  // Set by HTTP client from the target URL / body
+  "host",
+  "content-length",
+  // Not relevant for LLM APIs; avoid leaking or mismatched encoding
+  "cookie",
+  "accept-encoding",
+]);
+
 /**
  * Proxy an unmatched request to the real upstream provider, record the
  * response as a fixture on disk and in memory, then relay the response
@@ -64,12 +83,10 @@ export async function proxyAndRecord(
 
   defaults.logger.warn(`NO FIXTURE MATCH — proxying to ${upstreamUrl}${pathname}`);
 
-  // Forward only safe headers — auth and content negotiation
+  // Forward all request headers except hop-by-hop and client-set ones.
   const forwardHeaders: Record<string, string> = {};
-  const headersToForward = ["authorization", "x-api-key", "api-key", "content-type", "accept"];
-  for (const name of headersToForward) {
-    const val = req.headers[name];
-    if (val !== undefined) {
+  for (const [name, val] of Object.entries(req.headers)) {
+    if (val !== undefined && !STRIP_HEADERS.has(name)) {
       forwardHeaders[name] = Array.isArray(val) ? val.join(", ") : val;
     }
   }

@@ -1673,9 +1673,9 @@ describe("recorder auth header handling", () => {
     expect(content).not.toContain("api-key");
   });
 
-  it("custom non-auth headers from client are NOT forwarded to upstream", async () => {
-    // We'll verify by checking that the upstream doesn't receive custom headers.
-    // Create a raw upstream that echoes back received headers.
+  it("all non-hop-by-hop headers from client are forwarded to upstream", async () => {
+    // Verify that provider-specific headers (e.g. anthropic-version) are forwarded,
+    // while hop-by-hop headers (host, connection, etc.) are stripped.
     let receivedHeaders: http.IncomingHttpHeaders = {};
     const echoServer = http.createServer((req, res) => {
       receivedHeaders = req.headers;
@@ -1705,15 +1705,15 @@ describe("recorder auth header handling", () => {
       },
       {
         Authorization: "Bearer sk-test",
-        "X-Custom-Header": "should-not-forward",
-        "X-Request-Id": "req-123",
+        "X-Custom-Header": "custom-value",
+        "anthropic-version": "2023-06-01",
       },
     );
 
-    // Authorization is forwarded, custom headers are not
+    // All non-hop-by-hop headers are forwarded
     expect(receivedHeaders["authorization"]).toBe("Bearer sk-test");
-    expect(receivedHeaders["x-custom-header"]).toBeUndefined();
-    expect(receivedHeaders["x-request-id"]).toBeUndefined();
+    expect(receivedHeaders["x-custom-header"]).toBe("custom-value");
+    expect(receivedHeaders["anthropic-version"]).toBe("2023-06-01");
 
     await new Promise<void>((resolve) => echoServer.close(() => resolve()));
   });
