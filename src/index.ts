@@ -90,6 +90,9 @@ export type { ChaosAction } from "./types.js";
 // Recorder
 export { proxyAndRecord } from "./recorder.js";
 
+// URL
+export { resolveUpstreamUrl } from "./url.js";
+
 // Stream Collapse
 export {
   collapseOpenAISSE,
