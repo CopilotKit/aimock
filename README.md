@@ -23,53 +23,6 @@ const url = await mock.start();
 await mock.stop();
 ```
 
-## When to Use This vs MSW
-
-[MSW (Mock Service Worker)](https://mswjs.io/) is a popular API mocking library, but it solves a different problem.
-
-**The key difference is architecture.** llmock runs a real HTTP server on a port. MSW patches `http`/`https`/`fetch` modules inside a single Node.js process. MSW can only intercept requests from the process that calls `server.listen()` — child processes, separate services, and workers are unaffected.
-
-This matters for E2E tests where multiple processes make LLM API calls:
-
-```
-Playwright test runner (Node)
-  └─ controls browser → Next.js app (separate process)
-                            └─ OPENAI_BASE_URL → llmock :5555
-                                ├─ Mastra agent workers
-                                ├─ LangGraph workers
-                                └─ CopilotKit runtime
-```
-
-MSW can't intercept any of those calls. llmock can — it's a real server on a real port.
-
-**Use llmock when:**
-
-- Multiple processes need to hit the same mock (E2E tests, agent frameworks, microservices)
-- You want multi-provider SSE format out of the box (OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere)
-- You prefer defining fixtures as JSON files rather than code
-- You need a standalone CLI server
-
-**Use MSW when:**
-
-- All API calls originate from a single Node.js process (unit tests, SDK client tests)
-- You're mocking many different APIs, not just OpenAI
-- You want in-process interception without running a server
-
-| Capability                   | llmock                | MSW                                                                       |
-| ---------------------------- | --------------------- | ------------------------------------------------------------------------- |
-| Cross-process interception   | **Yes** (real server) | **No** (in-process only)                                                  |
-| OpenAI Chat Completions SSE  | **Built-in**          | Manual — build `data: {json}\n\n` + `[DONE]` yourself                     |
-| OpenAI Responses API SSE     | **Built-in**          | Manual — MSW's `sse()` sends `data:` events, not OpenAI's `event:` format |
-| Claude Messages API SSE      | **Built-in**          | Manual — build `event:`/`data:` SSE yourself                              |
-| Gemini streaming             | **Built-in**          | Manual — build `data:` SSE yourself                                       |
-| WebSocket APIs               | **Built-in**          | **No**                                                                    |
-| Fixture file loading (JSON)  | **Yes**               | **No** — handlers are code-only                                           |
-| Request journal / inspection | **Yes**               | **No** — track requests manually                                          |
-| Non-streaming responses      | **Yes**               | **Yes**                                                                   |
-| Error injection (one-shot)   | **Yes**               | **Yes** (via `server.use()`)                                              |
-| CLI for standalone use       | **Yes**               | **No**                                                                    |
-| Zero dependencies            | **Yes**               | **No** (~300KB)                                                           |
-
 ## Features
 
 - **[Multi-provider support](https://llmock.copilotkit.dev/compatible-providers.html)** — [OpenAI Chat Completions](https://llmock.copilotkit.dev/chat-completions.html), [OpenAI Responses](https://llmock.copilotkit.dev/responses-api.html), [Anthropic Claude](https://llmock.copilotkit.dev/claude-messages.html), [Google Gemini](https://llmock.copilotkit.dev/gemini.html), [AWS Bedrock](https://llmock.copilotkit.dev/aws-bedrock.html) (streaming + Converse), [Azure OpenAI](https://llmock.copilotkit.dev/azure-openai.html), [Vertex AI](https://llmock.copilotkit.dev/vertex-ai.html), [Ollama](https://llmock.copilotkit.dev/ollama.html), [Cohere](https://llmock.copilotkit.dev/cohere.html)
