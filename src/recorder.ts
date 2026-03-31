@@ -301,6 +301,12 @@ function buildFixtureResponse(parsed: unknown, status: number): FixtureResponse 
     if (Array.isArray(first.embedding)) {
       return { embedding: first.embedding as number[] };
     }
+    if (typeof first.embedding === "string") {
+      // Base64-encoded embedding (e.g. OpenAI with encoding_format: "base64")
+      const buf = Buffer.from(first.embedding, "base64");
+      const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+      return { embedding: Array.from(floats) };
+    }
   }
 
   // Direct embedding: { embedding: [...] }
