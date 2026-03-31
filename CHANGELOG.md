@@ -1,5 +1,15 @@
 # @copilotkit/llmock
 
+## 1.6.1
+
+### Patch Changes
+
+- Fix record proxy to preserve upstream URL path prefixes — base URLs like `https://gateway.company.com/llm` now correctly resolve to `gateway.company.com/llm/v1/chat/completions` instead of losing the `/llm` prefix (PR #57)
+- Fix record proxy to forward all request headers to upstream, not just `Content-Type` and auth headers. Hop-by-hop headers (`connection`, `keep-alive`, `transfer-encoding`, etc.) and client-set headers (`host`, `content-length`, `cookie`, `accept-encoding`) are still stripped (PR #58)
+- Fix recorder to decode base64-encoded embeddings when `encoding_format: "base64"` is set in the request. Python's openai SDK uses this by default. Previously these were saved as `proxy_error` fixtures (PR #64)
+- Guard base64 embedding decode against corrupted data (non-float32-aligned buffers fall through gracefully instead of crashing)
+- Add `--summary` flag to competitive matrix update script for markdown-formatted change summaries
+
 ## 1.6.0
 
 ### Minor Changes
