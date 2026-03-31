@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -21,6 +22,7 @@ jobs:
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
           if npm view "${PKG_NAME}@${PKG_VERSION}" version 2>/dev/null; then
             echo "published=true" >> "$GITHUB_OUTPUT"
           else
@@ -34,10 +36,20 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Ensure git tag exists
+        if: steps.check.outputs.published == 'false'
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
+            git tag "${TAG}"
+            git push origin "${TAG}"
+          fi
+
       - name: Create GitHub Release
         if: steps.check.outputs.published == 'false'
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          gh release create "v${PKG_VERSION}" --generate-notes --title "v${PKG_VERSION}"
+          TAG="v${{ steps.check.outputs.version }}"
+          # --verify-tag ensures the tag exists before creating the release
+          gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

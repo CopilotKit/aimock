@@ -1,0 +1,36 @@
+name: Unreleased Changes Check
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Check for unreleased source changes
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG="v${PKG_VERSION}"
+
+          # If the tag doesn't exist yet, this is the release commit itself — skip
+          if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} not found — this push likely IS the release. Skipping."
+            exit 0
+          fi
+
+          # Count source-file commits since the last release tag
+          UNRELEASED=$(git log "${TAG}..HEAD" --oneline -- 'src/' | wc -l | tr -d ' ')
+
+          if [ "$UNRELEASED" -gt 0 ]; then
+            echo "::warning::${UNRELEASED} source commits on main since ${TAG} — version has not been bumped."
+            echo ""
+            echo "Unreleased commits:"
+            git log "${TAG}..HEAD" --oneline -- 'src/'
+            echo ""
+            echo "Run: bump package.json version, update CHANGELOG.md, push to trigger publish."
+          else
+            echo "No unreleased source changes since ${TAG}."
+          fi
