@@ -40,6 +40,8 @@ import {
   execFileSafe,
   parseMode,
   getChangedFiles,
+  affectedSkillSections,
+  BUILDER_TO_SKILL_SECTION,
 } from "../../scripts/fix-drift.js";
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -741,5 +743,109 @@ describe("getChangedFiles", () => {
     mockedExecSync.mockReturnValue("R  old.ts -> new.ts\n M src/foo.ts\n");
     const result = getChangedFiles();
     expect(result).toEqual(["new.ts", "src/foo.ts"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// affectedSkillSections
+// ---------------------------------------------------------------------------
+
+describe("affectedSkillSections", () => {
+  it("returns empty array when no builder files are present", () => {
+    expect(affectedSkillSections(["src/__tests__/foo.test.ts", "package.json"])).toEqual([]);
+  });
+
+  it("maps known builder files to skill sections", () => {
+    const result = affectedSkillSections(["src/responses.ts", "src/messages.ts"]);
+    expect(result).toEqual(["Claude Messages", "Responses API"]);
+  });
+
+  it("deduplicates sections from multiple files mapping to the same section", () => {
+    const result = affectedSkillSections(["src/bedrock.ts", "src/bedrock-converse.ts"]);
+    expect(result).toEqual(["Bedrock"]);
+  });
+
+  it("ignores files not in the mapping", () => {
+    const result = affectedSkillSections(["src/responses.ts", "src/router.ts", "src/server.ts"]);
+    expect(result).toEqual(["Responses API"]);
+  });
+
+  it("returns sorted section names", () => {
+    const result = affectedSkillSections(["src/ollama.ts", "src/gemini.ts", "src/embeddings.ts"]);
+    expect(result).toEqual(["Embeddings", "Gemini", "Ollama"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUILDER_TO_SKILL_SECTION
+// ---------------------------------------------------------------------------
+
+describe("BUILDER_TO_SKILL_SECTION", () => {
+  it("includes all expected builder files", () => {
+    const expectedFiles = [
+      "src/responses.ts",
+      "src/messages.ts",
+      "src/gemini.ts",
+      "src/bedrock.ts",
+      "src/bedrock-converse.ts",
+      "src/embeddings.ts",
+      "src/ollama.ts",
+      "src/cohere.ts",
+      "src/ws-realtime.ts",
+      "src/ws-responses.ts",
+      "src/ws-gemini-live.ts",
+    ];
+    for (const file of expectedFiles) {
+      expect(BUILDER_TO_SKILL_SECTION).toHaveProperty(file);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPrBody — skill sections
+// ---------------------------------------------------------------------------
+
+describe("buildPrBody — skill sections", () => {
+  it("includes skill documentation section when builder files changed", () => {
+    const report = makeReport();
+    const body = buildPrBody(report, ["src/responses.ts", "src/__tests__/foo.test.ts"]);
+
+    expect(body).toContain("### Skill documentation");
+    expect(body).toContain("- Responses API");
+  });
+
+  it("omits skill documentation section when no builder files changed", () => {
+    const report = makeReport();
+    const body = buildPrBody(report, ["src/__tests__/foo.test.ts", "package.json"]);
+
+    expect(body).not.toContain("### Skill documentation");
+  });
+
+  it("omits skill documentation section when changedFiles is not provided", () => {
+    const report = makeReport();
+    const body = buildPrBody(report);
+
+    expect(body).not.toContain("### Skill documentation");
+  });
+
+  it("lists multiple affected skill sections", () => {
+    const report = makeReport();
+    const body = buildPrBody(report, ["src/responses.ts", "src/gemini.ts", "src/bedrock.ts"]);
+
+    expect(body).toContain("- Bedrock");
+    expect(body).toContain("- Gemini");
+    expect(body).toContain("- Responses API");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPrompt — skill file reference
+// ---------------------------------------------------------------------------
+
+describe("buildPrompt — skill file", () => {
+  it("includes skill file update instructions", () => {
+    const prompt = buildPrompt(makeReport());
+    expect(prompt).toContain("## Skill file update");
+    expect(prompt).toContain("skills/write-fixtures/SKILL.md");
   });
 });
