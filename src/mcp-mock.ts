@@ -1,6 +1,7 @@
 import * as http from "node:http";
 import type { Mountable } from "./types.js";
 import type { Journal } from "./journal.js";
+import type { MetricsRegistry } from "./metrics.js";
 import type {
   MCPMockOptions,
   MCPToolDefinition,
@@ -31,6 +32,7 @@ export class MCPMock implements Mountable {
   private sessions: Map<string, MCPSession> = new Map();
   private server: http.Server | null = null;
   private journal: Journal | null = null;
+  private registry: MetricsRegistry | null = null;
   private options: MCPMockOptions;
   private requestHandler: ReturnType<typeof createMCPRequestHandler>;
 
@@ -93,6 +95,20 @@ export class MCPMock implements Mountable {
 
     const body = await readBody(req);
 
+    // Extract JSON-RPC method for metrics
+    if (this.registry) {
+      try {
+        const parsed = JSON.parse(body);
+        const method =
+          typeof parsed === "object" && parsed !== null && "method" in parsed
+            ? String(parsed.method)
+            : "unknown";
+        this.registry.incrementCounter("aimock_mcp_requests_total", { method });
+      } catch {
+        this.registry.incrementCounter("aimock_mcp_requests_total", { method: "unknown" });
+      }
+    }
+
     await this.requestHandler(req, res, body);
 
     // Journal the request after the handler completes
@@ -122,6 +138,10 @@ export class MCPMock implements Mountable {
 
   setJournal(journal: Journal): void {
     this.journal = journal;
+  }
+
+  setRegistry(registry: MetricsRegistry): void {
+    this.registry = registry;
   }
 
   // ---- Standalone mode ----

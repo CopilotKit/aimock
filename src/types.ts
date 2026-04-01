@@ -16,6 +16,7 @@ export interface Mountable {
   health?(): { status: string; [key: string]: unknown };
   setJournal?(journal: Journal): void;
   setBaseUrl?(url: string): void;
+  setRegistry?(registry: MetricsRegistry): void;
 }
 
 export interface ContentPart {

@@ -1,6 +1,7 @@
 import * as http from "node:http";
 import type { Mountable } from "./types.js";
 import type { Journal } from "./journal.js";
+import type { MetricsRegistry } from "./metrics.js";
 import type {
   A2AAgentDefinition,
   A2AArtifact,
@@ -24,6 +25,7 @@ export class A2AMock implements Mountable {
   private tasks: Map<string, A2ATask> = new Map();
   private server: http.Server | null = null;
   private journal: Journal | null = null;
+  private registry: MetricsRegistry | null = null;
   private options: A2AMockOptions;
   private baseUrl = "";
   private dispatcher: ReturnType<typeof createJsonRpcDispatcher>;
@@ -88,6 +90,9 @@ export class A2AMock implements Mountable {
   ): Promise<boolean> {
     // Agent card endpoint
     if (req.method === "GET" && pathname === "/.well-known/agent-card.json") {
+      if (this.registry) {
+        this.registry.incrementCounter("aimock_a2a_requests_total", { method: "GetAgentCard" });
+      }
       const card = buildAgentCard(this.agents, this.baseUrl);
       res.writeHead(200, {
         "Content-Type": "application/json",
@@ -118,6 +123,15 @@ export class A2AMock implements Mountable {
           }),
         );
         return true;
+      }
+
+      // Record A2A method metric
+      if (this.registry) {
+        const rpcMethod =
+          typeof parsed === "object" && parsed !== null && "method" in parsed
+            ? String((parsed as Record<string, unknown>).method)
+            : "unknown";
+        this.registry.incrementCounter("aimock_a2a_requests_total", { method: rpcMethod });
       }
 
       if (isStreamingRequest(parsed)) {
@@ -159,6 +173,10 @@ export class A2AMock implements Mountable {
 
   setJournal(journal: Journal): void {
     this.journal = journal;
+  }
+
+  setRegistry(registry: MetricsRegistry): void {
+    this.registry = registry;
   }
 
   // ---- Standalone mode ----

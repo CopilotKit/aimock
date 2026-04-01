@@ -1,6 +1,7 @@
 import * as http from "node:http";
 import type { Mountable, JournalEntry } from "./types.js";
 import type { Journal } from "./journal.js";
+import type { MetricsRegistry } from "./metrics.js";
 import type {
   VectorMockOptions,
   VectorCollection,
@@ -17,6 +18,7 @@ export class VectorMock implements Mountable {
   private queryHandlers: Map<string, QueryHandler> = new Map();
   private server: http.Server | null = null;
   private journal: Journal | null = null;
+  private registry: MetricsRegistry | null = null;
   private options: VectorMockOptions;
   private requestHandler: ReturnType<typeof createVectorRequestHandler>;
 
@@ -89,6 +91,12 @@ export class VectorMock implements Mountable {
 
     const handled = this.requestHandler(req, res, pathname, parsed);
 
+    // Record vector operation metric
+    if (handled && this.registry) {
+      const { operation, provider } = classifyVectorRequest(req.method ?? "GET", pathname);
+      this.registry.incrementCounter("aimock_vector_requests_total", { operation, provider });
+    }
+
     // Journal the request after the handler completes
     if (handled && this.journal) {
       this.journal.add({
@@ -113,6 +121,10 @@ export class VectorMock implements Mountable {
 
   setJournal(journal: Journal): void {
     this.journal = journal;
+  }
+
+  setRegistry(registry: MetricsRegistry): void {
+    this.registry = registry;
   }
 
   // ---- Standalone mode ----
@@ -211,4 +223,55 @@ export class VectorMock implements Mountable {
     };
     return createVectorRequestHandler(state);
   }
+}
+
+// ---- Helpers ----
+
+/**
+ * Classify a vector request by operation and provider based on HTTP method and pathname.
+ */
+function classifyVectorRequest(
+  method: string,
+  pathname: string,
+): { operation: string; provider: string } {
+  // Pinecone paths
+  if (pathname === "/query" && method === "POST") {
+    return { operation: "query", provider: "pinecone" };
+  }
+  if (pathname === "/vectors/upsert" && method === "POST") {
+    return { operation: "upsert", provider: "pinecone" };
+  }
+  if (pathname === "/vectors/delete" && method === "POST") {
+    return { operation: "delete", provider: "pinecone" };
+  }
+  if (pathname === "/describe-index-stats" && method === "GET") {
+    return { operation: "describe", provider: "pinecone" };
+  }
+
+  // Qdrant paths
+  if (/^\/collections\/[^/]+\/points\/search$/.test(pathname) && method === "POST") {
+    return { operation: "query", provider: "qdrant" };
+  }
+  if (/^\/collections\/[^/]+\/points$/.test(pathname) && method === "PUT") {
+    return { operation: "upsert", provider: "qdrant" };
+  }
+  if (/^\/collections\/[^/]+\/points\/delete$/.test(pathname) && method === "POST") {
+    return { operation: "delete", provider: "qdrant" };
+  }
+
+  // ChromaDB paths
+  if (/^\/api\/v1\/collections\/[^/]+\/query$/.test(pathname) && method === "POST") {
+    return { operation: "query", provider: "chromadb" };
+  }
+  if (/^\/api\/v1\/collections\/[^/]+\/add$/.test(pathname) && method === "POST") {
+    return { operation: "upsert", provider: "chromadb" };
+  }
+  if (pathname === "/api/v1/collections" && method === "GET") {
+    return { operation: "list", provider: "chromadb" };
+  }
+  if (/^\/api\/v1\/collections\/[^/]+$/.test(pathname) && method === "DELETE") {
+    return { operation: "delete", provider: "chromadb" };
+  }
+
+  return { operation: "unknown", provider: "unknown" };
 }
