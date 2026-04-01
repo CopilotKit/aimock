@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
+import { realtimeItemsToMessages } from "../ws-realtime.js";
 
 // --- fixtures ---
 
@@ -56,6 +57,40 @@ function responseCreate(): string {
 
 function sessionUpdate(config: Record<string, unknown>): string {
   return JSON.stringify({ type: "session.update", session: config });
+}
+
+function functionCallOutputItem(callId: string, output: string): string {
+  return JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: callId,
+      output,
+    },
+  });
+}
+
+function functionCallItem(name: string, callId: string, args: string): string {
+  return JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "function_call",
+      name,
+      call_id: callId,
+      arguments: args,
+    },
+  });
+}
+
+function systemMessageItem(text: string): string {
+  return JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "system",
+      content: [{ type: "input_text", text }],
+    },
+  });
 }
 
 // --- tests ---
@@ -547,6 +582,216 @@ describe("WebSocket /v1/realtime", () => {
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 
+  it("sends error for malformed JSON", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send("this is not { valid json");
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("error");
+    expect((event.error as Record<string, unknown>).message).toBe("Malformed JSON");
+
+    ws.close();
+  });
+
+  it("sends error when conversation.item.create is missing item", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(JSON.stringify({ type: "conversation.item.create" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("error");
+    expect((event.error as Record<string, unknown>).message).toBe(
+      "Missing 'item' in conversation.item.create",
+    );
+
+    ws.close();
+  });
+
+  it("assigns auto-generated item.id when missing in conversation.item.create", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Send item without id
+    ws.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("conversation.item.created");
+    const item = event.item as Record<string, unknown>;
+    expect(item.id).toBeDefined();
+    expect((item.id as string).startsWith("item-")).toBe(true);
+
+    ws.close();
+  });
+
+  it("session.update updates modalities, model, and temperature", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(
+      sessionUpdate({
+        modalities: ["text", "audio"],
+        model: "gpt-4o-mini-realtime",
+        temperature: 0.5,
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("session.updated");
+    const session = event.session as Record<string, unknown>;
+    expect(session.modalities).toEqual(["text", "audio"]);
+    expect(session.model).toBe("gpt-4o-mini-realtime");
+    expect(session.temperature).toBe(0.5);
+
+    ws.close();
+  });
+
+  it("ignores unknown message types silently", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Send unknown message type
+    ws.send(JSON.stringify({ type: "some.unknown.type" }));
+
+    // Then send a valid message to confirm processing continues
+    ws.send(conversationItemCreate("user", "hello"));
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    // The unknown message is silently ignored, so next message is the item.created
+    expect(event.type).toBe("conversation.item.created");
+
+    ws.close();
+  });
+
+  it("handles function_call and function_call_output conversation items", async () => {
+    // Fixture that matches after tool call output is in conversation
+    const afterToolFixture: Fixture = {
+      match: { toolCallId: "call_123" },
+      response: { content: "Tool result processed" },
+    };
+    instance = await createServer([afterToolFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Add function_call item
+    ws.send(functionCallItem("get_weather", "call_123", '{"city":"NYC"}'));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    // Add function_call_output item
+    ws.send(functionCallOutputItem("call_123", "Sunny, 72F"));
+    await ws.waitForMessages(3); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Text response: response.created + output_item.added + content_part.added
+    // + text.delta(s) + text.done + content_part.done + output_item.done + response.done
+    // "Tool result processed" = 21 chars / chunkSize 20 = 2 deltas = 9 events
+    // Total: 3 + 9 = 12
+    const allRaw = await ws.waitForMessages(12);
+    const responseEvents = parseEvents(allRaw.slice(3));
+    const types = responseEvents.map((e) => e.type);
+    expect(types[0]).toBe("response.created");
+    expect(types[types.length - 1]).toBe("response.done");
+
+    // Verify text deltas reconstruct correctly
+    const deltas = responseEvents.filter((e) => e.type === "response.text.delta");
+    const fullText = deltas.map((d) => d.delta).join("");
+    expect(fullText).toBe("Tool result processed");
+
+    ws.close();
+  });
+
+  it("handles system role message items", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Add system message item
+    ws.send(systemMessageItem("You are a helpful assistant"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    // Add user message
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(3); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Wait for text response
+    const allRaw = await ws.waitForMessages(11);
+    const responseEvents = parseEvents(allRaw.slice(3));
+    expect(responseEvents[0].type).toBe("response.created");
+    expect(responseEvents[responseEvents.length - 1].type).toBe("response.done");
+
+    ws.close();
+  });
+
+  it("closes with 1008 in strict mode when no fixture matches", async () => {
+    instance = await createServer(allFixtures, { strict: true });
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "unknown-no-match"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Connection should be closed with 1008
+    await ws.waitForClose();
+  });
+
+  it("handles instructions in session for fixture matching", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Set instructions
+    ws.send(sessionUpdate({ instructions: "You are a helpful assistant." }));
+    await ws.waitForMessages(2); // + session.updated
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(3); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    // Wait for text response
+    const allRaw = await ws.waitForMessages(11);
+    const responseEvents = parseEvents(allRaw.slice(3));
+    expect(responseEvents[0].type).toBe("response.created");
+    expect(responseEvents[responseEvents.length - 1].type).toBe("response.done");
+
+    ws.close();
+  });
+
   it("accumulates conversation state across multiple response.create calls", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, "/v1/realtime");
@@ -584,5 +829,156 @@ describe("WebSocket /v1/realtime", () => {
     expect(instance.journal.size).toBe(2);
 
     ws.close();
+  });
+
+  it("handles error fixture with default status (no explicit status)", async () => {
+    const errorNoStatusFixture: Fixture = {
+      match: { userMessage: "error-no-status-rt" },
+      response: {
+        error: { message: "Internal failure", type: "server_error" },
+      },
+    };
+    instance = await createServer([errorNoStatusFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "error-no-status-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    const allRaw = await ws.waitForMessages(4);
+    const responseEvents = parseEvents(allRaw.slice(2));
+    expect(responseEvents[1].type).toBe("response.done");
+    const doneResp = responseEvents[1].response as Record<string, unknown>;
+    expect(doneResp.status).toBe("failed");
+
+    ws.close();
+  });
+
+  it("handles unknown response type gracefully", async () => {
+    const weirdFixture: Fixture = {
+      match: { userMessage: "weird-response-rt" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      response: { unknownField: "value" } as any,
+    };
+    instance = await createServer([weirdFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "weird-response-rt"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    const allRaw = await ws.waitForMessages(3);
+    const event = JSON.parse(allRaw[2]) as WSEvent;
+    expect(event.type).toBe("error");
+    expect((event.error as Record<string, unknown>).message).toBe(
+      "Fixture response did not match any known type",
+    );
+
+    ws.close();
+  });
+});
+
+// ─── Unit tests: realtimeItemsToMessages ─────────────────────────────────────
+
+describe("realtimeItemsToMessages", () => {
+  it("converts message items with all role types", () => {
+    const items = [
+      { type: "message" as const, role: "user" as const, content: [{ type: "text", text: "hi" }] },
+      {
+        type: "message" as const,
+        role: "assistant" as const,
+        content: [{ type: "text", text: "hello" }],
+      },
+      {
+        type: "message" as const,
+        role: "system" as const,
+        content: [{ type: "text", text: "you are helpful" }],
+      },
+    ];
+
+    const messages = realtimeItemsToMessages(items);
+    expect(messages).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "system", content: "you are helpful" },
+    ]);
+  });
+
+  it("adds system message when instructions provided", () => {
+    const items = [
+      { type: "message" as const, role: "user" as const, content: [{ type: "text", text: "hi" }] },
+    ];
+    const messages = realtimeItemsToMessages(items, "Be helpful");
+    expect(messages[0]).toEqual({ role: "system", content: "Be helpful" });
+    expect(messages[1]).toEqual({ role: "user", content: "hi" });
+  });
+
+  it("converts function_call items with fallback for missing name", () => {
+    const mockLogger = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} };
+    const items = [
+      {
+        type: "function_call" as const,
+        call_id: "call_123",
+        arguments: '{"q":"test"}',
+        // name is missing
+      },
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messages = realtimeItemsToMessages(items, undefined, mockLogger as any);
+    expect(messages.length).toBe(1);
+    expect(messages[0].role).toBe("assistant");
+    expect(messages[0].tool_calls![0].id).toBe("call_123");
+    expect(messages[0].tool_calls![0].function.name).toBe("");
+    expect(messages[0].tool_calls![0].function.arguments).toBe('{"q":"test"}');
+  });
+
+  it("converts function_call items with auto-generated call_id and empty arguments", () => {
+    const items = [
+      {
+        type: "function_call" as const,
+        name: "search",
+        // call_id and arguments missing
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages.length).toBe(1);
+    expect(messages[0].tool_calls![0].id).toMatch(/^call_/);
+    expect(messages[0].tool_calls![0].function.name).toBe("search");
+    expect(messages[0].tool_calls![0].function.arguments).toBe("");
+  });
+
+  it("converts function_call_output items with fallback for missing output", () => {
+    const mockLogger = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} };
+    const items = [
+      {
+        type: "function_call_output" as const,
+        call_id: "call_456",
+        // output is missing
+      },
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messages = realtimeItemsToMessages(items, undefined, mockLogger as any);
+    expect(messages.length).toBe(1);
+    expect(messages[0].role).toBe("tool");
+    expect(messages[0].content).toBe("");
+    expect(messages[0].tool_call_id).toBe("call_456");
+  });
+
+  it("handles message items with missing content", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        // content missing
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages[0].content).toBe("");
   });
 });

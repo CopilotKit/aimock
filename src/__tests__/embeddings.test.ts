@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import { PassThrough } from "node:stream";
 import {
   isEmbeddingResponse,
   generateDeterministicEmbedding,
@@ -7,6 +8,9 @@ import {
 } from "../helpers.js";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
+import { handleEmbeddings } from "../embeddings.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
 // isEmbeddingResponse type guard
@@ -715,5 +719,282 @@ describe("POST /v1/embeddings (Unicode input handling)", () => {
     const body1 = JSON.parse(res1.body);
     const body2 = JSON.parse(res2.body);
     expect(body1.data[0].embedding).not.toEqual(body2.data[0].embedding);
+  });
+});
+
+// ─── Branch coverage: strict mode, error defaults, incompatible response ─────
+
+describe("POST /v1/embeddings (strict mode)", () => {
+  it("returns 503 when strict mode is enabled and no fixture matches", async () => {
+    instance = await createServer([], { strict: true });
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "unmatched input",
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Strict mode: no fixture matched");
+    expect(body.error.code).toBe("no_fixture_match");
+  });
+});
+
+describe("POST /v1/embeddings (error response with default status)", () => {
+  it("defaults error status to 500 when status field is omitted", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { inputText: "error-no-status" },
+        response: {
+          error: {
+            message: "Server error",
+            type: "server_error",
+          },
+        } as Fixture["response"],
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v1/embeddings`, {
+      model: "text-embedding-3-small",
+      input: "error-no-status test",
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Server error");
+  });
+});
+
+// ─── Direct handler tests: covering ?? fallbacks on req.method/req.url ───────
+
+function createMockRes(): http.ServerResponse {
+  const res = new PassThrough() as unknown as http.ServerResponse;
+  let ended = false;
+  const headers: Record<string, string> = {};
+  res.setHeader = (name: string, value: string | number | readonly string[]) => {
+    headers[name.toLowerCase()] = String(value);
+    return res;
+  };
+  res.writeHead = (statusCode: number, hdrs?: Record<string, string>) => {
+    (res as { statusCode: number }).statusCode = statusCode;
+    if (hdrs) {
+      for (const [k, v] of Object.entries(hdrs)) {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+    return res;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  res.write = (chunk: string) => true;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  res.end = ((...args: unknown[]) => {
+    ended = true;
+    return res;
+  }) as typeof res.end;
+  Object.defineProperty(res, "writableEnded", { get: () => ended });
+  res.destroy = () => {
+    ended = true;
+    return res;
+  };
+  return res;
+}
+
+describe("handleEmbeddings (direct call — ?? fallback branches)", () => {
+  it("uses fallback POST and /v1/embeddings when req.method and req.url are undefined", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "hello",
+      }),
+      [],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback method/path on malformed JSON with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(mockReq, mockRes, "{bad", [], journal, defaults, () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(400);
+  });
+
+  it("uses fallback for strict mode with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger, strict: true };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "unmatched",
+      }),
+      [],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error fixture with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const errorFixture: Fixture = {
+      match: { inputText: "err" },
+      response: {
+        error: { message: "Fail", type: "server_error" },
+        status: 500,
+      },
+    };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "err input",
+      }),
+      [errorFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for embedding fixture with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const embFixture: Fixture = {
+      match: { inputText: "embed" },
+      response: { embedding: [0.1, 0.2, 0.3] },
+    };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "embed this",
+      }),
+      [embFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for incompatible fixture response with undefined req fields", async () => {
+    const journal = new Journal();
+    const logger = new Logger("silent");
+    const defaults = { latency: 0, chunkSize: 10, logger };
+
+    const badFixture: Fixture = {
+      match: { predicate: () => true },
+      response: { content: "text, not embedding" },
+    };
+
+    const mockReq = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+
+    const mockRes = createMockRes();
+
+    await handleEmbeddings(
+      mockReq,
+      mockRes,
+      JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "anything",
+      }),
+      [badFixture],
+      journal,
+      defaults,
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v1/embeddings");
+    expect(entry!.response.status).toBe(500);
   });
 });
