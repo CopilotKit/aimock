@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Migrate from piyook/llm-mock — aimock</title>
+    <meta
+      name="description"
+      content="A conversion guide for piyook/llm-mock users switching to aimock for AI application testing."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* ─── Side-by-side comparison grid ─────────────────────────── */
+      .compare-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin: 1.5rem 0 2rem;
+      }
+      .compare-grid .code-block {
+        margin-bottom: 0;
+      }
+      @media (max-width: 900px) {
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ─── Feature cards ────────────────────────────────────────── */
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .feature-card {
+        padding: 1.5rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .feature-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .feature-icon {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .feature-icon.green {
+        background: rgba(0, 255, 136, 0.1);
+        border: 1px solid rgba(0, 255, 136, 0.2);
+      }
+      .feature-icon.blue {
+        background: rgba(68, 136, 255, 0.1);
+        border: 1px solid rgba(68, 136, 255, 0.2);
+      }
+      .feature-icon.purple {
+        background: rgba(170, 102, 255, 0.1);
+        border: 1px solid rgba(170, 102, 255, 0.2);
+      }
+      .feature-icon.amber {
+        background: rgba(255, 170, 0, 0.1);
+        border: 1px solid rgba(255, 170, 0, 0.2);
+      }
+      .feature-icon.red {
+        background: rgba(255, 68, 102, 0.1);
+        border: 1px solid rgba(255, 68, 102, 0.2);
+      }
+      .feature-card h3 {
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin-bottom: 0.4rem;
+      }
+      .feature-card p {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+      @media (max-width: 900px) {
+        .features-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (min-width: 901px) and (max-width: 1200px) {
+        .features-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Switching from piyook/llm-mock to aimock</h1>
+        <p class="lead">
+          piyook/llm-mock handles basic OpenAI mocking with JSON templates. aimock is a complete
+          superset&mdash;streaming, multi-provider, WebSocket, structured output, sequential
+          responses, and the full AI stack.
+        </p>
+
+        <!-- ─── Fixture format comparison ────────────────────────── -->
+        <h2>Fixture format comparison</h2>
+        <p>
+          piyook/llm-mock requires you to build the full OpenAI response envelope by hand. aimock
+          uses a declarative match+response format&mdash;you specify the content, and aimock
+          auto-builds the response envelope with proper IDs, timestamps, token counts, and SSE
+          framing.
+        </p>
+
+        <div class="compare-grid">
+          <div class="code-block">
+            <div class="code-block-header">
+              piyook/llm-mock &mdash; full JSON template <span class="lang-tag">json</span>
+            </div>
+            <pre><code>{
+  <span class="prop">"id"</span>: <span class="str">"chatcmpl-abc123"</span>,
+  <span class="prop">"object"</span>: <span class="str">"chat.completion"</span>,
+  <span class="prop">"created"</span>: <span class="num">1677858242</span>,
+  <span class="prop">"model"</span>: <span class="str">"gpt-4"</span>,
+  <span class="prop">"choices"</span>: [{
+    <span class="prop">"index"</span>: <span class="num">0</span>,
+    <span class="prop">"message"</span>: {
+      <span class="prop">"role"</span>: <span class="str">"assistant"</span>,
+      <span class="prop">"content"</span>: <span class="str">"Hello there"</span>
+    },
+    <span class="prop">"finish_reason"</span>: <span class="str">"stop"</span>
+  }],
+  <span class="prop">"usage"</span>: {
+    <span class="prop">"prompt_tokens"</span>: <span class="num">9</span>,
+    <span class="prop">"completion_tokens"</span>: <span class="num">12</span>,
+    <span class="prop">"total_tokens"</span>: <span class="num">21</span>
+  }
+}</code></pre>
+          </div>
+
+          <div class="code-block">
+            <div class="code-block-header">
+              aimock &mdash; declarative fixture <span class="lang-tag">json</span>
+            </div>
+            <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
+  <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"Hello there"</span> }
+}
+
+<span class="cm">// aimock auto-generates:</span>
+<span class="cm">//   - id, object, created, model</span>
+<span class="cm">//   - choices[].index, finish_reason</span>
+<span class="cm">//   - usage (prompt_tokens, completion_tokens)</span>
+<span class="cm">//   - SSE streaming chunks (when stream: true)</span></code></pre>
+          </div>
+        </div>
+
+        <p>
+          With piyook/llm-mock, you maintain one template per response scenario and the server
+          returns it verbatim. With aimock, you write the minimum&mdash;just the content and an
+          optional match rule&mdash;and the server handles envelope generation, streaming, and
+          provider-specific formatting.
+        </p>
+
+        <!-- ─── What you gain ────────────────────────────────────── -->
+        <h2>What you gain</h2>
+
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon green">&#9889;</div>
+            <h3>Streaming SSE</h3>
+            <p>
+              Built-in Server-Sent Events for all providers. No manual chunk construction&mdash;the
+              same fixture works for streaming and non-streaming requests.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#127760;</div>
+            <h3>10+ providers</h3>
+            <p>
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere, and any
+              OpenAI-compatible endpoint.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">&#128268;</div>
+            <h3>WebSocket APIs</h3>
+            <p>
+              OpenAI Realtime, Responses WS, Gemini Live. Full bidirectional protocol mocking out of
+              the box.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">{ }</div>
+            <h3>Structured output</h3>
+            <p>
+              JSON mode and <code>response_format</code> matching. Return typed JSON that validates
+              against your schema.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">&#128260;</div>
+            <h3>Sequential responses</h3>
+            <p>
+              Return different responses on successive calls. Model multi-turn conversations, retry
+              scenarios, and degradation patterns.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">&#129513;</div>
+            <h3>MCP / A2A / Vector</h3>
+            <p>
+              Mock MCP tool servers, A2A agent endpoints, and vector database APIs alongside LLM
+              mocks on one port.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#9210;</div>
+            <h3>Record &amp; replay</h3>
+            <p>
+              Proxy real APIs, capture responses as fixtures, replay deterministically in CI. No
+              manual fixture authoring.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">&#128165;</div>
+            <h3>Chaos testing</h3>
+            <p>
+              Inject latency, drop chunks, corrupt payloads, and disconnect mid-stream to harden
+              your error handling.
+            </p>
+          </div>
+        </div>
+
+        <!-- ─── Comparison table ─────────────────────────────────── -->
+        <h2>Comparison table</h2>
+
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>piyook/llm-mock</th>
+              <th>aimock</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI Chat Completions</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>OpenAI Responses API</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Anthropic Claude</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Google Gemini</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>AWS Bedrock / Azure / Vertex AI / Ollama / Cohere</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Streaming SSE</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">Built-in (TTFT, TPS, jitter)</td>
+            </tr>
+            <tr>
+              <td>WebSocket protocols</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">3 protocols</td>
+            </tr>
+            <tr>
+              <td>Structured output / JSON mode</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Sequential responses</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>MCP / A2A / Vector mocking</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Record &amp; replay</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Chaos testing</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Drift detection</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">Automated CI</td>
+            </tr>
+            <tr>
+              <td>Prometheus metrics</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Programmatic API</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003; (TypeScript/JS)</td>
+            </tr>
+            <tr>
+              <td>Request journal</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Auto envelope generation</td>
+              <td style="color: var(--error)">&#10007; (manual JSON)</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Docker image</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Zero dependencies</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ─── CLI / Docker quick start ─────────────────────────── -->
+        <h2>CLI / Docker quick start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Install &amp; run <span class="lang-tag">sh</span>
+              </div>
+              <pre><code><span class="cm"># Run the mock server</span>
+npx aimock -p <span class="num">4010</span> -f ./fixtures
+
+<span class="cm"># With a full config file</span>
+npx aimock --config aimock.json --port <span class="num">4010</span>
+
+<span class="cm"># Point your app at the mock</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=mock-key</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">Docker <span class="lang-tag">sh</span></div>
+              <pre><code><span class="cm"># Pull and run</span>
+docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
+  -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
+  ghcr.io/copilotkit/aimock:latest \
+  -p <span class="num">4010</span> -f /fixtures
+
+<span class="cm"># With a config file</span>
+docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
+  -v <span class="str">$(pwd)/aimock.json:/app/aimock.json</span> \
+  -v <span class="str">$(pwd)/fixtures:/app/fixtures</span> \
+  ghcr.io/copilotkit/aimock \
+  aimock --config /app/aimock.json --host 0.0.0.0
+
+<span class="cm"># Point your app at the mock</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1</code></pre>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

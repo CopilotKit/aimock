@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Migrate from MSW — aimock</title>
+    <meta
+      name="description"
+      content="A conversion guide for MSW users switching to aimock for AI application testing."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* ─── Side-by-side comparison grid ─────────────────────────── */
+      .compare-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin: 1.5rem 0 2rem;
+      }
+      .compare-grid .code-block {
+        margin-bottom: 0;
+      }
+      @media (max-width: 900px) {
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ─── Feature cards (scoped from index) ────────────────────── */
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+        grid-column: 2;
+      }
+      .feature-card {
+        padding: 2rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .feature-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .feature-icon {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .feature-icon.green {
+        background: rgba(0, 255, 136, 0.1);
+        border: 1px solid rgba(0, 255, 136, 0.2);
+      }
+      .feature-icon.blue {
+        background: rgba(68, 136, 255, 0.1);
+        border: 1px solid rgba(68, 136, 255, 0.2);
+      }
+      .feature-icon.purple {
+        background: rgba(170, 102, 255, 0.1);
+        border: 1px solid rgba(170, 102, 255, 0.2);
+      }
+      .feature-icon.amber {
+        background: rgba(255, 170, 0, 0.1);
+        border: 1px solid rgba(255, 170, 0, 0.2);
+      }
+      .feature-icon.red {
+        background: rgba(255, 68, 102, 0.1);
+        border: 1px solid rgba(255, 68, 102, 0.2);
+      }
+      .feature-card h3 {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+      .feature-card p {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        line-height: 1.6;
+      }
+      @media (max-width: 900px) {
+        .features-grid {
+          grid-template-columns: 1fr;
+        }
+        .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+          grid-column: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Switching from MSW to aimock</h1>
+        <p class="lead">
+          MSW is excellent for general API mocking. But when your AI app spans multiple
+          processes&mdash;Playwright, Next.js, agent workers, Docker&mdash;MSW's in-process
+          interception can't reach them. aimock runs a real HTTP server that any process can hit.
+        </p>
+
+        <!-- ─── The 5-minute switch ──────────────────────────────── -->
+        <h2>The 5-minute switch</h2>
+        <p>Side-by-side: streaming SSE with MSW vs. aimock.</p>
+
+        <div class="compare-grid">
+          <div class="code-block">
+            <div class="code-block-header">
+              MSW &mdash; streaming SSE (~35 lines) <span class="lang-tag">ts</span>
+            </div>
+            <pre><code><span class="kw">import</span> { <span class="op">http</span>, <span class="type">HttpResponse</span> } <span class="kw">from</span> <span class="str">'msw'</span>
+<span class="kw">import</span> { <span class="fn">setupServer</span> } <span class="kw">from</span> <span class="str">'msw/node'</span>
+
+<span class="kw">const</span> <span class="op">server</span> = <span class="fn">setupServer</span>(
+  <span class="op">http</span>.<span class="fn">post</span>(<span class="str">'https://api.openai.com/v1/chat/completions'</span>, () <span class="kw">=&gt;</span> {
+    <span class="kw">const</span> <span class="op">encoder</span> = <span class="kw">new</span> <span class="type">TextEncoder</span>()
+    <span class="kw">const</span> <span class="op">stream</span> = <span class="kw">new</span> <span class="type">ReadableStream</span>({
+      <span class="fn">start</span>(<span class="op">controller</span>) {
+        <span class="op">controller</span>.<span class="fn">enqueue</span>(<span class="op">encoder</span>.<span class="fn">encode</span>(
+          <span class="str">'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'</span>
+        ))
+        <span class="op">controller</span>.<span class="fn">enqueue</span>(<span class="op">encoder</span>.<span class="fn">encode</span>(
+          <span class="str">'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'</span>
+        ))
+        <span class="op">controller</span>.<span class="fn">enqueue</span>(<span class="op">encoder</span>.<span class="fn">encode</span>(
+          <span class="str">'data: {"choices":[{"delta":{"content":" there"}}]}\n\n'</span>
+        ))
+        <span class="op">controller</span>.<span class="fn">enqueue</span>(<span class="op">encoder</span>.<span class="fn">encode</span>(<span class="str">'data: [DONE]\n\n'</span>))
+        <span class="op">controller</span>.<span class="fn">close</span>()
+      }
+    })
+    <span class="kw">return new</span> <span class="type">HttpResponse</span>(<span class="op">stream</span>, {
+      <span class="prop">headers</span>: { <span class="str">'Content-Type'</span>: <span class="str">'text/event-stream'</span> }
+    })
+  })
+)
+<span class="op">server</span>.<span class="fn">listen</span>()</code></pre>
+          </div>
+
+          <div class="code-block">
+            <div class="code-block-header">
+              aimock &mdash; same result (4 lines) <span class="lang-tag">ts</span>
+            </div>
+            <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">'@copilotkit/aimock'</span>
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>()
+<span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hello there"</span> })
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>()
+<span class="cm">// set OPENAI_BASE_URL = mock.url + "/v1"</span></code></pre>
+          </div>
+        </div>
+
+        <!-- ─── Non-streaming comparison ─────────────────────────── -->
+        <h2>Non-streaming comparison</h2>
+        <p>For simple JSON responses, MSW is comparable:</p>
+
+        <div class="compare-grid">
+          <div class="code-block">
+            <div class="code-block-header">MSW <span class="lang-tag">ts</span></div>
+            <pre><code><span class="op">http</span>.<span class="fn">post</span>(<span class="str">'/v1/chat/completions'</span>, () <span class="kw">=&gt;</span> {
+  <span class="kw">return</span> <span class="type">HttpResponse</span>.<span class="fn">json</span>({
+    <span class="prop">choices</span>: [{ <span class="prop">message</span>: { <span class="prop">content</span>: <span class="str">"Hi"</span> } }]
+  })
+})</code></pre>
+          </div>
+
+          <div class="code-block">
+            <div class="code-block-header">aimock <span class="lang-tag">ts</span></div>
+            <pre><code><span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi"</span> })</code></pre>
+          </div>
+        </div>
+
+        <p>
+          For non-streaming responses, the complexity is similar. aimock's advantage is
+          consistency&mdash;the same fixture works for streaming, non-streaming, and WebSocket
+          endpoints.
+        </p>
+
+        <!-- ─── What you gain ────────────────────────────────────── -->
+        <h2>What you gain</h2>
+
+        <div class="features-grid" style="grid-template-columns: repeat(3, 1fr)">
+          <div class="feature-card">
+            <div class="feature-icon green">&#127760;</div>
+            <h3>Cross-process interception</h3>
+            <p>
+              Playwright &rarr; Next.js &rarr; agent workers &rarr; Docker. Every process on the
+              machine hits the same mock.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#9889;</div>
+            <h3>Built-in SSE for 10+ providers</h3>
+            <p>
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. No manual chunk
+              construction.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">&#128268;</div>
+            <h3>WebSocket APIs</h3>
+            <p>OpenAI Realtime, Responses WS, Gemini Live. MSW cannot intercept WebSocket.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">&#9210;</div>
+            <h3>Record &amp; Replay</h3>
+            <p>
+              Proxy real APIs, save as fixtures, replay forever.
+              <code>npx aimock --record --provider-openai https://api.openai.com</code>
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">&#128193;</div>
+            <h3>Fixture files</h3>
+            <p>JSON files on disk. Version-controlled. Shared across tests.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">&#129513;</div>
+            <h3>MCP + A2A + Vector</h3>
+            <p>Mock your entire AI stack, not just LLM calls.</p>
+          </div>
+        </div>
+
+        <!-- ─── What you keep (or lose) ──────────────────────────── -->
+        <h2>What you keep (or lose)</h2>
+
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>MSW</th>
+              <th>aimock</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Browser service worker</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td>Point browser app's API base URL at aimock instead</td>
+            </tr>
+            <tr>
+              <td>General REST/GraphQL mocking</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td>Keep MSW alongside for non-AI routes</td>
+            </tr>
+            <tr>
+              <td>Cross-process</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td>aimock's key advantage</td>
+            </tr>
+            <tr>
+              <td>Streaming SSE</td>
+              <td style="color: var(--text-dim)">Manual</td>
+              <td style="color: var(--accent)">Built-in</td>
+              <td>10+ providers</td>
+            </tr>
+            <tr>
+              <td>WebSocket</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td>3 protocols</td>
+            </tr>
+            <tr>
+              <td>Record &amp; replay</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>Chaos testing</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>Zero dependencies</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td>MSW ~300KB</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ─── Using aimock alongside MSW ───────────────────────── -->
+        <h2>Using aimock alongside MSW</h2>
+        <p>
+          You don't have to choose. Use MSW for general REST/GraphQL mocking and aimock for
+          AI-specific endpoints.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">test-setup.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="cm">// test setup</span>
+<span class="kw">import</span> { <span class="fn">setupServer</span> } <span class="kw">from</span> <span class="str">'msw/node'</span>
+<span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">'@copilotkit/aimock'</span>
+
+<span class="cm">// MSW for REST APIs</span>
+<span class="kw">const</span> <span class="op">mswServer</span> = <span class="fn">setupServer</span>(
+  <span class="op">http</span>.<span class="fn">get</span>(<span class="str">'/api/users'</span>, () <span class="kw">=&gt;</span> <span class="type">HttpResponse</span>.<span class="fn">json</span>([...]))
+)
+
+<span class="cm">// aimock for AI APIs</span>
+<span class="kw">const</span> <span class="op">aiMock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({ <span class="prop">port</span>: <span class="num">0</span> })
+<span class="op">aiMock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi!"</span> })
+
+<span class="fn">beforeAll</span>(<span class="kw">async</span> () <span class="kw">=&gt;</span> {
+  <span class="op">mswServer</span>.<span class="fn">listen</span>()
+  <span class="kw">await</span> <span class="op">aiMock</span>.<span class="fn">start</span>()
+  <span class="op">process</span>.<span class="op">env</span>.<span class="prop">OPENAI_BASE_URL</span> = <span class="op">aiMock</span>.<span class="op">url</span> + <span class="str">"/v1"</span>
+})</code></pre>
+        </div>
+
+        <!-- ─── CLI / Docker quick start ─────────────────────────── -->
+        <h2>CLI / Docker quick start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">CLI <span class="lang-tag">sh</span></div>
+              <pre><code>npx aimock -p <span class="num">4010</span> -f ./fixtures</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">Docker <span class="lang-tag">sh</span></div>
+              <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
+  -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
+  ghcr.io/copilotkit/aimock:latest \
+  -p <span class="num">4010</span> -f /fixtures</code></pre>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Migrate from Python mock libraries — aimock</title>
+    <meta
+      name="description"
+      content="A conversion guide for pytest-mockllm, openai-responses-python, and evalcraft users switching to aimock."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* ─── Side-by-side comparison grid ─────────────────────────── */
+      .compare-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin: 1.5rem 0 2rem;
+      }
+      .compare-grid .code-block {
+        margin-bottom: 0;
+      }
+      @media (max-width: 900px) {
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ─── Feature cards ────────────────────────────────────────── */
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+        grid-column: 2;
+      }
+      .feature-card {
+        padding: 2rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .feature-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .feature-icon {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .feature-icon.green {
+        background: rgba(0, 255, 136, 0.1);
+        border: 1px solid rgba(0, 255, 136, 0.2);
+      }
+      .feature-icon.blue {
+        background: rgba(68, 136, 255, 0.1);
+        border: 1px solid rgba(68, 136, 255, 0.2);
+      }
+      .feature-icon.purple {
+        background: rgba(170, 102, 255, 0.1);
+        border: 1px solid rgba(170, 102, 255, 0.2);
+      }
+      .feature-icon.amber {
+        background: rgba(255, 170, 0, 0.1);
+        border: 1px solid rgba(255, 170, 0, 0.2);
+      }
+      .feature-icon.red {
+        background: rgba(255, 68, 102, 0.1);
+        border: 1px solid rgba(255, 68, 102, 0.2);
+      }
+      .feature-card h3 {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+      .feature-card p {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        line-height: 1.6;
+      }
+      @media (max-width: 900px) {
+        .features-grid {
+          grid-template-columns: 1fr;
+        }
+        .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+          grid-column: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Switching from Python mock libraries to aimock</h1>
+        <p class="lead">
+          pytest-mockllm, openai-responses-python, and evalcraft work great for single-process
+          Python tests. When your AI app spans multiple services&mdash;or you want to test from any
+          language&mdash;aimock gives you a real mock server accessible from anywhere.
+        </p>
+
+        <!-- ─── The libraries ────────────────────────────────────── -->
+        <h2>The libraries</h2>
+
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Library</th>
+              <th>Approach</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>pytest-mockllm</strong></td>
+              <td>pytest fixture + monkey-patching</td>
+              <td>OpenAI and Anthropic in-process</td>
+            </tr>
+            <tr>
+              <td><strong>openai-responses-python</strong></td>
+              <td>Decorator that intercepts <code>httpx</code></td>
+              <td>OpenAI API responses only</td>
+            </tr>
+            <tr>
+              <td><strong>evalcraft</strong></td>
+              <td>Mock + evaluation framework</td>
+              <td>OpenAI completions + eval metrics</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          All three work by intercepting HTTP calls within the same Python process. This is
+          convenient for unit tests, but it breaks down when your AI application spans multiple
+          services (API server, agent worker, background jobs) or when you need to test from
+          Playwright, a Node.js frontend, or another language entirely.
+        </p>
+
+        <!-- ─── Honest assessment ────────────────────────────────── -->
+        <h2>Honest assessment</h2>
+
+        <div class="info-box">
+          <p>
+            <strong>Two paths for Python teams.</strong> If you have Node.js available,
+            <code>npx aimock</code> starts a mock server in one command &mdash; no Docker needed.
+            The <code>aimock-pytest</code> pip package is in development to provide native pytest
+            fixture integration with automatic server lifecycle management. For Docker-based CI
+            environments, the <code>ghcr.io/copilotkit/aimock</code> image works with any language.
+          </p>
+        </div>
+
+        <!-- ─── Code comparison ──────────────────────────────────── -->
+        <h2>Code comparison</h2>
+        <p>
+          Here's what the switch looks like in practice. The Python decorator becomes a Docker
+          container + <code>conftest.py</code> fixture.
+        </p>
+
+        <h3>pytest-mockllm (before)</h3>
+
+        <div class="code-block">
+          <div class="code-block-header">test_agent.py <span class="lang-tag">py</span></div>
+          <pre><code><span class="kw">import</span> pytest
+<span class="kw">from</span> pytest_mockllm <span class="kw">import</span> mock_openai
+
+<span class="op">@mock_openai</span>(response=<span class="str">"Hello from the mock"</span>)
+<span class="kw">def</span> <span class="fn">test_my_agent</span>():
+    result = my_agent.run(<span class="str">"hello"</span>)
+    <span class="kw">assert</span> result == <span class="str">"Hello from the mock"</span></code></pre>
+        </div>
+
+        <h3>openai-responses-python (before)</h3>
+
+        <div class="code-block">
+          <div class="code-block-header">test_completions.py <span class="lang-tag">py</span></div>
+          <pre><code><span class="kw">from</span> openai_responses <span class="kw">import</span> mock_completions
+
+<span class="op">@mock_completions</span>(content=<span class="str">"Hello from the mock"</span>)
+<span class="kw">def</span> <span class="fn">test_chat</span>():
+    client = OpenAI()
+    resp = client.chat.completions.create(
+        model=<span class="str">"gpt-4"</span>,
+        messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"hello"</span>}]
+    )
+    <span class="kw">assert</span> resp.choices[<span class="num">0</span>].message.content == <span class="str">"Hello from the mock"</span></code></pre>
+        </div>
+
+        <h3>aimock (after)</h3>
+
+        <div class="compare-grid">
+          <div class="code-block">
+            <div class="code-block-header">conftest.py <span class="lang-tag">py</span></div>
+            <pre><code><span class="kw">import</span> pytest
+<span class="kw">import</span> subprocess, time, os
+
+<span class="op">@pytest.fixture</span>(scope=<span class="str">"session"</span>)
+<span class="kw">def</span> <span class="fn">aimock_server</span>():
+    <span class="cm"># Start aimock via Docker</span>
+    proc = subprocess.Popen([
+        <span class="str">"docker"</span>, <span class="str">"run"</span>, <span class="str">"--rm"</span>,
+        <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>,
+        <span class="str">"-v"</span>, <span class="str">f"{os.getcwd()}/fixtures:/fixtures"</span>,
+        <span class="str">"ghcr.io/copilotkit/aimock:latest"</span>,
+        <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>
+    ])
+    time.sleep(<span class="num">2</span>)  <span class="cm"># wait for server</span>
+
+    <span class="cm"># Point OpenAI SDK at the mock</span>
+    os.environ[<span class="str">"OPENAI_BASE_URL"</span>] = <span class="str">"http://localhost:4010/v1"</span>
+    os.environ[<span class="str">"OPENAI_API_KEY"</span>] = <span class="str">"mock-key"</span>
+
+    <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
+    proc.terminate()
+    proc.wait()</code></pre>
+          </div>
+
+          <div class="code-block">
+            <div class="code-block-header">test_agent.py <span class="lang-tag">py</span></div>
+            <pre><code><span class="kw">import</span> openai
+
+<span class="kw">def</span> <span class="fn">test_chat_completion</span>(aimock_server):
+    client = openai.OpenAI(
+        base_url=<span class="str">f"{aimock_server}/v1"</span>,
+        api_key=<span class="str">"mock-key"</span>
+    )
+    response = client.chat.completions.create(
+        model=<span class="str">"gpt-4"</span>,
+        messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"hello"</span>}]
+    )
+    <span class="kw">assert</span> response.choices[<span class="num">0</span>].message.content == <span class="str">"Hello from the mock"</span></code></pre>
+          </div>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/hello.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
+  <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"Hello from the mock"</span> }
+}</code></pre>
+        </div>
+
+        <!-- ─── What you gain ────────────────────────────────────── -->
+        <h2>What you gain</h2>
+
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon green">&#127760;</div>
+            <h3>Cross-process, cross-language</h3>
+            <p>
+              Your Python tests, Node.js frontend, Go microservices, and Playwright E2E tests all
+              hit the same mock server. No per-language patching.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#128225;</div>
+            <h3>10+ LLM providers</h3>
+            <p>
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. The Python
+              libraries only cover OpenAI (and sometimes Anthropic).
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">&#9210;</div>
+            <h3>Record &amp; replay</h3>
+            <p>
+              Proxy real APIs, save responses as fixtures, replay forever. No manual response
+              construction.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">&#129513;</div>
+            <h3>MCP / A2A / Vector</h3>
+            <p>
+              Mock your entire AI stack&mdash;MCP tool servers, A2A agent endpoints, vector
+              databases&mdash;not just LLM calls.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">&#128268;</div>
+            <h3>WebSocket + streaming</h3>
+            <p>
+              Built-in SSE streaming and WebSocket protocol support (OpenAI Realtime, Gemini Live).
+              The Python libraries don't handle streaming.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">&#128165;</div>
+            <h3>Chaos testing</h3>
+            <p>
+              Inject latency, drop chunks, corrupt payloads mid-stream. Test your error handling
+              under realistic failure conditions.
+            </p>
+          </div>
+        </div>
+
+        <!-- ─── What you lose (honestly) ─────────────────────────── -->
+        <h2>What you lose (honestly)</h2>
+
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Python mocks</th>
+              <th>aimock</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>In-process decorator convenience</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td>Coming with <code>aimock-pytest</code> pip package</td>
+            </tr>
+            <tr>
+              <td>Native pytest integration</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--text-dim)">conftest.py fixture</td>
+              <td>Works, but more boilerplate today</td>
+            </tr>
+            <tr>
+              <td>Zero infrastructure</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--text-dim)">Docker or npx</td>
+              <td>Requires Docker or Node.js runtime</td>
+            </tr>
+            <tr>
+              <td>Cross-process mocking</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td>aimock's key advantage</td>
+            </tr>
+            <tr>
+              <td>Multi-provider</td>
+              <td style="color: var(--text-dim)">1&ndash;2 providers</td>
+              <td style="color: var(--accent)">10+</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>Streaming SSE</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">Built-in</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>WebSocket protocols</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">3 protocols</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>Record &amp; replay</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>MCP / A2A / Vector</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td></td>
+            </tr>
+            <tr>
+              <td>Chaos testing</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ─── CLI / Docker quick start ─────────────────────────── -->
+        <h2>CLI / Docker quick start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Install &amp; run <span class="lang-tag">sh</span>
+              </div>
+              <pre><code><span class="cm"># Run the mock server (requires Node.js)</span>
+npx aimock -p <span class="num">4010</span> -f ./fixtures
+
+<span class="cm"># Point your Python app at the mock</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=mock-key
+
+<span class="cm"># Run your tests</span>
+pytest</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Docker (no Node.js required) <span class="lang-tag">sh</span>
+              </div>
+              <pre><code><span class="cm"># Pull and run</span>
+docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
+  -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
+  ghcr.io/copilotkit/aimock:latest \
+  -f /fixtures
+
+<span class="cm"># Point your Python app at the mock</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=mock-key
+
+<span class="cm"># Run your tests</span>
+pytest</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-box">
+          <p>
+            <strong>Docker is the recommended path for Python teams</strong> since it doesn't
+            require Node.js in your development environment. Add the container to your
+            <code>docker-compose.yml</code> or CI pipeline alongside your Python services.
+          </p>
+        </div>
+
+        <!-- ─── npx alternative ──────────────────────────────────── -->
+        <h2>Alternative: npx fixture (no Docker)</h2>
+        <p>
+          If Node.js is available in your environment, you can skip Docker entirely and use
+          <code>npx aimock</code> directly from your <code>conftest.py</code>.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">conftest.py (npx) <span class="lang-tag">py</span></div>
+          <pre><code><span class="kw">import</span> pytest
+<span class="kw">import</span> subprocess, time, os
+
+<span class="op">@pytest.fixture</span>(scope=<span class="str">"session"</span>)
+<span class="kw">def</span> <span class="fn">aimock_server</span>():
+    proc = subprocess.Popen(
+        [<span class="str">"npx"</span>, <span class="str">"aimock"</span>, <span class="str">"-p"</span>, <span class="str">"4010"</span>, <span class="str">"-f"</span>, <span class="str">"./fixtures"</span>],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    time.sleep(<span class="num">2</span>)  <span class="cm"># wait for server</span>
+
+    os.environ[<span class="str">"OPENAI_BASE_URL"</span>] = <span class="str">"http://localhost:4010/v1"</span>
+    os.environ[<span class="str">"OPENAI_API_KEY"</span>] = <span class="str">"mock-key"</span>
+
+    <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
+    proc.terminate()
+    proc.wait()</code></pre>
+        </div>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

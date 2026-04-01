@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ollama — llmock</title>
+    <title>Ollama — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,45 +42,16 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html" class="active">Ollama</a><a href="cohere.html">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a
-          ><a href="record-replay.html">Record &amp; Replay</a
-          ><a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Ollama</h1>
         <p class="lead">
-          llmock implements Ollama's native <code>/api/chat</code>, <code>/api/generate</code>, and
+          aimock implements Ollama's native <code>/api/chat</code>, <code>/api/generate</code>, and
           <code>/api/tags</code> endpoints with NDJSON streaming, matching Ollama's wire format
           including its key differences from OpenAI.
         </p>
@@ -133,7 +104,7 @@
           </li>
           <li>
             <strong>Duration metadata.</strong> Responses include <code>done_reason</code>,
-            <code>total_duration</code>, <code>eval_count</code>, etc. on the final chunk. llmock
+            <code>total_duration</code>, <code>eval_count</code>, etc. on the final chunk. aimock
             sends zeroed values.
           </li>
         </ul>
@@ -144,13 +115,13 @@
           <div class="code-block-header">
             ollama-quick-start.ts <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
 
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi from Ollama!"</span> });
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Point the Ollama SDK at llmock</span>
+<span class="cmt">// Point the Ollama SDK at aimock</span>
 <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/api/chat`</span>, {
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">body</span>: <span class="fn">JSON.stringify</span>({
@@ -199,7 +170,7 @@
         <h2>Tool Calls</h2>
         <p>
           Tool calls in Ollama send <code>arguments</code> as a parsed object (not a JSON string).
-          llmock automatically converts fixture <code>arguments</code> strings into objects for the
+          aimock automatically converts fixture <code>arguments</code> strings into objects for the
           Ollama wire format.
         </p>
 
@@ -278,7 +249,7 @@
 
         <h2>Request Translation</h2>
         <p>
-          llmock internally translates Ollama requests to a unified
+          aimock internally translates Ollama requests to a unified
           <code>ChatCompletionRequest</code> format for fixture matching. The
           <code>ollamaToCompletionRequest()</code> function maps Ollama's
           <code>options.temperature</code> to <code>temperature</code> and
@@ -289,14 +260,16 @@
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

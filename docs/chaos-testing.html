@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chaos Testing — llmock</title>
+    <title>Chaos Testing — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,45 +42,16 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html" class="active">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a
-          ><a href="record-replay.html">Record &amp; Replay</a
-          ><a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Chaos Testing</h1>
         <p class="lead">
-          llmock provides probabilistic failure injection to test how your application handles
+          aimock provides probabilistic failure injection to test how your application handles
           unreliable LLM APIs. Three failure modes can be configured at the server, fixture, or
           per-request level.
         </p>
@@ -138,7 +109,7 @@
 
         <div class="code-block">
           <div class="code-block-header">chaos-quick-start.ts <span class="lang-tag">ts</span></div>
-          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
 
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi!"</span> });
@@ -210,15 +181,15 @@
           </thead>
           <tbody>
             <tr>
-              <td><code>x-llmock-chaos-drop</code></td>
+              <td><code>x-aimock-chaos-drop</code></td>
               <td>Drop rate (0&ndash;1)</td>
             </tr>
             <tr>
-              <td><code>x-llmock-chaos-malformed</code></td>
+              <td><code>x-aimock-chaos-malformed</code></td>
               <td>Malformed rate (0&ndash;1)</td>
             </tr>
             <tr>
-              <td><code>x-llmock-chaos-disconnect</code></td>
+              <td><code>x-aimock-chaos-disconnect</code></td>
               <td>Disconnect rate (0&ndash;1)</td>
             </tr>
           </tbody>
@@ -233,7 +204,7 @@
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">headers</span>: {
     <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
-    <span class="str">"x-llmock-chaos-disconnect"</span>: <span class="str">"1.0"</span>,
+    <span class="str">"x-aimock-chaos-disconnect"</span>: <span class="str">"1.0"</span>,
   },
   <span class="prop">body</span>: <span class="fn">JSON.stringify</span>({ <span class="prop">model</span>: <span class="str">"gpt-4"</span>, <span class="prop">messages</span>: [...] }),
 });</code></pre>
@@ -242,12 +213,32 @@
         <h2>CLI Flags</h2>
         <p>Set server-level chaos from the command line:</p>
 
-        <div class="code-block">
-          <div class="code-block-header">CLI chaos flags <span class="lang-tag">bash</span></div>
-          <pre><code>npx llmock --fixtures ./fixtures \
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                CLI chaos flags <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx aimock --fixtures ./fixtures \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
   --chaos-disconnect 0.02</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                CLI chaos flags <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --fixtures /fixtures \
+  --chaos-drop 0.1 \
+  --chaos-malformed 0.05 \
+  --chaos-disconnect 0.02</code></pre>
+            </div>
+          </div>
         </div>
 
         <h2>Journal Tracking</h2>
@@ -279,28 +270,30 @@
         <h2>Prometheus Metrics</h2>
         <p>
           When metrics are enabled (<code>--metrics</code>), each chaos trigger increments the
-          <code>llmock_chaos_triggered_total</code> counter with an <code>action</code> label:
+          <code>aimock_chaos_triggered_total</code> counter with an <code>action</code> label:
         </p>
 
         <div class="code-block">
           <div class="code-block-header">Metrics output <span class="lang-tag">text</span></div>
-          <pre><code># TYPE llmock_chaos_triggered_total counter
-llmock_chaos_triggered_total{action="drop"} 3
-llmock_chaos_triggered_total{action="malformed"} 1
-llmock_chaos_triggered_total{action="disconnect"} 2</code></pre>
+          <pre><code># TYPE aimock_chaos_triggered_total counter
+aimock_chaos_triggered_total{action="drop"} 3
+aimock_chaos_triggered_total{action="malformed"} 1
+aimock_chaos_triggered_total{action="disconnect"} 2</code></pre>
         </div>
       </main>
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

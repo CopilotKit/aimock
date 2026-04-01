@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VectorMock — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>VectorMock</h1>
+        <p class="lead">
+          Mock vector database server for testing RAG pipelines and embedding-based retrieval.
+          Supports Pinecone, Qdrant, and ChromaDB API formats with collection management, upsert,
+          query, and delete operations.
+        </p>
+
+        <h2>Quick Start</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Standalone mode <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { VectorMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> vector = <span class="kw">new</span> VectorMock();
+
+vector.addCollection(<span class="str">"docs"</span>, { dimension: <span class="num">1536</span> });
+vector.onQuery(<span class="str">"docs"</span>, [
+  { id: <span class="str">"doc-1"</span>, score: <span class="num">0.95</span>, metadata: { title: <span class="str">"Getting Started"</span> } },
+  { id: <span class="str">"doc-2"</span>, score: <span class="num">0.87</span>, metadata: { title: <span class="str">"API Reference"</span> } },
+]);
+
+<span class="kw">const</span> url = <span class="kw">await</span> vector.start();
+<span class="cm">// Point your vector DB client at `url`</span></code></pre>
+        </div>
+
+        <h2>Mounted Mode</h2>
+        <p>
+          Mount VectorMock onto an LLMock server to share a single port with LLM mocking and other
+          services:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Mount on LLMock <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { LLMock, VectorMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> llm = <span class="kw">new</span> LLMock({ port: <span class="num">5555</span> });
+<span class="kw">const</span> vector = <span class="kw">new</span> VectorMock();
+
+vector.addCollection(<span class="str">"embeddings"</span>, { dimension: <span class="num">768</span> });
+vector.onQuery(<span class="str">"embeddings"</span>, [{ id: <span class="str">"v1"</span>, score: <span class="num">0.9</span> }]);
+
+llm.mount(<span class="str">"/vector"</span>, vector);
+<span class="kw">await</span> llm.start();
+<span class="cm">// Vector API at http://127.0.0.1:5555/vector</span></code></pre>
+        </div>
+
+        <h2>Collection Management</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Collections API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="cm">// Create a collection with a dimension</span>
+vector.addCollection(<span class="str">"products"</span>, { dimension: <span class="num">384</span> });
+
+<span class="cm">// Upsert vectors into a collection</span>
+vector.upsert(<span class="str">"products"</span>, [
+  { id: <span class="str">"p1"</span>, values: [<span class="num">0.1</span>, <span class="num">0.2</span>, ...], metadata: { name: <span class="str">"Widget"</span> } },
+  { id: <span class="str">"p2"</span>, values: [<span class="num">0.3</span>, <span class="num">0.4</span>, ...], metadata: { name: <span class="str">"Gadget"</span> } },
+]);
+
+<span class="cm">// Delete a collection</span>
+vector.deleteCollection(<span class="str">"products"</span>);</code></pre>
+        </div>
+
+        <h2>Query Handlers</h2>
+        <p>Register static results or dynamic handlers for query responses:</p>
+        <div class="code-block">
+          <div class="code-block-header">onQuery API <span class="lang-tag">typescript</span></div>
+          <pre><code><span class="cm">// Static results — always returns these</span>
+vector.onQuery(<span class="str">"docs"</span>, [
+  { id: <span class="str">"d1"</span>, score: <span class="num">0.95</span>, metadata: { topic: <span class="str">"setup"</span> } },
+]);
+
+<span class="cm">// Dynamic handler — receives the query, returns results</span>
+vector.onQuery(<span class="str">"docs"</span>, (query) =&gt; {
+  <span class="kw">const</span> topK = query.topK ?? <span class="num">10</span>;
+  <span class="kw">return</span> Array.from({ length: topK }, (_, i) =&gt; ({
+    id: <span class="str">`result-${i}`</span>,
+    score: <span class="num">1</span> - i * <span class="num">0.1</span>,
+  }));
+});</code></pre>
+        </div>
+
+        <h2>Pinecone-Compatible Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/query</code></td>
+              <td>Query vectors by namespace</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/vectors/upsert</code></td>
+              <td>Upsert vectors into a namespace</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/vectors/delete</code></td>
+              <td>Delete vectors by ID</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/describe-index-stats</code></td>
+              <td>Get index statistics</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Qdrant-Compatible Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/collections/{name}/points/search</code></td>
+              <td>Search points in a collection</td>
+            </tr>
+            <tr>
+              <td><code>PUT</code></td>
+              <td><code>/collections/{name}/points</code></td>
+              <td>Upsert points into a collection</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/collections/{name}/points/delete</code></td>
+              <td>Delete points by ID</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>ChromaDB-Compatible Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/api/v1/collections/{id}/query</code></td>
+              <td>Query a collection</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/api/v1/collections/{id}/add</code></td>
+              <td>Add embeddings to a collection</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/api/v1/collections</code></td>
+              <td>List all collections</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/api/v1/collections/{id}</code></td>
+              <td>Delete a collection</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Config File</h2>
+        <p>VectorMock can be configured via the aimock JSON config file:</p>
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"vector"</span>: {
+    <span class="prop">"path"</span>: <span class="str">"/vector"</span>,
+    <span class="prop">"collections"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"docs"</span>,
+        <span class="prop">"dimension"</span>: <span class="num">1536</span>,
+        <span class="prop">"vectors"</span>: [
+          { <span class="prop">"id"</span>: <span class="str">"v1"</span>, <span class="prop">"values"</span>: [<span class="num">0.1</span>, <span class="num">0.2</span>], <span class="prop">"metadata"</span>: { <span class="prop">"title"</span>: <span class="str">"Intro"</span> } }
+        ],
+        <span class="prop">"queryResults"</span>: [
+          { <span class="prop">"id"</span>: <span class="str">"v1"</span>, <span class="prop">"score"</span>: <span class="num">0.95</span>, <span class="prop">"metadata"</span>: { <span class="prop">"title"</span>: <span class="str">"Intro"</span> } }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+
+        <h2>Inspection</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Inspection API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code>vector.health();       <span class="cm">// { status: "ok", collections: 2 }</span>
+vector.getRequests();  <span class="cm">// Journal entries (when mounted with shared journal)</span>
+vector.reset();        <span class="cm">// Clears all collections and query handlers</span></code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

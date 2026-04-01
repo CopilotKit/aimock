@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Compatible Providers — llmock</title>
+    <title>Compatible Providers — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,47 +42,18 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html" class="active">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a>
-          <a href="record-replay.html">Record &amp; Replay</a>
-          <a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Compatible Providers</h1>
         <p class="lead">
           Many LLM providers use OpenAI-compatible
-          <code>/v1/chat/completions</code> endpoints. llmock works with all of them out of the box
-          &mdash; just point the SDK's base URL at your llmock instance.
+          <code>/v1/chat/completions</code> endpoints. aimock works with all of them out of the box
+          &mdash; just point the SDK's base URL at your aimock instance.
         </p>
 
         <h2>Supported Providers</h2>
@@ -103,7 +74,7 @@
             <tr>
               <td>Groq</td>
               <td><code>/openai/v1/chat/completions</code></td>
-              <td>Uses <code>/openai/</code> prefix &mdash; llmock strips it automatically</td>
+              <td>Uses <code>/openai/</code> prefix &mdash; aimock strips it automatically</td>
             </tr>
             <tr>
               <td>Ollama</td>
@@ -140,11 +111,11 @@
         <ul>
           <li>
             Most OpenAI-compatible providers send requests to
-            <code>/v1/chat/completions</code> with the same JSON format &mdash; llmock already
+            <code>/v1/chat/completions</code> with the same JSON format &mdash; aimock already
             handles this natively
           </li>
           <li>
-            Groq uses a <code>/openai/v1/</code> prefix for all endpoints. llmock automatically
+            Groq uses a <code>/openai/v1/</code> prefix for all endpoints. aimock automatically
             strips the <code>/openai</code> prefix, so <code>/openai/v1/chat/completions</code>,
             <code>/openai/v1/embeddings</code>, and <code>/openai/v1/models</code> all work
             transparently
@@ -159,7 +130,7 @@
         <h2>Mistral Configuration</h2>
         <p>
           Mistral's SDK uses the standard OpenAI-compatible endpoint. Point
-          <code>MISTRAL_API_ENDPOINT</code> at llmock:
+          <code>MISTRAL_API_ENDPOINT</code> at aimock:
         </p>
 
         <div class="code-block">
@@ -183,7 +154,7 @@
         <h2>Groq Configuration</h2>
         <p>
           Groq's SDK sends requests to <code>/openai/v1/chat/completions</code> (note the
-          <code>/openai</code> prefix). llmock handles this automatically.
+          <code>/openai</code> prefix). aimock handles this automatically.
         </p>
 
         <div class="code-block">
@@ -206,7 +177,7 @@
 
         <h2>Ollama Configuration</h2>
         <p>
-          Ollama exposes an OpenAI-compatible endpoint locally. Point the OpenAI SDK at llmock
+          Ollama exposes an OpenAI-compatible endpoint locally. Point the OpenAI SDK at aimock
           instead:
         </p>
 
@@ -303,7 +274,7 @@
           <p>
             <strong>Ollama native endpoints:</strong> In addition to the OpenAI-compatible endpoint
             listed above, Ollama has its own native <code>/api/chat</code> and
-            <code>/api/generate</code> endpoints. llmock supports these natively &mdash; see the
+            <code>/api/generate</code> endpoints. aimock supports these natively &mdash; see the
             <a href="ollama.html">Ollama page</a> for details on the native endpoint format.
           </p>
         </div>
@@ -311,14 +282,16 @@
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

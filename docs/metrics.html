@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Prometheus Metrics — llmock</title>
+    <title>Prometheus Metrics — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,45 +42,16 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a
-          ><a href="record-replay.html">Record &amp; Replay</a
-          ><a href="metrics.html" class="active">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Prometheus Metrics</h1>
         <p class="lead">
-          llmock exposes Prometheus-compatible metrics via <code>GET /metrics</code>. Opt-in with
+          aimock exposes Prometheus-compatible metrics via <code>GET /metrics</code>. Opt-in with
           <code>--metrics</code>. Zero external dependencies &mdash; implements counters,
           histograms, and gauges with Prometheus text exposition format serialization.
         </p>
@@ -105,9 +76,26 @@
 
         <h2>Quick Start</h2>
 
-        <div class="code-block">
-          <div class="code-block-header">Enable metrics <span class="lang-tag">bash</span></div>
-          <pre><code>npx llmock --fixtures ./fixtures --metrics</code></pre>
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Enable metrics <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx aimock --fixtures ./fixtures --metrics</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Enable metrics <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --fixtures /fixtures --metrics</code></pre>
+            </div>
+          </div>
         </div>
 
         <div class="code-block">
@@ -127,30 +115,59 @@
           </thead>
           <tbody>
             <tr>
-              <td><code>llmock_requests_total</code></td>
+              <td><code>aimock_requests_total</code></td>
               <td>Counter</td>
               <td><code>method</code>, <code>path</code>, <code>status</code></td>
               <td>Total number of requests handled</td>
             </tr>
             <tr>
-              <td><code>llmock_request_duration_seconds</code></td>
+              <td><code>aimock_request_duration_seconds</code></td>
               <td>Histogram</td>
               <td><code>method</code>, <code>path</code></td>
               <td>Request duration in seconds</td>
             </tr>
             <tr>
-              <td><code>llmock_fixtures_loaded</code></td>
+              <td><code>aimock_fixtures_loaded</code></td>
               <td>Gauge</td>
               <td>&mdash;</td>
               <td>Number of fixtures currently loaded</td>
             </tr>
             <tr>
-              <td><code>llmock_chaos_triggered_total</code></td>
+              <td><code>aimock_chaos_triggered_total</code></td>
               <td>Counter</td>
               <td><code>action</code></td>
               <td>
                 Number of chaos events triggered (action: <code>drop</code>, <code>malformed</code>,
                 <code>disconnect</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>aimock_mcp_requests_total</code></td>
+              <td>Counter</td>
+              <td><code>method</code></td>
+              <td>
+                Total MCP JSON-RPC requests (methods: <code>initialize</code>,
+                <code>tools/list</code>, <code>tools/call</code>, <code>resources/read</code>,
+                <code>resources/list</code>, <code>prompts/list</code>, <code>prompts/get</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>aimock_a2a_requests_total</code></td>
+              <td>Counter</td>
+              <td><code>method</code></td>
+              <td>
+                Total A2A requests (methods: <code>GetAgentCard</code>, <code>SendMessage</code>,
+                <code>GetTask</code>, <code>CancelTask</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>aimock_vector_requests_total</code></td>
+              <td>Counter</td>
+              <td><code>operation</code>, <code>provider</code></td>
+              <td>
+                Total vector DB requests (operations: <code>query</code>, <code>upsert</code>,
+                <code>delete</code>, <code>list</code>, <code>fetch</code>, <code>describe</code>;
+                providers: <code>pinecone</code>, <code>qdrant</code>, <code>chromadb</code>)
               </td>
             </tr>
           </tbody>
@@ -216,32 +233,32 @@
           <div class="code-block-header">
             Example /metrics response <span class="lang-tag">text</span>
           </div>
-          <pre><code># TYPE llmock_requests_total counter
-llmock_requests_total{method="POST",path="/v1/chat/completions",status="200"} 42
-llmock_requests_total{method="POST",path="/v1/messages",status="200"} 15
+          <pre><code># TYPE aimock_requests_total counter
+aimock_requests_total{method="POST",path="/v1/chat/completions",status="200"} 42
+aimock_requests_total{method="POST",path="/v1/messages",status="200"} 15
 
-# TYPE llmock_request_duration_seconds histogram
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.005"} 0
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.01"} 5
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.025"} 20
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.05"} 35
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.1"} 40
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.25"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.5"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="1"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="2.5"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="5"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="10"} 42
-llmock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="+Inf"} 42
-llmock_request_duration_seconds_sum{method="POST",path="/v1/chat/completions"} 1.234
-llmock_request_duration_seconds_count{method="POST",path="/v1/chat/completions"} 42
+# TYPE aimock_request_duration_seconds histogram
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.005"} 0
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.01"} 5
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.025"} 20
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.05"} 35
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.1"} 40
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.25"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="0.5"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="1"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="2.5"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="5"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="10"} 42
+aimock_request_duration_seconds_bucket{method="POST",path="/v1/chat/completions",le="+Inf"} 42
+aimock_request_duration_seconds_sum{method="POST",path="/v1/chat/completions"} 1.234
+aimock_request_duration_seconds_count{method="POST",path="/v1/chat/completions"} 42
 
-# TYPE llmock_fixtures_loaded gauge
-llmock_fixtures_loaded{} 12
+# TYPE aimock_fixtures_loaded gauge
+aimock_fixtures_loaded{} 12
 
-# TYPE llmock_chaos_triggered_total counter
-llmock_chaos_triggered_total{action="drop"} 3
-llmock_chaos_triggered_total{action="malformed"} 1</code></pre>
+# TYPE aimock_chaos_triggered_total counter
+aimock_chaos_triggered_total{action="drop"} 3
+aimock_chaos_triggered_total{action="malformed"} 1</code></pre>
         </div>
 
         <h2>Histogram Buckets</h2>
@@ -271,14 +288,16 @@ llmock_chaos_triggered_total{action="malformed"} 1</code></pre>
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

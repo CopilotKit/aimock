@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Services — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Services (Search / Rerank / Moderation)</h1>
+        <p class="lead">
+          Built-in service mocks for web search, reranking, and content moderation APIs. Register
+          fixture patterns on the LLMock instance and requests are matched by query/input text. No
+          separate server needed — services are built into the LLMock HTTP server.
+        </p>
+
+        <h2>Search (Tavily-Compatible)</h2>
+        <p>
+          Mock web search API at <code>POST /search</code>. Matches the request
+          <code>query</code> field against registered patterns.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">onSearch API <span class="lang-tag">typescript</span></div>
+          <pre><code><span class="kw">import</span> { LLMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> mock = <span class="kw">new</span> LLMock();
+
+<span class="cm">// String pattern — case-insensitive substring match</span>
+mock.onSearch(<span class="str">"weather"</span>, [
+  { title: <span class="str">"Weather Report"</span>, url: <span class="str">"https://example.com/weather"</span>, content: <span class="str">"Sunny today"</span> },
+]);
+
+<span class="cm">// RegExp pattern</span>
+mock.onSearch(<span class="kw">/</span>stock\s+price<span class="kw">/i</span>, [
+  { title: <span class="str">"ACME Stock"</span>, url: <span class="str">"https://example.com/stocks"</span>, content: <span class="str">"$42.00"</span>, score: <span class="num">0.95</span> },
+]);
+
+<span class="cm">// Catch-all — empty results for unmatched queries</span>
+mock.onSearch(<span class="kw">/</span>.*<span class="kw">/</span>, []);</code></pre>
+        </div>
+
+        <h3>Search Endpoint</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Request Body</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/search</code></td>
+              <td><code>{ "query": "...", "max_results": 5 }</code></td>
+              <td><code>{ "results": [...] }</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Rerank (Cohere-Compatible)</h2>
+        <p>
+          Mock reranking API at <code>POST /v2/rerank</code>. Matches the request
+          <code>query</code> field against registered patterns.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">onRerank API <span class="lang-tag">typescript</span></div>
+          <pre><code>mock.onRerank(<span class="str">"machine learning"</span>, [
+  { index: <span class="num">0</span>, relevance_score: <span class="num">0.99</span> },
+  { index: <span class="num">2</span>, relevance_score: <span class="num">0.85</span> },
+]);
+
+<span class="cm">// The response includes document text from the request body</span>
+<span class="cm">// Response format: { id, results: [{ index, relevance_score, document: { text } }] }</span></code></pre>
+        </div>
+
+        <h3>Rerank Endpoint</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Request Body</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v2/rerank</code></td>
+              <td><code>{ "query": "...", "documents": [...], "model": "..." }</code></td>
+              <td><code>{ "id": "...", "results": [...], "meta": {...} }</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Moderation (OpenAI-Compatible)</h2>
+        <p>
+          Mock content moderation API at <code>POST /v1/moderations</code>. Matches the request
+          <code>input</code> field against registered patterns. Unmatched requests return a default
+          unflagged result.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            onModerate API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="cm">// Flag specific content</span>
+mock.onModerate(<span class="str">"violent"</span>, {
+  flagged: <span class="kw">true</span>,
+  categories: { violence: <span class="kw">true</span>, hate: <span class="kw">false</span> },
+  category_scores: { violence: <span class="num">0.95</span>, hate: <span class="num">0.01</span> },
+});
+
+<span class="cm">// Catch-all — everything passes</span>
+mock.onModerate(<span class="kw">/</span>.*<span class="kw">/</span>, {
+  flagged: <span class="kw">false</span>,
+  categories: {},
+});</code></pre>
+        </div>
+
+        <h3>Moderation Endpoint</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Request Body</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/moderations</code></td>
+              <td><code>{ "input": "..." }</code></td>
+              <td><code>{ "id": "...", "model": "...", "results": [...] }</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Pattern Matching</h2>
+        <p>All three services use the same matching logic:</p>
+        <ul>
+          <li><strong>String patterns</strong> — case-insensitive substring match</li>
+          <li><strong>RegExp patterns</strong> — full regex test</li>
+          <li><strong>First match wins</strong> — register specific patterns before catch-alls</li>
+        </ul>
+
+        <h2>Config File</h2>
+        <p>Enable services via the aimock config file with default catch-all responses:</p>
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"services"</span>: {
+    <span class="prop">"search"</span>: <span class="kw">true</span>,
+    <span class="prop">"rerank"</span>: <span class="kw">true</span>,
+    <span class="prop">"moderate"</span>: <span class="kw">true</span>
+  }
+}</code></pre>
+        </div>
+        <p>
+          When enabled via config, each service registers a <code>/.*/</code> catch-all pattern.
+          Search and rerank return empty results; moderation returns unflagged. For custom
+          responses, use the programmatic API.
+        </p>
+
+        <h2>Journal Integration</h2>
+        <p>
+          All service requests are recorded in the LLMock journal with the
+          <code>service</code> field set to <code>"search"</code>, <code>"rerank"</code>, or
+          <code>"moderation"</code>:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Journal entries <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">const</span> entries = mock.getRequests();
+<span class="kw">const</span> searchRequests = entries.filter((e) =&gt; e.service === <span class="str">"search"</span>);
+<span class="kw">const</span> rerankRequests = entries.filter((e) =&gt; e.service === <span class="str">"rerank"</span>);
+<span class="kw">const</span> moderationRequests = entries.filter((e) =&gt; e.service === <span class="str">"moderation"</span>);</code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

@@ -26,6 +26,7 @@
   --blue: #4488ff;
   --purple: #aa66ff;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+  --font-features-mono: "liga" 0, "calt" 0;
   --font-sans: "Instrument Sans", -apple-system, system-ui, sans-serif;
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --sidebar-width: 260px;
@@ -44,6 +45,14 @@ body {
   color: var(--text-primary);
   line-height: 1.6;
   overflow-x: hidden;
+}
+
+code,
+pre,
+kbd,
+.code-block,
+[style*="font-mono"] {
+  font-feature-settings: var(--font-features-mono);
 }
 
 a {
@@ -135,17 +144,17 @@ body::before {
 /* ─── Docs Layout ─────────────────────────────────────────────── */
 .docs-layout {
   display: flex;
-  margin-top: 57px; /* nav height */
-  min-height: calc(100vh - 57px);
+  margin-top: calc(57px + 50px); /* nav height + section bar */
+  min-height: calc(100vh - 57px - 50px);
 }
 
 /* ─── Sidebar ─────────────────────────────────────────────────── */
 .sidebar {
   position: fixed;
-  top: 57px;
+  top: calc(57px + 50px); /* nav height + section bar */
   left: 0;
   width: var(--sidebar-width);
-  height: calc(100vh - 57px);
+  height: calc(100vh - 57px - 50px);
   overflow-y: auto;
   background: var(--bg-surface);
   border-right: 1px solid var(--border);

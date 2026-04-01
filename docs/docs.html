@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Documentation — llmock</title>
+    <title>Documentation — aimock</title>
     <meta
       name="description"
-      content="llmock documentation — fixture-driven mock LLM server for OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Ollama, Cohere, and Vertex AI APIs."
+      content="aimock documentation — complete mock infrastructure for AI application testing."
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -16,6 +16,221 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="style.css" />
+    <style>
+      /* ─── Section Bar (new component) ──────────────────────────── */
+      .section-bar {
+        position: sticky;
+        top: 57px;
+        z-index: 90;
+        background: rgba(10, 10, 15, 0.85);
+        backdrop-filter: blur(20px) saturate(1.4);
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
+        border-bottom: 1px solid var(--border);
+        padding: 0.75rem 0;
+        overflow: visible;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      .section-bar::-webkit-scrollbar {
+        display: none;
+      }
+      .section-bar-inner {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 2rem;
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+      }
+      .section-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.45rem 0.85rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        white-space: nowrap;
+        transition: all 0.2s var(--ease-out-expo);
+        text-decoration: none;
+      }
+      .section-pill:hover {
+        color: var(--text-primary);
+        border-color: var(--border-bright);
+        background: var(--bg-card-hover);
+        text-decoration: none;
+        transform: translateY(-1px);
+      }
+      .section-pill.pill-green {
+        border-left: 3px solid var(--accent);
+      }
+      .section-pill.pill-blue {
+        border-left: 3px solid var(--blue);
+      }
+      .section-pill.pill-purple {
+        border-left: 3px solid var(--purple);
+      }
+      .section-pill.pill-amber {
+        border-left: 3px solid var(--warning);
+      }
+      .section-pill.pill-red {
+        border-left: 3px solid var(--error);
+      }
+      .section-pill.pill-gray {
+        border-left: 3px solid var(--text-dim);
+      }
+      .section-pill-icon {
+        font-size: 0.85rem;
+        line-height: 1;
+      }
+
+      /* ─── Suite Cards Grid (new component) ─────────────────────── */
+      .suite-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.25rem;
+        margin-top: 2rem;
+        margin-bottom: 2rem;
+      }
+      .suite-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 1.5rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .suite-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .suite-card.border-green {
+        border-top: 2px solid var(--accent);
+      }
+      .suite-card.border-blue {
+        border-top: 2px solid var(--blue);
+      }
+      .suite-card.border-purple {
+        border-top: 2px solid var(--purple);
+      }
+      .suite-card.border-amber {
+        border-top: 2px solid var(--warning);
+      }
+      .suite-card.border-red {
+        border-top: 2px solid var(--error);
+      }
+      .suite-card.border-gray {
+        border-top: 2px solid var(--text-dim);
+      }
+      .suite-card-header {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+      .suite-card-icon {
+        font-size: 1.5rem;
+        line-height: 1;
+      }
+      .suite-card-title {
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .suite-card-desc {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+        margin: 0;
+      }
+      .suite-card-links {
+        list-style: none;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin: 0;
+      }
+      .suite-card-links li {
+        font-size: 0.8rem;
+        padding-left: 0.85rem;
+        position: relative;
+        margin: 0;
+      }
+      .suite-card-links li::before {
+        content: "\203A";
+        position: absolute;
+        left: 0;
+        color: var(--text-dim);
+      }
+      .suite-card-links a {
+        color: var(--text-secondary);
+        font-size: 0.8rem;
+        transition: color 0.15s;
+      }
+      .suite-card-links a:hover {
+        color: var(--accent);
+      }
+      .suite-card-cta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--accent);
+        margin-top: auto;
+        padding-top: 0.25rem;
+        transition: gap 0.2s var(--ease-out-expo);
+      }
+      .suite-card:hover .suite-card-cta {
+        gap: 0.6rem;
+      }
+
+      /* ─── Quick Start Paths ────────────────────────────────────── */
+      .quick-start-paths {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .quick-start-path {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.5rem;
+      }
+      .quick-start-path h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-top: 0;
+        margin-bottom: 0.75rem;
+        color: var(--text-primary);
+      }
+
+      /* ─── Responsive overrides ─────────────────────────────────── */
+      @media (max-width: 768px) {
+        .suite-grid {
+          grid-template-columns: 1fr;
+        }
+        .quick-start-paths {
+          grid-template-columns: 1fr;
+        }
+        .section-bar-inner {
+          padding: 0 1rem;
+        }
+      }
+    </style>
   </head>
   <body>
     <!-- ═══ Nav ═══════════════════════════════════════════════════════ -->
@@ -29,7 +244,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> llmock </a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -48,399 +263,182 @@
       </div>
     </nav>
 
+    <!-- ═══ Section Bar ══════════════════════════════════════════════ -->
+    <div class="section-bar">
+      <div class="section-bar-inner">
+        <a href="chat-completions.html" class="section-pill pill-green">
+          <span class="section-pill-icon">&#128225;</span> LLM Mocking
+        </a>
+        <a href="mcp-mock.html" class="section-pill pill-blue">
+          <span class="section-pill-icon">&#128268;</span> MCP Protocol
+        </a>
+        <a href="a2a-mock.html" class="section-pill pill-purple">
+          <span class="section-pill-icon">&#129309;</span> A2A Protocol
+        </a>
+        <a href="vector-mock.html" class="section-pill pill-amber">
+          <span class="section-pill-icon">&#128230;</span> Vector DBs
+        </a>
+        <a href="services.html" class="section-pill pill-red">
+          <span class="section-pill-icon">&#128269;</span> Search &amp; Rerank
+        </a>
+        <a href="chaos-testing.html" class="section-pill pill-gray">
+          <span class="section-pill-icon">&#9881;</span> Chaos &amp; DevOps
+        </a>
+      </div>
+    </div>
+
     <div class="docs-layout">
       <!-- ═══ Sidebar ═══════════════════════════════════════════════ -->
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html" class="active">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a>
-          <a href="responses-api.html">Responses API (OpenAI)</a>
-          <a href="claude-messages.html">Claude Messages</a>
-          <a href="gemini.html">Gemini</a><a href="azure-openai.html">Azure OpenAI</a
-          ><a href="aws-bedrock.html">AWS Bedrock</a><a href="ollama.html">Ollama</a
-          ><a href="cohere.html">Cohere</a><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a>
-          <a href="structured-output.html">Structured Output</a>
-          <a href="sequential-responses.html">Sequential Responses</a>
-          <a href="fixtures.html">Fixtures</a>
-          <a href="error-injection.html">Error Injection</a>
-          <a href="chaos-testing.html">Chaos Testing</a>
-          <a href="streaming-physics.html">Streaming Physics</a>
-          <a href="websocket.html">WebSocket APIs</a>
-          <a href="record-replay.html">Record &amp; Replay</a>
-          <a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a>
-          <a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <!-- ═══ Main Content ══════════════════════════════════════════ -->
       <main class="docs-content">
-        <h1>llmock Documentation</h1>
+        <h1>aimock Documentation</h1>
         <p class="lead">
-          llmock is a deterministic mock LLM server for testing. It runs a real HTTP server that any
-          process on the machine can reach, serving fixture-driven responses in the authentic SSE
-          format for OpenAI, Anthropic Claude, and Google Gemini APIs.
+          aimock is the complete mock infrastructure for AI application testing. Start with LLM API
+          mocking, add MCP tools, A2A agents, vector databases, and services as your stack grows.
+          One package. Zero dependencies.
         </p>
+
+        <h2>The Suite</h2>
+
+        <div class="suite-grid">
+          <!-- LLM Mocking -->
+          <div class="suite-card border-green">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#128225;</span>
+              <span class="suite-card-title">LLM Mocking</span>
+            </div>
+            <p class="suite-card-desc">Mock 10+ LLM providers with fixture-driven responses</p>
+            <ul class="suite-card-links">
+              <li><a href="chat-completions.html">Chat Completions</a></li>
+              <li><a href="claude-messages.html">Claude Messages</a></li>
+              <li><a href="gemini.html">Gemini</a></li>
+              <li><a href="aws-bedrock.html">Bedrock</a></li>
+              <li><a href="record-replay.html">Record &amp; Replay</a></li>
+            </ul>
+            <a href="chat-completions.html" class="suite-card-cta"
+              >Get started <span>&rarr;</span></a
+            >
+          </div>
+
+          <!-- MCP Protocol -->
+          <div class="suite-card border-blue">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#128268;</span>
+              <span class="suite-card-title">MCP Protocol</span>
+            </div>
+            <p class="suite-card-desc">Mock MCP servers with tools, resources, and prompts</p>
+            <ul class="suite-card-links">
+              <li><a href="mcp-mock.html">Tool handlers</a></li>
+              <li><a href="mcp-mock.html">Resources</a></li>
+              <li><a href="mcp-mock.html">Prompts</a></li>
+              <li><a href="mcp-mock.html">Session management</a></li>
+            </ul>
+            <a href="mcp-mock.html" class="suite-card-cta">Get started <span>&rarr;</span></a>
+          </div>
+
+          <!-- A2A Protocol -->
+          <div class="suite-card border-purple">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#129309;</span>
+              <span class="suite-card-title">A2A Protocol</span>
+            </div>
+            <p class="suite-card-desc">Mock agent-to-agent interactions with streaming</p>
+            <ul class="suite-card-links">
+              <li><a href="a2a-mock.html">Agent cards</a></li>
+              <li><a href="a2a-mock.html">Message routing</a></li>
+              <li><a href="a2a-mock.html">Task streaming</a></li>
+            </ul>
+            <a href="a2a-mock.html" class="suite-card-cta">Get started <span>&rarr;</span></a>
+          </div>
+
+          <!-- Vector Databases -->
+          <div class="suite-card border-amber">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#128230;</span>
+              <span class="suite-card-title">Vector Databases</span>
+            </div>
+            <p class="suite-card-desc">Mock Pinecone, Qdrant, and ChromaDB endpoints</p>
+            <ul class="suite-card-links">
+              <li><a href="vector-mock.html">Upsert &amp; query</a></li>
+              <li><a href="vector-mock.html">Collections</a></li>
+              <li><a href="vector-mock.html">Custom handlers</a></li>
+            </ul>
+            <a href="vector-mock.html" class="suite-card-cta">Get started <span>&rarr;</span></a>
+          </div>
+
+          <!-- Services -->
+          <div class="suite-card border-red">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#128269;</span>
+              <span class="suite-card-title">Services</span>
+            </div>
+            <p class="suite-card-desc">Search, rerank, and moderation API mocks</p>
+            <ul class="suite-card-links">
+              <li><a href="services.html">Tavily search</a></li>
+              <li><a href="services.html">Cohere rerank</a></li>
+              <li><a href="services.html">OpenAI moderation</a></li>
+            </ul>
+            <a href="services.html" class="suite-card-cta">Get started <span>&rarr;</span></a>
+          </div>
+
+          <!-- Testing & Operations -->
+          <div class="suite-card border-gray">
+            <div class="suite-card-header">
+              <span class="suite-card-icon">&#9881;</span>
+              <span class="suite-card-title">Testing &amp; Operations</span>
+            </div>
+            <p class="suite-card-desc">Chaos testing, metrics, drift detection, Docker</p>
+            <ul class="suite-card-links">
+              <li><a href="chaos-testing.html">Chaos testing</a></li>
+              <li><a href="metrics.html">Prometheus</a></li>
+              <li><a href="drift-detection.html">Drift detection</a></li>
+              <li><a href="docker.html">Docker &amp; Helm</a></li>
+            </ul>
+            <a href="chaos-testing.html" class="suite-card-cta">Get started <span>&rarr;</span></a>
+          </div>
+        </div>
 
         <h2>Quick Start</h2>
 
-        <div class="code-block">
-          <div class="code-block-header">
-            Install
-            <span class="lang-tag">shell</span>
+        <div class="quick-start-paths">
+          <!-- Path 1: LLM only -->
+          <div class="quick-start-path">
+            <h3>I want to mock LLM APIs</h3>
+            <div class="code-block">
+              <div class="code-block-header">
+                Programmatic usage
+                <span class="lang-tag">ts</span>
+              </div>
+              <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi there!"</span> });</code></pre>
+            </div>
+            <p><a href="docs.html">Quick Start: LLM &rarr;</a></p>
           </div>
-          <pre><code><span class="cm"># npm</span>
-npm install @copilotkit/llmock
 
-<span class="cm"># pnpm</span>
-pnpm add @copilotkit/llmock</code></pre>
-        </div>
-
-        <div class="code-block">
-          <div class="code-block-header">
-            Programmatic usage (vitest)
-            <span class="lang-tag">ts</span>
+          <!-- Path 2: Full suite -->
+          <div class="quick-start-path">
+            <h3>I want to mock my entire AI stack</h3>
+            <div class="code-block">
+              <div class="code-block-header">
+                aimock.json config
+                <span class="lang-tag">json</span>
+              </div>
+              <pre><code>{
+  <span class="key">"llm"</span>:    { <span class="key">"fixtures"</span>: <span class="str">"./fixtures/llm"</span> },
+  <span class="key">"mcp"</span>:    { <span class="key">"tools"</span>: [<span class="str">"search"</span>, <span class="str">"fetch"</span>] },
+  <span class="key">"a2a"</span>:    { <span class="key">"agents"</span>: [<span class="str">"planner"</span>] },
+  <span class="key">"vector"</span>: { <span class="key">"provider"</span>: <span class="str">"pinecone"</span> }
+}</code></pre>
+            </div>
+            <p><a href="aimock-cli.html">Quick Start: aimock suite &rarr;</a></p>
           </div>
-          <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
-<span class="kw">import</span> { <span class="fn">describe</span>, <span class="fn">it</span>, <span class="fn">expect</span>, <span class="fn">beforeAll</span>, <span class="fn">afterAll</span> } <span class="kw">from</span> <span class="str">"vitest"</span>;
-
-<span class="kw">let</span> <span class="op">mock</span>: <span class="type">LLMock</span>;
-
-<span class="fn">beforeAll</span>(<span class="kw">async</span> () <span class="kw">=&gt;</span> {
-  <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
-  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
-});
-
-<span class="fn">afterAll</span>(<span class="kw">async</span> () <span class="kw">=&gt;</span> {
-  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
-});
-
-<span class="fn">it</span>(<span class="str">"returns a text response"</span>, <span class="kw">async</span> () <span class="kw">=&gt;</span> {
-  <span class="op">mock</span>.<span class="fn">on</span>({ <span class="prop">userMessage</span>: <span class="str">"hello"</span> }, { <span class="prop">content</span>: <span class="str">"Hi there!"</span> });
-
-  <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/chat/completions`</span>, {
-    <span class="prop">method</span>: <span class="str">"POST"</span>,
-    <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
-    <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
-      <span class="prop">model</span>: <span class="str">"gpt-4"</span>,
-      <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"hello"</span> }],
-      <span class="prop">stream</span>: <span class="kw">false</span>,
-    }),
-  });
-  <span class="kw">const</span> <span class="op">body</span> = <span class="kw">await</span> <span class="op">res</span>.<span class="fn">json</span>();
-  <span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">choices</span>[<span class="num">0</span>].<span class="prop">message</span>.<span class="prop">content</span>).<span class="fn">toBe</span>(<span class="str">"Hi there!"</span>);
-});</code></pre>
         </div>
-
-        <div class="code-block">
-          <div class="code-block-header">
-            CLI usage
-            <span class="lang-tag">shell</span>
-          </div>
-          <pre><code><span class="cm"># Start the server with fixture files</span>
-npx llmock --fixtures ./fixtures --port 5555
-
-<span class="cm"># Point your app at it</span>
-<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:5555/v1
-<span class="kw">export</span> OPENAI_API_KEY=mock-key</code></pre>
-        </div>
-
-        <h2>Supported Endpoints</h2>
-
-        <table class="endpoint-table">
-          <thead>
-            <tr>
-              <th>Endpoint</th>
-              <th>Provider</th>
-              <th>Transport</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>POST /v1/chat/completions</td>
-              <td>OpenAI</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /v1/responses</td>
-              <td>OpenAI</td>
-              <td>HTTP SSE</td>
-            </tr>
-            <tr>
-              <td>WS /v1/responses</td>
-              <td>OpenAI</td>
-              <td>WebSocket</td>
-            </tr>
-            <tr>
-              <td>WS /v1/realtime</td>
-              <td>OpenAI</td>
-              <td>WebSocket</td>
-            </tr>
-            <tr>
-              <td>POST /v1/messages</td>
-              <td>Anthropic</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /v1beta/models/:model:*</td>
-              <td>Google Gemini</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-            <tr>
-              <td>WS /ws/google.ai.generativelanguage.*</td>
-              <td>Google Gemini Live</td>
-              <td>WebSocket</td>
-            </tr>
-            <tr>
-              <td>POST /v1/embeddings</td>
-              <td>OpenAI</td>
-              <td>JSON</td>
-            </tr>
-            <tr>
-              <td>POST /openai/v1/chat/completions</td>
-              <td>Groq / OpenAI-Compatible</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /model/{modelId}/invoke</td>
-              <td>AWS Bedrock</td>
-              <td>JSON</td>
-            </tr>
-            <tr>
-              <td>POST /model/{modelId}/invoke-with-response-stream</td>
-              <td>AWS Bedrock</td>
-              <td>AWS Event Stream (binary)</td>
-            </tr>
-            <tr>
-              <td>POST /model/{modelId}/converse</td>
-              <td>AWS Bedrock</td>
-              <td>JSON</td>
-            </tr>
-            <tr>
-              <td>POST /model/{modelId}/converse-stream</td>
-              <td>AWS Bedrock</td>
-              <td>AWS Event Stream (binary)</td>
-            </tr>
-            <tr>
-              <td>POST /v1/projects/.../models/:model:*</td>
-              <td>Vertex AI</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /api/chat</td>
-              <td>Ollama</td>
-              <td>NDJSON / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /api/generate</td>
-              <td>Ollama</td>
-              <td>NDJSON / JSON</td>
-            </tr>
-            <tr>
-              <td>POST /v2/chat</td>
-              <td>Cohere</td>
-              <td>HTTP SSE / JSON</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <h2>Feature Pages</h2>
-
-        <div class="feature-grid">
-          <a href="chat-completions.html" class="feature-link">
-            <span class="badge badge-green">OpenAI</span>
-            <h3>Chat Completions</h3>
-            <p>Streaming and non-streaming text + tool call responses via SSE.</p>
-          </a>
-          <a href="responses-api.html" class="feature-link">
-            <span class="badge badge-green">OpenAI</span>
-            <h3>Responses API</h3>
-            <p>HTTP SSE and WebSocket transports for the Responses API.</p>
-          </a>
-          <a href="claude-messages.html" class="feature-link">
-            <span class="badge badge-purple">Anthropic</span>
-            <h3>Claude Messages</h3>
-            <p>Anthropic-format SSE streaming with content blocks.</p>
-          </a>
-          <a href="gemini.html" class="feature-link">
-            <span class="badge badge-blue">Google</span>
-            <h3>Gemini</h3>
-            <p>GenerateContent and StreamGenerateContent endpoints.</p>
-          </a>
-          <a href="embeddings.html" class="feature-link">
-            <span class="badge badge-amber">New</span>
-            <h3>Embeddings</h3>
-            <p>OpenAI-compatible /v1/embeddings endpoint with fixture or auto-generated vectors.</p>
-          </a>
-          <a href="structured-output.html" class="feature-link">
-            <span class="badge badge-amber">New</span>
-            <h3>Structured Output</h3>
-            <p>JSON mode and response_format matching for structured responses.</p>
-          </a>
-          <a href="sequential-responses.html" class="feature-link">
-            <span class="badge badge-amber">New</span>
-            <h3>Sequential Responses</h3>
-            <p>Stateful fixtures that return different responses on each call.</p>
-          </a>
-          <a href="fixtures.html" class="feature-link">
-            <span class="badge badge-green">Core</span>
-            <h3>Fixtures</h3>
-            <p>JSON fixture file format, matching rules, and validation.</p>
-          </a>
-          <a href="error-injection.html" class="feature-link">
-            <span class="badge badge-red">Core</span>
-            <h3>Error Injection</h3>
-            <p>One-shot errors, stream truncation, and disconnect simulation.</p>
-          </a>
-          <a href="chaos-testing.html" class="feature-link">
-            <span class="badge badge-red">New</span>
-            <h3>Chaos Testing</h3>
-            <p>
-              Probabilistic failure injection &mdash; random errors, latency spikes, stream
-              corruption.
-            </p>
-          </a>
-          <a href="websocket.html" class="feature-link">
-            <span class="badge badge-blue">Core</span>
-            <h3>WebSocket APIs</h3>
-            <p>Realtime, Responses, and Gemini Live over WebSocket.</p>
-          </a>
-          <a href="record-replay.html" class="feature-link">
-            <span class="badge badge-purple">New</span>
-            <h3>Record &amp; Replay</h3>
-            <p>Proxy to real APIs, record responses as fixtures, then replay deterministically.</p>
-          </a>
-          <a href="metrics.html" class="feature-link">
-            <span class="badge badge-blue">New</span>
-            <h3>Prometheus Metrics</h3>
-            <p>Expose request counts, latencies, and fixture match rates via /metrics endpoint.</p>
-          </a>
-          <a href="ollama.html" class="feature-link">
-            <span class="badge badge-green">Provider</span>
-            <h3>Ollama</h3>
-            <p>Native Ollama /api/chat and /api/generate endpoints.</p>
-          </a>
-          <a href="cohere.html" class="feature-link">
-            <span class="badge badge-green">Provider</span>
-            <h3>Cohere</h3>
-            <p>Cohere Chat API with native and OpenAI-compatible endpoints.</p>
-          </a>
-          <a href="vertex-ai.html" class="feature-link">
-            <span class="badge badge-blue">Provider</span>
-            <h3>Vertex AI</h3>
-            <p>Google Cloud Vertex AI endpoints using the Gemini handler.</p>
-          </a>
-          <a href="docker.html" class="feature-link">
-            <span class="badge badge-amber">Ops</span>
-            <h3>Docker &amp; Helm</h3>
-            <p>Container image and Kubernetes Helm chart deployment.</p>
-          </a>
-          <a href="drift-detection.html" class="feature-link">
-            <span class="badge badge-red">CI</span>
-            <h3>Drift Detection</h3>
-            <p>Three-way conformance testing against real APIs.</p>
-          </a>
-        </div>
-
-        <h2>API Reference</h2>
-
-        <h3>LLMock class</h3>
-
-        <table class="endpoint-table">
-          <thead>
-            <tr>
-              <th>Method</th>
-              <th>Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>new LLMock(opts?)</td>
-              <td>
-                Create instance. Options: <code>port</code>, <code>host</code>,
-                <code>latency</code>, <code>chunkSize</code>, <code>logLevel</code>,
-                <code>chaos</code>, <code>record</code>, <code>strict</code>, <code>metrics</code>,
-                <code>streamingProfile</code>
-              </td>
-            </tr>
-            <tr>
-              <td>start()</td>
-              <td>Start the HTTP server. Returns the base URL.</td>
-            </tr>
-            <tr>
-              <td>stop()</td>
-              <td>Stop the server.</td>
-            </tr>
-            <tr>
-              <td>on(match, response, opts?)</td>
-              <td>Add a fixture with match criteria and response.</td>
-            </tr>
-            <tr>
-              <td>onMessage(pattern, response)</td>
-              <td>Shorthand: match on userMessage.</td>
-            </tr>
-            <tr>
-              <td>onToolCall(name, response)</td>
-              <td>Shorthand: match on toolName.</td>
-            </tr>
-            <tr>
-              <td>onEmbedding(pattern, response)</td>
-              <td>Shorthand: match on inputText (embeddings).</td>
-            </tr>
-            <tr>
-              <td>onJsonOutput(pattern, json)</td>
-              <td>Shorthand: match userMessage + responseFormat=json_object.</td>
-            </tr>
-            <tr>
-              <td>onToolResult(id, response)</td>
-              <td>Shorthand: match on toolCallId.</td>
-            </tr>
-            <tr>
-              <td>nextRequestError(status, body?)</td>
-              <td>Queue a one-shot error for the next request.</td>
-            </tr>
-            <tr>
-              <td>addFixture(fixture)</td>
-              <td>Add a raw Fixture object.</td>
-            </tr>
-            <tr>
-              <td>loadFixtureFile(path)</td>
-              <td>Load fixtures from a JSON file.</td>
-            </tr>
-            <tr>
-              <td>loadFixtureDir(path)</td>
-              <td>Load all fixture JSON files from a directory.</td>
-            </tr>
-            <tr>
-              <td>reset()</td>
-              <td>Clear all fixtures and journal entries.</td>
-            </tr>
-            <tr>
-              <td>getRequests()</td>
-              <td>Get all journal entries.</td>
-            </tr>
-            <tr>
-              <td>getLastRequest()</td>
-              <td>Get the most recent journal entry.</td>
-            </tr>
-            <tr>
-              <td>.url / .port</td>
-              <td>Access the server URL and port.</td>
-            </tr>
-          </tbody>
-        </table>
       </main>
     </div>
 
@@ -448,16 +446,17 @@ npx llmock --fixtures ./fixtures --port 5555
     <footer class="docs-footer">
       <div class="footer-inner">
         <div class="footer-left">
-          <span>$</span> llmock &middot; MIT License &middot; Built by
+          <span>$</span> aimock &middot; MIT License &middot; Built by
           <a href="https://github.com/CopilotKit" target="_blank">CopilotKit</a>
         </div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
   </body>
 </html>
