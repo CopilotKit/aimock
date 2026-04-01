@@ -1,0 +1,44 @@
+name: Python Tests
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/aimock-pytest/**"
+      - "src/**"
+      - "dist/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/aimock-pytest/**"
+      - "src/**"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Build the TS package first
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+      # Set CLI path to local build
+      - name: Set AIMOCK_CLI_PATH
+        run: echo "AIMOCK_CLI_PATH=$PWD/dist/cli.js" >> $GITHUB_ENV
+
+      # Install and test Python package
+      - name: Install aimock-pytest
+        run: pip install ./packages/aimock-pytest[test]
+      - name: Run Python tests
+        run: cd packages/aimock-pytest && pytest tests/ -v
