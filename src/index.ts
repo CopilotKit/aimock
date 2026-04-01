@@ -54,6 +54,15 @@ export { handleOllama, handleOllamaGenerate, ollamaToCompletionRequest } from ".
 // Cohere
 export { handleCohere, cohereToCompletionRequest } from "./cohere.js";
 
+// Service mocks
+export { handleSearch } from "./search.js";
+export type { SearchResult, SearchFixture } from "./search.js";
+export { handleRerank } from "./rerank.js";
+export type { RerankResult, RerankFixture } from "./rerank.js";
+export { handleModeration } from "./moderation.js";
+export type { ModerationResult, ModerationFixture } from "./moderation.js";
+export type { ServiceFixtures } from "./server.js";
+
 // WebSocket
 export { WebSocketConnection, upgradeToWebSocket, computeAcceptKey } from "./ws-framing.js";
 export { handleWebSocketResponses } from "./ws-responses.js";
@@ -105,6 +114,60 @@ export {
 } from "./stream-collapse.js";
 export type { CollapseResult } from "./stream-collapse.js";
 
+// Mountable
+export type { Mountable } from "./types.js";
+
+// MCP
+export { MCPMock } from "./mcp-mock.js";
+export type {
+  MCPMockOptions,
+  MCPToolDefinition,
+  MCPResourceDefinition,
+  MCPPromptDefinition,
+  MCPContent,
+  MCPResourceContent,
+  MCPPromptResult,
+  MCPSession,
+} from "./mcp-types.js";
+
+// Vector
+export { VectorMock } from "./vector-mock.js";
+export type {
+  VectorMockOptions,
+  VectorCollection,
+  VectorEntry,
+  QueryResult,
+  VectorQuery,
+  QueryHandler,
+} from "./vector-types.js";
+
+// A2A
+export { A2AMock } from "./a2a-mock.js";
+export type {
+  A2AMockOptions,
+  A2AAgentDefinition,
+  A2APart,
+  A2AArtifact,
+  A2ATaskResponse,
+  A2AStreamEvent,
+  A2ATask,
+  A2AMessage,
+  A2ARole,
+  A2ATaskState,
+} from "./a2a-types.js";
+
+// JSON-RPC
+export { createJsonRpcDispatcher } from "./jsonrpc.js";
+export type { JsonRpcResponse, MethodHandler, JsonRpcDispatcherOptions } from "./jsonrpc.js";
+
+// Config loader
+export { loadConfig, startFromConfig } from "./config-loader.js";
+export type { AimockConfig } from "./config-loader.js";
+
+// Suite
+export { createMockSuite } from "./suite.js";
+export type { MockSuite, MockSuiteOptions } from "./suite.js";
+
 // Types
 export type {
   ChatMessage,
@@ -134,4 +197,7 @@ export type {
   ToolCallMessage,
   RecordConfig,
   RecordProviderKey,
+  ChatCompletion,
+  ChatCompletionChoice,
+  ChatCompletionMessage,
 } from "./types.js";

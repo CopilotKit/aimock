@@ -226,6 +226,26 @@ export function buildToolCallCompletion(toolCalls: ToolCall[], model: string): C
   };
 }
 
+// ─── HTTP helpers ─────────────────────────────────────────────────────────
+
+export function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    req.on("error", reject);
+  });
+}
+
+// ─── Pattern matching ─────────────────────────────────────────────────────
+
+export function matchesPattern(text: string, pattern: string | RegExp): boolean {
+  if (typeof pattern === "string") {
+    return text.toLowerCase().includes(pattern.toLowerCase());
+  }
+  return pattern.test(text);
+}
+
 // ─── Embedding helpers ─────────────────────────────────────────────────────
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
