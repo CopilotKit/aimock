@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mount &amp; Composition — llmock</title>
+    <title>Mount &amp; Composition — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,50 +42,11 @@
         </ul>
       </div>
     </nav>
-    <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html">Ollama</a><a href="cohere.html">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a>
-          <a href="record-replay.html">Record &amp; Replay</a>
-          <a href="metrics.html">Prometheus Metrics</a>
-          <a href="mount.html" class="active">Mount &amp; Composition</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Tools</h3>
-          <a href="mcp-mock.html">MCPMock</a>
-          <a href="a2a-mock.html">A2AMock</a>
-          <a href="vector-mock.html">VectorMock</a>
-          <a href="services.html">Services</a>
-        </div>
 
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a>
-          <a href="aimock-cli.html">aimock CLI</a>
-          <a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Mount &amp; Composition</h1>
@@ -239,7 +200,7 @@ llm.mount(<span class="str">"/a2a"</span>, a2aMock);   <span class="cm">// A2A a
           <div class="code-block-header">
             createMockSuite() <span class="lang-tag">typescript</span>
           </div>
-          <pre><code><span class="kw">import</span> { createMockSuite } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+          <pre><code><span class="kw">import</span> { createMockSuite } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
 
 <span class="kw">const</span> suite = <span class="kw">await</span> createMockSuite({
   llm: { port: <span class="num">0</span> },
@@ -261,7 +222,7 @@ afterAll(() =&gt; suite.stop());       <span class="cm">// stops everything</spa
 
         <h2>Built-in Services</h2>
         <p>
-          llmock ships with first-party mock services that implement the <code>Mountable</code>
+          aimock ships with first-party mock services that implement the <code>Mountable</code>
           interface:
         </p>
         <ul>
@@ -286,7 +247,7 @@ afterAll(() =&gt; suite.stop());       <span class="cm">// stops everything</spa
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
@@ -295,5 +256,7 @@ afterAll(() =&gt; suite.stop());       <span class="cm">// stops everything</spa
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>
