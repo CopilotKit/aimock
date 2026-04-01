@@ -2,6 +2,7 @@ import type {
   ChaosConfig,
   EmbeddingFixtureOpts,
   Fixture,
+  FixtureFileEntry,
   FixtureMatch,
   FixtureOpts,
   FixtureResponse,
@@ -10,7 +11,12 @@ import type {
   RecordConfig,
 } from "./types.js";
 import { createServer, type ServerInstance } from "./server.js";
-import { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
+import {
+  loadFixtureFile,
+  loadFixturesFromDir,
+  entryToFixture,
+  validateFixtures,
+} from "./fixture-loader.js";
 import { Journal } from "./journal.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
@@ -57,6 +63,22 @@ export class LLMock {
 
   loadFixtureDir(dirPath: string): this {
     this.fixtures.push(...loadFixturesFromDir(dirPath));
+    return this;
+  }
+
+  /**
+   * Add fixtures from a JSON string or pre-parsed array of fixture entries.
+   * Validates all fixtures and throws if any have severity "error".
+   */
+  addFixturesFromJSON(input: string | FixtureFileEntry[]): this {
+    const entries: FixtureFileEntry[] = typeof input === "string" ? JSON.parse(input) : input;
+    const converted = entries.map(entryToFixture);
+    const issues = validateFixtures(converted);
+    const errors = issues.filter((i) => i.severity === "error");
+    if (errors.length > 0) {
+      throw new Error(`Fixture validation failed: ${JSON.stringify(errors)}`);
+    }
+    this.fixtures.push(...converted);
     return this;
   }
 
@@ -164,11 +186,13 @@ export class LLMock {
   mount(path: string, handler: Mountable): this {
     this.mounts.push({ path, handler });
 
-    // If server is already running, wire up journal and baseUrl immediately
+    // If server is already running, wire up journal, registry, and baseUrl immediately
     // so late mounts behave identically to pre-start mounts.
     if (this.serverInstance) {
       if (handler.setJournal) handler.setJournal(this.serverInstance.journal);
       if (handler.setBaseUrl) handler.setBaseUrl(this.serverInstance.url + path);
+      const registry = this.serverInstance.defaults.registry;
+      if (registry && handler.setRegistry) handler.setRegistry(registry);
     }
 
     return this;

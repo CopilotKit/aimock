@@ -9,7 +9,7 @@ import {
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 
-function entryToFixture(entry: FixtureFileEntry): Fixture {
+export function entryToFixture(entry: FixtureFileEntry): Fixture {
   return {
     match: {
       userMessage: entry.match.userMessage,
