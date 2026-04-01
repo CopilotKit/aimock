@@ -691,6 +691,31 @@ describe("Gemini journal", () => {
   });
 });
 
+// ─── Error fixture without type field ─────────────────────────────────────────
+
+describe("Gemini error fixture without type", () => {
+  it("falls back to ERROR status when error.type is undefined", async () => {
+    const noTypeFixture: Fixture = {
+      match: { userMessage: "no-type-error" },
+      response: {
+        error: {
+          message: "Something went wrong",
+        },
+        status: 500,
+      },
+    };
+    instance = await createServer([noTypeFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "no-type-error" }] }],
+    });
+
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Something went wrong");
+    expect(body.error.status).toBe("ERROR");
+  });
+});
+
 // ─── CORS ───────────────────────────────────────────────────────────────────
 
 describe("Gemini CORS", () => {
@@ -701,5 +726,324 @@ describe("Gemini CORS", () => {
     });
 
     expect(res.headers["access-control-allow-origin"]).toBe("*");
+  });
+});
+
+// ─── Input conversion: additional branch coverage ────────────────────────────
+
+describe("geminiToCompletionRequest — additional branches", () => {
+  it("defaults role to 'user' when content.role is missing", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [{ parts: [{ text: "no role" }] }],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+    // role defaults to "user"
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe("user");
+    expect(result.messages[0].content).toBe("no role");
+  });
+
+  it("converts functionResponse.response that is a string", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: "search",
+                  response: "plain string response" as unknown as Record<string, unknown>,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe("tool");
+    // String response is used directly
+    expect(result.messages[0].content).toBe("plain string response");
+  });
+
+  it("includes text parts alongside functionResponse parts", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: "search",
+                  response: { data: "result" },
+                },
+              },
+              { text: "Additional context" },
+            ],
+          },
+        ],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+    // functionResponse → tool message, then text → user message
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0].role).toBe("tool");
+    expect(result.messages[1].role).toBe("user");
+    expect(result.messages[1].content).toBe("Additional context");
+  });
+
+  it("handles tools with empty functionDeclarations", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        tools: [{}],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+    // No functionDeclarations → tools should be undefined
+    expect(result.tools).toBeUndefined();
+  });
+
+  it("handles empty systemInstruction text", () => {
+    const result = geminiToCompletionRequest(
+      {
+        systemInstruction: { parts: [{ functionCall: { name: "x", args: {} } }] },
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+    // systemInstruction has no text parts → no system message
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe("user");
+  });
+});
+
+// ─── Streaming: empty content ────────────────────────────────────────────────
+
+describe("Gemini streaming empty content", () => {
+  it("streams a single empty-text chunk for empty content", async () => {
+    const emptyFixture: Fixture = {
+      match: { userMessage: "empty" },
+      response: { content: "" },
+    };
+    instance = await createServer([emptyFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "empty" }] }],
+    });
+
+    expect(res.status).toBe(200);
+
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { parts: { text: string }[] };
+        finishReason?: string;
+      }[];
+      usageMetadata?: unknown;
+    }[];
+
+    // Empty content produces a single chunk with empty text
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].candidates[0].content.parts[0].text).toBe("");
+    expect(chunks[0].candidates[0].finishReason).toBe("STOP");
+    expect(chunks[0].usageMetadata).toBeDefined();
+  });
+});
+
+// ─── Tool call with malformed JSON arguments ─────────────────────────────────
+
+describe("Gemini tool call malformed arguments", () => {
+  it("non-streaming: falls back to empty args for malformed JSON", async () => {
+    const malformedToolFixture: Fixture = {
+      match: { userMessage: "malformed-args" },
+      response: {
+        toolCalls: [{ name: "broken_tool", arguments: "{not valid json}" }],
+      },
+    };
+    instance = await createServer([malformedToolFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "malformed-args" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.candidates[0].content.parts[0].functionCall.name).toBe("broken_tool");
+    // Falls back to empty args
+    expect(body.candidates[0].content.parts[0].functionCall.args).toEqual({});
+    expect(body.candidates[0].finishReason).toBe("FUNCTION_CALL");
+  });
+
+  it("non-streaming: uses empty object for empty arguments string", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-args" },
+      response: {
+        toolCalls: [{ name: "no_args_tool", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "empty-args" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.candidates[0].content.parts[0].functionCall.name).toBe("no_args_tool");
+    expect(body.candidates[0].content.parts[0].functionCall.args).toEqual({});
+  });
+
+  it("streaming: falls back to empty args for malformed JSON", async () => {
+    const malformedToolFixture: Fixture = {
+      match: { userMessage: "malformed-stream" },
+      response: {
+        toolCalls: [{ name: "broken_tool", arguments: "{{bad}}" }],
+      },
+    };
+    instance = await createServer([malformedToolFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "malformed-stream" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { parts: { functionCall: { name: string; args: unknown } }[] };
+      }[];
+    }[];
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.name).toBe("broken_tool");
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.args).toEqual({});
+  });
+
+  it("streaming: uses empty object for empty arguments string", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-args-stream" },
+      response: {
+        toolCalls: [{ name: "no_args_tool", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "empty-args-stream" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { parts: { functionCall: { name: string; args: unknown } }[] };
+      }[];
+    }[];
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.name).toBe("no_args_tool");
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.args).toEqual({});
+  });
+});
+
+// ─── Strict mode ─────────────────────────────────────────────────────────────
+
+describe("Gemini strict mode", () => {
+  it("returns 503 in strict mode when no fixture matches", async () => {
+    instance = await createServer(allFixtures, { strict: true });
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "nomatch-strict" }] }],
+    });
+
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Strict mode: no fixture matched");
+    expect(body.error.status).toBe("UNAVAILABLE");
+  });
+});
+
+// ─── Streaming interruptions ─────────────────────────────────────────────────
+
+describe("Gemini streaming interruptions", () => {
+  it("text: records interruption in journal when stream is truncated", async () => {
+    const interruptFixture: Fixture = {
+      match: { userMessage: "interrupt-text" },
+      response: { content: "ABCDEFGHIJKLMNOP" },
+      chunkSize: 1,
+      latency: 10,
+      truncateAfterChunks: 3,
+    };
+    instance = await createServer([interruptFixture]);
+
+    // The server destroys the connection mid-stream, so the client will get
+    // a socket error. Use a race with a timeout to avoid hanging.
+    const parsed = new URL(instance.url);
+    await new Promise<void>((resolve) => {
+      const data = JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "interrupt-text" }] }],
+      });
+      const req = http.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port,
+          path: "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          res.on("data", () => {});
+          res.on("end", () => resolve());
+          res.on("error", () => resolve());
+          res.on("close", () => resolve());
+        },
+      );
+      req.on("error", () => resolve());
+      req.write(data);
+      req.end();
+    });
+
+    // Wait briefly for the server to finish processing
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Journal should record interruption
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("truncateAfterChunks");
+  });
+
+  it("tool call: records interruption in journal when disconnected", async () => {
+    const interruptToolFixture: Fixture = {
+      match: { userMessage: "interrupt-tool" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+      disconnectAfterMs: 1,
+      latency: 100,
+    };
+    instance = await createServer([interruptToolFixture]);
+
+    try {
+      await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+        contents: [{ role: "user", parts: [{ text: "interrupt-tool" }] }],
+      });
+    } catch {
+      // Expected — socket hang up
+    }
+
+    // Wait briefly for the server to finish processing
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Journal should record interruption
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.response.interrupted).toBe(true);
+    expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 });
