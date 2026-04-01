@@ -8,10 +8,10 @@
       "name": "llmock",
       "source": {
         "source": "npm",
-        "package": "@copilotkit/llmock",
-        "version": "^1.5.0"
+        "package": "@copilotkit/aimock",
+        "version": "^1.7.0"
       },
-      "description": "Fixture authoring skill for @copilotkit/llmock — match fields, response types, embeddings, structured output, sequential responses, streaming physics, agent loop patterns, gotchas, and debugging"
+      "description": "Fixture authoring skill for @copilotkit/aimock — match fields, response types, embeddings, structured output, sequential responses, streaming physics, agent loop patterns, gotchas, and debugging"
     }
   ]
 }

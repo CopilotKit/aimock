@@ -10,7 +10,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  PRIMARY_IMAGE: ghcr.io/copilotkit/aimock
+  COMPAT_IMAGE: ghcr.io/copilotkit/llmock
 
 jobs:
   build-and-push:
@@ -37,11 +38,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
+      - name: Extract metadata (primary — aimock)
+        id: meta-primary
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.PRIMARY_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Extract metadata (compat — llmock)
+        id: meta-compat
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.COMPAT_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
@@ -52,7 +62,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ steps.meta-primary.outputs.tags }}
+            ${{ steps.meta-compat.outputs.tags }}
+          labels: ${{ steps.meta-primary.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

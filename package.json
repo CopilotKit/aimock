@@ -1,7 +1,7 @@
 {
-  "name": "@copilotkit/llmock",
-  "version": "1.6.1",
-  "description": "Deterministic mock LLM server for testing (OpenAI, Anthropic, Gemini)",
+  "name": "@copilotkit/aimock",
+  "version": "1.7.0",
+  "description": "Mock infrastructure for AI application testing — LLM APIs, MCP tools, A2A agents, vector databases, search, and more. Zero dependencies.",
   "license": "MIT",
   "packageManager": "pnpm@10.28.2",
   "engines": {
@@ -18,12 +18,56 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./mcp": {
+      "import": {
+        "types": "./dist/mcp-stub.d.ts",
+        "default": "./dist/mcp-stub.js"
+      },
+      "require": {
+        "types": "./dist/mcp-stub.d.cts",
+        "default": "./dist/mcp-stub.cjs"
+      }
+    },
+    "./a2a": {
+      "import": {
+        "types": "./dist/a2a-stub.d.ts",
+        "default": "./dist/a2a-stub.js"
+      },
+      "require": {
+        "types": "./dist/a2a-stub.d.cts",
+        "default": "./dist/a2a-stub.cjs"
+      }
+    },
+    "./vector": {
+      "import": {
+        "types": "./dist/vector-stub.d.ts",
+        "default": "./dist/vector-stub.js"
+      },
+      "require": {
+        "types": "./dist/vector-stub.d.cts",
+        "default": "./dist/vector-stub.cjs"
+      }
     }
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "mcp": [
+        "./dist/mcp-stub.d.ts"
+      ],
+      "a2a": [
+        "./dist/a2a-stub.d.ts"
+      ],
+      "vector": [
+        "./dist/vector-stub.d.ts"
+      ]
+    }
+  },
   "bin": {
+    "aimock": "./dist/aimock-cli.js",
     "llmock": "./dist/cli.js"
   },
   "files": [
@@ -50,24 +94,25 @@
     "*.{ts,mts,js,mjs}": "eslint --fix"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@arethetypeswrong/cli": "^0.17.3",
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.30.0",
+    "@google/generative-ai": "^0.24.0",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.30.0",
     "eslint-config-prettier": "^10.1.5",
     "husky": "^9.1.7",
     "lint-staged": "^16.3.2",
+    "openai": "^4.0.0",
     "prettier": "^3.6.2",
     "publint": "^0.3.12",
     "tsdown": "^0.12.5",
+    "tsx": "^4.19.0",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.35.1",
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@google/generative-ai": "^0.24.0",
-    "@types/node": "^22.0.0",
-    "openai": "^4.0.0",
-    "tsx": "^4.19.0",
     "vitest": "^3.2.1"
   }
 }

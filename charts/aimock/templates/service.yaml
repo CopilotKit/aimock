@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "llmock.fullname" . }}
+  name: {{ include "aimock.fullname" . }}
   labels:
-    {{- include "llmock.labels" . | nindent 4 }}
+    {{- include "aimock.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +12,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "llmock.selectorLabels" . | nindent 4 }}
+    {{- include "aimock.selectorLabels" . | nindent 4 }}

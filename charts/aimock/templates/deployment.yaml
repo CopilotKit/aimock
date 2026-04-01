@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "llmock.fullname" . }}
+  name: {{ include "aimock.fullname" . }}
   labels:
-    {{- include "llmock.labels" . | nindent 4 }}
+    {{- include "aimock.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "llmock.selectorLabels" . | nindent 6 }}
+      {{- include "aimock.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "llmock.selectorLabels" . | nindent 8 }}
+        {{- include "aimock.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: llmock
+        - name: aimock
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:

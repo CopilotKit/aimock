@@ -1,13 +1,13 @@
 ---
 name: write-fixtures
-description: Use when writing test fixtures for @copilotkit/llmock — mock LLM responses, tool call sequences, error injection, multi-turn agent loops, embeddings, structured output, sequential responses, or debugging fixture mismatches
+description: Use when writing test fixtures for @copilotkit/aimock — mock LLM responses, tool call sequences, error injection, multi-turn agent loops, embeddings, structured output, sequential responses, or debugging fixture mismatches
 ---
 
-# Writing llmock Test Fixtures
+# Writing aimock Test Fixtures
 
-## What llmock Is
+## What aimock Is
 
-Zero-dependency mock LLM server. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Vertex AI, Ollama, Cohere). Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs. Chaos testing and Prometheus metrics.
+aimock is a zero-dependency mock LLM server. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, AWS Bedrock, Azure OpenAI, Vertex AI, Ollama, Cohere). Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs. Chaos testing and Prometheus metrics.
 
 ## Core Mental Model
 
@@ -348,6 +348,154 @@ All providers share the same fixture pool — write fixtures once, they work for
 
 18. **Cohere requires `model` field** — returns 400 if `model` is missing from the request body.
 
+## Mount & Composition
+
+### mount() API
+
+Mount additional mock services onto a running LLMock server. All services share one port, one health endpoint, and one request journal.
+
+```typescript
+const llm = new LLMock({ port: 5555 });
+llm.mount("/mcp", mcpMock); // MCP tools at /mcp
+llm.mount("/a2a", a2aMock); // A2A agents at /a2a
+llm.mount("/vector", vectorMock); // Vector DB at /vector
+await llm.start();
+```
+
+Any object implementing the `Mountable` interface (a `handleRequest` method that returns `boolean`) can be mounted. Path prefixes are stripped before the service sees the request — `/mcp/tools/list` arrives as `/tools/list`.
+
+### createMockSuite()
+
+Unified lifecycle for LLMock + mounted services:
+
+```typescript
+import { createMockSuite } from "@copilotkit/aimock";
+
+const suite = createMockSuite({
+  port: 0,
+  fixtures: "./fixtures",
+  services: { "/mcp": mcpMock, "/a2a": a2aMock },
+});
+
+await suite.start();
+// suite.llm — the LLMock instance
+// suite.url — base URL
+
+afterEach(() => suite.reset()); // resets everything
+afterAll(() => suite.stop());
+```
+
+### aimock CLI config file
+
+The `aimock` CLI reads a JSON config and serves all services on one port:
+
+```bash
+aimock --config aimock.json --port 4010
+```
+
+Config format:
+
+```json
+{
+  "llm": {
+    "fixtures": "./fixtures",
+    "latency": 0,
+    "metrics": true
+  },
+  "services": {
+    "/mcp": { "type": "mcp", "tools": "./mcp-tools.json" },
+    "/a2a": { "type": "a2a", "agents": "./a2a-agents.json" }
+  }
+}
+```
+
+## VectorMock
+
+Mock vector database server for testing RAG pipelines. Supports Pinecone, Qdrant, and ChromaDB API formats.
+
+```typescript
+import { VectorMock } from "@copilotkit/aimock";
+
+const vector = new VectorMock();
+
+// Create a collection and register query results
+vector.addCollection("docs", { dimension: 1536 });
+vector.onQuery("docs", [
+  { id: "doc-1", score: 0.95, metadata: { title: "Getting Started" } },
+  { id: "doc-2", score: 0.87, metadata: { title: "API Reference" } },
+]);
+
+// Upsert vectors
+vector.upsert("docs", [
+  { id: "v1", values: [0.1, 0.2, ...], metadata: { title: "Intro" } },
+]);
+
+// Dynamic query handler
+vector.onQuery("docs", (query) => {
+  return [{ id: "result", score: 1.0, metadata: { topK: query.topK } }];
+});
+
+// Standalone or mounted
+const url = await vector.start();
+// Or: llm.mount("/vector", vector);
+```
+
+### VectorMock endpoints
+
+| Provider | Endpoints                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Pinecone | `POST /query`, `POST /vectors/upsert`, `POST /vectors/delete`, `GET /describe-index-stats`                                               |
+| Qdrant   | `POST /collections/{name}/points/search`, `PUT /collections/{name}/points`, `POST /collections/{name}/points/delete`                     |
+| ChromaDB | `POST /api/v1/collections/{id}/query`, `POST /api/v1/collections/{id}/add`, `GET /api/v1/collections`, `DELETE /api/v1/collections/{id}` |
+
+## Service Mocks (Search / Rerank / Moderation)
+
+Built-in mocks for common AI-adjacent services. Registered on the LLMock instance directly — no separate server needed.
+
+### Search (Tavily-compatible)
+
+```typescript
+// POST /search — matches request `query` field
+mock.onSearch("weather", [
+  { title: "Weather Report", url: "https://example.com", content: "Sunny today" },
+]);
+mock.onSearch(/stock\s+price/i, [
+  { title: "ACME Stock", url: "https://example.com", content: "$42", score: 0.95 },
+]);
+```
+
+### Rerank (Cohere-compatible)
+
+```typescript
+// POST /v2/rerank — matches request `query` field
+mock.onRerank("machine learning", [
+  { index: 0, relevance_score: 0.99 },
+  { index: 2, relevance_score: 0.85 },
+]);
+```
+
+### Moderation (OpenAI-compatible)
+
+```typescript
+// POST /v1/moderations — matches request `input` field
+mock.onModerate("violent", {
+  flagged: true,
+  categories: { violence: true, hate: false },
+  category_scores: { violence: 0.95, hate: 0.01 },
+});
+
+// Catch-all — everything passes
+mock.onModerate(/.*/, { flagged: false, categories: {} });
+```
+
+### Pattern matching
+
+All three services use the same matching logic:
+
+- **String patterns** — case-insensitive substring match
+- **RegExp patterns** — full regex test
+- **First match wins** — register specific patterns before catch-alls
+
 ## Debugging Fixture Mismatches
 
 When a fixture doesn't match:
@@ -360,7 +508,7 @@ When a fixture doesn't match:
 ## E2E Test Setup Pattern
 
 ```typescript
-import { LLMock } from "@copilotkit/llmock";
+import { LLMock } from "@copilotkit/aimock";
 
 // Setup — port: 0 picks a random available port
 const mock = new LLMock({ port: 0 });
@@ -408,6 +556,10 @@ const mock = await LLMock.create({ port: 0 }); // creates + starts in one call
 | `clearRequests()`                       | Clear journal only                          |
 | `setChaos(opts)`                        | Set server-level chaos rates                |
 | `clearChaos()`                          | Remove server-level chaos                   |
+| `onSearch(pattern, results)`            | Match search requests by query              |
+| `onRerank(pattern, results)`            | Match rerank requests by query              |
+| `onModerate(pattern, result)`           | Match moderation requests by input          |
+| `mount(path, handler)`                  | Mount a Mountable (VectorMock, etc.)        |
 | `url` / `baseUrl`                       | Server URL (throws if not started)          |
 | `port`                                  | Server port number                          |
 
