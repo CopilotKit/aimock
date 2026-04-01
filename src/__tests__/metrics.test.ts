@@ -455,13 +455,13 @@ describe("MetricsRegistry: all three types serialized together", () => {
 describe("MetricsRegistry: status label in counter output", () => {
   it("status label appears correctly in serialized counter", () => {
     const reg = createMetricsRegistry();
-    reg.incrementCounter("llmock_requests_total", { status: "200", path: "/v1/chat/completions" });
-    reg.incrementCounter("llmock_requests_total", { status: "200", path: "/v1/chat/completions" });
-    reg.incrementCounter("llmock_requests_total", { status: "404", path: "/v1/chat/completions" });
+    reg.incrementCounter("aimock_requests_total", { status: "200", path: "/v1/chat/completions" });
+    reg.incrementCounter("aimock_requests_total", { status: "200", path: "/v1/chat/completions" });
+    reg.incrementCounter("aimock_requests_total", { status: "404", path: "/v1/chat/completions" });
 
     const output = reg.serialize();
-    expect(output).toContain('llmock_requests_total{path="/v1/chat/completions",status="200"} 2');
-    expect(output).toContain('llmock_requests_total{path="/v1/chat/completions",status="404"} 1');
+    expect(output).toContain('aimock_requests_total{path="/v1/chat/completions",status="200"} 2');
+    expect(output).toContain('aimock_requests_total{path="/v1/chat/completions",status="404"} 1');
   });
 });
 
@@ -518,9 +518,9 @@ describe("integration: /metrics endpoint", () => {
     await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
 
     const res = await httpGet(`${instance.url}/metrics`);
-    expect(res.body).toContain("llmock_requests_total");
+    expect(res.body).toContain("aimock_requests_total");
     // Should have count of 2 for the completions path
-    expect(res.body).toMatch(/llmock_requests_total\{[^}]*path="\/v1\/chat\/completions"[^}]*\} 2/);
+    expect(res.body).toMatch(/aimock_requests_total\{[^}]*path="\/v1\/chat\/completions"[^}]*\} 2/);
   });
 
   it("records histogram bucket distribution after a request", async () => {
@@ -536,14 +536,14 @@ describe("integration: /metrics endpoint", () => {
 
     const res = await httpGet(`${instance.url}/metrics`);
     // Should have histogram buckets
-    expect(res.body).toContain("llmock_request_duration_seconds_bucket");
-    expect(res.body).toContain("llmock_request_duration_seconds_count");
-    expect(res.body).toContain("llmock_request_duration_seconds_sum");
+    expect(res.body).toContain("aimock_request_duration_seconds_bucket");
+    expect(res.body).toContain("aimock_request_duration_seconds_count");
+    expect(res.body).toContain("aimock_request_duration_seconds_sum");
     // +Inf bucket should equal count
     const infMatch = res.body.match(
-      /llmock_request_duration_seconds_bucket\{[^}]*le="\+Inf"\} (\d+)/,
+      /aimock_request_duration_seconds_bucket\{[^}]*le="\+Inf"\} (\d+)/,
     );
-    const countMatch = res.body.match(/llmock_request_duration_seconds_count\{[^}]*\} (\d+)/);
+    const countMatch = res.body.match(/aimock_request_duration_seconds_count\{[^}]*\} (\d+)/);
     expect(infMatch).not.toBeNull();
     expect(countMatch).not.toBeNull();
     expect(infMatch![1]).toBe(countMatch![1]);
@@ -564,8 +564,8 @@ describe("integration: /metrics endpoint", () => {
     await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
 
     const res = await httpGet(`${instance.url}/metrics`);
-    expect(res.body).toContain("llmock_chaos_triggered_total");
-    expect(res.body).toMatch(/llmock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
+    expect(res.body).toContain("aimock_chaos_triggered_total");
+    expect(res.body).toMatch(/aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
   });
 
   it("increments chaos counter on Anthropic /v1/messages endpoint", async () => {
@@ -587,8 +587,8 @@ describe("integration: /metrics endpoint", () => {
     });
 
     const res = await httpGet(`${instance.url}/metrics`);
-    expect(res.body).toContain("llmock_chaos_triggered_total");
-    expect(res.body).toMatch(/llmock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
+    expect(res.body).toContain("aimock_chaos_triggered_total");
+    expect(res.body).toMatch(/aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
   });
 
   it("tracks fixtures loaded gauge", async () => {
@@ -598,7 +598,7 @@ describe("integration: /metrics endpoint", () => {
     ];
     instance = await createServer(fixtures, { metrics: true });
     const res = await httpGet(`${instance.url}/metrics`);
-    expect(res.body).toContain("llmock_fixtures_loaded{} 2");
+    expect(res.body).toContain("aimock_fixtures_loaded{} 2");
   });
 
   it("metrics endpoint remains responsive after normal requests", async () => {
@@ -620,7 +620,7 @@ describe("integration: /metrics endpoint", () => {
     // Server remains reachable and metrics endpoint still responds after the request
     const metricsRes = await httpGet(`${instance.url}/metrics`);
     expect(metricsRes.status).toBe(200);
-    expect(metricsRes.body).toContain("llmock_requests_total");
+    expect(metricsRes.body).toContain("aimock_requests_total");
   });
 
   it("continues serving requests when metrics registry throws (try-catch guards EventEmitter crash)", async () => {
