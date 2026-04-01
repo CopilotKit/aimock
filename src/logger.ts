@@ -15,21 +15,21 @@ export class Logger {
 
   info(...args: unknown[]): void {
     if (this.level >= LEVELS.info) {
-      console.log("[llmock]", ...args);
+      console.log("[aimock]", ...args);
     }
   }
 
   debug(...args: unknown[]): void {
     if (this.level >= LEVELS.debug) {
-      console.log("[llmock]", ...args);
+      console.log("[aimock]", ...args);
     }
   }
 
   warn(...args: unknown[]): void {
-    console.warn("[llmock]", ...args);
+    console.warn("[aimock]", ...args);
   }
 
   error(...args: unknown[]): void {
-    console.error("[llmock]", ...args);
+    console.error("[aimock]", ...args);
   }
 }

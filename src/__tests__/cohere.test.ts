@@ -689,7 +689,7 @@ describe("POST /v2/chat (chaos)", () => {
         messages: [{ role: "user", content: "hello" }],
         stream: false,
       },
-      { "x-llmock-chaos-drop": "1.0" },
+      { "x-aimock-chaos-drop": "1.0" },
     );
 
     expect(res.status).toBe(500);

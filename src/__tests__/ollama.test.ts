@@ -579,7 +579,7 @@ describe("POST /api/chat (chaos)", () => {
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(data),
-            "x-llmock-chaos-drop": "1.0",
+            "x-aimock-chaos-drop": "1.0",
           },
         },
         (res) => {
@@ -729,7 +729,7 @@ describe("POST /api/generate (chaos)", () => {
           headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(data),
-            "x-llmock-chaos-drop": "1.0",
+            "x-aimock-chaos-drop": "1.0",
           },
         },
         (res) => {

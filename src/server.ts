@@ -1,6 +1,7 @@
 import * as http from "node:http";
 import type {
   Fixture,
+  FixtureFileEntry,
   ChatCompletionRequest,
   HandlerDefaults,
   MockServerOptions,
@@ -9,6 +10,7 @@ import type {
 } from "./types.js";
 import { Journal } from "./journal.js";
 import { matchFixture } from "./router.js";
+import { validateFixtures, entryToFixture } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import {
@@ -114,6 +116,160 @@ function handleOptions(res: http.ServerResponse): void {
 function handleNotFound(res: http.ServerResponse, message: string): void {
   setCorsHeaders(res);
   writeErrorResponse(res, 404, JSON.stringify({ error: { message, type: "not_found" } }));
+}
+
+// ---------------------------------------------------------------------------
+// /__aimock/* control API — used by aimock-pytest and other test harnesses
+// to manage fixtures, journal, and error injection without restarting the
+// server.
+// ---------------------------------------------------------------------------
+
+const CONTROL_PREFIX = "/__aimock";
+
+/**
+ * Handle requests under `/__aimock/`. Returns `true` if the request was
+ * handled, `false` if the path doesn't match the control prefix.
+ */
+async function handleControlAPI(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  pathname: string,
+  fixtures: Fixture[],
+  journal: Journal,
+): Promise<boolean> {
+  if (!pathname.startsWith(CONTROL_PREFIX)) return false;
+
+  const subPath = pathname.slice(CONTROL_PREFIX.length);
+  setCorsHeaders(res);
+
+  // GET /__aimock/health
+  if (subPath === "/health" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return true;
+  }
+
+  // GET /__aimock/journal
+  if (subPath === "/journal" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(journal.getAll()));
+    return true;
+  }
+
+  // POST /__aimock/fixtures — add fixtures dynamically
+  if (subPath === "/fixtures" && req.method === "POST") {
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      return true;
+    }
+
+    let parsed: { fixtures?: FixtureFileEntry[] };
+    try {
+      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[] };
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return true;
+    }
+
+    if (!Array.isArray(parsed.fixtures)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
+      return true;
+    }
+
+    const converted = parsed.fixtures.map(entryToFixture);
+    const issues = validateFixtures(converted);
+    const errors = issues.filter((i) => i.severity === "error");
+    if (errors.length > 0) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Validation failed", details: errors }));
+      return true;
+    }
+
+    fixtures.push(...converted);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ added: converted.length }));
+    return true;
+  }
+
+  // DELETE /__aimock/fixtures — clear all fixtures
+  if (subPath === "/fixtures" && req.method === "DELETE") {
+    fixtures.length = 0;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ cleared: true }));
+    return true;
+  }
+
+  // POST /__aimock/reset — clear fixtures + journal + match counts
+  if (subPath === "/reset" && req.method === "POST") {
+    fixtures.length = 0;
+    journal.clear();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ reset: true }));
+    return true;
+  }
+
+  // POST /__aimock/error — queue a one-shot error
+  if (subPath === "/error" && req.method === "POST") {
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      return true;
+    }
+
+    let parsed: { status?: number; body?: { message?: string; type?: string; code?: string } };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return true;
+    }
+
+    const status = parsed.status ?? 500;
+    const errorBody = parsed.body;
+    const errorFixture: Fixture = {
+      match: { predicate: () => true },
+      response: {
+        error: {
+          message: errorBody?.message ?? "Injected error",
+          type: errorBody?.type ?? "server_error",
+          code: errorBody?.code,
+        },
+        status,
+      },
+    };
+    // Insert at front so it matches before everything else
+    fixtures.unshift(errorFixture);
+    // Remove after first match
+    const original = errorFixture.match.predicate!;
+    errorFixture.match.predicate = (req) => {
+      const result = original(req);
+      if (result) {
+        queueMicrotask(() => {
+          const idx = fixtures.indexOf(errorFixture);
+          if (idx !== -1) fixtures.splice(idx, 1);
+        });
+      }
+      return result;
+    };
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ queued: true }));
+    return true;
+  }
+
+  // Unknown control path
+  handleNotFound(res, `Unknown control endpoint: ${pathname}`);
+  return true;
 }
 
 async function handleCompletions(
@@ -424,16 +580,17 @@ export async function createServer(
 
   const journal = new Journal();
 
-  // Share journal with mounted services
+  // Share journal and metrics registry with mounted services
   if (mounts) {
     for (const { handler } of mounts) {
       if (handler.setJournal) handler.setJournal(journal);
+      if (registry && handler.setRegistry) handler.setRegistry(registry);
     }
   }
 
   // Set initial fixtures-loaded gauge
   if (registry) {
-    registry.setGauge("llmock_fixtures_loaded", {}, fixtures.length);
+    registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -473,14 +630,14 @@ export async function createServer(
           const normalizedPath = normalizePathLabel(rawPathname);
           const method = req.method ?? "UNKNOWN";
           const status = String(res.statusCode);
-          registry.incrementCounter("llmock_requests_total", {
+          registry.incrementCounter("aimock_requests_total", {
             method,
             path: normalizedPath,
             status,
           });
           const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
           registry.observeHistogram(
-            "llmock_request_duration_seconds",
+            "aimock_request_duration_seconds",
             { method, path: normalizedPath },
             elapsed,
           );
@@ -488,6 +645,12 @@ export async function createServer(
           defaults.logger.warn("metrics instrumentation error", err);
         }
       });
+    }
+
+    // Control API — must be checked before mounts and path rewrites
+    if (pathname.startsWith(CONTROL_PREFIX)) {
+      await handleControlAPI(req, res, pathname, fixtures, journal);
+      return;
     }
 
     // Dispatch to mounted services before any path rewrites
@@ -572,7 +735,7 @@ export async function createServer(
         id,
         object: "model" as const,
         created: 1686935002,
-        owned_by: "llmock",
+        owned_by: "aimock",
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
