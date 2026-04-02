@@ -154,12 +154,20 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
           message: "content is empty string",
         });
       }
-      if (response.reasoning !== undefined && typeof response.reasoning !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: "reasoning must be a string",
-        });
+      if (response.reasoning !== undefined) {
+        if (typeof response.reasoning !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: "reasoning must be a string",
+          });
+        } else if (response.reasoning === "") {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "reasoning is empty string — no reasoning events will be emitted",
+          });
+        }
       }
       if (response.webSearches !== undefined) {
         if (!Array.isArray(response.webSearches)) {

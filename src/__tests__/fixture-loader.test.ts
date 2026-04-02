@@ -844,4 +844,55 @@ describe("validateFixtures", () => {
       true,
     );
   });
+
+  it("error: reasoning is not a string", () => {
+    const fixtures = [makeFixture({ response: { content: "hi", reasoning: 123 } as never })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "error" && r.message.includes("reasoning must be a string"),
+      ),
+    ).toBe(true);
+  });
+
+  it("warning: reasoning is empty string", () => {
+    const fixtures = [makeFixture({ response: { content: "hi", reasoning: "" } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "warning" && r.message.includes("reasoning is empty")),
+    ).toBe(true);
+  });
+
+  it("error: webSearches is not an array", () => {
+    const fixtures = [
+      makeFixture({ response: { content: "hi", webSearches: "not-array" } as never }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "error" && r.message.includes("webSearches must be an array"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: webSearches element is not a string", () => {
+    const fixtures = [
+      makeFixture({ response: { content: "hi", webSearches: ["valid", 42] } as never }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "error" && r.message.includes("webSearches[1] is not a string"),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts valid reasoning and webSearches", () => {
+    const fixtures = [
+      makeFixture({
+        response: { content: "hi", reasoning: "thinking...", webSearches: ["query1", "query2"] },
+      }),
+    ];
+    expect(validateFixtures(fixtures)).toEqual([]);
+  });
 });

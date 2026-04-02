@@ -25,7 +25,12 @@ const errorFixture: Fixture = {
   },
 };
 
-const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture];
+const reasoningFixture: Fixture = {
+  match: { userMessage: "think" },
+  response: { content: "The answer.", reasoning: "Let me reason about this." },
+};
+
+const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture, reasoningFixture];
 
 // --- tests ---
 
@@ -446,5 +451,23 @@ describe("WebSocket /v1/responses", () => {
     expect(entry).not.toBeNull();
     expect(entry!.response.interrupted).toBe(true);
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
+  });
+
+  it("streams reasoning events before text via WebSocket", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("think"));
+
+    const raw = await ws.waitForMessages(15);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.output_text.delta");
+
+    const reasoningIdx = types.indexOf("response.reasoning_summary_text.delta");
+    const textIdx = types.indexOf("response.output_text.delta");
+    expect(reasoningIdx).toBeLessThan(textIdx);
   });
 });
