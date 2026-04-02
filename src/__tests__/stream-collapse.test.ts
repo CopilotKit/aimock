@@ -1684,3 +1684,111 @@ describe("collapseStreamingResponse bedrock SSE", () => {
     expect(result!.content).toBe("bedrock-sse");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reasoning and web search collapse
+// ---------------------------------------------------------------------------
+
+describe("collapseOpenAISSE with reasoning", () => {
+  it("extracts reasoning from Responses API reasoning_summary_text.delta events", () => {
+    const body = [
+      `data: ${JSON.stringify({ type: "response.created", response: {} })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "Let me " })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.reasoning_summary_text.delta", delta: "think." })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Answer" })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.completed", response: {} })}`,
+      "",
+    ].join("\n");
+
+    const result = collapseOpenAISSE(body);
+    expect(result.content).toBe("Answer");
+    expect(result.reasoning).toBe("Let me think.");
+  });
+
+  it("extracts web searches from Responses API output_item.done events", () => {
+    const body = [
+      `data: ${JSON.stringify({ type: "response.created", response: {} })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        item: { type: "web_search_call", status: "completed", query: "test query" },
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        item: { type: "web_search_call", status: "completed", query: "another query" },
+      })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Result" })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.completed", response: {} })}`,
+      "",
+    ].join("\n");
+
+    const result = collapseOpenAISSE(body);
+    expect(result.content).toBe("Result");
+    expect(result.webSearches).toEqual(["test query", "another query"]);
+  });
+
+  it("returns undefined reasoning and webSearches when not present", () => {
+    const body = [
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Plain" })}`,
+      "",
+      `data: ${JSON.stringify({ type: "response.completed", response: {} })}`,
+      "",
+    ].join("\n");
+
+    const result = collapseOpenAISSE(body);
+    expect(result.content).toBe("Plain");
+    expect(result.reasoning).toBeUndefined();
+    expect(result.webSearches).toBeUndefined();
+  });
+});
+
+describe("collapseAnthropicSSE with thinking", () => {
+  it("extracts reasoning from thinking_delta events", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Hmm " } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "interesting" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Answer");
+    expect(result.reasoning).toBe("Hmm interesting");
+  });
+
+  it("returns undefined reasoning when no thinking blocks", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "text_delta", text: "Plain" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Plain");
+    expect(result.reasoning).toBeUndefined();
+  });
+});

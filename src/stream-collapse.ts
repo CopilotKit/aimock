@@ -19,6 +19,8 @@ import type { Logger } from "./logger.js";
 // ambiguous results and simplify downstream consumers.
 export interface CollapseResult {
   content?: string;
+  reasoning?: string;
+  webSearches?: string[];
   toolCalls?: ToolCall[];
   droppedChunks?: number;
   truncated?: boolean;
@@ -38,6 +40,8 @@ export interface CollapseResult {
 export function collapseOpenAISSE(body: string): CollapseResult {
   const lines = body.split("\n\n").filter((l) => l.trim().length > 0);
   let content = "";
+  let reasoning = "";
+  const webSearchQueries: string[] = [];
   let droppedChunks = 0;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -53,6 +57,35 @@ export function collapseOpenAISSE(body: string): CollapseResult {
       parsed = JSON.parse(payload) as Record<string, unknown>;
     } catch {
       droppedChunks++;
+      continue;
+    }
+
+    // Responses API reasoning events
+    if (
+      parsed.type === "response.reasoning_summary_text.delta" &&
+      typeof parsed.delta === "string"
+    ) {
+      reasoning += parsed.delta;
+      continue;
+    }
+
+    // Responses API web search events
+    if (parsed.type === "response.output_item.done") {
+      const item = parsed.item as Record<string, unknown> | undefined;
+      if (item?.type === "web_search_call" && typeof item.query === "string") {
+        webSearchQueries.push(item.query);
+        continue;
+      }
+    }
+
+    // Responses API text content events
+    if (parsed.type === "response.output_text.delta" && typeof parsed.delta === "string") {
+      content += parsed.delta;
+      continue;
+    }
+
+    // Skip other Responses API structural events
+    if (typeof parsed.type === "string" && parsed.type.startsWith("response.")) {
       continue;
     }
 
@@ -108,7 +141,12 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     };
   }
 
-  return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
+  return {
+    content,
+    ...(reasoning ? { reasoning } : {}),
+    ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
+    ...(droppedChunks > 0 ? { droppedChunks } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +163,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
 export function collapseAnthropicSSE(body: string): CollapseResult {
   const blocks = body.split("\n\n").filter((b) => b.trim().length > 0);
   let content = "";
+  let reasoning = "";
   let droppedChunks = 0;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -166,6 +205,10 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
         content += delta.text;
       }
 
+      if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+        reasoning += delta.thinking;
+      }
+
       if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
         const entry = toolCallMap.get(index);
         if (entry) {
@@ -183,11 +226,16 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
         arguments: tc.arguments,
         ...(tc.id ? { id: tc.id } : {}),
       })),
+      ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
     };
   }
 
-  return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
+  return {
+    content,
+    ...(reasoning ? { reasoning } : {}),
+    ...(droppedChunks > 0 ? { droppedChunks } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

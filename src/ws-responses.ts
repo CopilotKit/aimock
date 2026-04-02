@@ -194,7 +194,14 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildTextStreamEvents(response.content, completionReq.model, chunkSize);
+
+    const events = buildTextStreamEvents(
+      response.content,
+      completionReq.model,
+      chunkSize,
+      response.reasoning,
+      response.webSearches,
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
       ws,

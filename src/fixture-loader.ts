@@ -154,6 +154,54 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
           message: "content is empty string",
         });
       }
+      if (response.reasoning !== undefined) {
+        if (typeof response.reasoning !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: "reasoning must be a string",
+          });
+        } else if (response.reasoning === "") {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "reasoning is empty string — no reasoning events will be emitted",
+          });
+        }
+      }
+      if (response.webSearches !== undefined) {
+        if (!Array.isArray(response.webSearches)) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: "webSearches must be an array of strings",
+          });
+        } else if (response.webSearches.length === 0) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "webSearches is empty array — no web search events will be emitted",
+          });
+        } else {
+          for (let j = 0; j < response.webSearches.length; j++) {
+            if (typeof response.webSearches[j] !== "string") {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `webSearches[${j}] is not a string`,
+              });
+              break;
+            }
+            if (response.webSearches[j] === "") {
+              results.push({
+                severity: "warning",
+                fixtureIndex: i,
+                message: `webSearches[${j}] is empty string`,
+              });
+            }
+          }
+        }
+      }
     }
 
     // Tool call response checks

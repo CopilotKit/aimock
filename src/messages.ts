@@ -198,6 +198,7 @@ function buildClaudeTextStreamEvents(
   content: string,
   model: string,
   chunkSize: number,
+  reasoning?: string,
 ): ClaudeSSEEvent[] {
   const msgId = generateMessageId();
   const events: ClaudeSSEEvent[] = [];
@@ -217,10 +218,37 @@ function buildClaudeTextStreamEvents(
     },
   });
 
-  // content_block_start
+  let blockIndex = 0;
+
+  // Thinking block (emitted before text when reasoning is present)
+  if (reasoning) {
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "thinking", thinking: "" },
+    });
+
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: { type: "thinking_delta", thinking: slice },
+      });
+    }
+
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    });
+
+    blockIndex++;
+  }
+
+  // content_block_start (text)
   events.push({
     type: "content_block_start",
-    index: 0,
+    index: blockIndex,
     content_block: { type: "text", text: "" },
   });
 
@@ -229,7 +257,7 @@ function buildClaudeTextStreamEvents(
     const slice = content.slice(i, i + chunkSize);
     events.push({
       type: "content_block_delta",
-      index: 0,
+      index: blockIndex,
       delta: { type: "text_delta", text: slice },
     });
   }
@@ -237,7 +265,7 @@ function buildClaudeTextStreamEvents(
   // content_block_stop
   events.push({
     type: "content_block_stop",
-    index: 0,
+    index: blockIndex,
   });
 
   // message_delta
@@ -337,12 +365,20 @@ function buildClaudeToolCallStreamEvents(
 
 // Non-streaming response builders
 
-function buildClaudeTextResponse(content: string, model: string): object {
+function buildClaudeTextResponse(content: string, model: string, reasoning?: string): object {
+  const contentBlocks: object[] = [];
+
+  if (reasoning) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning });
+  }
+
+  contentBlocks.push({ type: "text", text: content });
+
   return {
     id: generateMessageId(),
     type: "message",
     role: "assistant",
-    content: [{ type: "text", text: content }],
+    content: contentBlocks,
     model,
     stop_reason: "end_turn",
     stop_sequence: null,
@@ -569,6 +605,11 @@ export async function handleMessages(
 
   // Text response
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      defaults.logger.warn(
+        "webSearches in fixture response are not supported for Claude Messages API — ignoring",
+      );
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -577,11 +618,20 @@ export async function handleMessages(
       response: { status: 200, fixture },
     });
     if (claudeReq.stream !== true) {
-      const body = buildClaudeTextResponse(response.content, completionReq.model);
+      const body = buildClaudeTextResponse(
+        response.content,
+        completionReq.model,
+        response.reasoning,
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildClaudeTextStreamEvents(response.content, completionReq.model, chunkSize);
+      const events = buildClaudeTextStreamEvents(
+        response.content,
+        completionReq.model,
+        chunkSize,
+        response.reasoning,
+      );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
         latency,
