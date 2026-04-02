@@ -74,8 +74,8 @@ export function collapseOpenAISSE(body: string): CollapseResult {
       const item = parsed.item as Record<string, unknown> | undefined;
       if (item?.type === "web_search_call" && typeof item.query === "string") {
         webSearchQueries.push(item.query);
+        continue;
       }
-      continue;
     }
 
     // Responses API text content events
