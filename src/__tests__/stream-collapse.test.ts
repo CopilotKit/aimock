@@ -1752,21 +1752,21 @@ describe("collapseOpenAISSE with reasoning", () => {
 describe("collapseAnthropicSSE with thinking", () => {
   it("extracts reasoning from thinking_delta events", () => {
     const body = [
-      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "thinking" } })}`,
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Hmm " } })}`,
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Hmm " } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "interesting" } })}`,
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "interesting" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } })}`,
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 1 })}`,
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
       "",
-      `data: ${JSON.stringify({ type: "message_stop" })}`,
+      `event: message_stop\ndata: {}`,
       "",
     ].join("\n");
 
@@ -1777,13 +1777,13 @@ describe("collapseAnthropicSSE with thinking", () => {
 
   it("returns undefined reasoning when no thinking blocks", () => {
     const body = [
-      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}`,
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "text", text: "" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Plain" } })}`,
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "text_delta", text: "Plain" } })}`,
       "",
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
       "",
-      `data: ${JSON.stringify({ type: "message_stop" })}`,
+      `event: message_stop\ndata: {}`,
       "",
     ].join("\n");
 
