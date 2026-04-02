@@ -78,6 +78,12 @@ export function collapseOpenAISSE(body: string): CollapseResult {
       continue;
     }
 
+    // Responses API text content events
+    if (parsed.type === "response.output_text.delta" && typeof parsed.delta === "string") {
+      content += parsed.delta;
+      continue;
+    }
+
     // Skip other Responses API structural events
     if (typeof parsed.type === "string" && parsed.type.startsWith("response.")) {
       continue;
