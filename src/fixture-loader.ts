@@ -176,6 +176,12 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
             fixtureIndex: i,
             message: "webSearches must be an array of strings",
           });
+        } else if (response.webSearches.length === 0) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "webSearches is empty array — no web search events will be emitted",
+          });
         } else {
           for (let j = 0; j < response.webSearches.length; j++) {
             if (typeof response.webSearches[j] !== "string") {
@@ -185,6 +191,13 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
                 message: `webSearches[${j}] is not a string`,
               });
               break;
+            }
+            if (response.webSearches[j] === "") {
+              results.push({
+                severity: "warning",
+                fixtureIndex: i,
+                message: `webSearches[${j}] is empty string`,
+              });
             }
           }
         }

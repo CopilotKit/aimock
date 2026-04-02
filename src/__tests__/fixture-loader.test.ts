@@ -895,4 +895,24 @@ describe("validateFixtures", () => {
     ];
     expect(validateFixtures(fixtures)).toEqual([]);
   });
+
+  it("warning: webSearches is empty array", () => {
+    const fixtures = [makeFixture({ response: { content: "hi", webSearches: [] } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "warning" && r.message.includes("webSearches is empty array"),
+      ),
+    ).toBe(true);
+  });
+
+  it("warning: webSearches element is empty string", () => {
+    const fixtures = [makeFixture({ response: { content: "hi", webSearches: ["valid", ""] } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "warning" && r.message.includes("webSearches[1] is empty string"),
+      ),
+    ).toBe(true);
+  });
 });
