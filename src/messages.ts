@@ -500,7 +500,12 @@ export async function handleMessages(
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = claudeToCompletionRequest(claudeReq);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

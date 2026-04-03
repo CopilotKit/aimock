@@ -250,6 +250,67 @@
           unexpected API calls.
         </p>
 
+        <h2>Request Transform</h2>
+        <p>
+          When upstream services inject dynamic data into prompts — timestamps, UUIDs, session IDs,
+          or per-request metadata — the same logical request produces different raw text every time.
+          Recorded fixtures won't replay because the text never matches exactly.
+          <code>requestTransform</code> normalizes requests <em>before</em> fixture matching and
+          recording, stripping the volatile parts so that logically identical requests always hit
+          the same fixture.
+        </p>
+        <p>
+          <strong>Matching behavior change:</strong> when a <code>requestTransform</code> is set,
+          string comparisons for <code>userMessage</code> and <code>inputText</code> switch from
+          substring (<code>includes()</code>) to exact equality (<code>===</code>). This ensures
+          deterministic replay of recorded fixtures — no accidental partial matches against
+          normalized text. RegExp and predicate matching are unaffected; predicates always receive
+          the original (untransformed) request.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Stripping dynamic fields <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+<span class="kw">import</span> <span class="kw">type</span> { <span class="op">ChatCompletionRequest</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+
+<span class="cmt">// Strip timestamps and request IDs injected by the orchestrator</span>
+<span class="kw">function</span> <span class="fn">normalize</span>(<span class="op">req</span>: <span class="op">ChatCompletionRequest</span>): <span class="op">ChatCompletionRequest</span> {
+  <span class="kw">return</span> {
+    ...<span class="op">req</span>,
+    <span class="prop">messages</span>: <span class="op">req</span>.<span class="prop">messages</span>.<span class="fn">map</span>((<span class="op">m</span>) =&gt; {
+      <span class="kw">if</span> (<span class="op">m</span>.<span class="prop">role</span> !== <span class="str">"system"</span>) <span class="kw">return</span> <span class="op">m</span>;
+      <span class="kw">if</span> (<span class="kw">typeof</span> <span class="op">m</span>.<span class="prop">content</span> !== <span class="str">"string"</span>) <span class="kw">return</span> <span class="op">m</span>;
+      <span class="kw">return</span> {
+        ...<span class="op">m</span>,
+        <span class="prop">content</span>: <span class="op">m</span>.<span class="prop">content</span>
+          .<span class="fn">replace</span>(<span class="str">/Current time: .*/g</span>, <span class="str">""</span>)
+          .<span class="fn">replace</span>(<span class="str">/Session: [a-f0-9-]{36}/g</span>, <span class="str">""</span>)
+          .<span class="fn">trim</span>(),
+      };
+    }),
+  };
+}
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>({
+  <span class="prop">requestTransform</span>: <span class="op">normalize</span>,
+});
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="op">mock</span>.<span class="fn">enableRecording</span>({
+  <span class="prop">providers</span>: { <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span> },
+  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+});</code></pre>
+        </div>
+
+        <p>
+          The transform is applied in two places: during fixture <strong>matching</strong> (so
+          replayed requests find the right fixture) and during <strong>recording</strong> (so the
+          saved fixture's match key is already normalized). This means a fixture recorded through a
+          transform will replay correctly on the next run without any manual editing.
+        </p>
+
         <h2>Fixture Auto-Generation</h2>
         <p>Recorded fixtures are saved to disk with timestamped filenames:</p>
 

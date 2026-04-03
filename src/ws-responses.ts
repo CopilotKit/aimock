@@ -6,7 +6,7 @@
  * handler, but as individual WebSocket text frames.
  */
 
-import type { Fixture } from "./types.js";
+import type { ChatCompletionRequest, Fixture } from "./types.js";
 import { matchFixture } from "./router.js";
 import {
   responsesToCompletionRequest,
@@ -57,7 +57,14 @@ export function handleWebSocketResponses(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
 ): void {
   const { logger } = defaults;
   // Serialize message processing to prevent event interleaving
@@ -82,7 +89,14 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
 ): Promise<void> {
   let parsed: unknown;
   try {
@@ -136,7 +150,12 @@ async function processMessage(
   };
 
   const completionReq = responsesToCompletionRequest(responsesReq);
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

@@ -675,7 +675,12 @@ export async function handleResponses(
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = responsesToCompletionRequest(responsesReq);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

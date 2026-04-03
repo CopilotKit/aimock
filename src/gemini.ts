@@ -415,7 +415,12 @@ export async function handleGemini(
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = geminiToCompletionRequest(geminiReq, model, streaming);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
   const path = req.url ?? `/v1beta/models/${model}:generateContent`;
 
   if (fixture) {

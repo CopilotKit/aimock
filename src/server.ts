@@ -340,7 +340,12 @@ async function handleCompletions(
   }
 
   // Match fixture
-  const fixture = matchFixture(fixtures, body, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    body,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);
@@ -561,6 +566,9 @@ export async function createServer(
     },
     get strict() {
       return serverOptions.strict;
+    },
+    get requestTransform() {
+      return serverOptions.requestTransform;
     },
   };
 
