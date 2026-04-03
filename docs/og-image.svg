@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <rect width="1200" height="630" fill="#0a0a0f"/>
+  <text x="600" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="700" fill="#ffffff">
+    <tspan fill="#00ff88">$</tspan> aimock
+  </text>
+  <text x="600" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#888899">
+    Mock everything your AI app talks to
+  </text>
+  <text x="600" y="400" text-anchor="middle" font-family="monospace" font-size="20" fill="#555566">
+    LLM APIs  |  MCP  |  A2A  |  Vector DBs  |  Search
+  </text>
+  <text x="600" y="540" text-anchor="middle" font-family="monospace" font-size="18" fill="#00ff88">
+    npm install @copilotkit/aimock
+  </text>
+</svg>

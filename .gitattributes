@@ -7,3 +7,4 @@
 *.webm filter=lfs diff=lfs merge=lfs -text
 *.svg filter=lfs diff=lfs merge=lfs -text
 docs/favicon.svg !filter !diff !merge
+docs/og-image.* !filter !diff !merge
