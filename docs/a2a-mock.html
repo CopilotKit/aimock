@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A2AMock — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>A2AMock</h1>
+        <p class="lead">
+          Mock A2A (Agent-to-Agent) protocol server for testing multi-agent systems. Implements the
+          A2A JSON-RPC protocol with agent card discovery, message routing, task management, and SSE
+          streaming.
+        </p>
+
+        <h2>Quick Start</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Standalone mode <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { A2AMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> a2a = <span class="kw">new</span> A2AMock();
+
+a2a.registerAgent({
+  name: <span class="str">"translator"</span>,
+  description: <span class="str">"Translates text between languages"</span>,
+  skills: [{ id: <span class="str">"translate"</span>, name: <span class="str">"Translate"</span> }],
+});
+
+a2a.onMessage(<span class="str">"translator"</span>, <span class="str">"translate"</span>, [{ text: <span class="str">"Translated text"</span> }]);
+
+<span class="kw">const</span> url = <span class="kw">await</span> a2a.start();
+<span class="cm">// Agent card at: ${url}/.well-known/agent-card.json</span>
+<span class="cm">// JSON-RPC at: ${url}/</span></code></pre>
+        </div>
+
+        <h2>Mounted Mode</h2>
+        <p>
+          Mount A2AMock onto an LLMock server to share a single port with LLM mocking and other
+          services:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Mount on LLMock <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { LLMock, A2AMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> llm = <span class="kw">new</span> LLMock({ port: <span class="num">5555</span> });
+<span class="kw">const</span> a2a = <span class="kw">new</span> A2AMock();
+
+a2a.registerAgent({ name: <span class="str">"assistant"</span> });
+a2a.onMessage(<span class="str">"assistant"</span>, <span class="str">"hello"</span>, [{ text: <span class="str">"Hi!"</span> }]);
+
+llm.mount(<span class="str">"/a2a"</span>, a2a);
+<span class="kw">await</span> llm.start();
+<span class="cm">// A2A available at http://127.0.0.1:5555/a2a</span></code></pre>
+        </div>
+
+        <h2>Subpath Import</h2>
+        <p>A2AMock is also available via a dedicated subpath import for tree-shaking:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Subpath import <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { A2AMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock/a2a"</span>;</code></pre>
+        </div>
+
+        <h2>Agent Registration</h2>
+        <p>Register agents with skills and capabilities:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Register agents <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code>a2a.registerAgent({
+  name: <span class="str">"researcher"</span>,
+  description: <span class="str">"Research assistant"</span>,
+  version: <span class="str">"1.0.0"</span>,
+  skills: [
+    { id: <span class="str">"search"</span>, name: <span class="str">"Web Search"</span>, tags: [<span class="str">"research"</span>] },
+    { id: <span class="str">"summarize"</span>, name: <span class="str">"Summarize"</span> },
+  ],
+  capabilities: { streaming: <span class="kw">true</span> },
+});</code></pre>
+        </div>
+
+        <h2>Message Patterns</h2>
+        <p>Route messages to responses using string or RegExp patterns:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Message patterns <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="cm">// String substring match</span>
+a2a.onMessage(<span class="str">"agent"</span>, <span class="str">"hello"</span>, [{ text: <span class="str">"Hi there!"</span> }]);
+
+<span class="cm">// RegExp match</span>
+a2a.onMessage(<span class="str">"agent"</span>, <span class="kw">/</span>^translate\s+(.+)<span class="kw">/i</span>, [{ text: <span class="str">"Translation result"</span> }]);
+
+<span class="cm">// Task with artifacts</span>
+a2a.onTask(<span class="str">"agent"</span>, <span class="str">"compute"</span>, [
+  { parts: [{ text: <span class="str">"42"</span> }], name: <span class="str">"result"</span> },
+]);</code></pre>
+        </div>
+
+        <h2>Streaming Tasks</h2>
+        <p>Simulate streaming responses with SSE events:</p>
+        <div class="code-block">
+          <div class="code-block-header">Streaming <span class="lang-tag">typescript</span></div>
+          <pre><code>a2a.onStreamingTask(<span class="str">"agent"</span>, <span class="str">"long-task"</span>, [
+  { type: <span class="str">"status"</span>, state: <span class="str">"TASK_STATE_WORKING"</span> },
+  { type: <span class="str">"artifact"</span>, parts: [{ text: <span class="str">"partial result"</span> }], name: <span class="str">"output"</span> },
+  { type: <span class="str">"artifact"</span>, parts: [{ text: <span class="str">"final result"</span> }], lastChunk: <span class="kw">true</span>, name: <span class="str">"output"</span> },
+], <span class="num">50</span>); <span class="cm">// 50ms delay between events</span></code></pre>
+        </div>
+
+        <h2>Config File</h2>
+        <p>A2AMock can be configured via the aimock JSON config file:</p>
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"a2a"</span>: {
+    <span class="prop">"path"</span>: <span class="str">"/a2a"</span>,
+    <span class="prop">"agents"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"assistant"</span>,
+        <span class="prop">"description"</span>: <span class="str">"A helpful assistant"</span>,
+        <span class="prop">"skills"</span>: [{ <span class="prop">"id"</span>: <span class="str">"chat"</span>, <span class="prop">"name"</span>: <span class="str">"Chat"</span> }],
+        <span class="prop">"messages"</span>: [
+          { <span class="prop">"pattern"</span>: <span class="str">"hello"</span>, <span class="prop">"parts"</span>: [{ <span class="prop">"text"</span>: <span class="str">"Hi there!"</span> }] }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+
+        <h2>JSON-RPC Methods</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>SendMessage</code></td>
+              <td>Send a message, get a synchronous response</td>
+            </tr>
+            <tr>
+              <td><code>SendStreamingMessage</code></td>
+              <td>Send a message, get an SSE stream of events</td>
+            </tr>
+            <tr>
+              <td><code>GetTask</code></td>
+              <td>Retrieve a task by ID</td>
+            </tr>
+            <tr>
+              <td><code>ListTasks</code></td>
+              <td>List tasks, optionally filtered by contextId</td>
+            </tr>
+            <tr>
+              <td><code>CancelTask</code></td>
+              <td>Cancel a non-terminal task</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Agent Card</h2>
+        <p>
+          The agent card is served at <code>GET /.well-known/agent-card.json</code> and includes all
+          registered agents' skills and capabilities. The <code>A2A-Version: 1.0</code> header is
+          included on all responses.
+        </p>
+
+        <h2>Inspection</h2>
+        <div class="code-block">
+          <div class="code-block-header">
+            Inspection API <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code>a2a.health();  <span class="cm">// { status: "ok", agents: 2, tasks: 5 }</span>
+a2a.reset();   <span class="cm">// Clears all agents and tasks</span></code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

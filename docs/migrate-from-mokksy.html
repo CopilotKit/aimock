@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Migrate from Mokksy — aimock</title>
+    <meta
+      name="description"
+      content="A conversion guide for AI-Mocks/Mokksy (Kotlin) users switching to aimock for AI application testing."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* ─── Feature cards (scoped from index) ────────────────────── */
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+      }
+      .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+        grid-column: 2;
+      }
+      .feature-card {
+        padding: 2rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .feature-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .feature-icon {
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .feature-icon.green {
+        background: rgba(0, 255, 136, 0.1);
+        border: 1px solid rgba(0, 255, 136, 0.2);
+      }
+      .feature-icon.blue {
+        background: rgba(68, 136, 255, 0.1);
+        border: 1px solid rgba(68, 136, 255, 0.2);
+      }
+      .feature-icon.purple {
+        background: rgba(170, 102, 255, 0.1);
+        border: 1px solid rgba(170, 102, 255, 0.2);
+      }
+      .feature-icon.amber {
+        background: rgba(255, 170, 0, 0.1);
+        border: 1px solid rgba(255, 170, 0, 0.2);
+      }
+      .feature-icon.red {
+        background: rgba(255, 68, 102, 0.1);
+        border: 1px solid rgba(255, 68, 102, 0.2);
+      }
+      .feature-card h3 {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+      .feature-card p {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        line-height: 1.6;
+      }
+      @media (max-width: 900px) {
+        .features-grid {
+          grid-template-columns: 1fr;
+        }
+        .features-grid > .feature-card:last-child:nth-child(3n + 1) {
+          grid-column: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Switching from Mokksy to aimock</h1>
+        <p class="lead">
+          Mokksy (AI-Mocks) is a solid Kotlin/Ktor-based mock for JVM teams. aimock gives you the
+          same LLM mocking from any language&mdash;plus MCP, A2A, vector databases,
+          record-and-replay, and drift detection that Mokksy doesn't have.
+        </p>
+
+        <!-- ─── The quick switch ─────────────────────────────────── -->
+        <h2>The quick switch</h2>
+        <p>
+          JVM tests can use aimock via Docker or <code>npx aimock</code> if Node.js is available.
+          Point the OpenAI Java SDK at aimock and your existing test assertions stay the same.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            JUnit 5 &mdash; start aimock before tests <span class="lang-tag">kotlin</span>
+          </div>
+          <pre><code><span class="cm">// JUnit 5 — start aimock before tests</span>
+<span class="kw">@BeforeAll</span>
+<span class="kw">fun</span> <span class="fn">setup</span>() {
+    <span class="type">ProcessBuilder</span>(<span class="str">"docker"</span>, <span class="str">"run"</span>, <span class="str">"-d"</span>, <span class="str">"--name"</span>, <span class="str">"aimock"</span>,
+        <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>, <span class="str">"-v"</span>, <span class="str">"./fixtures:/fixtures"</span>,
+        <span class="str">"ghcr.io/copilotkit/aimock"</span>, <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>)
+        .<span class="fn">start</span>().<span class="fn">waitFor</span>()
+}
+
+<span class="kw">@AfterAll</span>
+<span class="kw">fun</span> <span class="fn">teardown</span>() {
+    <span class="type">ProcessBuilder</span>(<span class="str">"docker"</span>, <span class="str">"stop"</span>, <span class="str">"aimock"</span>).<span class="fn">start</span>().<span class="fn">waitFor</span>()
+    <span class="type">ProcessBuilder</span>(<span class="str">"docker"</span>, <span class="str">"rm"</span>, <span class="str">"aimock"</span>).<span class="fn">start</span>().<span class="fn">waitFor</span>()
+}
+
+<span class="cm">// Point OpenAI Java SDK at aimock</span>
+<span class="kw">val</span> <span class="op">client</span> = <span class="type">OpenAIClient</span>.<span class="fn">builder</span>()
+    .<span class="fn">baseUrl</span>(<span class="str">"http://localhost:4010/v1"</span>)
+    .<span class="fn">apiKey</span>(<span class="str">"mock"</span>)
+    .<span class="fn">build</span>()</code></pre>
+        </div>
+
+        <!-- ─── What you gain ────────────────────────────────────── -->
+        <h2>What you gain</h2>
+
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon green">&#127760;</div>
+            <h3>Cross-language testing</h3>
+            <p>
+              Kotlin, Python, TypeScript, Go, Rust&mdash;any language that speaks HTTP can use the
+              same mock server with the same fixtures.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#128268;</div>
+            <h3>MCP / A2A / Vector mocking</h3>
+            <p>
+              Mock your entire AI stack: MCP tool servers, A2A agent protocols, and vector
+              databases&mdash;not just LLM completions.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon purple">&#9210;</div>
+            <h3>Record &amp; replay</h3>
+            <p>
+              Proxy real APIs, save responses as JSON fixtures, replay deterministically forever. No
+              manual response construction.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon amber">&#128225;</div>
+            <h3>More providers (11 vs 5)</h3>
+            <p>
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere, and more. Mokksy
+              covers OpenAI, Anthropic, Google, Ollama, and MistralAI.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon red">&#128269;</div>
+            <h3>Drift detection</h3>
+            <p>
+              Automatically detect when real provider APIs diverge from your mocked responses. Know
+              when your tests are lying to you.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon green">&#129513;</div>
+            <h3>Chaos testing</h3>
+            <p>
+              Inject latency, errors, partial failures, and rate limits. Verify your app handles
+              degraded AI services gracefully.
+            </p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon blue">&#128230;</div>
+            <h3>Docker + Helm native</h3>
+            <p>
+              First-class Docker images and Helm charts. Drop aimock into any CI pipeline or
+              Kubernetes cluster without JVM dependencies.
+            </p>
+          </div>
+        </div>
+
+        <!-- ─── What you lose (honestly) ─────────────────────────── -->
+        <h2>What you lose (honestly)</h2>
+
+        <ul>
+          <li>
+            <strong>Native Kotlin DSL</strong> &mdash; Mokksy's <code>mockLLM { }</code> builder is
+            elegant. With aimock you configure via HTTP/JSON fixtures or the Docker CLI.
+          </li>
+          <li>
+            <strong>In-process JVM mock</strong> &mdash; Mokksy embeds inside your test process.
+            aimock runs as a separate server (localhost or container).
+          </li>
+          <li>
+            <strong>Kotlin coroutine integration</strong> &mdash; Mokksy's streaming is backed by
+            Ktor and coroutines natively. aimock streams over plain HTTP SSE.
+          </li>
+          <li>
+            <strong>Ktor-specific test helpers</strong> &mdash; If your app uses Ktor's test engine,
+            Mokksy plugs in directly. aimock requires a network call.
+          </li>
+        </ul>
+
+        <!-- ─── Comparison table ─────────────────────────────────── -->
+        <h2>Comparison table</h2>
+
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Mokksy</th>
+              <th>aimock</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Language</td>
+              <td>Kotlin/JVM only</td>
+              <td>Any (HTTP-based)</td>
+            </tr>
+            <tr>
+              <td>In-process mock</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+            </tr>
+            <tr>
+              <td>Cross-language / cross-process</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>LLM providers</td>
+              <td>5 (OpenAI, Anthropic, Google, Ollama, MistralAI)</td>
+              <td>11+</td>
+            </tr>
+            <tr>
+              <td>Streaming SSE</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>WebSocket APIs</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>MCP mock</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>A2A mock</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Vector DB mock</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Record &amp; replay</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Drift detection</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Chaos testing</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Docker / Helm</td>
+              <td style="color: var(--error)">&#10007;</td>
+              <td style="color: var(--accent)">&#10003;</td>
+            </tr>
+            <tr>
+              <td>Kotlin DSL</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+            </tr>
+            <tr>
+              <td>Coroutine integration</td>
+              <td style="color: var(--accent)">&#10003;</td>
+              <td style="color: var(--error)">&#10007;</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ─── TestContainers integration ───────────────────────── -->
+        <h2>TestContainers integration</h2>
+        <p>
+          For a cleaner lifecycle, use
+          <a href="https://testcontainers.com/" target="_blank">TestContainers</a>
+          to manage the aimock container automatically.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            AIMockContainer.kt <span class="lang-tag">kotlin</span>
+          </div>
+          <pre><code><span class="cm">// Using TestContainers for cleaner lifecycle</span>
+<span class="kw">class</span> <span class="type">AIMockContainer</span> : <span class="type">GenericContainer</span>&lt;<span class="type">AIMockContainer</span>&gt;(<span class="str">"ghcr.io/copilotkit/aimock"</span>) {
+    <span class="kw">init</span> {
+        <span class="fn">withExposedPorts</span>(<span class="num">4010</span>)
+        <span class="fn">withFileSystemBind</span>(<span class="str">"./fixtures"</span>, <span class="str">"/fixtures"</span>)
+        <span class="fn">withCommand</span>(<span class="str">"-f"</span>, <span class="str">"/fixtures"</span>)
+        <span class="fn">waitingFor</span>(<span class="type">Wait</span>.<span class="fn">forHttp</span>(<span class="str">"/health"</span>).<span class="fn">forPort</span>(<span class="num">4010</span>))
+    }
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Using the container in tests <span class="lang-tag">kotlin</span>
+          </div>
+          <pre><code><span class="kw">@Testcontainers</span>
+<span class="kw">class</span> <span class="type">MyAgentTest</span> {
+    <span class="kw">companion object</span> {
+        <span class="kw">@Container</span>
+        <span class="kw">val</span> <span class="op">aimock</span> = <span class="type">AIMockContainer</span>()
+    }
+
+    <span class="kw">@Test</span>
+    <span class="kw">fun</span> <span class="fn">`agent responds with mocked content`</span>() {
+        <span class="kw">val</span> <span class="op">baseUrl</span> = <span class="str">"http://</span><span class="op">\${aimock.host}</span><span class="str">:</span><span class="op">\${aimock.getMappedPort(4010)}</span><span class="str">/v1"</span>
+        <span class="kw">val</span> <span class="op">client</span> = <span class="type">OpenAIClient</span>.<span class="fn">builder</span>()
+            .<span class="fn">baseUrl</span>(<span class="op">baseUrl</span>)
+            .<span class="fn">apiKey</span>(<span class="str">"mock"</span>)
+            .<span class="fn">build</span>()
+        <span class="cm">// ... your test assertions</span>
+    }
+}</code></pre>
+        </div>
+
+        <!-- ─── CLI / Docker quick start ─────────────────────────── -->
+        <h2>CLI / Docker quick start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">CLI <span class="lang-tag">sh</span></div>
+              <pre><code>npx aimock -p <span class="num">4010</span> -f ./fixtures</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">Docker <span class="lang-tag">sh</span></div>
+              <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
+  -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
+  ghcr.io/copilotkit/aimock:latest \
+  -f /fixtures</code></pre>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

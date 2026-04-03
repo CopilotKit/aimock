@@ -96,7 +96,7 @@ describe("health endpoints", () => {
       expect(ids).toContain("text-embedding-3-small");
       for (const model of body.data) {
         expect(model.object).toBe("model");
-        expect(model.owned_by).toBe("llmock");
+        expect(model.owned_by).toBe("aimock");
         expect(typeof model.created).toBe("number");
       }
     });

@@ -1,0 +1,42 @@
+name: Publish aimock-pytest
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/aimock-pytest/**"
+  workflow_dispatch:
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install hatch
+
+      - name: Check if version is already published
+        id: check
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('packages/aimock-pytest/pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if pip install "aimock-pytest==$VERSION" --dry-run --no-deps 2>/dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        if: steps.check.outputs.published == 'false'
+        run: cd packages/aimock-pytest && hatch build
+
+      - name: Publish to PyPI
+        if: steps.check.outputs.published == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/aimock-pytest/dist/

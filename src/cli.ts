@@ -223,7 +223,7 @@ async function main() {
     strict: values.strict,
   });
 
-  logger.info(`llmock server listening on ${instance.url}`);
+  logger.info(`aimock server listening on ${instance.url}`);
 
   // Start file watcher if requested
   let watcher: { close: () => void } | null = null;

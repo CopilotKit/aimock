@@ -1,13 +1,16 @@
 import * as http from "node:http";
 import type {
   Fixture,
+  FixtureFileEntry,
   ChatCompletionRequest,
   HandlerDefaults,
   MockServerOptions,
+  Mountable,
   RecordProviderKey,
 } from "./types.js";
 import { Journal } from "./journal.js";
 import { matchFixture } from "./router.js";
+import { validateFixtures, entryToFixture } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import {
@@ -28,6 +31,9 @@ import { handleConverse, handleConverseStream } from "./bedrock-converse.js";
 import { handleEmbeddings } from "./embeddings.js";
 import { handleOllama, handleOllamaGenerate } from "./ollama.js";
 import { handleCohere } from "./cohere.js";
+import { handleSearch, type SearchFixture } from "./search.js";
+import { handleRerank, type RerankFixture } from "./rerank.js";
+import { handleModeration, type ModerationFixture } from "./moderation.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
@@ -52,6 +58,9 @@ const GEMINI_LIVE_PATH =
 const MESSAGES_PATH = "/v1/messages";
 const EMBEDDINGS_PATH = "/v1/embeddings";
 const COHERE_CHAT_PATH = "/v2/chat";
+const SEARCH_PATH = "/search";
+const RERANK_PATH = "/v2/rerank";
+const MODERATIONS_PATH = "/v1/moderations";
 const DEFAULT_CHUNK_SIZE = 20;
 
 const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
@@ -107,6 +116,160 @@ function handleOptions(res: http.ServerResponse): void {
 function handleNotFound(res: http.ServerResponse, message: string): void {
   setCorsHeaders(res);
   writeErrorResponse(res, 404, JSON.stringify({ error: { message, type: "not_found" } }));
+}
+
+// ---------------------------------------------------------------------------
+// /__aimock/* control API — used by aimock-pytest and other test harnesses
+// to manage fixtures, journal, and error injection without restarting the
+// server.
+// ---------------------------------------------------------------------------
+
+const CONTROL_PREFIX = "/__aimock";
+
+/**
+ * Handle requests under `/__aimock/`. Returns `true` if the request was
+ * handled, `false` if the path doesn't match the control prefix.
+ */
+async function handleControlAPI(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  pathname: string,
+  fixtures: Fixture[],
+  journal: Journal,
+): Promise<boolean> {
+  if (!pathname.startsWith(CONTROL_PREFIX)) return false;
+
+  const subPath = pathname.slice(CONTROL_PREFIX.length);
+  setCorsHeaders(res);
+
+  // GET /__aimock/health
+  if (subPath === "/health" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return true;
+  }
+
+  // GET /__aimock/journal
+  if (subPath === "/journal" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(journal.getAll()));
+    return true;
+  }
+
+  // POST /__aimock/fixtures — add fixtures dynamically
+  if (subPath === "/fixtures" && req.method === "POST") {
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      return true;
+    }
+
+    let parsed: { fixtures?: FixtureFileEntry[] };
+    try {
+      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[] };
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return true;
+    }
+
+    if (!Array.isArray(parsed.fixtures)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
+      return true;
+    }
+
+    const converted = parsed.fixtures.map(entryToFixture);
+    const issues = validateFixtures(converted);
+    const errors = issues.filter((i) => i.severity === "error");
+    if (errors.length > 0) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Validation failed", details: errors }));
+      return true;
+    }
+
+    fixtures.push(...converted);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ added: converted.length }));
+    return true;
+  }
+
+  // DELETE /__aimock/fixtures — clear all fixtures
+  if (subPath === "/fixtures" && req.method === "DELETE") {
+    fixtures.length = 0;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ cleared: true }));
+    return true;
+  }
+
+  // POST /__aimock/reset — clear fixtures + journal + match counts
+  if (subPath === "/reset" && req.method === "POST") {
+    fixtures.length = 0;
+    journal.clear();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ reset: true }));
+    return true;
+  }
+
+  // POST /__aimock/error — queue a one-shot error
+  if (subPath === "/error" && req.method === "POST") {
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      return true;
+    }
+
+    let parsed: { status?: number; body?: { message?: string; type?: string; code?: string } };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return true;
+    }
+
+    const status = parsed.status ?? 500;
+    const errorBody = parsed.body;
+    const errorFixture: Fixture = {
+      match: { predicate: () => true },
+      response: {
+        error: {
+          message: errorBody?.message ?? "Injected error",
+          type: errorBody?.type ?? "server_error",
+          code: errorBody?.code,
+        },
+        status,
+      },
+    };
+    // Insert at front so it matches before everything else
+    fixtures.unshift(errorFixture);
+    // Remove after first match
+    const original = errorFixture.match.predicate!;
+    errorFixture.match.predicate = (req) => {
+      const result = original(req);
+      if (result) {
+        queueMicrotask(() => {
+          const idx = fixtures.indexOf(errorFixture);
+          if (idx !== -1) fixtures.splice(idx, 1);
+        });
+      }
+      return result;
+    };
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ queued: true }));
+    return true;
+  }
+
+  // Unknown control path
+  handleNotFound(res, `Unknown control endpoint: ${pathname}`);
+  return true;
 }
 
 async function handleCompletions(
@@ -365,12 +528,20 @@ async function handleCompletions(
   );
 }
 
+export interface ServiceFixtures {
+  search: SearchFixture[];
+  rerank: RerankFixture[];
+  moderation: ModerationFixture[];
+}
+
 // NOTE: The fixtures array is read by reference on each request. Callers
 // (e.g. LLMock) may mutate it after the server starts and changes will
 // be visible immediately. This is intentional — do not copy the array.
 export async function createServer(
   fixtures: Fixture[],
   options?: MockServerOptions,
+  mounts?: Array<{ path: string; handler: Mountable }>,
+  serviceFixtures?: ServiceFixtures,
 ): Promise<ServerInstance> {
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
@@ -409,12 +580,35 @@ export async function createServer(
 
   const journal = new Journal();
 
+  // Share journal and metrics registry with mounted services
+  if (mounts) {
+    for (const { handler } of mounts) {
+      if (handler.setJournal) handler.setJournal(journal);
+      if (registry && handler.setRegistry) handler.setRegistry(registry);
+    }
+  }
+
   // Set initial fixtures-loaded gauge
   if (registry) {
-    registry.setGauge("llmock_fixtures_loaded", {}, fixtures.length);
+    registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+    // Delegate to async handler — catch unhandled rejections to prevent Node.js crashes
+    handleHttpRequest(req, res).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Internal error";
+      defaults.logger.warn(`Unhandled request error: ${msg}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message: msg, type: "server_error" } }));
+      }
+    });
+  });
+
+  async function handleHttpRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     // OPTIONS preflight
     if (req.method === "OPTIONS") {
       handleOptions(res);
@@ -436,14 +630,14 @@ export async function createServer(
           const normalizedPath = normalizePathLabel(rawPathname);
           const method = req.method ?? "UNKNOWN";
           const status = String(res.statusCode);
-          registry.incrementCounter("llmock_requests_total", {
+          registry.incrementCounter("aimock_requests_total", {
             method,
             path: normalizedPath,
             status,
           });
           const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
           registry.observeHistogram(
-            "llmock_request_duration_seconds",
+            "aimock_request_duration_seconds",
             { method, path: normalizedPath },
             elapsed,
           );
@@ -451,6 +645,23 @@ export async function createServer(
           defaults.logger.warn("metrics instrumentation error", err);
         }
       });
+    }
+
+    // Control API — must be checked before mounts and path rewrites
+    if (pathname.startsWith(CONTROL_PREFIX)) {
+      await handleControlAPI(req, res, pathname, fixtures, journal);
+      return;
+    }
+
+    // Dispatch to mounted services before any path rewrites
+    if (mounts) {
+      for (const { path: mountPath, handler } of mounts) {
+        if (pathname === mountPath || pathname.startsWith(mountPath + "/")) {
+          const subPath = pathname.slice(mountPath.length) || "/";
+          const handled = await handler.handleRequest(req, res, subPath);
+          if (handled) return;
+        }
+      }
     }
 
     // Azure OpenAI: /openai/deployments/{id}/{operation} → /v1/{operation} (chat/completions, embeddings)
@@ -472,8 +683,22 @@ export async function createServer(
     // Health / readiness probes
     if (pathname === HEALTH_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok" }));
+      if (mounts && mounts.length > 0) {
+        const services: Record<string, unknown> = {
+          llm: { status: "ok", fixtures: fixtures.length },
+        };
+        for (const { path: mountPath, handler } of mounts) {
+          if (handler.health) {
+            const name = mountPath.replace(/^\//, "");
+            services[name] = handler.health();
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", services }));
+      } else {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+      }
       return;
     }
 
@@ -510,7 +735,7 @@ export async function createServer(
         id,
         object: "model" as const,
         created: 1686935002,
-        owned_by: "llmock",
+        owned_by: "aimock",
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
@@ -930,6 +1155,93 @@ export async function createServer(
       return;
     }
 
+    // POST /search — Web Search API (Tavily-compatible)
+    if (pathname === SEARCH_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) =>
+          handleSearch(
+            req,
+            res,
+            raw,
+            serviceFixtures?.search ?? [],
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /v2/rerank — Reranking API (Cohere rerank-compatible)
+    if (pathname === RERANK_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) =>
+          handleRerank(
+            req,
+            res,
+            raw,
+            serviceFixtures?.rerank ?? [],
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
+    // POST /v1/moderations — Moderation API (OpenAI-compatible)
+    if (pathname === MODERATIONS_PATH && req.method === "POST") {
+      readBody(req)
+        .then((raw) =>
+          handleModeration(
+            req,
+            res,
+            raw,
+            serviceFixtures?.moderation ?? [],
+            journal,
+            defaults,
+            setCorsHeaders,
+          ),
+        )
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "Internal error";
+          if (!res.headersSent) {
+            writeErrorResponse(
+              res,
+              500,
+              JSON.stringify({ error: { message: msg, type: "server_error" } }),
+            );
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+      return;
+    }
+
     // POST /v1/chat/completions — Chat Completions API
     if (pathname !== COMPLETIONS_PATH) {
       handleNotFound(res, "Not found");
@@ -974,7 +1286,7 @@ export async function createServer(
         res.end();
       }
     });
-  });
+  }
 
   // ─── WebSocket upgrade handling ──────────────────────────────────────────
 
@@ -983,65 +1295,90 @@ export async function createServer(
   server.on(
     "upgrade",
     (req: http.IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
-      const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-      const pathname = parsedUrl.pathname;
-
-      if (
-        pathname !== RESPONSES_PATH &&
-        pathname !== REALTIME_PATH &&
-        pathname !== GEMINI_LIVE_PATH
-      ) {
-        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-
-      // Push any buffered data back before upgrading
-      if (head.length > 0) {
-        socket.unshift(head);
-      }
-
-      let ws: WebSocketConnection;
-      try {
-        ws = upgradeToWebSocket(req, socket);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "WebSocket upgrade failed";
-        logger.error(`WebSocket upgrade error: ${msg}`);
+      handleUpgradeRequest(req, socket, head).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        defaults.logger.warn(`Unhandled upgrade error: ${msg}`);
         if (!socket.destroyed) socket.destroy();
-        return;
-      }
-
-      activeConnections.add(ws);
-
-      ws.on("error", (err: Error) => {
-        logger.error(`WebSocket error: ${err.message}`);
-        activeConnections.delete(ws);
       });
-
-      ws.on("close", () => {
-        activeConnections.delete(ws);
-      });
-
-      // Route to handler
-      if (pathname === RESPONSES_PATH) {
-        handleWebSocketResponses(ws, fixtures, journal, {
-          ...defaults,
-          model: "gpt-4",
-        });
-      } else if (pathname === REALTIME_PATH) {
-        const model = parsedUrl.searchParams.get("model") ?? "gpt-4o-realtime";
-        handleWebSocketRealtime(ws, fixtures, journal, {
-          ...defaults,
-          model,
-        });
-      } else if (pathname === GEMINI_LIVE_PATH) {
-        handleWebSocketGeminiLive(ws, fixtures, journal, {
-          ...defaults,
-          model: "gemini-2.0-flash",
-        });
-      }
     },
   );
+
+  async function handleUpgradeRequest(
+    req: http.IncomingMessage,
+    socket: import("node:net").Socket,
+    head: Buffer,
+  ): Promise<void> {
+    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const pathname = parsedUrl.pathname;
+
+    // Dispatch to mounted services
+    if (mounts) {
+      for (const { path: mountPath, handler } of mounts) {
+        if (
+          (pathname === mountPath || pathname.startsWith(mountPath + "/")) &&
+          handler.handleUpgrade
+        ) {
+          const subPath = pathname.slice(mountPath.length) || "/";
+          if (await handler.handleUpgrade(socket, head, subPath)) return;
+        }
+      }
+    }
+
+    if (
+      pathname !== RESPONSES_PATH &&
+      pathname !== REALTIME_PATH &&
+      pathname !== GEMINI_LIVE_PATH
+    ) {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    // Push any buffered data back before upgrading
+    if (head.length > 0) {
+      socket.unshift(head);
+    }
+
+    let ws: WebSocketConnection;
+    try {
+      ws = upgradeToWebSocket(req, socket);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "WebSocket upgrade failed";
+      logger.error(`WebSocket upgrade error: ${msg}`);
+      if (!socket.destroyed) socket.destroy();
+      return;
+    }
+
+    activeConnections.add(ws);
+
+    ws.on("error", (err: Error) => {
+      logger.error(`WebSocket error: ${err.message}`);
+      activeConnections.delete(ws);
+    });
+
+    ws.on("close", () => {
+      activeConnections.delete(ws);
+    });
+
+    // Route to handler
+    if (pathname === RESPONSES_PATH) {
+      handleWebSocketResponses(ws, fixtures, journal, {
+        ...defaults,
+        model: "gpt-4",
+      });
+    } else if (pathname === REALTIME_PATH) {
+      const model = parsedUrl.searchParams.get("model") ?? "gpt-4o-realtime";
+      handleWebSocketRealtime(ws, fixtures, journal, {
+        ...defaults,
+        model,
+      });
+    } else if (pathname === GEMINI_LIVE_PATH) {
+      handleWebSocketGeminiLive(ws, fixtures, journal, {
+        ...defaults,
+        model: "gemini-2.0-flash",
+      });
+    }
+  }
 
   // Close active WS connections when server shuts down
   const originalClose = server.close.bind(server);
@@ -1063,6 +1400,14 @@ export async function createServer(
         return;
       }
       const url = `http://${addr.address}:${addr.port}`;
+
+      // Set base URL on mounted services that support it
+      if (mounts) {
+        for (const { path: mountPath, handler } of mounts) {
+          if (handler.setBaseUrl) handler.setBaseUrl(url + mountPath);
+        }
+      }
+
       resolve({ server, journal, url, defaults });
     });
   });

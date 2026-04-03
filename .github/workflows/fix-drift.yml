@@ -33,7 +33,7 @@ jobs:
       # Step 0: Configure git identity and create fix branch
       - name: Configure git
         run: |
-          git config user.name "llmock-drift-bot"
+          git config user.name "aimock-drift-bot"
           git config user.email "drift-bot@copilotkit.ai"
           git checkout -B fix/drift-$(date +%Y-%m-%d)-${{ github.run_id }}
 

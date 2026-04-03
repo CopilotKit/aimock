@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cohere — llmock</title>
+    <title>Cohere — aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,40 +42,11 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a><a href="aws-bedrock.html">AWS Bedrock</a
-          ><a href="ollama.html">Ollama</a><a href="cohere.html" class="active">Cohere</a
-          ><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a
-          ><a href="record-replay.html">Record &amp; Replay</a
-          ><a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>Cohere v2 Chat API</h1>
@@ -117,7 +88,7 @@
           <li>
             <strong>Dual usage tracking.</strong> Responses include both
             <code>billed_units</code> (input_tokens, output_tokens, search_units, classifications)
-            and <code>tokens</code> (input_tokens, output_tokens). llmock returns zeroed values.
+            and <code>tokens</code> (input_tokens, output_tokens). aimock returns zeroed values.
           </li>
           <li>
             <strong>Defaults to non-streaming.</strong> Set <code>"stream": true</code> explicitly
@@ -131,13 +102,13 @@
           <div class="code-block-header">
             cohere-quick-start.ts <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
 
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi from Cohere!"</span> });
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Point the Cohere SDK at llmock</span>
+<span class="cmt">// Point the Cohere SDK at aimock</span>
 <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v2/chat`</span>, {
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
@@ -256,7 +227,7 @@ data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed
 
         <h2>Request Translation</h2>
         <p>
-          llmock internally translates Cohere requests to a unified
+          aimock internally translates Cohere requests to a unified
           <code>ChatCompletionRequest</code> format for fixture matching. The
           <code>cohereToCompletionRequest()</code> function maps Cohere message roles (including
           <code>tool</code> with <code>tool_call_id</code>) and tool definitions to the common
@@ -266,14 +237,16 @@ data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

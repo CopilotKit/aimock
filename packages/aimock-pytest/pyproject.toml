@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aimock-pytest"
+version = "0.1.0"
+description = "pytest fixtures for aimock — mock LLM APIs, MCP, A2A, vector DBs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0", "requests>=2.28"]
+
+[project.entry-points."pytest11"]
+aimock = "aimock_pytest.plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aimock_pytest"]

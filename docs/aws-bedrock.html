@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AWS Bedrock &mdash; llmock</title>
+    <title>AWS Bedrock &mdash; aimock</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           >
             &#9776;
           </button>
-          <a href="index.html" class="nav-brand"><span class="prompt">$</span> llmock</a>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
         </div>
         <ul class="nav-links">
           <li><a href="index.html">Home</a></li>
@@ -42,46 +42,17 @@
         </ul>
       </div>
     </nav>
+
+    <div id="section-bar"></div>
+
     <div class="docs-layout">
-      <aside class="sidebar">
-        <div class="sidebar-section">
-          <h3>Getting Started</h3>
-          <a href="docs.html">Overview</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Providers</h3>
-          <a href="chat-completions.html">Chat Completions (OpenAI)</a
-          ><a href="responses-api.html">Responses API (OpenAI)</a
-          ><a href="claude-messages.html">Claude Messages</a><a href="gemini.html">Gemini</a
-          ><a href="azure-openai.html">Azure OpenAI</a
-          ><a href="aws-bedrock.html" class="active">AWS Bedrock</a><a href="ollama.html">Ollama</a
-          ><a href="cohere.html">Cohere</a><a href="vertex-ai.html">Vertex AI</a
-          ><a href="compatible-providers.html">Compatible Providers</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Features</h3>
-          <a href="embeddings.html">Embeddings</a
-          ><a href="structured-output.html">Structured Output</a
-          ><a href="sequential-responses.html">Sequential Responses</a
-          ><a href="fixtures.html">Fixtures</a><a href="error-injection.html">Error Injection</a
-          ><a href="chaos-testing.html">Chaos Testing</a
-          ><a href="streaming-physics.html">Streaming Physics</a
-          ><a href="websocket.html">WebSocket APIs</a>
-          <a href="record-replay.html">Record &amp; Replay</a>
-          <a href="metrics.html">Prometheus Metrics</a>
-        </div>
-        <div class="sidebar-section">
-          <h3>Deployment</h3>
-          <a href="docker.html">Docker &amp; Helm</a
-          ><a href="drift-detection.html">Drift Detection</a>
-        </div>
-      </aside>
+      <aside class="sidebar" id="sidebar"></aside>
 
       <main class="docs-content">
         <h1>AWS Bedrock</h1>
         <p class="lead">
-          llmock supports the AWS Bedrock Claude invoke and Converse API endpoints &mdash; both
-          streaming and non-streaming. Point the AWS SDK at your llmock instance and fixtures match
+          aimock supports the AWS Bedrock Claude invoke and Converse API endpoints &mdash; both
+          streaming and non-streaming. Point the AWS SDK at your aimock instance and fixtures match
           against the Bedrock-format requests, returning responses in the authentic Bedrock format
           including AWS Event Stream binary framing for streaming.
         </p>
@@ -96,13 +67,13 @@
           <code>model</code> field in the body (the model is in the URL).
         </p>
         <p>
-          llmock detects the Bedrock URL pattern, extracts the model ID, translates the request to
+          aimock detects the Bedrock URL pattern, extracts the model ID, translates the request to
           the internal fixture-matching format, and returns the response in the Anthropic Messages
           API format &mdash; which is identical to the Bedrock Claude response format. For
           streaming, responses use the AWS Event Stream binary framing protocol.
         </p>
         <p>
-          llmock also supports the <strong>Converse API</strong> (<code
+          aimock also supports the <strong>Converse API</strong> (<code
             >/model/{modelId}/converse</code
           >
           and <code>/model/{modelId}/converse-stream</code>), which uses a different
@@ -205,7 +176,7 @@
         </div>
 
         <h2>SDK Configuration</h2>
-        <p>To point the AWS SDK Bedrock Runtime client at llmock, configure the endpoint URL:</p>
+        <p>To point the AWS SDK Bedrock Runtime client at aimock, configure the endpoint URL:</p>
 
         <div class="code-block">
           <div class="code-block-header">bedrock-sdk.ts <span class="lang-tag">ts</span></div>
@@ -213,7 +184,7 @@
 
 <span class="kw">const</span> <span class="op">client</span> = <span class="kw">new</span> <span class="type">BedrockRuntimeClient</span>({
   <span class="prop">region</span>: <span class="str">"us-east-1"</span>,
-  <span class="prop">endpoint</span>: <span class="str">"http://localhost:4005"</span>,  <span class="cm">// llmock URL</span>
+  <span class="prop">endpoint</span>: <span class="str">"http://localhost:4005"</span>,  <span class="cm">// aimock URL</span>
   <span class="prop">credentials</span>: { <span class="prop">accessKeyId</span>: <span class="str">"mock"</span>, <span class="prop">secretAccessKey</span>: <span class="str">"mock"</span> },
 });
 
@@ -256,7 +227,7 @@
         <div class="info-box">
           <p>
             Fixtures are shared across all providers. The same fixture file works for OpenAI, Claude
-            Messages, Gemini, Azure, and Bedrock endpoints &mdash; llmock translates each provider's
+            Messages, Gemini, Azure, and Bedrock endpoints &mdash; aimock translates each provider's
             request format to a common internal format before matching.
           </p>
         </div>
@@ -264,7 +235,7 @@
         <h2>Streaming (invoke-with-response-stream)</h2>
         <p>
           The <code>invoke-with-response-stream</code> endpoint returns responses using the
-          <strong>AWS Event Stream binary protocol</strong>. llmock implements this protocol
+          <strong>AWS Event Stream binary protocol</strong>. aimock implements this protocol
           natively &mdash; each response chunk is encoded as a binary frame with CRC32 checksums,
           headers, and a JSON payload, exactly as the real Bedrock service sends them.
         </p>
@@ -322,7 +293,7 @@
 [message_crc32: 4B CRC32 of entire frame minus last 4 bytes]</code></pre>
         </div>
         <p>
-          llmock encodes these frames with proper CRC32 checksums, so the AWS SDK can decode them
+          aimock encodes these frames with proper CRC32 checksums, so the AWS SDK can decode them
           natively. The <code>:event-type</code> header in each frame carries the event name (e.g.
           <code>chunk</code>), and the <code>:content-type</code> header is set to
           <code>application/json</code>.
@@ -332,7 +303,7 @@
         <p>
           The Converse API is AWS Bedrock's provider-agnostic conversation interface. It uses
           camelCase field names and a different request structure than the Claude-native invoke
-          endpoints. llmock supports both <code>/model/{modelId}/converse</code> (non-streaming) and
+          endpoints. aimock supports both <code>/model/{modelId}/converse</code> (non-streaming) and
           <code>/model/{modelId}/converse-stream</code> (streaming via Event Stream binary).
         </p>
 
@@ -369,21 +340,23 @@
         <p>
           The Converse API also supports tool calls via <code>toolUse</code> and
           <code>toolResult</code> content blocks, and tool definitions via the
-          <code>toolConfig</code> field. llmock translates all of these to the unified internal
+          <code>toolConfig</code> field. aimock translates all of these to the unified internal
           format for fixture matching.
         </p>
       </main>
     </div>
     <footer class="docs-footer">
       <div class="footer-inner">
-        <div class="footer-left"><span>$</span> llmock &middot; MIT License</div>
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
           <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
           </li>
         </ul>
       </div>
     </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
   </body>
 </html>

@@ -1,7 +1,23 @@
+import type * as http from "node:http";
+import type * as net from "node:net";
+import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
 
 // LLMock type definitions — shared across all provider adapters and the fixture router.
+
+export interface Mountable {
+  handleRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    pathname: string,
+  ): Promise<boolean>;
+  handleUpgrade?(socket: net.Socket, head: Buffer, pathname: string): Promise<boolean>;
+  health?(): { status: string; [key: string]: unknown };
+  setJournal?(journal: Journal): void;
+  setBaseUrl?(url: string): void;
+  setRegistry?(registry: MetricsRegistry): void;
+}
 
 export interface ContentPart {
   type: string;
@@ -155,6 +171,7 @@ export interface JournalEntry {
   path: string;
   headers: Record<string, string>;
   body: ChatCompletionRequest | null;
+  service?: string;
   response: {
     status: number;
     fixture: Fixture | null;

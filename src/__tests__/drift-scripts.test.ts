@@ -263,7 +263,7 @@ describe("addChangelogEntry", () => {
   });
 
   it("inserts entry after title line in existing changelog", () => {
-    const existing = "# @copilotkit/llmock\n\n## 1.0.0\n\nOld entry\n";
+    const existing = "# @copilotkit/aimock\n\n## 1.0.0\n\nOld entry\n";
     writeFileSync(join(tmpDir, "CHANGELOG.md"), existing, "utf-8");
     addChangelogEntry(makeReport(), "1.2.4");
     const content = readFileSync(join(tmpDir, "CHANGELOG.md"), "utf-8");
@@ -278,7 +278,7 @@ describe("addChangelogEntry", () => {
   });
 
   it("includes provider summaries", () => {
-    writeFileSync(join(tmpDir, "CHANGELOG.md"), "# @copilotkit/llmock\n", "utf-8");
+    writeFileSync(join(tmpDir, "CHANGELOG.md"), "# @copilotkit/aimock\n", "utf-8");
     addChangelogEntry(makeReport(), "1.2.4");
     const content = readFileSync(join(tmpDir, "CHANGELOG.md"), "utf-8");
     expect(content).toContain("OpenAI Chat (non-streaming text)");

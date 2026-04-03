@@ -112,8 +112,8 @@ describe("evaluateChaos", () => {
     };
     // Fixture says malformed, header says disconnect
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-malformed": "0",
-      "x-llmock-chaos-disconnect": "1.0",
+      "x-aimock-chaos-malformed": "0",
+      "x-aimock-chaos-disconnect": "1.0",
     };
     const result = evaluateChaos(fixture, undefined, headers);
     expect(result).toBe("disconnect");
@@ -121,7 +121,7 @@ describe("evaluateChaos", () => {
 
   it("header drop overrides everything", () => {
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-drop": "1.0",
+      "x-aimock-chaos-drop": "1.0",
     };
     const result = evaluateChaos(null, undefined, headers);
     expect(result).toBe("drop");
@@ -164,7 +164,7 @@ describe("evaluateChaos — header value clamping and validation", () => {
   it("ignores NaN header value (e.g., 'banana') and does not trigger chaos", () => {
     // "banana" parses to NaN via parseFloat — should be ignored, not crash
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-drop": "banana",
+      "x-aimock-chaos-drop": "banana",
     };
     // Run 20 times — none should trigger (NaN ignored means no rate set)
     for (let i = 0; i < 20; i++) {
@@ -175,7 +175,7 @@ describe("evaluateChaos — header value clamping and validation", () => {
 
   it("clamps header drop value > 1 to 1.0 (always triggers)", () => {
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-drop": "2.0",
+      "x-aimock-chaos-drop": "2.0",
     };
     // Run 20 times — every one must trigger since clamped to 1.0
     for (let i = 0; i < 20; i++) {
@@ -186,7 +186,7 @@ describe("evaluateChaos — header value clamping and validation", () => {
 
   it("clamps header drop value < 0 to 0 (never triggers)", () => {
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-drop": "-1.0",
+      "x-aimock-chaos-drop": "-1.0",
     };
     // Run 50 times — none should trigger since clamped to 0
     for (let i = 0; i < 50; i++) {
@@ -197,7 +197,7 @@ describe("evaluateChaos — header value clamping and validation", () => {
 
   it("clamps header malformed value > 1 to 1.0 (always triggers)", () => {
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-malformed": "5.0",
+      "x-aimock-chaos-malformed": "5.0",
     };
     for (let i = 0; i < 20; i++) {
       const result = evaluateChaos(null, undefined, headers);
@@ -207,7 +207,7 @@ describe("evaluateChaos — header value clamping and validation", () => {
 
   it("clamps header disconnect value > 1 to 1.0 (always triggers)", () => {
     const headers: http.IncomingHttpHeaders = {
-      "x-llmock-chaos-disconnect": "99.0",
+      "x-aimock-chaos-disconnect": "99.0",
     };
     for (let i = 0; i < 20; i++) {
       const result = evaluateChaos(null, undefined, headers);
@@ -265,14 +265,14 @@ describe("chaos integration: fixture-level", () => {
 });
 
 describe("chaos integration: header override", () => {
-  it("drops request when X-LLMock-Chaos-Drop header is 1.0", async () => {
+  it("drops request when X-AIMock-Chaos-Drop header is 1.0", async () => {
     const fixtures: Fixture[] = [
       { match: { userMessage: "hello" }, response: { content: "Hi there" } },
     ];
     instance = await createServer(fixtures);
 
     const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"), {
-      "X-LLMock-Chaos-Drop": "1.0",
+      "X-AIMock-Chaos-Drop": "1.0",
     });
     expect(res.status).toBe(500);
 
@@ -590,7 +590,7 @@ describe("fixture-level chaos on non-OpenAI provider", () => {
 // ---------------------------------------------------------------------------
 
 describe("chaos with logLevel silent: invalid header is ignored gracefully", () => {
-  it("proceeds normally and does not throw when x-llmock-chaos-drop is not a number", async () => {
+  it("proceeds normally and does not throw when x-aimock-chaos-drop is not a number", async () => {
     const fixtures: Fixture[] = [
       { match: { userMessage: "hello" }, response: { content: "Hi there" } },
     ];
@@ -598,7 +598,7 @@ describe("chaos with logLevel silent: invalid header is ignored gracefully", () 
 
     // "notanumber" parses to NaN — should be silently ignored, request proceeds normally
     const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"), {
-      "X-LLMock-Chaos-Drop": "notanumber",
+      "X-AIMock-Chaos-Drop": "notanumber",
     });
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
@@ -610,7 +610,7 @@ describe("chaos with logLevel silent: invalid header is ignored gracefully", () 
     // must not produce console.warn output — the caller has no logger to suppress it.
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     // "notanumber" parses to NaN — old code would call console.warn; new code uses logger?.warn (no-op)
-    evaluateChaos(null, undefined, { "x-llmock-chaos-drop": "notanumber" });
+    evaluateChaos(null, undefined, { "x-aimock-chaos-drop": "notanumber" });
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

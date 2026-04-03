@@ -178,11 +178,11 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --log-level", () => {
     const child = spawnCli(["--fixtures", fixturePath, "--port", "0", "--log-level", "silent"]);
 
     // Wait for the server to be ready (listen on port)
-    // With silent, there should be no [llmock] output
+    // With silent, there should be no [aimock] output
     await new Promise((r) => setTimeout(r, 1500));
 
     const stdout = child.stdout();
-    expect(stdout).not.toContain("[llmock]");
+    expect(stdout).not.toContain("[aimock]");
 
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {
@@ -195,7 +195,7 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --log-level", () => {
     const child = spawnCli(["--fixtures", fixturePath, "--port", "0", "--log-level", "info"]);
 
     await child.waitForOutput(/listening on/i, 5000);
-    expect(child.stdout()).toContain("[llmock]");
+    expect(child.stdout()).toContain("[aimock]");
     expect(child.stdout()).toContain("Loaded 1 fixture(s)");
 
     child.kill("SIGTERM");
@@ -209,7 +209,7 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --log-level", () => {
     const child = spawnCli(["--fixtures", fixturePath, "--port", "0", "--log-level", "debug"]);
 
     await child.waitForOutput(/listening on/i, 5000);
-    expect(child.stdout()).toContain("[llmock]");
+    expect(child.stdout()).toContain("[aimock]");
 
     child.kill("SIGTERM");
     await new Promise<void>((resolve) => {

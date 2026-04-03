@@ -1,4 +1,4 @@
-# @copilotkit/llmock
+# @copilotkit/aimock
 
 ## 1.6.1
 

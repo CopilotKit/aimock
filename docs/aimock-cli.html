@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>aimock CLI — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>aimock CLI</h1>
+        <p class="lead">
+          <code>aimock</code> is the full-stack mock orchestrator. Where <code>aimock</code> serves
+          LLM endpoints only, <code>aimock</code> reads a JSON config file and serves LLM mocks
+          alongside additional mock services (MCP, A2A, vector stores) on a single port.
+        </p>
+
+        <h2>aimock vs aimock</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>llmock CLI</th>
+              <th>aimock CLI</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>LLM mock endpoints</td>
+              <td>Yes</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Additional mock services</td>
+              <td>No</td>
+              <td>Yes (via mount)</td>
+            </tr>
+            <tr>
+              <td>Config file</td>
+              <td>CLI flags only</td>
+              <td>JSON config file</td>
+            </tr>
+            <tr>
+              <td>Single-port routing</td>
+              <td>LLM paths only</td>
+              <td>All services on one port</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Quick Start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">Run aimock <span class="lang-tag">shell</span></div>
+              <pre><code>$ npx aimock --config aimock.json --port 4010</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">Run aimock <span class="lang-tag">shell</span></div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v ./aimock.json:/config.json \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --config /config.json --port 4010</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h2>Config File Format</h2>
+        <p>
+          The config file is a JSON object describing which services to run and how to configure
+          them. The <code>llm</code> section configures the core LLMock server. Additional services
+          are mounted at path prefixes.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"llm"</span>: {
+    <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="prop">"latency"</span>: <span class="num">0</span>,
+    <span class="prop">"chunkSize"</span>: <span class="num">20</span>,
+    <span class="prop">"logLevel"</span>: <span class="str">"info"</span>,
+    <span class="prop">"validateOnLoad"</span>: <span class="kw">true</span>,
+    <span class="prop">"metrics"</span>: <span class="kw">true</span>,
+    <span class="prop">"strict"</span>: <span class="kw">false</span>
+  },
+  <span class="prop">"services"</span>: {
+    <span class="prop">"/mcp"</span>: {
+      <span class="prop">"type"</span>: <span class="str">"mcp"</span>,
+      <span class="prop">"tools"</span>: <span class="str">"./mcp-tools.json"</span>
+    },
+    <span class="prop">"/a2a"</span>: {
+      <span class="prop">"type"</span>: <span class="str">"a2a"</span>,
+      <span class="prop">"agents"</span>: <span class="str">"./a2a-agents.json"</span>
+    }
+  }
+}</code></pre>
+        </div>
+
+        <h3>Config Fields</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Type</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>llm</code></td>
+              <td>object</td>
+              <td>
+                LLMock configuration. Accepts <code>fixtures</code>, <code>latency</code>,
+                <code>chunkSize</code>, <code>logLevel</code>, <code>validateOnLoad</code>,
+                <code>metrics</code>, <code>strict</code>, <code>chaos</code>,
+                <code>streamingProfile</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>services</code></td>
+              <td>object</td>
+              <td>
+                Map of mount paths to service configs. Each key is a URL path prefix (e.g.
+                <code>/mcp</code>), each value describes the service type and its options.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>CLI Flags</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Option</th>
+              <th>Default</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--config</code></td>
+              <td><code>aimock.json</code></td>
+              <td>Path to JSON config file</td>
+            </tr>
+            <tr>
+              <td><code>--port</code></td>
+              <td><code>4010</code></td>
+              <td>Port to listen on (overrides config)</td>
+            </tr>
+            <tr>
+              <td><code>--host</code></td>
+              <td><code>127.0.0.1</code></td>
+              <td>Host to bind to (overrides config)</td>
+            </tr>
+            <tr>
+              <td><code>--help</code></td>
+              <td>&mdash;</td>
+              <td>Show help</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Single-Port Routing</h2>
+        <p>
+          All services share one port. Requests are routed by path prefix. LLM endpoints live at the
+          root, mounted services at their configured prefix:
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Path</th>
+              <th>Service</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>/v1/chat/completions</code></td>
+              <td>LLMock (OpenAI Chat Completions)</td>
+            </tr>
+            <tr>
+              <td><code>/v1/messages</code></td>
+              <td>LLMock (Anthropic Claude)</td>
+            </tr>
+            <tr>
+              <td><code>/v1/embeddings</code></td>
+              <td>LLMock (Embeddings)</td>
+            </tr>
+            <tr>
+              <td><code>/mcp/*</code></td>
+              <td>MCP mock service</td>
+            </tr>
+            <tr>
+              <td><code>/a2a/*</code></td>
+              <td>A2A mock service</td>
+            </tr>
+            <tr>
+              <td><code>/health</code></td>
+              <td>Unified health check (all services)</td>
+            </tr>
+            <tr>
+              <td><code>/metrics</code></td>
+              <td>Prometheus metrics (if enabled)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Path stripping is automatic &mdash; a request to <code>/mcp/tools/list</code> arrives at
+          the MCP service as <code>/tools/list</code>.
+        </p>
+
+        <h2>Docker Usage</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Run with config <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx aimock --config aimock.json --host 0.0.0.0</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Docker run with config <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Mount config and fixtures into the container</span>
+$ docker run -p 4010:4010 \
+  -v ./aimock.json:/config.json \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --config /config.json --host 0.0.0.0</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h2>Docker Compose</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">docker-compose.yml <span class="lang-tag">yaml</span></div>
+          <pre><code><span class="prop">services</span>:
+  <span class="prop">aimock</span>:
+    <span class="prop">image</span>: <span class="str">ghcr.io/copilotkit/aimock:latest</span>
+    <span class="prop">command</span>: <span class="str">aimock --config /app/aimock.json --host 0.0.0.0</span>
+    <span class="prop">ports</span>:
+      - <span class="str">"4010:4010"</span>
+    <span class="prop">volumes</span>:
+      - <span class="str">./aimock.json:/app/aimock.json:ro</span>
+      - <span class="str">./fixtures:/app/fixtures:ro</span>
+
+  <span class="prop">app</span>:
+    <span class="prop">build</span>: <span class="str">.</span>
+    <span class="prop">environment</span>:
+      <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://aimock:4010/v1</span>
+      <span class="prop">MCP_SERVER_URL</span>: <span class="str">http://aimock:4010/mcp</span>
+    <span class="prop">depends_on</span>:
+      - <span class="str">aimock</span></code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

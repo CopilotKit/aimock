@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Migrate from VidaiMock — aimock</title>
+    <meta
+      name="description"
+      content="Switching from VidaiMock to aimock — a conversion guide covering CLI, fixtures, and feature comparison."
+    />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="index.html" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="docs.html" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Switching from VidaiMock to aimock</h1>
+        <p class="lead">
+          VidaiMock is a capable Rust binary with broad provider support. aimock matches that
+          coverage and adds what VidaiMock can&rsquo;t &mdash; a programmatic TypeScript API,
+          WebSocket support, fixture files, request journal, and MCP/A2A/Vector mocking.
+        </p>
+
+        <!-- ═══ The quick switch ══════════════════════════════════════ -->
+        <h2>The quick switch</h2>
+
+        <p>The CLI flags map directly. Swap the binary name, adjust the flag names, and go:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            VidaiMock
+            <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>vidaimock --port 4010 --template-dir ./templates</code></pre>
+        </div>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                aimock (equivalent)
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>npx aimock -p 4010 -f ./fixtures</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                aimock (equivalent)
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock -p 4010 -f /fixtures</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h3>Fixture format comparison</h3>
+        <p>
+          VidaiMock uses Tera templates (<code>.tera</code>) to build responses dynamically. aimock
+          uses plain JSON fixture files &mdash; no template language, no compilation step.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            VidaiMock &mdash; Tera template
+            <span class="lang-tag">tera</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"model"</span>: <span class="str">"{{ model }}"</span>,
+  <span class="prop">"choices"</span>: [{
+    <span class="prop">"message"</span>: {
+      <span class="prop">"role"</span>: <span class="str">"assistant"</span>,
+      <span class="prop">"content"</span>: <span class="str">"Hello from VidaiMock"</span>
+    }
+  }]
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            aimock &mdash; JSON fixture
+            <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
+  <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"Hello from aimock"</span> }
+}</code></pre>
+        </div>
+
+        <p>
+          aimock fixtures are declarative: you specify <em>what to match</em> and
+          <em>what to return</em>. The server handles model names, streaming format, and
+          provider-specific envelope generation automatically.
+        </p>
+
+        <!-- ═══ What you gain ═════════════════════════════════════════ -->
+        <h2>What you gain</h2>
+
+        <div class="feature-grid">
+          <div class="feature-link">
+            <span class="badge badge-green">API</span>
+            <h3>Programmatic API</h3>
+            <p>
+              Import <code>LLMock</code> in TypeScript/JavaScript and configure fixtures,
+              assertions, and lifecycle in code &mdash; no process spawning needed.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-blue">Transport</span>
+            <h3>WebSocket APIs</h3>
+            <p>
+              Built-in support for OpenAI Realtime, OpenAI Responses WS, and Gemini Live &mdash;
+              three WebSocket protocols out of the box.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-purple">Testing</span>
+            <h3>Request journal</h3>
+            <p>
+              Every request is recorded with full headers, body, matched fixture, and timing.
+              <code>getRequests()</code> lets you assert on what your app actually sent.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-amber">Protocols</span>
+            <h3>MCP / A2A / Vector</h3>
+            <p>
+              Mock MCP tool servers, A2A agent-to-agent endpoints, and vector database APIs
+              alongside your LLM mocks on one port.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-purple">Capture</span>
+            <h3>Record &amp; replay</h3>
+            <p>
+              Proxy to real APIs, capture responses as fixtures, then replay deterministically in
+              CI. No manual fixture authoring required.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-red">CI</span>
+            <h3>Drift detection</h3>
+            <p>
+              Automated three-way conformance testing against live provider APIs. Catch breaking
+              changes before your users do.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-amber">Format</span>
+            <h3>Structured output</h3>
+            <p>
+              JSON mode and <code>response_format</code> matching for structured responses &mdash;
+              match on schema, return typed JSON.
+            </p>
+          </div>
+          <div class="feature-link">
+            <span class="badge badge-green">Stateful</span>
+            <h3>Sequential responses</h3>
+            <p>
+              Return different responses on successive calls to the same endpoint. Model multi-turn
+              conversations and retry scenarios.
+            </p>
+          </div>
+        </div>
+
+        <!-- ═══ Comparison table ══════════════════════════════════════ -->
+        <h2>Comparison table</h2>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>VidaiMock</th>
+              <th>aimock</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Programmatic API</td>
+              <td>No (binary only)</td>
+              <td>Yes (TypeScript/JS)</td>
+            </tr>
+            <tr>
+              <td>WebSocket APIs</td>
+              <td>No</td>
+              <td>Built-in (3 protocols)</td>
+            </tr>
+            <tr>
+              <td>Request journal</td>
+              <td>No</td>
+              <td>Built-in</td>
+            </tr>
+            <tr>
+              <td>MCP / A2A / Vector</td>
+              <td>No</td>
+              <td>Built-in</td>
+            </tr>
+            <tr>
+              <td>Record &amp; replay</td>
+              <td>No</td>
+              <td>Built-in</td>
+            </tr>
+            <tr>
+              <td>Drift detection</td>
+              <td>No</td>
+              <td>Automated CI</td>
+            </tr>
+            <tr>
+              <td>LLM providers</td>
+              <td>11+</td>
+              <td>10+</td>
+            </tr>
+            <tr>
+              <td>Prometheus metrics</td>
+              <td>Yes</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Chaos testing</td>
+              <td>Partial</td>
+              <td>Built-in (3 modes)</td>
+            </tr>
+            <tr>
+              <td>Docker</td>
+              <td>Yes</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Streaming physics</td>
+              <td>Yes</td>
+              <td>Built-in (ttft/tps/jitter)</td>
+            </tr>
+            <tr>
+              <td>Dependencies</td>
+              <td>Zero (Rust)</td>
+              <td>Zero (Node.js builtins)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ═══ CLI / Docker quick start ══════════════════════════════ -->
+        <h2>CLI / Docker quick start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli active">
+            <div class="code-block">
+              <div class="code-block-header">
+                Install &amp; run
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Run the mock server</span>
+npx aimock -p 4010 -f ./fixtures
+
+<span class="cm"># Point your app at it</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=mock-key</code></pre>
+            </div>
+
+            <div class="code-block">
+              <div class="code-block-header">
+                With a config file
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Full config-driven setup (LLM + MCP + A2A on one port)</span>
+npx aimock --config aimock.json --port 4010</code></pre>
+            </div>
+          </div>
+
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Docker run
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Pull and run from GitHub Container Registry</span>
+docker pull ghcr.io/copilotkit/aimock:latest
+
+docker run -p 4010:4010 \
+  -v $(pwd)/fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock
+
+<span class="cm"># With a config file</span>
+docker run -p 4010:4010 \
+  -v $(pwd)/aimock.json:/app/aimock.json \
+  -v $(pwd)/fixtures:/app/fixtures \
+  ghcr.io/copilotkit/aimock aimock --config /app/aimock.json --host 0.0.0.0</code></pre>
+            </div>
+
+            <div class="code-block">
+              <div class="code-block-header">
+                docker-compose.yml
+                <span class="lang-tag">yaml</span>
+              </div>
+              <pre><code><span class="prop">services</span>:
+  <span class="prop">aimock</span>:
+    <span class="prop">image</span>: <span class="str">ghcr.io/copilotkit/aimock:latest</span>
+    <span class="prop">command</span>: <span class="str">aimock --config /app/aimock.json --host 0.0.0.0</span>
+    <span class="prop">ports</span>:
+      - <span class="str">"4010:4010"</span>
+    <span class="prop">volumes</span>:
+      - <span class="str">./aimock.json:/app/aimock.json:ro</span>
+      - <span class="str">./fixtures:/app/fixtures:ro</span>
+
+  <span class="prop">app</span>:
+    <span class="prop">build</span>: <span class="str">.</span>
+    <span class="prop">environment</span>:
+      <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://aimock:4010/v1</span>
+      <span class="prop">OPENAI_API_KEY</span>: <span class="str">mock-key</span>
+    <span class="prop">depends_on</span>:
+      - <span class="str">aimock</span></code></pre>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

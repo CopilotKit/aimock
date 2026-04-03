@@ -4,7 +4,7 @@ fullnameOverride: ""
 replicaCount: 1
 
 image:
-  repository: ghcr.io/copilotkit/llmock
+  repository: ghcr.io/copilotkit/aimock
   tag: ""
   pullPolicy: IfNotPresent
 

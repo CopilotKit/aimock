@@ -1,98 +1,81 @@
-# @copilotkit/llmock [![Unit Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml) [![Drift Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml) [![npm version](https://img.shields.io/npm/v/@copilotkit/llmock)](https://www.npmjs.com/package/@copilotkit/llmock)
+# aimock [![Unit Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-unit.yml) [![Drift Tests](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml/badge.svg)](https://github.com/CopilotKit/llmock/actions/workflows/test-drift.yml) [![npm version](https://img.shields.io/npm/v/@copilotkit/aimock)](https://www.npmjs.com/package/@copilotkit/aimock)
 
-Deterministic mock LLM server for testing. A real HTTP server on a real port — not an in-process interceptor — so every process in your stack (Playwright, Next.js, agent workers, microservices) can point at it via `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` and get reproducible, instant responses. Streams SSE in real OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, and Cohere API formats, driven entirely by fixtures. Zero runtime dependencies.
+Mock infrastructure for AI application testing — LLM APIs, MCP tools, A2A agents, vector databases, search, rerank, and moderation. One package, one port, zero dependencies.
 
 ## Quick Start
 
 ```bash
-npm install @copilotkit/llmock
+npm install @copilotkit/aimock
 ```
 
 ```typescript
-import { LLMock } from "@copilotkit/llmock";
+import { LLMock } from "@copilotkit/aimock";
 
-const mock = new LLMock({ port: 5555 });
-
+const mock = new LLMock({ port: 0 });
 mock.onMessage("hello", { content: "Hi there!" });
+await mock.start();
 
-const url = await mock.start();
-// Point your OpenAI client at `url` instead of https://api.openai.com
+process.env.OPENAI_BASE_URL = `${mock.url}/v1`;
 
 // ... run your tests ...
 
 await mock.stop();
 ```
 
+## The aimock Suite
+
+aimock mocks everything your AI app talks to:
+
+| Tool           | What it mocks                                                     | Docs                                                     |
+| -------------- | ----------------------------------------------------------------- | -------------------------------------------------------- |
+| **LLMock**     | OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere | [Providers](https://aimock.copilotkit.dev/docs.html)     |
+| **MCPMock**    | MCP tools, resources, prompts with session management             | [MCP](https://aimock.copilotkit.dev/mcp-mock.html)       |
+| **A2AMock**    | Agent-to-agent protocol with SSE streaming                        | [A2A](https://aimock.copilotkit.dev/a2a-mock.html)       |
+| **VectorMock** | Pinecone, Qdrant, ChromaDB compatible endpoints                   | [Vector](https://aimock.copilotkit.dev/vector-mock.html) |
+| **Services**   | Tavily search, Cohere rerank, OpenAI moderation                   | [Services](https://aimock.copilotkit.dev/services.html)  |
+
+Run them all on one port with `npx aimock --config aimock.json`, or use the programmatic API to compose exactly what you need.
+
 ## Features
 
-- **[Multi-provider support](https://llmock.copilotkit.dev/compatible-providers.html)** — [OpenAI Chat Completions](https://llmock.copilotkit.dev/chat-completions.html), [OpenAI Responses](https://llmock.copilotkit.dev/responses-api.html), [Anthropic Claude](https://llmock.copilotkit.dev/claude-messages.html), [Google Gemini](https://llmock.copilotkit.dev/gemini.html), [AWS Bedrock](https://llmock.copilotkit.dev/aws-bedrock.html) (streaming + Converse), [Azure OpenAI](https://llmock.copilotkit.dev/azure-openai.html), [Vertex AI](https://llmock.copilotkit.dev/vertex-ai.html), [Ollama](https://llmock.copilotkit.dev/ollama.html), [Cohere](https://llmock.copilotkit.dev/cohere.html)
-- **[Embeddings API](https://llmock.copilotkit.dev/embeddings.html)** — OpenAI-compatible embedding responses with configurable dimensions
-- **[Structured output / JSON mode](https://llmock.copilotkit.dev/structured-output.html)** — `response_format`, `json_schema`, and function calling
-- **[Sequential responses](https://llmock.copilotkit.dev/sequential-responses.html)** — Stateful multi-turn fixtures that return different responses on each call
-- **[Streaming physics](https://llmock.copilotkit.dev/streaming-physics.html)** — Configurable `ttft`, `tps`, and `jitter` for realistic timing
-- **[WebSocket APIs](https://llmock.copilotkit.dev/websocket.html)** — OpenAI Responses WS, Realtime API, and Gemini Live
-- **[Error injection](https://llmock.copilotkit.dev/error-injection.html)** — One-shot errors, rate limiting, and provider-specific error formats
-- **[Chaos testing](https://llmock.copilotkit.dev/chaos-testing.html)** — Probabilistic failure injection: 500 errors, malformed JSON, mid-stream disconnects
-- **[Prometheus metrics](https://llmock.copilotkit.dev/metrics.html)** — Request counts, latencies, and fixture match rates at `/metrics`
-- **[Request journal](https://llmock.copilotkit.dev/docs.html)** — Record, inspect, and assert on every request
-- **[Fixture validation](https://llmock.copilotkit.dev/fixtures.html)** — Schema validation at load time with `--validate-on-load`
-- **CLI with hot-reload** — Standalone server with `--watch` for live fixture editing
-- **[Docker + Helm](https://llmock.copilotkit.dev/docker.html)** — Container image and Helm chart for CI/CD pipelines
-- **Record-and-replay** — VCR-style proxy-on-miss records real API responses as fixtures for deterministic replay
-- **[Drift detection](https://llmock.copilotkit.dev/drift-detection.html)** — Daily CI runs against real APIs to catch response format changes
-- **Claude Code integration** — `/write-fixtures` skill teaches your AI assistant how to write fixtures correctly
+- **[Record & Replay](https://aimock.copilotkit.dev/record-replay.html)** — Proxy real APIs, save as fixtures, replay deterministically forever
+- **[11 LLM Providers](https://aimock.copilotkit.dev/docs.html)** — OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere — full streaming support
+- **[MCP / A2A / Vector](https://aimock.copilotkit.dev/mcp-mock.html)** — Mock every protocol your AI agents use
+- **[Chaos Testing](https://aimock.copilotkit.dev/chaos-testing.html)** — 500 errors, malformed JSON, mid-stream disconnects at any probability
+- **[Drift Detection](https://aimock.copilotkit.dev/drift-detection.html)** — Daily CI validation against real APIs
+- **[Streaming Physics](https://aimock.copilotkit.dev/streaming-physics.html)** — Configurable `ttft`, `tps`, and `jitter`
+- **[WebSocket APIs](https://aimock.copilotkit.dev/websocket.html)** — OpenAI Realtime, Responses WS, Gemini Live
+- **[Prometheus Metrics](https://aimock.copilotkit.dev/metrics.html)** — Request counts, latencies, fixture match rates
+- **[Docker + Helm](https://aimock.copilotkit.dev/docker.html)** — Container image and Helm chart for CI/CD
+- **Zero dependencies** — Everything from Node.js builtins
 
-## CLI Quick Reference
+## CLI
 
 ```bash
-llmock [options]
+# LLM mocking only
+npx aimock -p 4010 -f ./fixtures
+
+# Full suite from config
+npx aimock --config aimock.json
+
+# Record mode: proxy to real APIs, save fixtures
+npx aimock --record --provider-openai https://api.openai.com
+
+# Docker
+docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures
 ```
 
-| Option               | Short | Default      | Description                                 |
-| -------------------- | ----- | ------------ | ------------------------------------------- |
-| `--port`             | `-p`  | `4010`       | Port to listen on                           |
-| `--host`             | `-h`  | `127.0.0.1`  | Host to bind to                             |
-| `--fixtures`         | `-f`  | `./fixtures` | Path to fixtures directory or file          |
-| `--latency`          | `-l`  | `0`          | Latency between SSE chunks (ms)             |
-| `--chunk-size`       | `-c`  | `20`         | Characters per SSE chunk                    |
-| `--watch`            | `-w`  |              | Watch fixture path for changes and reload   |
-| `--log-level`        |       | `info`       | Log verbosity: `silent`, `info`, `debug`    |
-| `--validate-on-load` |       |              | Validate fixture schemas at startup         |
-| `--chaos-drop`       |       | `0`          | Chaos: probability of 500 errors (0-1)      |
-| `--chaos-malformed`  |       | `0`          | Chaos: probability of malformed JSON (0-1)  |
-| `--chaos-disconnect` |       | `0`          | Chaos: probability of disconnect (0-1)      |
-| `--metrics`          |       |              | Enable Prometheus metrics at /metrics       |
-| `--record`           |       |              | Record mode: proxy unmatched to real APIs   |
-| `--strict`           |       |              | Strict mode: fail on unmatched requests     |
-| `--provider-*`       |       |              | Upstream URL per provider (with `--record`) |
-| `--help`             |       |              | Show help                                   |
+## Switching from other tools?
 
-```bash
-# Start with bundled example fixtures
-llmock
-
-# Custom fixtures on a specific port
-llmock -p 8080 -f ./my-fixtures
-
-# Simulate slow responses
-llmock --latency 100 --chunk-size 5
-
-# Record mode: proxy unmatched requests to real APIs and save as fixtures
-llmock --record --provider-openai https://api.openai.com --provider-anthropic https://api.anthropic.com
-
-# Strict mode in CI: fail if any request doesn't match a fixture
-llmock --strict -f ./fixtures
-```
+Step-by-step migration guides: [MSW](https://aimock.copilotkit.dev/migrate-from-msw.html) · [VidaiMock](https://aimock.copilotkit.dev/migrate-from-vidaimock.html) · [mock-llm](https://aimock.copilotkit.dev/migrate-from-mock-llm.html) · [Python mocks](https://aimock.copilotkit.dev/migrate-from-python-mocks.html) · [Mokksy](https://aimock.copilotkit.dev/migrate-from-mokksy.html)
 
 ## Documentation
 
-Full API reference, fixture format, E2E patterns, and provider-specific guides:
-
-**[https://llmock.copilotkit.dev/docs.html](https://llmock.copilotkit.dev/docs.html)**
+**[https://aimock.copilotkit.dev](https://aimock.copilotkit.dev)**
 
 ## Real-World Usage
 
-[CopilotKit](https://github.com/CopilotKit/CopilotKit) uses llmock across its test suite to verify AI agent behavior across multiple LLM providers without hitting real APIs.
+[AG-UI](https://github.com/ag-ui-protocol/ag-ui) uses aimock for its [end-to-end test suite](https://github.com/ag-ui-protocol/ag-ui/tree/main/apps/dojo/e2e), verifying AI agent behavior across LLM providers with [fixture-driven responses](https://github.com/ag-ui-protocol/ag-ui/tree/main/apps/dojo/e2e/fixtures/openai).
 
 ## License
 

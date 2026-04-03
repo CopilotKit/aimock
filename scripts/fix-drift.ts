@@ -39,6 +39,28 @@ const KILL_GRACE_MS = 10_000;
 
 const VALID_SEVERITIES: ReadonlySet<DriftSeverity> = new Set(["critical", "warning", "info"]);
 
+const SKILL_FILE = "skills/write-fixtures/SKILL.md";
+
+/**
+ * Map builder source files to the corresponding section names in the
+ * write-fixtures skill documentation.  Used to flag which skill sections
+ * may need updating when a drift fix changes a builder's output format.
+ */
+export const BUILDER_TO_SKILL_SECTION: Record<string, string> = {
+  "src/responses.ts": "Responses API",
+  "src/messages.ts": "Claude Messages",
+  "src/gemini.ts": "Gemini",
+  "src/bedrock.ts": "Bedrock",
+  "src/bedrock-converse.ts": "Bedrock",
+  "src/embeddings.ts": "Embeddings",
+  "src/ollama.ts": "Ollama",
+  "src/cohere.ts": "Cohere",
+  "src/ws-realtime.ts": "OpenAI Realtime WebSocket",
+  "src/ws-responses.ts": "OpenAI Responses WebSocket",
+  "src/ws-gemini-live.ts": "Gemini Live WebSocket",
+  "src/helpers.ts": "OpenAI Chat Completions",
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -91,6 +113,20 @@ export function execFileSafe(file: string, args: string[]): void {
   } catch (err: unknown) {
     throw formatExecError(`${file} ${args.join(" ")}`, err);
   }
+}
+
+/**
+ * Given a list of changed file paths, return the unique skill section names
+ * that correspond to modified builder files.  Returns an empty array when
+ * no builder files map to a known skill section.
+ */
+export function affectedSkillSections(changedFiles: string[]): string[] {
+  const sections = new Set<string>();
+  for (const file of changedFiles) {
+    const section = BUILDER_TO_SKILL_SECTION[file];
+    if (section) sections.add(section);
+  }
+  return [...sections].sort();
 }
 
 export function readFileIfExists(path: string): string | null {
@@ -190,7 +226,7 @@ export function readDriftReport(path: string): DriftReport {
 export function buildPrompt(report: DriftReport): string {
   const lines: string[] = [];
 
-  lines.push("You are fixing API drift in the llmock mock server.");
+  lines.push("You are fixing API drift in the aimock mock server.");
   lines.push("");
   lines.push("## Workflow");
   lines.push("");
@@ -237,6 +273,14 @@ export function buildPrompt(report: DriftReport): string {
     lines.push("");
   }
 
+  lines.push("## Skill file update");
+  lines.push("");
+  lines.push("If any builder's output format changed (new fields, renamed fields, changed event");
+  lines.push("types), update the write-fixtures skill documentation to match:");
+  lines.push(`  File: ${SKILL_FILE}`);
+  lines.push("Only update the Response Types and API Endpoints sections that correspond to the");
+  lines.push("changed builders. Do not rewrite unrelated sections.");
+  lines.push("");
   lines.push("## After all fixes");
   lines.push("");
   lines.push("1. Run the full test suite: pnpm test");
@@ -386,7 +430,7 @@ export function addChangelogEntry(report: DriftReport, version: string): void {
   ].join("\n");
 
   // Insert after the first line (the title)
-  const titleLine = "# @copilotkit/llmock\n";
+  const titleLine = "# @copilotkit/aimock\n";
   if (existing.startsWith(titleLine)) {
     const rest = existing.slice(titleLine.length);
     writeFileSync(changelogPath, titleLine + "\n" + newEntry + rest, "utf-8");
@@ -395,7 +439,7 @@ export function addChangelogEntry(report: DriftReport, version: string): void {
   }
 }
 
-export function buildPrBody(report: DriftReport): string {
+export function buildPrBody(report: DriftReport, changedFiles?: string[]): string {
   const providers: string[] = [];
   const diffs: string[] = [];
 
@@ -408,7 +452,7 @@ export function buildPrBody(report: DriftReport): string {
 
   const reportJson = JSON.stringify(report, null, 2);
 
-  return [
+  const sections: string[] = [
     "## Summary",
     "",
     "Auto-generated drift remediation.",
@@ -419,6 +463,21 @@ export function buildPrBody(report: DriftReport): string {
     "### Diffs fixed",
     ...diffs,
     "",
+  ];
+
+  // Flag skill sections that may need review based on which builders changed
+  const skillSections = changedFiles ? affectedSkillSections(changedFiles) : [];
+  if (skillSections.length > 0) {
+    sections.push(
+      "### Skill documentation",
+      "",
+      `The following write-fixtures skill sections may need review after these builder changes:`,
+      ...skillSections.map((s) => `- ${s}`),
+      "",
+    );
+  }
+
+  sections.push(
     "## Drift Report",
     "",
     "<details>",
@@ -429,7 +488,9 @@ export function buildPrBody(report: DriftReport): string {
     "```",
     "",
     "</details>",
-  ].join("\n");
+  );
+
+  return sections.join("\n");
 }
 
 /**
@@ -485,6 +546,7 @@ function createPr(report: DriftReport): void {
     (f) => f.startsWith("src/") && !f.startsWith("src/__tests__/"),
   );
   const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/"));
+  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
 
   // Abort if no source files were changed — a version-bump-only PR would be misleading
   if (builderFiles.length === 0 && testFiles.length === 0) {
@@ -503,6 +565,15 @@ function createPr(report: DriftReport): void {
   if (testFiles.length > 0) {
     execFileSafe("git", ["add", ...testFiles]);
     execFileSafe("git", ["commit", "-m", "test: update SDK shapes for drift remediation"]);
+  }
+
+  if (skillFiles.length > 0) {
+    execFileSafe("git", ["add", ...skillFiles]);
+    execFileSafe("git", [
+      "commit",
+      "-m",
+      "docs: update write-fixtures skill for builder format changes",
+    ]);
   }
 
   const newVersion = patchBumpVersion();
@@ -525,10 +596,10 @@ function createPr(report: DriftReport): void {
   execFileSafe("git", ["push", "-u", "origin", branchName]);
   console.log(`Pushed branch ${branchName}`);
 
-  const prBody = buildPrBody(report);
+  const prBody = buildPrBody(report, changedFiles);
   const prTitle = `fix: auto-remediate API drift (${stamp})`;
 
-  const prBodyFile = `/tmp/llmock-drift-${process.pid}-pr-body.md`;
+  const prBodyFile = `/tmp/aimock-drift-${process.pid}-pr-body.md`;
   writeFileSync(prBodyFile, prBody, "utf-8");
   try {
     execFileSafe("gh", [
@@ -593,7 +664,7 @@ function createIssue(report: DriftReport | null): void {
 
   const issueTitle = `Drift detected — auto-fix failed (${stamp})`;
 
-  const issueBodyFile = `/tmp/llmock-drift-${process.pid}-issue-body.md`;
+  const issueBodyFile = `/tmp/aimock-drift-${process.pid}-issue-body.md`;
   writeFileSync(issueBodyFile, issueBody, "utf-8");
   try {
     execFileSafe("gh", [

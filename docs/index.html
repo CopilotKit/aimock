@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>llmock — Deterministic mock LLM server for testing</title>
+    <title>aimock — Deterministic mock infrastructure for AI apps</title>
     <meta
       name="description"
-      content="Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven. Zero dependencies. Multi-provider mock — OpenAI, Claude, Gemini, AWS Bedrock, Azure, Ollama, Cohere, Vertex AI — drop-in replacement for your test suite."
+      content="One mock server for LLMs, MCP, A2A, vector DBs, and more. Fixture-driven. Zero dependencies. The aimock suite for AI application testing."
     />
 
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
@@ -48,6 +48,7 @@
         --blue: #4488ff;
         --purple: #aa66ff;
         --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+        --font-features-mono: "liga" 0, "calt" 0;
         --font-sans: "Instrument Sans", -apple-system, system-ui, sans-serif;
         --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
       }
@@ -65,6 +66,12 @@
         color: var(--text-primary);
         line-height: 1.6;
         overflow-x: hidden;
+      }
+
+      code,
+      pre,
+      kbd {
+        font-feature-settings: var(--font-features-mono);
       }
 
       a {
@@ -115,15 +122,27 @@
       }
       .nav-brand {
         display: flex;
-        align-items: center;
-        gap: 0.75rem;
+        flex-direction: column;
+        gap: 0;
         font-family: var(--font-mono);
         font-weight: 600;
         font-size: 1rem;
         color: var(--text-primary);
       }
+      .nav-brand .brand-main {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
       .nav-brand .prompt {
         color: var(--accent);
+      }
+      .nav-brand .powered-by {
+        font-size: 0.6rem;
+        font-weight: 400;
+        color: var(--text-dim);
+        padding-left: 1.5rem;
+        margin-top: -2px;
       }
       .nav-links {
         display: flex;
@@ -157,14 +176,56 @@
         background: var(--bg-card);
       }
 
+      /* ─── Animations ─────────────────────────────────────────────── */
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(30px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0;
+        }
+      }
+
+      .fade-in {
+        opacity: 0;
+        transform: translateY(30px);
+        transition:
+          opacity 0.8s var(--ease-out-expo),
+          transform 0.8s var(--ease-out-expo);
+      }
+      .fade-in.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
       /* ─── Hero ───────────────────────────────────────────────────── */
       .hero {
-        padding: 10rem 0 6rem;
+        padding: 10rem 0 5rem;
         position: relative;
         overflow: hidden;
       }
-
-      /* Gradient orb behind hero */
       .hero::before {
         content: "";
         position: absolute;
@@ -176,12 +237,10 @@
         background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
         pointer-events: none;
       }
-
       .hero .container {
         position: relative;
         z-index: 1;
       }
-
       .hero-badge {
         display: inline-flex;
         align-items: center;
@@ -204,7 +263,6 @@
         box-shadow: 0 0 8px var(--accent);
         animation: pulse 2s infinite;
       }
-
       .hero h1 {
         font-family: var(--font-sans);
         font-size: clamp(2.5rem, 6vw, 4.5rem);
@@ -218,121 +276,75 @@
         color: var(--accent);
         position: relative;
       }
-
       .hero-sub {
         font-size: 1.2rem;
         color: var(--text-secondary);
-        max-width: 600px;
+        max-width: 640px;
         margin-top: 1.5rem;
         line-height: 1.7;
         animation: fadeUp 0.8s var(--ease-out-expo) 0.2s both;
       }
 
-      .hero-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1rem;
-        margin-top: 2.5rem;
-        animation: fadeUp 0.8s var(--ease-out-expo) 0.3s both;
-      }
-
-      .btn {
+      /* ─── Install Box ────────────────────────────────────────────── */
+      .install-box {
         display: inline-flex;
         align-items: center;
-        gap: 0.5rem;
-        padding: 0.75rem 1.75rem;
-        border-radius: 8px;
-        font-family: var(--font-mono);
-        font-size: 0.875rem;
-        font-weight: 500;
-        transition: all 0.2s;
-        cursor: pointer;
-        border: none;
-      }
-      .btn-primary {
-        background: var(--accent);
-        color: var(--bg-deep);
-      }
-      .btn-primary:hover {
-        background: #33ffaa;
-        box-shadow: 0 0 30px var(--accent-glow-strong);
-        text-decoration: none;
-      }
-      .btn-secondary {
-        background: transparent;
-        color: var(--text-primary);
-        border: 1px solid var(--border);
-      }
-      .btn-secondary:hover {
-        border-color: var(--border-bright);
-        background: var(--bg-card);
-        text-decoration: none;
-      }
-
-      .hero-install {
-        display: flex;
-        align-items: center;
         gap: 1rem;
-        margin-top: 2rem;
-        padding: 0.75rem 1.25rem;
-        background: var(--bg-surface);
+        margin-top: 2.5rem;
+        padding: 0.75rem 1rem 0.75rem 1.25rem;
+        background: var(--bg-card);
         border: 1px solid var(--border);
-        border-radius: 8px;
+        border-radius: 10px;
         font-family: var(--font-mono);
-        font-size: 0.875rem;
-        max-width: max-content;
-        animation: fadeUp 0.8s var(--ease-out-expo) 0.4s both;
+        font-size: 0.9rem;
+        animation: fadeUp 0.8s var(--ease-out-expo) 0.3s both;
       }
-      .hero-install .dollar {
+      .install-box .prompt-sign {
         color: var(--accent);
         user-select: none;
       }
-      .hero-install code {
-        color: var(--text-secondary);
+      .install-box code {
+        color: var(--text-primary);
       }
-      .hero-install .copy-btn {
+      .install-box .copy-btn {
         background: none;
-        border: none;
-        color: var(--text-dim);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text-secondary);
+        padding: 0.35rem 0.75rem;
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
         cursor: pointer;
-        padding: 0.25rem;
-        transition: color 0.2s;
-        font-size: 1rem;
+        transition: all 0.2s;
       }
-      .hero-install .copy-btn:hover {
+      .install-box .copy-btn:hover {
+        border-color: var(--accent);
         color: var(--accent);
       }
 
-      /* ─── SSE Stream Animation ───────────────────────────────────── */
-      .demo {
-        margin-top: 4rem;
-        animation: fadeUp 0.8s var(--ease-out-expo) 0.5s both;
-      }
+      /* ─── Demo Panels ────────────────────────────────────────────── */
       .demo-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 1.5rem;
-      }
-      @media (max-width: 900px) {
-        .demo-grid {
-          grid-template-columns: 1fr;
-        }
+        margin-top: 3.5rem;
+        animation: fadeUp 0.8s var(--ease-out-expo) 0.4s both;
       }
       .demo-panel {
-        background: var(--bg-surface);
+        background: var(--bg-card);
         border: 1px solid var(--border);
         border-radius: 12px;
         overflow: hidden;
         box-shadow:
-          0 20px 60px rgba(0, 0, 0, 0.5),
-          0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+          0 8px 32px rgba(0, 0, 0, 0.4),
+          0 2px 8px rgba(0, 0, 0, 0.2);
       }
       .demo-titlebar {
         display: flex;
         align-items: center;
         gap: 0.5rem;
-        padding: 0.65rem 1rem;
-        background: var(--bg-card);
+        padding: 0.75rem 1rem;
+        background: rgba(0, 0, 0, 0.3);
         border-bottom: 1px solid var(--border);
       }
       .demo-titlebar .dots {
@@ -348,37 +360,67 @@
         background: #ff5f57;
       }
       .demo-titlebar .dots span:nth-child(2) {
-        background: #febc2e;
+        background: #ffbd2e;
       }
       .demo-titlebar .dots span:nth-child(3) {
-        background: #28c840;
+        background: #28ca42;
       }
       .demo-titlebar .title {
-        flex: 1;
-        text-align: center;
         font-family: var(--font-mono);
-        font-size: 0.7rem;
+        font-size: 0.75rem;
         color: var(--text-dim);
+        margin-left: 0.5rem;
       }
-
-      /* Left panel: static fixture code */
-      .demo-fixture pre {
+      .demo-body {
         padding: 1.25rem;
         font-family: var(--font-mono);
-        font-size: 0.78rem;
-        line-height: 1.75;
+        font-size: 0.8rem;
+        line-height: 1.7;
         overflow-x: auto;
-        color: var(--text-secondary);
-        height: 310px;
-      }
-      .demo-fixture .key {
-        color: var(--blue);
-      }
-      .demo-fixture .str {
-        color: var(--accent);
       }
 
-      /* Right panel: animated terminal */
+      /* ─── Syntax Highlighting ────────────────────────────────────── */
+      .syn-key {
+        color: #88aaff;
+      }
+      .syn-str {
+        color: #66ddaa;
+      }
+      .syn-num {
+        color: #ffaa66;
+      }
+      .syn-bool {
+        color: #ff88aa;
+      }
+      .syn-bracket {
+        color: var(--text-dim);
+      }
+      .syn-comment {
+        color: var(--text-dim);
+        font-style: italic;
+      }
+
+      /* ─── Terminal Colors ────────────────────────────────────────── */
+      .t-green {
+        color: var(--accent);
+      }
+      .t-yellow {
+        color: var(--warning);
+      }
+      .t-red {
+        color: var(--error);
+      }
+      .t-blue {
+        color: var(--blue);
+      }
+      .t-dim {
+        color: var(--text-dim);
+      }
+      .t-purple {
+        color: var(--purple);
+      }
+
+      /* ─── Terminal Demo Animation ────────────────────────────────── */
       .demo-term {
         padding: 1.25rem;
         font-family: var(--font-mono);
@@ -431,502 +473,511 @@
         margin-left: 1px;
       }
 
-      /* ─── Sections ───────────────────────────────────────────────── */
-      section {
-        padding: 3rem 0;
+      /* ─── Section: Record & Replay ───────────────────────────────── */
+      .section-record {
+        padding: 4.5rem 0;
+        position: relative;
+        background: linear-gradient(
+          180deg,
+          var(--bg-deep) 0%,
+          var(--bg-surface) 30%,
+          var(--bg-surface) 70%,
+          var(--bg-deep) 100%
+        );
       }
-
-      .section-label {
+      .record-grid {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr;
+        gap: 4rem;
+        align-items: center;
+      }
+      .record-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
         font-family: var(--font-mono);
-        font-size: 0.75rem;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-        color: var(--accent);
+        font-size: 0.8rem;
+        color: var(--error);
         margin-bottom: 1rem;
       }
-
-      .section-title {
-        font-size: clamp(1.75rem, 4vw, 2.75rem);
+      .record-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--error);
+        box-shadow: 0 0 10px var(--error);
+        animation: pulse 1.5s infinite;
+      }
+      .record-left h2 {
+        font-size: clamp(1.8rem, 4vw, 2.8rem);
         font-weight: 700;
-        letter-spacing: -0.02em;
         line-height: 1.15;
-        max-width: 650px;
+        letter-spacing: -0.02em;
+        margin-bottom: 2rem;
       }
-
-      .section-desc {
-        font-size: 1.1rem;
-        color: var(--text-secondary);
-        max-width: 600px;
-        margin-top: 1rem;
-        line-height: 1.7;
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+        margin-bottom: 2.5rem;
       }
-
-      /* ─── Features Grid ──────────────────────────────────────────── */
-      .features-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1.5rem;
-        margin-top: 3.5rem;
+      .step {
+        display: flex;
+        gap: 1rem;
+        align-items: flex-start;
       }
-
-      .features-grid > .feature-card:last-child:nth-child(3n + 1) {
-        grid-column: 2;
-      }
-
-      .feature-card {
-        padding: 2rem;
+      .step-num {
+        flex-shrink: 0;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
         background: var(--bg-card);
         border: 1px solid var(--border);
-        border-radius: 12px;
-        transition:
-          border-color 0.3s,
-          transform 0.3s,
-          box-shadow 0.3s;
-      }
-      .feature-card:hover {
-        border-color: var(--border-bright);
-        transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
-      }
-      .feature-icon {
-        width: 40px;
-        height: 40px;
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 10px;
-        font-size: 1.25rem;
-        margin-bottom: 1.25rem;
         font-family: var(--font-mono);
-        font-weight: 700;
-      }
-      .feature-icon.green {
-        background: rgba(0, 255, 136, 0.1);
+        font-size: 0.8rem;
+        font-weight: 600;
         color: var(--accent);
-        border: 1px solid rgba(0, 255, 136, 0.2);
       }
-      .feature-icon.blue {
-        background: rgba(68, 136, 255, 0.1);
-        color: var(--blue);
-        border: 1px solid rgba(68, 136, 255, 0.2);
+      .step-content h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 0.25rem;
       }
-      .feature-icon.purple {
-        background: rgba(170, 102, 255, 0.1);
-        color: var(--purple);
-        border: 1px solid rgba(170, 102, 255, 0.2);
-      }
-      .feature-icon.amber {
-        background: rgba(255, 170, 0, 0.1);
-        color: var(--warning);
-        border: 1px solid rgba(255, 170, 0, 0.2);
-      }
-      .feature-icon.red {
-        background: rgba(255, 68, 102, 0.1);
-        color: var(--error);
-        border: 1px solid rgba(255, 68, 102, 0.2);
+      .step-content p {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        line-height: 1.6;
       }
 
+      /* ─── Buttons ────────────────────────────────────────────────── */
+      .btn-primary {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1.75rem;
+        background: var(--accent);
+        color: var(--bg-deep);
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+        font-weight: 600;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+      }
+      .btn-primary:hover {
+        background: var(--accent-dim);
+        text-decoration: none;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 20px var(--accent-glow);
+      }
+      .btn-secondary {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1.75rem;
+        background: transparent;
+        color: var(--text-primary);
+        font-family: var(--font-mono);
+        font-size: 0.875rem;
+        font-weight: 500;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+      }
+      .btn-secondary:hover {
+        border-color: var(--border-bright);
+        background: var(--bg-card);
+        text-decoration: none;
+      }
+
+      /* ─── Section: Transition ─────────────────────────────────────── */
+      .section-transition {
+        padding: 6rem 0;
+        text-align: center;
+      }
+      .transition-text {
+        font-size: clamp(1.4rem, 3vw, 2rem);
+        font-weight: 600;
+        color: var(--text-secondary);
+        letter-spacing: -0.02em;
+        margin-bottom: 3rem;
+      }
+      .service-strip {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 2.5rem;
+        margin-bottom: 2rem;
+      }
+      .service-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.5rem 2rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.75rem;
+        min-width: 140px;
+        backdrop-filter: blur(10px);
+        transition: all 0.3s var(--ease-out-expo);
+      }
+      .service-card-link {
+        text-decoration: none;
+        color: inherit;
+        display: block;
+        min-width: 140px;
+      }
+      .service-card-link:hover {
+        text-decoration: none;
+      }
+      .service-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--border-bright);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+      .service-card-link:hover .service-card.blue {
+        border-top-color: #5599ff;
+      }
+      .service-card-link:hover .service-card.purple {
+        border-top-color: #cc88ff;
+      }
+      .service-card-link:hover .service-card.amber {
+        border-top-color: #ffcc33;
+      }
+      .service-card-link:hover .service-card.red {
+        border-top-color: #ff6688;
+      }
+      .service-card-link:hover .service-card.gray {
+        border-top-color: #7777a0;
+      }
+      .service-card .service-icon {
+        font-size: 1.75rem;
+      }
+      .service-card .service-label {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--text-primary);
+      }
+      .service-card.blue {
+        border-top: 2px solid var(--blue);
+      }
+      .service-card.purple {
+        border-top: 2px solid var(--purple);
+      }
+      .service-card.amber {
+        border-top: 2px solid var(--warning);
+      }
+      .service-card.red {
+        border-top: 2px solid var(--error);
+      }
+      .service-card.gray {
+        border-top: 2px solid var(--text-dim);
+      }
+
+      /* ─── Section: Suite Reveal ──────────────────────────────────── */
+      .section-suite {
+        padding: 4.5rem 0;
+        position: relative;
+        overflow: hidden;
+      }
+      .section-suite::before {
+        content: "";
+        position: absolute;
+        top: -100px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 1000px;
+        height: 800px;
+        background: radial-gradient(
+          ellipse,
+          rgba(68, 136, 255, 0.08) 0%,
+          rgba(0, 255, 136, 0.05) 40%,
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+      .section-suite .container {
+        position: relative;
+        z-index: 1;
+      }
+      .section-suite h2 {
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        font-weight: 700;
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+        text-align: center;
+        margin-bottom: 1rem;
+      }
+      .section-suite .suite-sub {
+        text-align: center;
+        color: var(--text-secondary);
+        font-size: 1.15rem;
+        max-width: 560px;
+        margin: 0 auto 3.5rem;
+        line-height: 1.7;
+      }
+
+      /* ─── Section: Feature Grid ──────────────────────────────────── */
+      .section-features {
+        padding: 4.5rem 0;
+        background: linear-gradient(
+          180deg,
+          var(--bg-deep) 0%,
+          var(--bg-surface) 50%,
+          var(--bg-deep) 100%
+        );
+      }
+      .section-features h2 {
+        font-size: clamp(1.8rem, 4vw, 2.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        text-align: center;
+        margin-bottom: 3.5rem;
+      }
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+      }
+      .feature-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 2rem;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        transition: all 0.3s var(--ease-out-expo);
+      }
+      .feature-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--border-bright);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      }
+      .feature-card .feature-icon {
+        font-size: 1.75rem;
+        margin-bottom: 1rem;
+      }
       .feature-card h3 {
         font-size: 1.05rem;
         font-weight: 600;
         margin-bottom: 0.5rem;
       }
       .feature-card p {
-        font-size: 0.9rem;
+        font-size: 0.875rem;
         color: var(--text-secondary);
         line-height: 1.6;
       }
 
-      /* ─── Code Examples ──────────────────────────────────────────── */
-      .code-section {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 3rem;
-        align-items: start;
-        margin-top: 3.5rem;
-      }
-      .code-section .text-side {
-        padding-top: 1rem;
-      }
-      .code-section .text-side h3 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin-bottom: 0.75rem;
-      }
-      .code-section .text-side p {
-        color: var(--text-secondary);
-        line-height: 1.7;
-        margin-bottom: 1rem;
-      }
-      .code-section .text-side ul {
-        list-style: none;
-        padding: 0;
-      }
-      .code-section .text-side ul li {
-        padding: 0.4rem 0;
-        padding-left: 1.5rem;
+      /* ─── Section: Reliability / Drift Detection ────────────────── */
+      .section-reliability {
+        padding: 4.5rem 0;
         position: relative;
-        color: var(--text-secondary);
-        font-size: 0.95rem;
+        background: linear-gradient(
+          180deg,
+          var(--bg-deep) 0%,
+          #0d1220 30%,
+          #0d1220 70%,
+          var(--bg-deep) 100%
+        );
       }
-      .code-section .text-side ul li::before {
-        content: "→";
-        position: absolute;
-        left: 0;
-        color: var(--accent);
-        font-family: var(--font-mono);
-      }
-
-      .code-block {
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        overflow: hidden;
-      }
-      .code-block-header {
-        display: flex;
-        align-items: center;
-        padding: 0.65rem 1rem;
-        background: var(--bg-card);
-        border-bottom: 1px solid var(--border);
-        font-family: var(--font-mono);
-        font-size: 0.7rem;
-        color: var(--text-dim);
-      }
-      .code-block-header .lang-tag {
-        margin-left: auto;
-        padding: 0.15rem 0.5rem;
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        font-size: 0.65rem;
-        text-transform: uppercase;
-      }
-      .code-block pre {
-        padding: 1.25rem;
-        overflow-x: auto;
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        line-height: 1.75;
-      }
-      .code-block pre code {
-        color: var(--text-secondary);
-      }
-      .code-block .kw {
-        color: var(--purple);
-      }
-      .code-block .fn {
-        color: var(--blue);
-      }
-      .code-block .str {
-        color: var(--accent);
-      }
-      .code-block .num {
-        color: var(--warning);
-      }
-      .code-block .cm {
-        color: var(--text-dim);
-        font-style: italic;
-      }
-      .code-block .op {
-        color: var(--text-primary);
-      }
-      .code-block .prop {
-        color: var(--error);
-      }
-      .code-block .type {
-        color: var(--warning);
-      }
-
-      /* ─── Reliability / Drift Detection ─────────────────────────── */
-      .triangle-wrapper {
+      .section-reliability .container {
         position: relative;
-        width: 100%;
-        max-width: 600px;
-        margin: 3.5rem auto 1rem;
-        aspect-ratio: 1.3 / 1;
-      }
-      .triangle-wrapper svg {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 0;
-      }
-      .tri-node {
-        position: absolute;
-        background: var(--bg-card);
-        border: 2px solid;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        text-align: center;
-        width: 170px;
         z-index: 1;
       }
-      .tri-node h3 {
-        font-size: 0.95rem;
-        font-weight: 600;
-        color: var(--text-primary);
-        margin-bottom: 0.3rem;
+      .section-reliability h2 {
+        font-size: clamp(1.8rem, 4vw, 2.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        text-align: center;
+        margin-bottom: 1rem;
       }
-      .tri-node p {
-        font-size: 0.75rem;
+      .reliability-sub {
+        text-align: center;
         color: var(--text-secondary);
-        line-height: 1.4;
+        font-size: 1.05rem;
+        max-width: 640px;
+        margin: 0 auto 3.5rem;
+        line-height: 1.7;
       }
-      .tri-node .node-icon {
-        font-size: 1.5rem;
+      .drift-flow {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 2rem;
+        max-width: 900px;
+        margin: 0 auto 3rem;
+        position: relative;
+      }
+      .drift-flow::before {
+        content: "";
+        position: absolute;
+        top: 28px;
+        left: calc(16.67% + 1rem);
+        right: calc(16.67% + 1rem);
+        height: 2px;
+        background: var(--border);
+      }
+      .drift-step {
+        text-align: center;
+        position: relative;
+      }
+      .drift-step-num {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: var(--bg-card);
+        border: 2px solid var(--blue);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--font-mono);
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--blue);
+        margin: 0 auto 1.25rem;
+        position: relative;
+        z-index: 1;
+      }
+      .drift-step h3 {
+        font-size: 1.05rem;
+        font-weight: 600;
         margin-bottom: 0.5rem;
       }
-      .tri-node.sdk {
-        border-color: var(--blue);
-        top: 0;
-        left: 50%;
-        transform: translateX(-50%);
-      }
-      .tri-node.sdk .node-icon {
-        color: var(--blue);
-      }
-      .tri-node.real {
-        border-color: var(--accent);
-        bottom: 0;
-        left: 0;
-      }
-      .tri-node.real .node-icon {
-        color: var(--accent);
-      }
-      .tri-node.mock {
-        border-color: var(--purple);
-        bottom: 0;
-        right: 0;
-      }
-      .tri-node.mock .node-icon {
-        color: var(--purple);
-      }
-      .diagnosis-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1rem;
-        margin-top: 2.5rem;
-      }
-      .diagnosis-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1rem 1.25rem;
-      }
-      .diagnosis-card .diag-header {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin-bottom: 0.4rem;
-      }
-      .diagnosis-card .diag-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-      }
-      .diagnosis-card h4 {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-      .diagnosis-card p {
-        font-size: 0.78rem;
-        color: var(--text-secondary);
-        line-height: 1.5;
-      }
-      .drift-report {
-        background: var(--bg-deep);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 1.25rem 1.5rem;
-        margin-top: 2.5rem;
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        line-height: 1.8;
-        color: var(--text-secondary);
-        overflow-x: auto;
-      }
-      .drift-report .report-header {
-        color: var(--text-primary);
-        font-weight: 600;
-        margin-bottom: 0.75rem;
-        font-size: 0.8rem;
-      }
-      .drift-report .severity-critical {
-        color: var(--error);
-      }
-      .drift-report .severity-warning {
-        color: var(--warning);
-      }
-      .drift-report .severity-ok {
-        color: var(--accent);
-      }
-      .drift-report .field-path {
-        color: var(--blue);
-      }
-      .drift-report .drift-label {
-        color: var(--text-primary);
-      }
-      .drift-report .report-summary {
-        color: var(--text-dim);
-      }
-      .drift-report .field-label {
-        color: var(--text-dim);
-      }
-      .drift-report .divider {
-        border-top: 1px solid var(--border);
-        margin: 0.6rem 0;
-      }
-      .ci-footer {
-        display: flex;
-        align-items: center;
-        gap: 1.5rem;
-        margin-top: 2rem;
-        padding-top: 1.5rem;
-        border-top: 1px solid var(--border);
-      }
-      .ci-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 0.4rem 0.75rem;
-        font-size: 0.8rem;
-        color: var(--text-secondary);
-        font-family: var(--font-mono);
-        flex-shrink: 0;
-      }
-      .ci-badge .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--accent);
-      }
-      .ci-text {
-        font-size: 0.9rem;
+      .drift-step p {
+        font-size: 0.875rem;
         color: var(--text-secondary);
         line-height: 1.6;
       }
+      .reliability-cta {
+        text-align: center;
+      }
 
-      /* ─── Comparison Table ───────────────────────────────────────── */
-      .comparison-table-wrap {
-        margin-top: 3rem;
+      @media (max-width: 768px) {
+        .drift-flow {
+          grid-template-columns: 1fr;
+          gap: 2.5rem;
+        }
+        .drift-flow::before {
+          display: none;
+        }
+      }
+
+      /* ─── Section: Comparison ─────────────────────────────────────── */
+      .section-comparison {
+        padding: 4.5rem 0;
+      }
+      .section-comparison h2 {
+        font-size: clamp(1.8rem, 4vw, 2.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        text-align: center;
+        margin-bottom: 3.5rem;
+      }
+      .comparison-wrap {
+        -webkit-overflow-scrolling: touch;
       }
       .comparison-table {
         width: 100%;
         border-collapse: separate;
         border-spacing: 0;
-        font-size: 0.9rem;
-      }
-      .comparison-table thead th {
-        text-align: left;
-        padding: 1rem 1.25rem;
-        font-family: var(--font-mono);
-        font-weight: 600;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        border-bottom: 2px solid var(--border-bright);
-        color: var(--text-secondary);
-        position: sticky;
-        top: 56px;
-        background: var(--bg-deep);
-        z-index: 10;
-      }
-      .comparison-table thead th:nth-child(2) {
-        color: var(--accent);
-      }
-      .comparison-table thead th a {
-        text-decoration: none;
-      }
-      .comparison-table thead th a:hover {
-        text-decoration: underline;
-      }
-      .comparison-table td {
-        padding: 0.85rem 1.25rem;
-        border-bottom: 1px solid var(--border);
-        color: var(--text-secondary);
-      }
-      .comparison-table td:first-child {
-        font-weight: 500;
-        color: var(--text-primary);
-      }
-      .comparison-table tr:last-child td {
-        border-bottom: none;
-      }
-      .comparison-table .yes {
-        color: var(--accent);
-        font-weight: 600;
-      }
-      .comparison-table .no {
-        color: var(--text-dim);
-      }
-      .comparison-table .manual {
-        color: var(--warning);
         font-size: 0.85rem;
       }
-
-      /* ─── Architecture Diagram ───────────────────────────────────── */
-      .arch-diagram {
-        margin-top: 3rem;
-        padding: 2.5rem;
-        background: var(--bg-surface);
-        border: 1px solid var(--border);
-        border-radius: 12px;
+      .comparison-table thead th {
+        position: sticky;
+        top: 57px;
+        z-index: 10;
+        padding: 1rem;
+        background: var(--bg-deep);
+        border-bottom: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+        font-weight: 600;
+        text-align: center;
         font-family: var(--font-mono);
         font-size: 0.8rem;
-        line-height: 2;
-        overflow-x: auto;
+        white-space: nowrap;
       }
-      .arch-diagram .process {
+      .comparison-table thead th:first-child {
+        text-align: left;
+      }
+      .comparison-table thead th.col-aimock {
+        background: var(--accent);
+        color: var(--bg-deep);
+        border-left: 2px solid var(--accent);
+        border-right: 2px solid var(--accent);
+      }
+      .comparison-table tbody td {
+        padding: 0.75rem 1rem;
+        border: 1px solid var(--border);
+        text-align: center;
+        color: var(--text-secondary);
+      }
+      .comparison-table tbody td:first-child {
+        text-align: left;
         color: var(--text-primary);
+        font-weight: 500;
       }
-      .arch-diagram .arrow {
-        color: var(--text-dim);
+      .comparison-table tbody td.col-aimock {
+        border-left: 2px solid var(--accent);
+        border-right: 2px solid var(--accent);
+        background: rgba(0, 255, 136, 0.03);
       }
-      .arch-diagram .mock {
+      .comparison-table tbody tr:hover td {
+        background: var(--bg-card-hover);
+      }
+      .comparison-table tbody tr:hover td.col-aimock {
+        background: rgba(0, 255, 136, 0.06);
+      }
+      .comparison-table tbody td.col-aimock:last-child {
+        border-right: 2px solid var(--accent);
+      }
+      .yes {
         color: var(--accent);
         font-weight: 600;
       }
-      .arch-diagram .env {
+      .no {
+        color: var(--text-dim);
+      }
+      .partial {
         color: var(--warning);
       }
-      .arch-diagram .dim {
-        color: var(--text-dim);
+      .manual {
+        color: var(--blue);
+        font-size: 0.75rem;
       }
 
       /* ─── Footer ─────────────────────────────────────────────────── */
       footer {
-        padding: 4rem 0;
+        padding: 3rem 0;
         border-top: 1px solid var(--border);
+        text-align: center;
       }
-      footer .container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .footer-left {
+      .footer-brand {
         font-family: var(--font-mono);
-        font-size: 0.8rem;
+        font-size: 0.85rem;
         color: var(--text-dim);
+        margin-bottom: 1rem;
       }
-      .footer-left span {
+      .footer-brand .prompt {
         color: var(--accent);
       }
       .footer-links {
         display: flex;
         gap: 2rem;
+        justify-content: center;
         list-style: none;
       }
       .footer-links a {
-        color: var(--text-dim);
+        color: var(--text-secondary);
         font-size: 0.85rem;
+        font-weight: 500;
         transition: color 0.2s;
       }
       .footer-links a:hover {
@@ -934,113 +985,75 @@
         text-decoration: none;
       }
 
-      /* ─── Animations ─────────────────────────────────────────────── */
-      @keyframes fadeUp {
-        from {
-          opacity: 0;
-          transform: translateY(20px);
+      /* ─── Mobile ──────────────────────────────────────────────────── */
+      @media (max-width: 768px) {
+        .nav-links {
+          gap: 1rem;
         }
-        to {
-          opacity: 1;
-          transform: translateY(0);
+        .nav-links .nav-hide-mobile {
+          display: none;
         }
-      }
-      @keyframes blink {
-        50% {
-          opacity: 0;
-        }
-      }
-      @keyframes pulse {
-        0%,
-        100% {
-          box-shadow: 0 0 8px var(--accent);
-        }
-        50% {
-          box-shadow:
-            0 0 16px var(--accent),
-            0 0 4px var(--accent);
-        }
-      }
-
-      /* Scroll-triggered fade-in */
-      .reveal {
-        opacity: 0;
-        transform: translateY(30px);
-        transition:
-          opacity 0.7s var(--ease-out-expo),
-          transform 0.7s var(--ease-out-expo);
-      }
-      .reveal.visible {
-        opacity: 1;
-        transform: translateY(0);
-      }
-      /* Remove transform from comparison section so sticky headers work
-         (transform creates a new containing block that breaks sticky) */
-      .comparison.reveal.visible {
-        transform: none;
-      }
-
-      /* ─── Responsive ─────────────────────────────────────────────── */
-      @media (max-width: 900px) {
-        .features-grid {
+        .demo-grid {
           grid-template-columns: 1fr;
         }
-        .code-section {
+        .record-grid {
           grid-template-columns: 1fr;
+          gap: 2.5rem;
         }
-        .diagnosis-grid {
+        .service-strip {
+          gap: 0.75rem;
+        }
+        .service-card {
+          min-width: 110px;
+          padding: 1rem 1.25rem;
+        }
+        .feature-grid {
           grid-template-columns: 1fr;
         }
         .comparison-table {
+          font-size: 0.78rem;
+        }
+        .install-box {
+          flex-wrap: wrap;
           font-size: 0.8rem;
         }
-        .comparison-table th,
-        .comparison-table td {
-          padding: 0.65rem 0.75rem;
-        }
       }
-      @media (max-width: 600px) {
+
+      @media (max-width: 480px) {
         .hero {
           padding: 8rem 0 4rem;
         }
         .hero h1 {
           font-size: 2rem;
         }
-        .nav-links {
-          gap: 1rem;
-        }
-        .nav-links a:not(.gh-link) {
+        .nav-brand .powered-by {
           display: none;
-        }
-        .ci-footer {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-        footer .container {
-          flex-direction: column;
-          gap: 1.5rem;
-          text-align: center;
-        }
-        .footer-links {
-          flex-wrap: wrap;
-          justify-content: center;
         }
       }
     </style>
   </head>
+
   <body>
-    <!-- ═══ Nav ═══════════════════════════════════════════════════════ -->
+    <!-- ─── Nav ──────────────────────────────────────────────────── -->
     <nav>
       <div class="container">
-        <a href="#" class="nav-brand"> <span class="prompt">$</span> llmock </a>
+        <div class="nav-brand">
+          <div class="brand-main"><span class="prompt">$</span> aimock</div>
+        </div>
         <ul class="nav-links">
-          <li><a href="#features">Features</a></li>
-          <li><a href="#examples">Examples</a></li>
-          <li><a href="#comparison">Comparison</a></li>
-          <li><a href="#reliability">Reliability</a></li>
+          <li><a href="#record" class="nav-hide-mobile">Record & Replay</a></li>
+          <li><a href="#suite" class="nav-hide-mobile">Suite</a></li>
+          <li><a href="#features" class="nav-hide-mobile">Features</a></li>
+          <li><a href="#comparison" class="nav-hide-mobile">Comparison</a></li>
+          <li><a href="#switch" class="nav-hide-mobile">Switch</a></li>
           <li><a href="docs.html">Docs</a></li>
           <li>
-            <a href="https://github.com/CopilotKit/llmock" class="gh-link" target="_blank">
+            <a
+              href="https://github.com/CopilotKit/llmock"
+              class="gh-link"
+              target="_blank"
+              rel="noopener"
+            >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path
                   d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
@@ -1053,715 +1066,552 @@
       </div>
     </nav>
 
-    <!-- ═══ Hero ══════════════════════════════════════════════════════ -->
-    <header class="hero">
+    <!-- ─── Section 1: Hero ──────────────────────────────────────── -->
+    <section class="hero">
       <div class="container">
         <div class="hero-badge">
           <span class="dot"></span>
-          Zero dependencies &middot; Node.js builtins only &middot;
-          <a
-            href="https://www.npmjs.com/package/@copilotkit/llmock"
-            target="_blank"
-            style="display: inline-flex; align-items: center; vertical-align: middle"
-            ><img
-              src="https://img.shields.io/npm/v/@copilotkit/llmock?style=flat-square&color=e8e8f0&labelColor=2a2a3a&label=Version"
-              alt="npm version"
-              style="height: 16px"
-          /></a>
+          aimock &mdash; mock everything your AI app talks to
         </div>
 
-        <h1>Deterministic <span class="highlight">mock LLM</span> server for testing</h1>
+        <h1>
+          Deterministic
+          <span class="highlight">mock infrastructure</span>
+          for AI apps
+        </h1>
 
         <p class="hero-sub">
-          Real HTTP server. Real SSE streams. WebSocket APIs. Fixture-driven responses.
-          Multi-provider mock — OpenAI, Claude, Gemini — any process on the machine can reach it.
+          Start with LLM mocking. Add MCP, A2A, vector, and more when you need them. The aimock
+          suite grows with your stack.
         </p>
 
-        <div class="hero-actions">
-          <a href="docs.html" class="btn btn-primary"> Get Started </a>
-          <a
-            href="https://www.npmjs.com/package/@copilotkit/llmock"
-            class="btn btn-secondary"
-            target="_blank"
-          >
-            npm &rarr;
-          </a>
+        <div class="install-box">
+          <span class="prompt-sign">$</span>
+          <code>npm install @copilotkit/aimock</code>
+          <button class="copy-btn" onclick="copyInstall(this)">Copy</button>
         </div>
 
-        <div class="hero-install">
-          <span class="dollar">$</span>
-          <code>npm install @copilotkit/llmock</code>
-          <button
-            class="copy-btn"
-            onclick="
-              navigator.clipboard.writeText('npm install @copilotkit/llmock');
-              this.textContent = '✓';
-              setTimeout(() => (this.textContent = '⧉'), 1500);
-            "
-            title="Copy"
-          >
-            ⧉
-          </button>
-        </div>
+        <div class="demo-grid">
+          <!-- Left: fixture.json -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">fixture.json</span>
+            </div>
+            <div class="demo-body">
+              <pre><span class="syn-bracket">{</span>
+  <span class="syn-key">"match"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"userMessage"</span><span class="syn-bracket">:</span> <span class="syn-str">"Hello"</span>
+  <span class="syn-bracket">},</span>
+  <span class="syn-key">"response"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"content"</span><span class="syn-bracket">:</span> <span class="syn-str">"Hi there! How can I help?"</span>
+  <span class="syn-bracket">},</span>
+  <span class="syn-key">"opts"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"chunkSize"</span><span class="syn-bracket">:</span> <span class="syn-num">10</span><span class="syn-bracket">,</span>
+    <span class="syn-key">"latency"</span><span class="syn-bracket">:</span> <span class="syn-num">1000</span>
+  <span class="syn-bracket">}</span>
+<span class="syn-bracket">}</span></pre>
+            </div>
+          </div>
 
-        <!-- Two-panel demo -->
-        <div class="demo">
-          <div class="demo-grid">
-            <!-- Left: fixture definition -->
-            <div class="demo-panel demo-fixture">
-              <div class="demo-titlebar">
-                <div class="dots"><span></span><span></span><span></span></div>
-                <span class="title">fixtures/chat.json</span>
-                <div style="width: 54px"></div>
+          <!-- Right: terminal -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">terminal</span>
+            </div>
+            <div id="demo-term" class="demo-term"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Section 2: Record & Replay ───────────────────────────── -->
+    <section class="section-record" id="record">
+      <div class="container">
+        <div class="record-grid">
+          <div class="record-left fade-in">
+            <div class="record-label">
+              <span class="record-dot"></span>
+              Record &amp; Replay
+            </div>
+            <h2>From zero to fixtures in one command</h2>
+
+            <div class="steps">
+              <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                  <h3>Record</h3>
+                  <p>Proxy unmatched requests to real APIs and capture every response.</p>
+                </div>
               </div>
-              <pre>{
-  <span class="key">"fixtures"</span>: [
-    {
-      <span class="key">"match"</span>: {
-        <span class="key">"userMessage"</span>: <span class="str">"capital of France"</span>
-      },
-      <span class="key">"response"</span>: {
-        <span class="key">"content"</span>: <span class="str">"The capital of France is Paris."</span>
-      }
-    }
-  ]
-}</pre>
+              <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                  <h3>Save</h3>
+                  <p>Fixtures written to disk automatically as clean, editable JSON.</p>
+                </div>
+              </div>
+              <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                  <h3>Replay</h3>
+                  <p>Deterministic responses in CI, forever. No API keys, no flakiness.</p>
+                </div>
+              </div>
             </div>
 
-            <!-- Right: animated terminal -->
+            <a href="record-replay.html" class="btn-primary"
+              >Learn about Record &amp; Replay &rarr;</a
+            >
+          </div>
+
+          <div class="fade-in" style="transition-delay: 0.15s">
             <div class="demo-panel">
               <div class="demo-titlebar">
                 <div class="dots"><span></span><span></span><span></span></div>
-                <span class="title">Terminal</span>
-                <div style="width: 54px"></div>
+                <span class="title">terminal</span>
               </div>
-              <div class="demo-term" id="demo-term"></div>
+              <div class="demo-body">
+                <pre><span class="t-green">$</span> npx aimock --record --provider-openai https://api.openai.com
+
+<span class="t-blue">&#9889;</span> Listening on http://localhost:4010
+
+<span class="t-yellow">&#9888;</span> NO FIXTURE MATCH &mdash; proxying to
+  https://api.openai.com/v1/chat/completions
+
+<span class="t-green">&#10003;</span> Recorded &rarr; fixtures/recorded/openai-2026-03-31T22:15:00.json
+
+<span class="t-blue">&#9889;</span> Fixture match &mdash; replaying from disk</pre>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </header>
+    </section>
 
-    <!-- ═══ Features ══════════════════════════════════════════════════ -->
-    <section id="features" class="reveal">
+    <!-- ─── Section 3: Transition ────────────────────────────────── -->
+    <!-- ─── Section 4: The Full Suite ────────────────────────────── -->
+    <section class="section-suite" id="suite">
       <div class="container">
-        <span class="section-label">Why llmock</span>
-        <h2 class="section-title">Stop paying for flaky tests</h2>
-        <p class="section-desc">
-          Tests that hit real LLM APIs — OpenAI, Gemini, Anthropic — cost money, time out, and
-          produce non-deterministic results. llmock replaces those calls with immediate,
-          deterministic responses from a real HTTP server any process on the machine can reach.
+        <h2 class="fade-in">
+          Your AI app talks to more than just LLMs.<br />
+          <span class="highlight">aimock mocks all of them.</span>
+        </h2>
+
+        <div class="service-strip fade-in" style="transition-delay: 0.1s">
+          <a href="mcp-mock.html" class="service-card-link">
+            <div class="service-card blue">
+              <span class="service-icon">&#128268;</span>
+              <span class="service-label">MCP Tools</span>
+            </div>
+          </a>
+          <a href="a2a-mock.html" class="service-card-link">
+            <div class="service-card purple">
+              <span class="service-icon">&#129309;</span>
+              <span class="service-label">A2A Agents</span>
+            </div>
+          </a>
+          <a href="vector-mock.html" class="service-card-link">
+            <div class="service-card amber">
+              <span class="service-icon">&#128230;</span>
+              <span class="service-label">Vector DBs</span>
+            </div>
+          </a>
+          <a href="services.html" class="service-card-link">
+            <div class="service-card red">
+              <span class="service-icon">&#128269;</span>
+              <span class="service-label">Search &amp; Rerank</span>
+            </div>
+          </a>
+          <a href="services.html#moderation" class="service-card-link">
+            <div class="service-card gray">
+              <span class="service-icon">&#128737;</span>
+              <span class="service-label">Moderation</span>
+            </div>
+          </a>
+        </div>
+
+        <p class="suite-sub fade-in" style="transition-delay: 0.2s">
+          One JSON config. One port. Every service your AI app depends on.
         </p>
 
-        <div class="features-grid">
-          <div class="feature-card">
-            <div class="feature-icon green">⚡</div>
-            <h3>Real HTTP Server</h3>
+        <div class="demo-grid fade-in" style="transition-delay: 0.2s">
+          <!-- Left: aimock.json -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">aimock.json</span>
+            </div>
+            <div class="demo-body">
+              <pre><span class="syn-bracket">{</span>
+  <span class="syn-key">"llm"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"fixtures"</span><span class="syn-bracket">:</span> <span class="syn-str">"./fixtures/llm"</span><span class="syn-bracket">,</span>
+    <span class="syn-key">"providers"</span><span class="syn-bracket">:</span> <span class="syn-bracket">[</span><span class="syn-str">"openai"</span><span class="syn-bracket">,</span> <span class="syn-str">"claude"</span><span class="syn-bracket">,</span> <span class="syn-str">"gemini"</span><span class="syn-bracket">]</span>
+  <span class="syn-bracket">},</span>
+  <span class="syn-key">"mcp"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"tools"</span><span class="syn-bracket">:</span> <span class="syn-str">"./fixtures/mcp/tools.json"</span><span class="syn-bracket">,</span>
+    <span class="syn-key">"resources"</span><span class="syn-bracket">:</span> <span class="syn-str">"./fixtures/mcp/resources.json"</span>
+  <span class="syn-bracket">},</span>
+  <span class="syn-key">"a2a"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"agents"</span><span class="syn-bracket">:</span> <span class="syn-str">"./fixtures/a2a/agents.json"</span>
+  <span class="syn-bracket">},</span>
+  <span class="syn-key">"vector"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+    <span class="syn-key">"provider"</span><span class="syn-bracket">:</span> <span class="syn-str">"pinecone"</span><span class="syn-bracket">,</span>
+    <span class="syn-key">"fixtures"</span><span class="syn-bracket">:</span> <span class="syn-str">"./fixtures/vector"</span>
+  <span class="syn-bracket">}</span>
+<span class="syn-bracket">}</span></pre>
+            </div>
+          </div>
+
+          <!-- Right: terminal -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">terminal</span>
+            </div>
+            <div class="demo-body">
+              <pre><span class="t-green">$</span> npx aimock --config aimock.json
+
+<span class="t-blue">&#9889;</span> aimock v1.0.0
+
+<span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/chat/completions
+<span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/messages
+<span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/embeddings
+<span class="t-green">&#10003;</span> MCP    <span class="t-dim">mounted at</span>  /mcp/tools/*
+<span class="t-green">&#10003;</span> A2A    <span class="t-dim">mounted at</span>  /a2a/agents/*
+<span class="t-green">&#10003;</span> Vector <span class="t-dim">mounted at</span>  /vectors/*
+
+<span class="t-blue">&#9889;</span> Listening on <span class="t-green">http://localhost:4010</span>
+<span class="t-dim">   6 services &middot; 24 fixtures loaded</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Section 5: Feature Grid ──────────────────────────────── -->
+    <section class="section-features" id="features">
+      <div class="container">
+        <h2 class="fade-in">Everything you need</h2>
+
+        <div class="feature-grid">
+          <div class="feature-card fade-in">
+            <div class="feature-icon">&#128225;</div>
+            <h3>Every Major LLM Provider</h3>
             <p>
-              Runs on an actual port. Any process on the machine can reach it — Next.js, Mastra,
-              LangGraph, Agno, anything that speaks HTTP.
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere &mdash; full
+              streaming and embeddings support for every provider.
             </p>
           </div>
-          <div class="feature-card">
-            <div class="feature-icon blue">📡</div>
-            <h3>Authentic SSE Streams</h3>
+
+          <div class="feature-card fade-in" style="transition-delay: 0.08s">
+            <div class="feature-icon">&#128268;</div>
+            <h3>MCP Protocol</h3>
             <p>
-              OpenAI, Claude, and Gemini APIs — authentic SSE format for each provider. Streaming
-              and non-streaming modes.
+              Mock tools, resources, and prompts with full session management. Test your MCP
+              integrations without running real tool servers.
             </p>
           </div>
-          <div class="feature-card">
-            <div class="feature-icon purple">📁</div>
-            <h3>JSON Fixture Files</h3>
+
+          <div class="feature-card fade-in" style="transition-delay: 0.16s">
+            <div class="feature-icon">&#129309;</div>
+            <h3>A2A Protocol</h3>
             <p>
-              Define responses as JSON — one file per feature. Load a directory, load a file, or
-              register fixtures programmatically.
+              Agent cards, message routing, and SSE streaming. Mock multi-agent interactions with
+              deterministic responses.
             </p>
           </div>
-          <div class="feature-card">
-            <div class="feature-icon amber">🔧</div>
-            <h3>Tool Call Support</h3>
+
+          <div class="feature-card fade-in" style="transition-delay: 0.24s">
+            <div class="feature-icon">&#128230;</div>
+            <h3>Vector Databases</h3>
             <p>
-              Return tool calls with structured arguments. Match on tool names, tool result IDs, or
-              write custom predicates.
+              Pinecone, Qdrant, and ChromaDB compatible. Mock similarity search, upserts, and index
+              operations with fixtures.
             </p>
           </div>
-          <div class="feature-card">
-            <div class="feature-icon red">💥</div>
-            <h3>Error Injection</h3>
-            <p>
-              Queue one-shot errors — 429 rate limits, 503 outages, whatever. Fires once, then
-              auto-removes itself.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon green">📋</div>
-            <h3>Request Journal</h3>
-            <p>
-              Every request recorded. Inspect messages, verify tool calls, assert on conversation
-              history. HTTP and programmatic access.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon blue">🔌</div>
-            <h3>WebSocket APIs</h3>
-            <p>
-              OpenAI Responses, OpenAI Realtime, and Gemini Live over WebSocket. Same fixtures, real
-              RFC 6455 framing, zero dependencies. Text + tool calls.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon purple">🎛️</div>
-            <h3>Streaming Physics</h3>
-            <p>
-              Simulate realistic streaming timing with TTFT, TPS, and jitter. Test loading states
-              and streaming UX under real-world conditions.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon red">🎲</div>
+
+          <div class="feature-card fade-in" style="transition-delay: 0.32s">
+            <div class="feature-icon">&#128165;</div>
             <h3>Chaos Testing</h3>
             <p>
-              Probabilistic failure injection &mdash; random errors, latency spikes, and stream
-              corruption for resilience testing.
+              Drop, malformed, or disconnect at any probability. Verify your app gracefully handles
+              every failure mode.
             </p>
           </div>
-          <div class="feature-card">
-            <div class="feature-icon amber">📊</div>
-            <h3>Prometheus Metrics</h3>
+
+          <div class="feature-card fade-in" style="transition-delay: 0.4s">
+            <div class="feature-icon">&#128202;</div>
+            <h3>Drift Detection</h3>
             <p>
-              Expose request counts, latencies, and fixture match rates via a /metrics endpoint.
-              Grafana-ready.
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon green">🔴</div>
-            <h3>Record &amp; Replay</h3>
-            <p>
-              Proxy to real APIs, record responses as fixtures, then replay them deterministically
-              in tests.
+              Daily CI validation against real APIs. Know immediately when provider behavior changes
+              break your fixtures.
             </p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ═══ Code Examples ════════════════════════════════════════════ -->
-    <section id="examples" class="reveal">
+    <!-- ─── Section 6: Drift Detection / Reliability ──────────────── -->
+    <section class="section-reliability" id="reliability">
       <div class="container">
-        <span class="section-label">Usage</span>
-        <h2 class="section-title">Fixture-driven. Zero boilerplate.</h2>
-
-        <!-- Example 1: Quick Start -->
-        <div class="code-section" style="margin-top: 3.5rem">
-          <div class="text-side">
-            <h3>Simple text responses</h3>
-            <p>
-              Match on the last user message — substring or regex. The fixture fires when it
-              matches, streaming SSE chunks just like the real API.
-            </p>
-            <ul>
-              <li>First-match-wins routing</li>
-              <li>Substring and RegExp matching</li>
-              <li>Configurable chunk size and latency</li>
-            </ul>
-          </div>
-          <div class="code-block">
-            <div class="code-block-header">
-              fixtures/chat.json
-              <span class="lang-tag">json</span>
-            </div>
-            <pre><code>{
-  <span class="key">"fixtures"</span>: [
-    {
-      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"stock price of AAPL"</span> },
-      <span class="key">"response"</span>: {
-        <span class="key">"content"</span>: <span class="str">"The current stock price of Apple Inc. (AAPL) is $150.25."</span>
-      }
-    },
-    {
-      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"capital of France"</span> },
-      <span class="key">"response"</span>: {
-        <span class="key">"content"</span>: <span class="str">"The capital of France is Paris."</span>
-      }
-    }
-  ]
-}</code></pre>
-          </div>
-        </div>
-
-        <!-- Example 2: Tool Calls -->
-        <div class="code-section reveal">
-          <div class="code-block">
-            <div class="code-block-header">
-              fixtures/tools.json
-              <span class="lang-tag">json</span>
-            </div>
-            <pre><code>{
-  <span class="key">"fixtures"</span>: [
-    {
-      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"one step with eggs"</span> },
-      <span class="key">"response"</span>: {
-        <span class="key">"toolCalls"</span>: [{
-          <span class="key">"name"</span>: <span class="str">"generate_task_steps"</span>,
-          <span class="key">"arguments"</span>: <span class="str">"{\"steps\":[{\"description\":\"Crack eggs\"},{\"description\":\"Preheat oven\"}]}"</span>
-        }]
-      }
-    },
-    {
-      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"background color to blue"</span> },
-      <span class="key">"response"</span>: {
-        <span class="key">"toolCalls"</span>: [{
-          <span class="key">"name"</span>: <span class="str">"change_background"</span>,
-          <span class="key">"arguments"</span>: <span class="str">"{\"background\":\"blue\"}"</span>
-        }]
-      }
-    }
-  ]
-}</code></pre>
-          </div>
-          <div class="text-side">
-            <h3>Tool call responses</h3>
-            <p>
-              Return structured tool calls that agent frameworks execute directly. Used in
-              production E2E tests for CopilotKit, Mastra, and LangGraph integrations.
-            </p>
-            <ul>
-              <li>Tool calls with JSON arguments</li>
-              <li>Match on tool name or tool result ID</li>
-              <li>Multi-tool-call responses</li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Example 3: Predicate Routing -->
-        <div class="code-section reveal">
-          <div class="text-side">
-            <h3>Predicate-based routing</h3>
-            <p>
-              When substring matching isn't enough, use predicates. Inspect the full request —
-              system prompt flags, message history, model name, anything.
-            </p>
-            <ul>
-              <li>Inspect system prompt state flags</li>
-              <li>Route supervisor agents by conversation state</li>
-              <li>Combine with substring matching (AND logic)</li>
-            </ul>
-          </div>
-          <div class="code-block">
-            <div class="code-block-header">
-              e2e/mock-setup.ts
-              <span class="lang-tag">ts</span>
-            </div>
-            <pre><code><span class="cm">// Supervisor sees the same user message every time,</span>
-<span class="cm">// but system prompt contains state flags</span>
-<span class="kw">mock</span>.<span class="fn">addFixture</span>({
-  <span class="prop">match</span>: {
-    <span class="prop">predicate</span>: (<span class="op">req</span>) <span class="kw">=></span> {
-      <span class="kw">const</span> <span class="op">sys</span> = <span class="op">req</span>.<span class="prop">messages</span>
-        .<span class="fn">find</span>(<span class="op">m</span> <span class="kw">=></span> <span class="op">m</span>.<span class="prop">role</span> === <span class="str">"system"</span>);
-      <span class="kw">return</span> <span class="op">sys</span>?.<span class="prop">content</span>
-        ?.<span class="fn">includes</span>(<span class="str">"Flights found: false"</span>);
-    }
-  },
-  <span class="prop">response</span>: {
-    <span class="prop">toolCalls</span>: [{
-      <span class="prop">name</span>: <span class="str">"supervisor_response"</span>,
-      <span class="prop">arguments</span>: <span class="str">'{"next_agent":"flights_agent"}'</span>
-    }]
-  }
-});</code></pre>
-          </div>
-        </div>
-
-        <!-- Example 4: E2E Setup -->
-        <div class="code-section reveal">
-          <div class="code-block">
-            <div class="code-block-header">
-              e2e/global-setup.ts
-              <span class="lang-tag">ts</span>
-            </div>
-            <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/llmock"</span>;
-
-<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({ <span class="prop">port</span>: <span class="num">5555</span> });
-
-<span class="cm">// Load JSON fixture files</span>
-<span class="op">mock</span>.<span class="fn">loadFixtureDir</span>(<span class="str">"./fixtures/openai"</span>);
-
-<span class="cm">// Catch-all for tool results</span>
-<span class="op">mock</span>.<span class="fn">addFixture</span>({
-  <span class="prop">match</span>: {
-    <span class="prop">predicate</span>: (<span class="op">req</span>) <span class="kw">=></span>
-      <span class="op">req</span>.<span class="prop">messages</span>.<span class="fn">at</span>(-<span class="num">1</span>)?.<span class="prop">role</span> === <span class="str">"tool"</span>
-  },
-  <span class="prop">response</span>: { <span class="prop">content</span>: <span class="str">"Done!"</span> }
-});
-
-<span class="kw">const</span> <span class="op">url</span> = <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
-
-<span class="cm">// Every process on the machine can reach this</span>
-<span class="op">process</span>.<span class="prop">env</span>.<span class="prop">OPENAI_BASE_URL</span> = <span class="str">`${url}/v1`</span>;
-<span class="op">process</span>.<span class="prop">env</span>.<span class="prop">OPENAI_API_KEY</span> = <span class="str">"mock-key"</span>;</code></pre>
-          </div>
-          <div class="text-side">
-            <h3>E2E global setup</h3>
-            <p>
-              Start the mock server once in Playwright's global setup. All child processes —
-              Next.js, agent workers, CopilotKit runtime — inherit <code>OPENAI_BASE_URL</code> and
-              hit the same server.
-            </p>
-            <ul>
-              <li>One server, many processes</li>
-              <li>JSON fixtures loaded from disk</li>
-              <li>Programmatic catch-alls for tool results</li>
-              <li>Universal fallback prevents 404 crashes</li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Example 5: WebSocket Realtime -->
-        <div class="code-section reveal">
-          <div class="text-side">
-            <h3>WebSocket APIs</h3>
-            <p>
-              Same fixtures work over WebSocket transport. OpenAI Responses, OpenAI Realtime, and
-              Gemini Live — RFC 6455 framing with zero dependencies.
-            </p>
-            <ul>
-              <li>OpenAI Responses API over WebSocket</li>
-              <li>OpenAI Realtime API — text + tool calls</li>
-              <li>
-                Gemini Live BidiGenerateContent (unverified — no text-capable model exists yet)
-              </li>
-              <li>No audio/video — text and tool call paths only</li>
-            </ul>
-          </div>
-          <div class="code-block">
-            <div class="code-block-header">
-              OpenAI Realtime over WebSocket
-              <span class="lang-tag">jsonc</span>
-            </div>
-            <pre><code><span class="cm">// Connect to ws://localhost:5555/v1/realtime</span>
-
-<span class="cm">// → Configure session:</span>
-{ <span class="key">"type"</span>: <span class="str">"session.update"</span>,
-  <span class="key">"session"</span>: { <span class="key">"modalities"</span>: [<span class="str">"text"</span>] } }
-
-<span class="cm">// → Add user message:</span>
-{ <span class="key">"type"</span>: <span class="str">"conversation.item.create"</span>,
-  <span class="key">"item"</span>: { <span class="key">"type"</span>: <span class="str">"message"</span>,
-    <span class="key">"role"</span>: <span class="str">"user"</span>,
-    <span class="key">"content"</span>: [{ <span class="key">"type"</span>: <span class="str">"input_text"</span>,
-      <span class="key">"text"</span>: <span class="str">"Hello"</span> }] } }
-
-<span class="cm">// → Request response:</span>
-{ <span class="key">"type"</span>: <span class="str">"response.create"</span> }
-
-<span class="cm">// ← Server streams back:</span>
-<span class="cm">// {"type":"response.created", ...}</span>
-<span class="cm">// {"type":"response.text.delta","delta":"Hi"}</span>
-<span class="cm">// {"type":"response.text.delta","delta":" there!"}</span>
-<span class="cm">// {"type":"response.text.done", ...}</span>
-<span class="cm">// {"type":"response.done", ...}</span></code></pre>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ═══ Comparison ═══════════════════════════════════════════════ -->
-    <section id="comparison" class="comparison reveal">
-      <div class="container">
-        <span class="section-label">Comparison</span>
-        <h2 class="section-title">How llmock compares</h2>
-        <p class="section-desc">
-          llmock is purpose-built for LLM API testing. Here's how it stacks up against
-          general-purpose and LLM-specific mocking tools.
+        <h2 class="fade-in">Verified against real APIs, every day</h2>
+        <p class="reliability-sub fade-in" style="transition-delay: 0.1s">
+          aimock's drift detection runs daily against live provider APIs. When response formats
+          change, you know immediately &mdash; not when your tests break in production.
         </p>
 
-        <div class="arch-diagram">
-          <span class="dim">// MSW: only intercepts in the process that calls server.listen()</span
-          ><br />
-          <span class="dim">// llmock: real server on a real port — any process can reach it</span
-          ><br /><br />
-          <span class="process">Playwright test runner</span><br />
-          <span class="arrow">&nbsp;&nbsp;└─</span> <span class="process">controls browser</span>
-          <span class="arrow">→</span> <span class="process">Next.js app</span>
-          <span class="dim">(separate process)</span><br />
-          <span class="arrow"
-            >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─</span
-          >
-          <span class="env">OPENAI_BASE_URL</span> <span class="arrow">→</span>
-          <span class="mock">llmock :5555</span><br />
-          <span class="arrow"
-            >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─</span
-          >
-          <span class="process">Mastra agent workers</span><br />
-          <span class="arrow"
-            >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─</span
-          >
-          <span class="process">LangGraph workers</span><br />
-          <span class="arrow"
-            >&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─</span
-          >
-          <span class="process">CopilotKit runtime</span>
+        <div class="drift-flow fade-in" style="transition-delay: 0.2s">
+          <div class="drift-step">
+            <div class="drift-step-num">1</div>
+            <h3>Real API calls</h3>
+            <p>
+              Daily CI hits actual OpenAI, Anthropic, Gemini endpoints to capture current response
+              formats.
+            </p>
+          </div>
+          <div class="drift-step">
+            <div class="drift-step-num">2</div>
+            <h3>Response validation</h3>
+            <p>
+              Compares real responses against aimock's fixture format. Schema changes are caught
+              instantly.
+            </p>
+          </div>
+          <div class="drift-step">
+            <div class="drift-step-num">3</div>
+            <h3>Auto-remediation</h3>
+            <p>
+              Drift detected &rarr; PR opened &rarr; fixtures, skills, and docs updated
+              automatically. Zero manual effort.
+            </p>
+          </div>
         </div>
 
-        <div class="comparison-table-wrap">
+        <div class="reliability-cta fade-in" style="transition-delay: 0.3s">
+          <a href="drift-detection.html" class="btn-primary">Learn about drift detection &rarr;</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Section 7: Comparison ────────────────────────────────── -->
+    <section class="section-comparison" id="comparison">
+      <div class="container">
+        <h2 class="fade-in">How aimock compares</h2>
+
+        <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
           <table class="comparison-table">
             <thead>
               <tr>
                 <th>Capability</th>
-                <th>
-                  <a
-                    href="https://github.com/CopilotKit/llmock"
-                    target="_blank"
-                    style="color: var(--accent)"
-                    >llmock</a
-                  >
-                </th>
-                <th>
-                  <a href="https://mswjs.io/" target="_blank" style="color: var(--text-secondary)"
-                    >MSW</a
-                  >
-                </th>
-                <th>
-                  <a
-                    href="https://github.com/vidaiUK/VidaiMock"
-                    target="_blank"
-                    style="color: var(--text-secondary)"
-                    >VidaiMock</a
-                  >
-                </th>
-                <th>
-                  <a
-                    href="https://github.com/dwmkerr/mock-llm"
-                    target="_blank"
-                    style="color: var(--text-secondary)"
-                    >mock-llm</a
-                  >
-                </th>
-                <th>
-                  <a
-                    href="https://github.com/piyook/llm-mock"
-                    target="_blank"
-                    style="color: var(--text-secondary)"
-                    >piyook/llm-mock</a
-                  >
-                </th>
+                <th class="col-aimock">aimock</th>
+                <th>MSW</th>
+                <th>VidaiMock</th>
+                <th>mock-llm</th>
+                <th>piyook/llm-mock</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Cross-process interception</td>
-                <td class="yes">Real server ✓</td>
-                <td class="no">In-process only</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes (Docker)</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Real server &#10003;</span></td>
+                <td>In-process only</td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span> (Docker)</td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>Chat Completions SSE</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>Responses API SSE</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>Claude Messages API</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>Gemini streaming</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>WebSocket APIs</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Multi-provider support</td>
-                <td class="yes">
-                  OpenAI + Claude + Gemini + Bedrock + Azure + Ollama + Cohere + Vertex AI ✓
-                </td>
-                <td class="no">Manual</td>
-                <td class="yes">
-                  OpenAI + Claude + Gemini + Bedrock + Azure + Vertex + Cohere + more
-                </td>
-                <td class="manual">OpenAI only</td>
-                <td class="manual">OpenAI only</td>
+                <td class="col-aimock"><span class="yes">11 providers &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td>11 providers</td>
+                <td>OpenAI only</td>
+                <td>OpenAI only</td>
               </tr>
               <tr>
                 <td>Embeddings API</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
                 <td>Structured output / JSON mode</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">Manual</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Sequential / stateful responses</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="manual">Manual</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Fixture files</td>
-                <td class="yes">JSON ✓</td>
-                <td class="no">Code-only</td>
-                <td class="manual">Tera templates</td>
-                <td class="manual">YAML config</td>
-                <td class="manual">JSON templates</td>
+                <td class="col-aimock"><span class="yes">JSON &#10003;</span></td>
+                <td>Code-only</td>
+                <td>Tera templates</td>
+                <td>YAML config</td>
+                <td>JSON templates</td>
               </tr>
               <tr>
-                <td>Programmatic API (test helpers)</td>
-                <td class="yes">Yes (TypeScript/JS) ✓</td>
-                <td class="yes">Yes (TypeScript/JS)</td>
-                <td class="no">No (binary only)</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td>Programmatic API</td>
+                <td class="col-aimock"><span class="yes">&#10003;</span> (TypeScript/JS)</td>
+                <td><span class="yes">&#10003;</span> (TypeScript/JS)</td>
+                <td>No (binary only)</td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Request journal</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">Manual</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
+                <td class="col-aimock"><span class="yes">&#10003;</span></td>
+                <td><span class="manual">manual</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
               </tr>
               <tr>
-                <td>Error injection (one-shot)</td>
-                <td class="yes">Yes ✓</td>
-                <td class="yes">Yes</td>
-                <td class="manual">Partial</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td>Error injection</td>
+                <td class="col-aimock"><span class="yes">&#10003;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="partial">partial</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
-                <td>Docker image</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-              </tr>
-              <tr>
-                <td>Helm chart</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
+                <td>Docker + Helm</td>
+                <td class="col-aimock"><span class="yes">Both &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td>Docker only</td>
+                <td><span class="yes">&#10003;</span> (Both)</td>
+                <td>Docker only</td>
               </tr>
               <tr>
                 <td>Drift detection</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-              </tr>
-              <tr>
-                <td>Azure OpenAI</td>
-                <td class="yes">Yes ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-              </tr>
-              <tr>
-                <td>AWS Bedrock</td>
-                <td class="yes">Yes (streaming + Converse) ✓</td>
-                <td class="manual">Manual</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-              </tr>
-              <tr>
-                <td>CLI server</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-                <td class="yes">Yes</td>
-              </tr>
-              <tr>
-                <td>GET /v1/models</td>
-                <td class="yes">Yes ✓</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Chaos testing</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Record &amp; replay</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Prometheus metrics</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Streaming physics</td>
-                <td class="yes">Built-in ✓</td>
-                <td class="no">No</td>
-                <td class="yes">Yes</td>
-                <td class="no">No</td>
-                <td class="no">No</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="yes">&#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+              </tr>
+              <tr>
+                <td>MCP tool mocking</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+              </tr>
+              <tr>
+                <td>A2A agent mocking</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+              </tr>
+              <tr>
+                <td>Vector DB mocking</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+              </tr>
+              <tr>
+                <td>Search &amp; rerank</td>
+                <td class="col-aimock"><span class="yes">Built-in &#10003;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
+                <td><span class="no">&#10007;</span></td>
               </tr>
               <tr>
                 <td>Dependencies</td>
-                <td class="yes">Zero</td>
-                <td class="no">~300KB</td>
-                <td class="yes">Zero (Rust binary)</td>
-                <td class="no">Node.js + Express</td>
-                <td class="manual">Minimal</td>
+                <td class="col-aimock"><span class="yes">Zero &#10003;</span></td>
+                <td>~300KB</td>
+                <td>Zero (Rust)</td>
+                <td>Node+Express</td>
+                <td>Minimal</td>
               </tr>
             </tbody>
           </table>
@@ -1769,370 +1619,185 @@
       </div>
     </section>
 
-    <!-- ═══ Reliability / Drift Detection ═══════════════════════════ -->
-    <section id="reliability" class="reveal">
-      <div class="container">
-        <span class="section-label">Reliability</span>
-        <h2 class="section-title">Verified against real APIs. Every day.</h2>
-        <p class="section-desc">
-          A mock that doesn't match reality is worse than no mock &mdash; your tests pass, but
-          production breaks. llmock runs three-way drift detection that compares SDK types, real API
-          responses, and mock output to catch shape mismatches before you do.
+    <!-- ─── Section: Ready to Switch ─────────────────────────────── -->
+    <section class="section-switch" id="switch" style="padding: 2rem 0">
+      <div class="container" style="text-align: center">
+        <h2 class="fade-in">Ready to switch? We got you.</h2>
+        <p
+          class="fade-in"
+          style="color: var(--text-secondary); margin: 1rem auto 1.5rem; max-width: 500px"
+        >
+          Step-by-step migration guides for every major mock tool.
         </p>
-
-        <!-- Triangle diagram -->
-        <div class="triangle-wrapper">
-          <svg viewBox="0 0 600 420" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <!-- SDK → Real (left edge) -->
-            <line
-              x1="245"
-              y1="105"
-              x2="130"
-              y2="280"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="127,274 137,278 133,286" fill="var(--border)" />
-            <!-- SDK → Mock (right edge) -->
-            <line
-              x1="355"
-              y1="105"
-              x2="470"
-              y2="280"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="473,274 463,278 467,286" fill="var(--border)" />
-            <!-- Real ↔ Mock (bottom edge) -->
-            <line
-              x1="195"
-              y1="355"
-              x2="405"
-              y2="355"
-              stroke="var(--border)"
-              stroke-width="1.5"
-              stroke-dasharray="6 4"
-            />
-            <polygon points="200,349 190,355 200,361" fill="var(--border)" />
-            <polygon points="400,349 410,355 400,361" fill="var(--border)" />
-            <!-- Edge labels (horizontal, centered on each line) -->
-            <rect x="131" y="182" width="85" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="173"
-              y="196"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              SDK = Real?
-            </text>
-            <rect x="360" y="182" width="90" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="405"
-              y="196"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              SDK = Mock?
-            </text>
-            <rect x="255" y="338" width="90" height="20" rx="4" fill="var(--bg-deep)" />
-            <text
-              x="300"
-              y="352"
-              text-anchor="middle"
-              fill="var(--text-dim)"
-              font-family="JetBrains Mono, SF Mono, Fira Code, monospace"
-              font-size="11"
-            >
-              Real = Mock?
-            </text>
-          </svg>
-          <div class="tri-node sdk">
-            <div class="node-icon">{ }</div>
-            <h3>SDK Types</h3>
-            <p>What TypeScript types say the shape should be</p>
-          </div>
-          <div class="tri-node real">
-            <div class="node-icon">&#8644;</div>
-            <h3>Real API</h3>
-            <p>What OpenAI, Claude, Gemini actually return</p>
-          </div>
-          <div class="tri-node mock">
-            <div class="node-icon">&#9881;</div>
-            <h3>llmock</h3>
-            <p>What the mock produces for the same request</p>
-          </div>
-        </div>
-
-        <!-- Diagnosis cards -->
-        <div class="diagnosis-grid">
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--error)"></div>
-              <h4>Mock doesn't match real</h4>
-            </div>
-            <p>
-              llmock needs updating &mdash; test fails immediately. The SDK comparison tells us why
-              it drifted.
-            </p>
-          </div>
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--warning)"></div>
-              <h4>Provider changed, SDK is behind</h4>
-            </div>
-            <p>
-              Early warning &mdash; the real API has new fields that neither the SDK nor llmock know
-              about yet.
-            </p>
-          </div>
-          <div class="diagnosis-card">
-            <div class="diag-header">
-              <div class="diag-dot" style="background: var(--accent)"></div>
-              <h4>All three agree</h4>
-            </div>
-            <p>No drift &mdash; the mock matches reality and the SDK types are current.</p>
-          </div>
-        </div>
-
-        <!-- Drift report snippet -->
-        <div class="drift-report">
-          <div class="report-header">$ pnpm test:drift</div>
-          <span class="severity-critical">[critical]</span>
-          <span class="drift-label">LLMOCK DRIFT</span> &mdash; field in SDK + real API but missing
-          from mock<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >choices[].message.refusal</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;null &nbsp;&nbsp;
-          <span class="field-label">Real:</span> null &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
-          <div class="divider"></div>
-          <span class="severity-critical">[critical]</span>
-          <span class="drift-label">TYPE MISMATCH</span> &mdash; real API and mock disagree on
-          type<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >content[].input</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;object &nbsp;&nbsp;
-          <span class="field-label">Real:</span> object &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> string<br />
-          <div class="divider"></div>
-          <span class="severity-warning">[warning]</span>
-          <span class="drift-label">PROVIDER ADDED FIELD</span> &mdash; in real API but not in SDK
-          or mock<br />
-          <span class="field-label">Path:</span>&nbsp;&nbsp;&nbsp;&nbsp;<span class="field-path"
-            >choices[].message.annotations</span
-          ><br />
-          <span class="field-label">SDK:</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;absent&gt;
-          &nbsp;&nbsp; <span class="field-label">Real:</span> array &nbsp;&nbsp;
-          <span class="field-label">Mock:</span> &lt;absent&gt;<br />
-          <div class="divider"></div>
-          <span class="severity-ok" style="font-size: 0.85rem">&#10003;</span>
-          <span class="report-summary"
-            >2 critical (test fails) &middot; 1 warning (logged) &middot; detected before any user
-            reported it</span
+        <div
+          class="fade-in"
+          style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap"
+        >
+          <a href="migrate-from-msw.html" class="btn btn-secondary"
+            ><img
+              src="https://mswjs.io/icon.svg"
+              alt=""
+              width="16"
+              height="16"
+              style="vertical-align: -2px; margin-right: 6px; filter: grayscale(1) brightness(2)"
+            />MSW</a
           >
-        </div>
-
-        <!-- CI footer -->
-        <div class="ci-footer">
-          <div class="ci-badge"><span class="dot"></span> Daily CI</div>
-          <span class="ci-text">Drift tests across 4 providers run automatically every day.</span>
+          <a href="migrate-from-vidaimock.html" class="btn btn-secondary">VidaiMock</a>
+          <a href="migrate-from-mock-llm.html" class="btn btn-secondary">mock-llm</a>
+          <a href="migrate-from-piyook.html" class="btn btn-secondary">piyook</a>
+          <a href="migrate-from-python-mocks.html" class="btn btn-secondary"
+            ><img
+              src="https://www.python.org/static/favicon.ico"
+              alt=""
+              width="16"
+              height="16"
+              style="vertical-align: -2px; margin-right: 6px"
+            />Python</a
+          >
+          <a href="migrate-from-mokksy.html" class="btn btn-secondary">Mokksy</a>
         </div>
       </div>
     </section>
 
-    <!-- ═══ Claude Code Integration ═══════════════════════════════════ -->
-    <section id="claude-code" class="reveal">
-      <div class="container">
-        <span class="section-label">AI-Assisted Development</span>
-        <h2 class="section-title">Claude Code Integration</h2>
-        <p class="section-desc">
-          llmock ships with a
-          <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank">Claude Code</a>
-          skill that teaches your AI assistant how to write fixtures correctly &mdash; match fields,
-          response types, agent loop patterns, gotchas, and debugging techniques.
-        </p>
-
-        <div class="features-grid" style="grid-template-columns: repeat(2, 1fr)">
-          <div class="feature-card">
-            <div class="feature-icon green">🔌</div>
-            <h3>Plugin Install</h3>
-            <p>
-              <code>/plugin marketplace add CopilotKit/llmock</code><br />
-              <code>/plugin install llmock@copilotkit-tools</code>
-            </p>
-            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
-              Skill appears as <code>/llmock:write-fixtures</code>
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon blue">📂</div>
-            <h3>Local Plugin</h3>
-            <p>
-              <code>claude --plugin-dir ./node_modules/@copilotkit/llmock</code>
-            </p>
-            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
-              Same result, no marketplace needed
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon purple">📁</div>
-            <h3>Add Directory</h3>
-            <p>
-              <code>claude --add-dir ./node_modules/@copilotkit/llmock</code>
-            </p>
-            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
-              Skill appears as <code>/write-fixtures</code> for the session
-            </p>
-          </div>
-          <div class="feature-card">
-            <div class="feature-icon amber">📋</div>
-            <h3>Copy to Project</h3>
-            <p>
-              <code
-                >cp node_modules/@copilotkit/llmock/.claude/commands/write-fixtures.md
-                .claude/commands/</code
-              >
-            </p>
-            <p style="margin-top: 0.5rem; color: var(--text-secondary)">
-              Permanent <code>/write-fixtures</code> &mdash; commit to share with team
-            </p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ═══ Real-World Usage ═════════════════════════════════════════ -->
-    <section class="reveal">
-      <div class="container">
-        <h2 class="section-title">Real-World Usage</h2>
-        <p class="section-desc">
-          <a href="https://github.com/CopilotKit/CopilotKit" target="_blank">CopilotKit</a> uses
-          llmock across its test suite to verify AI agent behavior across multiple LLM providers
-          without hitting real APIs. The tests cover streaming text, tool calls, and multi-turn
-          conversations across both v1 and v2 runtimes. See the
-          <a
-            href="https://github.com/CopilotKit/CopilotKit/search?q=llmock&amp;type=code"
-            target="_blank"
-            >test suite</a
+    <!-- ─── Section: Real-World Usage ────────────────────────────── -->
+    <section class="section-realworld" id="realworld" style="padding: 2rem 0">
+      <div class="container" style="text-align: center">
+        <h2 class="fade-in">Built for production</h2>
+        <p
+          class="fade-in"
+          style="
+            color: var(--text-secondary);
+            max-width: 700px;
+            margin: 1rem auto 0;
+            line-height: 1.8;
+          "
+        >
+          <a href="https://github.com/ag-ui-protocol/ag-ui">AG-UI</a> uses aimock for its
+          <a href="https://github.com/ag-ui-protocol/ag-ui/tree/main/apps/dojo/e2e"
+            >end-to-end test suite</a
+          >, verifying AI agent behavior across LLM providers with
+          <a href="https://github.com/ag-ui-protocol/ag-ui/tree/main/apps/dojo/e2e/fixtures/openai"
+            >fixture-driven responses</a
           >
-          and
-          <a
-            href="https://github.com/CopilotKit/CopilotKit/search?q=fixtures+path%3A**%2Ffixtures&amp;type=code"
-            target="_blank"
-            >fixture files</a
-          >
-          for real-world examples.
+          in the codebase.
         </p>
       </div>
     </section>
 
-    <!-- ═══ Footer ═══════════════════════════════════════════════════ -->
+    <!-- ─── Section 8: Footer ────────────────────────────────────── -->
     <footer>
       <div class="container">
-        <div class="footer-left">
-          <span>$</span> llmock &middot; MIT License &middot; Built by
-          <a href="https://github.com/CopilotKit" target="_blank">CopilotKit</a>
-        </div>
+        <div class="footer-brand"><span class="prompt">$</span> aimock &middot; MIT License</div>
         <ul class="footer-links">
-          <li><a href="https://github.com/CopilotKit/llmock" target="_blank">GitHub</a></li>
+          <li><a href="docs.html">Docs</a></li>
           <li>
-            <a href="https://www.npmjs.com/package/@copilotkit/llmock" target="_blank">npm</a>
+            <a href="https://github.com/CopilotKit/llmock" target="_blank" rel="noopener">GitHub</a>
           </li>
           <li>
-            <a href="docs.html">Docs</a>
-          </li>
-          <li>
-            <a href="https://github.com/CopilotKit/llmock/issues" target="_blank">Issues</a>
+            <a
+              href="https://www.npmjs.com/package/@copilotkit/aimock"
+              target="_blank"
+              rel="noopener"
+              >npm</a
+            >
           </li>
         </ul>
       </div>
     </footer>
 
-    <!-- ═══ Scripts ═══════════════════════════════════════════════════ -->
+    <!-- ─── Scripts ──────────────────────────────────────────────── -->
     <script>
-      // ── Scroll reveal ────────────────────────────────────────────────
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((e) => {
-            if (e.isIntersecting) {
-              e.target.classList.add("visible");
-              observer.unobserve(e.target);
-            }
-          });
-        },
-        { threshold: 0.1 },
-      );
+      // Copy install command
+      function copyInstall(btn) {
+        navigator.clipboard.writeText("npm install @copilotkit/aimock").then(function () {
+          btn.textContent = "Copied!";
+          setTimeout(function () {
+            btn.textContent = "Copy";
+          }, 2000);
+        });
+      }
 
-      document.querySelectorAll(".reveal").forEach((el) => observer.observe(el));
+      // Scroll-triggered fade-in via IntersectionObserver
+      (function () {
+        var observer = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("visible");
+                observer.unobserve(entry.target);
+              }
+            });
+          },
+          { threshold: 0.1, rootMargin: "0px 0px -40px 0px" },
+        );
+
+        document.querySelectorAll(".fade-in").forEach(function (el) {
+          observer.observe(el);
+        });
+      })();
 
       // ── Terminal demo animation ──────────────────────────────────────
-      const termSteps = [
+      var termSteps = [
         // Step 1: User types command
-        { type: "prompt", text: "llmock -p 5555 -f ./fixtures", delay: 600 },
+        { type: "prompt", text: "npx aimock -p 4010 -f ./fixture.json", delay: 600 },
         // Step 2: Server starts
         {
           type: "line",
-          html: '<span class="ok">✓ Listening on http://127.0.0.1:5555</span>',
+          html: '<span class="ok">\u2713 Listening on http://127.0.0.1:4010</span>',
           delay: 400,
         },
         {
           type: "line",
-          html: '<span class="info">  Loaded 12 fixtures from ./fixtures</span>',
+          html: '<span class="info">  Loaded 1 fixture from ./fixture.json</span>',
           delay: 300,
         },
         { type: "line", html: "", delay: 600 },
         // Step 3: Request arrives
-        { type: "line", html: '<span class="req">→ POST /v1/chat/completions</span>', delay: 200 },
-        { type: "line", html: '<span class="info">  model: gpt-4o</span>', delay: 150 },
         {
           type: "line",
-          html: '<span class="info">  user: "What is the capital of France?"</span>',
+          html: '<span class="req">\u2192 POST /v1/chat/completions</span>',
           delay: 200,
         },
+        { type: "line", html: '<span class="info">  model: gpt-4o</span>', delay: 150 },
+        { type: "line", html: '<span class="info">  user: "Hello"</span>', delay: 200 },
         {
           type: "line",
-          html: '<span class="match">  ✓ matched fixture: "capital of France"</span>',
+          html: '<span class="match">  \u2713 matched fixture: "Hello"</span>',
           delay: 400,
         },
         { type: "line", html: "", delay: 200 },
-        // Step 4: Stream the response
+        // Step 4: Stream the response — chunkSize: 20, latency: 50ms
         {
           type: "line",
-          html: '<span class="info">  streaming →</span> <span class="streamed" id="stream-target"></span>',
+          html: '<span class="info">  streaming \u2192</span> <span class="streamed" id="stream-target"></span>',
           delay: 100,
         },
         {
           type: "stream",
-          text: "The capital of France is Paris.",
+          text: "Hi there! How can I help?",
           target: "stream-target",
-          charDelay: 45,
+          chunkSize: 10,
+          charDelay: 20,
+          chunkDelay: 1000,
         },
         { type: "line", html: "", delay: 400 },
-        // Step 5: Done, show prompt again
+        // Step 5: Done
         {
           type: "line",
-          html: '<span class="ok">  ✓ 200 OK</span> <span class="info">— 3 chunks, 0ms latency</span>',
+          html: '<span class="ok">  \u2713 200 OK</span> <span class="info">\u2014 3 chunks, 1s latency</span>',
           delay: 800,
         },
       ];
 
       function runTermDemo() {
-        const term = document.getElementById("demo-term");
+        var term = document.getElementById("demo-term");
         term.innerHTML = "";
-        let stepIdx = 0;
+        var stepIdx = 0;
 
         function nextStep() {
           if (stepIdx >= termSteps.length) {
             // Add blinking cursor, then restart
-            const cursorLine = document.createElement("div");
+            var cursorLine = document.createElement("div");
             cursorLine.innerHTML = '<span class="prompt-sym">$ </span><span class="cursor"></span>';
             cursorLine.style.opacity = "1";
             term.appendChild(cursorLine);
@@ -2140,21 +1805,21 @@
             return;
           }
 
-          const step = termSteps[stepIdx];
+          var step = termSteps[stepIdx];
           stepIdx++;
 
           if (step.type === "prompt") {
             // Type out the command character by character
-            const line = document.createElement("div");
+            var line = document.createElement("div");
             line.className = "line";
             line.innerHTML =
               '<span class="prompt-sym">$ </span><span class="cmd"></span><span class="cursor"></span>';
             line.classList.add("visible");
             term.appendChild(line);
 
-            const cmdSpan = line.querySelector(".cmd");
-            const cursor = line.querySelector(".cursor");
-            let ci = 0;
+            var cmdSpan = line.querySelector(".cmd");
+            var cursor = line.querySelector(".cursor");
+            var ci = 0;
             function typeChar() {
               if (ci >= step.text.length) {
                 cursor.remove();
@@ -2167,26 +1832,39 @@
             }
             typeChar();
           } else if (step.type === "stream") {
-            // Type into an existing target span
-            const target = document.getElementById(step.target);
+            // Stream in chunks (chunkSize chars per burst, chunkDelay between bursts,
+            // charDelay between characters within each burst)
+            var target = document.getElementById(step.target);
             if (!target) {
               setTimeout(nextStep, 100);
               return;
             }
-            let ci = 0;
-            function typeStream() {
+            var ci = 0;
+            var sz = step.chunkSize || step.text.length;
+            var cd = step.charDelay || 20;
+            function typeChunk() {
               if (ci >= step.text.length) {
                 setTimeout(nextStep, step.delay || 300);
                 return;
               }
-              target.textContent += step.text[ci];
-              ci++;
-              setTimeout(typeStream, step.charDelay);
+              var end = Math.min(ci + sz, step.text.length);
+              var chi = ci;
+              function typeChar() {
+                if (chi >= end) {
+                  ci = end;
+                  setTimeout(typeChunk, step.chunkDelay || 50);
+                  return;
+                }
+                target.textContent += step.text[chi];
+                chi++;
+                setTimeout(typeChar, cd);
+              }
+              typeChar();
             }
-            typeStream();
+            typeChunk();
           } else {
             // Regular line — fade in
-            const line = document.createElement("div");
+            var line = document.createElement("div");
             line.className = "line";
             if (step.html === "") {
               line.innerHTML = "&nbsp;";
@@ -2195,8 +1873,10 @@
             }
             term.appendChild(line);
             // Trigger reflow, then add visible class
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => line.classList.add("visible"));
+            requestAnimationFrame(function () {
+              requestAnimationFrame(function () {
+                line.classList.add("visible");
+              });
             });
             setTimeout(nextStep, step.delay);
           }
@@ -2206,19 +1886,22 @@
       }
 
       // Start when demo scrolls into view
-      const demoObserver = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((e) => {
-            if (e.isIntersecting) {
-              runTermDemo();
-              demoObserver.unobserve(e.target);
-            }
-          });
-        },
-        { threshold: 0.3 },
-      );
-
-      demoObserver.observe(document.querySelector(".demo"));
+      (function () {
+        var demoTerm = document.getElementById("demo-term");
+        if (!demoTerm) return;
+        var demoObserver = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (e) {
+              if (e.isIntersecting) {
+                runTermDemo();
+                demoObserver.unobserve(e.target);
+              }
+            });
+          },
+          { threshold: 0.1 },
+        );
+        demoObserver.observe(demoTerm);
+      })();
     </script>
   </body>
 </html>

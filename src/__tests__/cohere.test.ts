@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
-import type { Fixture } from "../types.js";
+import type { Fixture, HandlerDefaults } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { cohereToCompletionRequest } from "../cohere.js";
+import { cohereToCompletionRequest, handleCohere } from "../cohere.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
 
 // --- helpers ---
 
@@ -687,7 +689,7 @@ describe("POST /v2/chat (chaos)", () => {
         messages: [{ role: "user", content: "hello" }],
         stream: false,
       },
-      { "x-llmock-chaos-drop": "1.0" },
+      { "x-aimock-chaos-drop": "1.0" },
     );
 
     expect(res.status).toBe(500);
@@ -931,6 +933,135 @@ describe("POST /v2/chat (journal)", () => {
   });
 });
 
+// ─── Integration tests: POST /v2/chat (streaming malformed tool call args) ──
+
+describe("POST /v2/chat (streaming malformed tool call arguments)", () => {
+  it("falls back to '{}' for malformed JSON in streaming tool call", async () => {
+    const badArgsFixture: Fixture = {
+      match: { userMessage: "bad-stream-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "NOT VALID JSON" }],
+      },
+    };
+    instance = await createServer([badArgsFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "bad-stream-args" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    const events = parseSSEEvents(res.body);
+    const tcDeltas = events.filter((e) => e.event === "tool-call-delta");
+    const argsAccum = tcDeltas
+      .map((e) => {
+        const delta = e.data.delta as Record<string, unknown>;
+        const msg = delta.message as Record<string, unknown>;
+        const calls = msg.tool_calls as Record<string, unknown>;
+        const fn = calls.function as Record<string, unknown>;
+        return fn.arguments as string;
+      })
+      .join("");
+    expect(argsAccum).toBe("{}");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (streaming tool call with empty args) ─
+
+describe("POST /v2/chat (streaming tool call with empty arguments)", () => {
+  it("defaults to '{}' when arguments is empty string in streaming", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-stream-args" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "empty-stream-args" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+    const events = parseSSEEvents(res.body);
+    const tcDeltas = events.filter((e) => e.event === "tool-call-delta");
+    const argsAccum = tcDeltas
+      .map((e) => {
+        const delta = e.data.delta as Record<string, unknown>;
+        const msg = delta.message as Record<string, unknown>;
+        const calls = msg.tool_calls as Record<string, unknown>;
+        const fn = calls.function as Record<string, unknown>;
+        return fn.arguments as string;
+      })
+      .join("");
+    expect(argsAccum).toBe("{}");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (tool call with empty/missing args non-streaming) ─
+
+describe("POST /v2/chat (non-streaming tool call with empty arguments)", () => {
+  it("defaults to '{}' when arguments is empty string", async () => {
+    const emptyArgsFixture: Fixture = {
+      match: { userMessage: "empty-args-ns" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: "" }],
+      },
+    };
+    instance = await createServer([emptyArgsFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "empty-args-ns" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message.tool_calls[0].function.arguments).toBe("{}");
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (tool call with no id, non-streaming) ─
+
+describe("POST /v2/chat (non-streaming tool call with no id)", () => {
+  it("generates tool call id when fixture provides none", async () => {
+    const noIdFixture: Fixture = {
+      match: { userMessage: "no-id-ns" },
+      response: {
+        toolCalls: [{ name: "fn", arguments: '{"x":1}' }],
+      },
+    };
+    instance = await createServer([noIdFixture]);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "no-id-ns" }],
+      stream: false,
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.message.tool_calls[0].id).toMatch(/^call_/);
+  });
+});
+
+// ─── Integration tests: POST /v2/chat (error fixture streaming) ─────────────
+
+describe("POST /v2/chat (error fixture streaming)", () => {
+  it("returns error fixture with correct status even when stream:true", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "fail" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toBe("Rate limited");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Streaming tool call with explicit fixture id
 // ---------------------------------------------------------------------------
@@ -992,5 +1123,296 @@ describe("POST /v2/chat (streaming tool call with fixture-provided id)", () => {
     expect(msgEnd).toBeDefined();
     const endDelta = msgEnd!.data.delta as Record<string, unknown>;
     expect(endDelta.finish_reason).toBe("TOOL_CALL");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct handler tests for req.method/req.url fallback branches
+// ---------------------------------------------------------------------------
+
+function createMockReq(overrides: Partial<http.IncomingMessage> = {}): http.IncomingMessage {
+  return {
+    method: undefined,
+    url: undefined,
+    headers: {},
+    ...overrides,
+  } as unknown as http.IncomingMessage;
+}
+
+function createMockRes(): http.ServerResponse & { _written: string; _status: number } {
+  const res = {
+    _written: "",
+    _status: 0,
+    writableEnded: false,
+    statusCode: 0,
+    writeHead(status: number) {
+      res._status = status;
+      res.statusCode = status;
+    },
+    setHeader() {},
+    write(data: string) {
+      res._written += data;
+      return true;
+    },
+    end(data?: string) {
+      if (data) res._written += data;
+      res.writableEnded = true;
+    },
+    destroy() {
+      res.writableEnded = true;
+    },
+  };
+  return res as unknown as http.ServerResponse & { _written: string; _status: number };
+}
+
+function createDefaults(overrides: Partial<HandlerDefaults> = {}): HandlerDefaults {
+  return {
+    latency: 0,
+    chunkSize: 100,
+    logger: new Logger("silent"),
+    ...overrides,
+  };
+}
+
+describe("handleCohere (direct handler call, method/url fallbacks)", () => {
+  it("uses fallback for text response (non-streaming) with undefined method/url", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "hi" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    expect(res._status).toBe(200);
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v2/chat");
+  });
+
+  it("uses fallback for streaming text response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "hi" },
+      response: { content: "Hello" },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "hi" }], stream: true }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v2/chat");
+  });
+
+  it("uses fallback for malformed JSON", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(req, res, "{bad", [], journal, createDefaults(), () => {});
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v2/chat");
+  });
+
+  it("uses fallback for missing model", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v2/chat");
+  });
+
+  it("uses fallback for missing messages", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r" }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.path).toBe("/v2/chat");
+  });
+
+  it("uses fallback for no fixture match", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "x" }] }),
+      [],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(404);
+  });
+
+  it("uses fallback for strict mode", async () => {
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "x" }] }),
+      [],
+      journal,
+      createDefaults({ strict: true }),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(503);
+  });
+
+  it("uses fallback for error response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "err" },
+      response: { error: { message: "fail", type: "err" }, status: 500 },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "err" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
+  });
+
+  it("uses fallback for non-streaming tool call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "tool" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for streaming tool call response", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "tool" },
+      response: { toolCalls: [{ name: "fn", arguments: '{"x":1}' }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({
+        model: "cmd-r",
+        messages: [{ role: "user", content: "tool" }],
+        stream: true,
+      }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(200);
+  });
+
+  it("uses fallback for unknown response type", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "embed" },
+      response: { embedding: [0.1] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "embed" }] }),
+      [fixture],
+      journal,
+      createDefaults(),
+      () => {},
+    );
+
+    const entry = journal.getLast();
+    expect(entry!.method).toBe("POST");
+    expect(entry!.response.status).toBe(500);
   });
 });

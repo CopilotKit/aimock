@@ -36,17 +36,17 @@ function resolveChaosConfig(
 
   // Header overrides everything
   if (rawHeaders) {
-    const dropHeader = rawHeaders["x-llmock-chaos-drop"];
-    const malformedHeader = rawHeaders["x-llmock-chaos-malformed"];
-    const disconnectHeader = rawHeaders["x-llmock-chaos-disconnect"];
+    const dropHeader = rawHeaders["x-aimock-chaos-drop"];
+    const malformedHeader = rawHeaders["x-aimock-chaos-malformed"];
+    const disconnectHeader = rawHeaders["x-aimock-chaos-disconnect"];
 
     if (typeof dropHeader === "string") {
       const val = parseFloat(dropHeader);
       if (isNaN(val)) {
-        logger?.warn(`[chaos] x-llmock-chaos-drop: invalid value "${dropHeader}", ignoring`);
+        logger?.warn(`[chaos] x-aimock-chaos-drop: invalid value "${dropHeader}", ignoring`);
       } else {
         if (val < 0 || val > 1) {
-          logger?.warn(`[chaos] x-llmock-chaos-drop: value ${val} out of range [0,1], clamping`);
+          logger?.warn(`[chaos] x-aimock-chaos-drop: value ${val} out of range [0,1], clamping`);
         }
         base.dropRate = Math.min(1, Math.max(0, val));
       }
@@ -55,12 +55,12 @@ function resolveChaosConfig(
       const val = parseFloat(malformedHeader);
       if (isNaN(val)) {
         logger?.warn(
-          `[chaos] x-llmock-chaos-malformed: invalid value "${malformedHeader}", ignoring`,
+          `[chaos] x-aimock-chaos-malformed: invalid value "${malformedHeader}", ignoring`,
         );
       } else {
         if (val < 0 || val > 1) {
           logger?.warn(
-            `[chaos] x-llmock-chaos-malformed: value ${val} out of range [0,1], clamping`,
+            `[chaos] x-aimock-chaos-malformed: value ${val} out of range [0,1], clamping`,
           );
         }
         base.malformedRate = Math.min(1, Math.max(0, val));
@@ -70,12 +70,12 @@ function resolveChaosConfig(
       const val = parseFloat(disconnectHeader);
       if (isNaN(val)) {
         logger?.warn(
-          `[chaos] x-llmock-chaos-disconnect: invalid value "${disconnectHeader}", ignoring`,
+          `[chaos] x-aimock-chaos-disconnect: invalid value "${disconnectHeader}", ignoring`,
         );
       } else {
         if (val < 0 || val > 1) {
           logger?.warn(
-            `[chaos] x-llmock-chaos-disconnect: value ${val} out of range [0,1], clamping`,
+            `[chaos] x-aimock-chaos-disconnect: value ${val} out of range [0,1], clamping`,
           );
         }
         base.disconnectRate = Math.min(1, Math.max(0, val));
@@ -152,7 +152,7 @@ export function applyChaos(
   if (!action) return false;
 
   if (registry) {
-    registry.incrementCounter("llmock_chaos_triggered_total", { action });
+    registry.incrementCounter("aimock_chaos_triggered_total", { action });
   }
 
   switch (action) {
