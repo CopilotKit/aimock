@@ -1363,10 +1363,7 @@
           <div class="feature-card fade-in" style="transition-delay: 0.4s">
             <div class="feature-icon">&#128202;</div>
             <h3>Drift Detection</h3>
-            <p>
-              Daily CI validation against real APIs. Know immediately when provider behavior changes
-              break your fixtures.
-            </p>
+            <p>Fixtures stay accurate as providers evolve. Fixes ship before your tests break.</p>
           </div>
         </div>
       </div>
@@ -1375,10 +1372,10 @@
     <!-- ─── Section 6: Drift Detection / Reliability ──────────────── -->
     <section class="section-reliability" id="reliability">
       <div class="container">
-        <h2 class="fade-in">Verified against real APIs, every day</h2>
+        <h2 class="fade-in">Your mocks never go stale</h2>
         <p class="reliability-sub fade-in" style="transition-delay: 0.1s">
-          aimock's drift detection runs daily against live provider APIs. When response formats
-          change, you know immediately &mdash; not when your tests break in production.
+          LLM providers change their response formats without warning. aimock catches it within 24
+          hours and ships the fix before your tests break.
         </p>
 
         <div class="drift-flow fade-in" style="transition-delay: 0.2s">
@@ -1386,24 +1383,24 @@
             <div class="drift-step-num">1</div>
             <h3>Real API calls</h3>
             <p>
-              Daily CI hits actual OpenAI, Anthropic, Gemini endpoints to capture current response
-              formats.
+              Daily CI hits actual OpenAI, Anthropic, Gemini endpoints to detect response format
+              changes.
             </p>
           </div>
           <div class="drift-step">
             <div class="drift-step-num">2</div>
-            <h3>Response validation</h3>
+            <h3>Compare &amp; detect</h3>
             <p>
-              Compares real responses against aimock's fixture format. Schema changes are caught
-              instantly.
+              Response schemas are validated against aimock's builders. Any drift is flagged
+              automatically.
             </p>
           </div>
           <div class="drift-step">
             <div class="drift-step-num">3</div>
-            <h3>Auto-remediation</h3>
+            <h3>Fix &amp; ship</h3>
             <p>
-              Drift detected &rarr; PR opened &rarr; fixtures, skills, and docs updated
-              automatically. Zero manual effort.
+              Drift detected &rarr; fixtures, builders, skills, and docs updated &rarr; PR shipped.
+              Always current, within a day.
             </p>
           </div>
         </div>
