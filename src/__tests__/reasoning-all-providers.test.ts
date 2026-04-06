@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as http from "node:http";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -6,18 +6,21 @@ import { buildBedrockStreamTextEvents } from "../bedrock.js";
 
 // --- helpers ---
 
+let instance: ServerInstance;
+let baseUrl: string;
+
 function post(
-  url: string,
+  path: string,
   body: unknown,
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const parsed = new URL(url);
+    const parsed = new URL(baseUrl);
     const req = http.request(
       {
         hostname: parsed.hostname,
         port: parsed.port,
-        path: parsed.pathname,
+        path,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -78,25 +81,24 @@ const plainFixture: Fixture = {
 
 const allFixtures: Fixture[] = [reasoningFixture, plainFixture];
 
-// --- tests ---
+// --- server lifecycle ---
 
-let instance: ServerInstance | null = null;
+beforeAll(async () => {
+  instance = await createServer(allFixtures);
+  baseUrl = instance.url;
+});
 
-afterEach(async () => {
-  if (instance) {
-    await new Promise<void>((resolve) => {
-      instance!.server.close(() => resolve());
-    });
-    instance = null;
-  }
+afterAll(async () => {
+  await new Promise<void>((resolve) => {
+    instance.server.close(() => resolve());
+  });
 });
 
 // ─── OpenAI Chat Completions: Reasoning ─────────────────────────────────────
 
 describe("POST /v1/chat/completions (reasoning non-streaming)", () => {
   it("includes reasoning_content field on assistant message", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1/chat/completions`, {
+    const res = await post(`/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "think" }],
       stream: false,
@@ -111,8 +113,7 @@ describe("POST /v1/chat/completions (reasoning non-streaming)", () => {
   });
 
   it("omits reasoning_content when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1/chat/completions`, {
+    const res = await post(`/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "plain" }],
       stream: false,
@@ -126,8 +127,7 @@ describe("POST /v1/chat/completions (reasoning non-streaming)", () => {
 
 describe("POST /v1/chat/completions (reasoning streaming)", () => {
   it("emits reasoning_content deltas before content deltas", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1/chat/completions`, {
+    const res = await post(`/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "think" }],
       stream: true,
@@ -159,8 +159,7 @@ describe("POST /v1/chat/completions (reasoning streaming)", () => {
   });
 
   it("no reasoning_content deltas when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1/chat/completions`, {
+    const res = await post(`/v1/chat/completions`, {
       model: "gpt-4",
       messages: [{ role: "user", content: "plain" }],
       stream: true,
@@ -188,8 +187,7 @@ function parseGeminiSSEChunks(body: string): unknown[] {
 
 describe("POST /v1beta/models/{model}:generateContent (reasoning non-streaming)", () => {
   it("includes thought part before text part", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+    const res = await post(`/v1beta/models/gemini-2.5-flash:generateContent`, {
       contents: [{ role: "user", parts: [{ text: "think" }] }],
     });
 
@@ -204,8 +202,7 @@ describe("POST /v1beta/models/{model}:generateContent (reasoning non-streaming)"
   });
 
   it("no thought part when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+    const res = await post(`/v1beta/models/gemini-2.5-flash:generateContent`, {
       contents: [{ role: "user", parts: [{ text: "plain" }] }],
     });
 
@@ -219,8 +216,7 @@ describe("POST /v1beta/models/{model}:generateContent (reasoning non-streaming)"
 
 describe("POST /v1beta/models/{model}:streamGenerateContent (reasoning streaming)", () => {
   it("streams thought chunks before text chunks", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
+    const res = await post(`/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
       contents: [{ role: "user", parts: [{ text: "think" }] }],
     });
 
@@ -251,8 +247,7 @@ describe("POST /v1beta/models/{model}:streamGenerateContent (reasoning streaming
   });
 
   it("no thought chunks when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
+    const res = await post(`/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
       contents: [{ role: "user", parts: [{ text: "plain" }] }],
     });
 
@@ -271,8 +266,7 @@ describe("POST /v1beta/models/{model}:streamGenerateContent (reasoning streaming
 
 describe("POST /model/{id}/invoke (reasoning non-streaming)", () => {
   it("includes thinking content block before text block", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/model/anthropic.claude-3-sonnet-20240229-v1:0/invoke`, {
+    const res = await post(`/model/anthropic.claude-3-sonnet-20240229-v1:0/invoke`, {
       messages: [{ role: "user", content: [{ type: "text", text: "think" }] }],
       max_tokens: 1024,
       anthropic_version: "bedrock-2023-05-31",
@@ -288,8 +282,7 @@ describe("POST /model/{id}/invoke (reasoning non-streaming)", () => {
   });
 
   it("no thinking block when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/model/anthropic.claude-3-sonnet-20240229-v1:0/invoke`, {
+    const res = await post(`/model/anthropic.claude-3-sonnet-20240229-v1:0/invoke`, {
       messages: [{ role: "user", content: [{ type: "text", text: "plain" }] }],
       max_tokens: 1024,
       anthropic_version: "bedrock-2023-05-31",
@@ -305,13 +298,9 @@ describe("POST /model/{id}/invoke (reasoning non-streaming)", () => {
 
 describe("POST /model/{id}/converse (reasoning non-streaming)", () => {
   it("includes reasoningContent block before text block", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(
-      `${instance.url}/model/anthropic.claude-3-sonnet-20240229-v1:0/converse`,
-      {
-        messages: [{ role: "user", content: [{ text: "think" }] }],
-      },
-    );
+    const res = await post(`/model/anthropic.claude-3-sonnet-20240229-v1:0/converse`, {
+      messages: [{ role: "user", content: [{ text: "think" }] }],
+    });
 
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
@@ -325,13 +314,9 @@ describe("POST /model/{id}/converse (reasoning non-streaming)", () => {
   });
 
   it("no reasoningContent block when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(
-      `${instance.url}/model/anthropic.claude-3-sonnet-20240229-v1:0/converse`,
-      {
-        messages: [{ role: "user", content: [{ text: "plain" }] }],
-      },
-    );
+    const res = await post(`/model/anthropic.claude-3-sonnet-20240229-v1:0/converse`, {
+      messages: [{ role: "user", content: [{ text: "plain" }] }],
+    });
 
     const body = JSON.parse(res.body);
     const content = body.output.message.content;
@@ -351,8 +336,7 @@ function parseNDJSON(body: string): object[] {
 
 describe("POST /api/chat (reasoning non-streaming)", () => {
   it("includes reasoning_content on assistant message", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/chat`, {
+    const res = await post(`/api/chat`, {
       model: "deepseek-r1",
       messages: [{ role: "user", content: "think" }],
       stream: false,
@@ -365,8 +349,7 @@ describe("POST /api/chat (reasoning non-streaming)", () => {
   });
 
   it("omits reasoning_content when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/chat`, {
+    const res = await post(`/api/chat`, {
       model: "deepseek-r1",
       messages: [{ role: "user", content: "plain" }],
       stream: false,
@@ -380,8 +363,7 @@ describe("POST /api/chat (reasoning non-streaming)", () => {
 
 describe("POST /api/chat (reasoning streaming)", () => {
   it("streams reasoning_content chunks before content chunks", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/chat`, {
+    const res = await post(`/api/chat`, {
       model: "deepseek-r1",
       messages: [{ role: "user", content: "think" }],
       stream: true,
@@ -409,8 +391,7 @@ describe("POST /api/chat (reasoning streaming)", () => {
   });
 
   it("no reasoning_content chunks when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/chat`, {
+    const res = await post(`/api/chat`, {
       model: "deepseek-r1",
       messages: [{ role: "user", content: "plain" }],
       stream: true,
@@ -432,8 +413,7 @@ describe("POST /api/chat (reasoning streaming)", () => {
 
 describe("POST /api/generate (reasoning non-streaming)", () => {
   it("includes reasoning_content field", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/generate`, {
+    const res = await post(`/api/generate`, {
       model: "deepseek-r1",
       prompt: "think",
       stream: false,
@@ -446,8 +426,7 @@ describe("POST /api/generate (reasoning non-streaming)", () => {
   });
 
   it("omits reasoning_content when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/generate`, {
+    const res = await post(`/api/generate`, {
       model: "deepseek-r1",
       prompt: "plain",
       stream: false,
@@ -461,8 +440,7 @@ describe("POST /api/generate (reasoning non-streaming)", () => {
 
 describe("POST /api/generate (reasoning streaming)", () => {
   it("streams reasoning_content chunks before response chunks", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/generate`, {
+    const res = await post(`/api/generate`, {
       model: "deepseek-r1",
       prompt: "think",
       stream: true,
@@ -489,8 +467,7 @@ describe("POST /api/generate (reasoning streaming)", () => {
   });
 
   it("no reasoning_content chunks when reasoning is absent", async () => {
-    instance = await createServer(allFixtures);
-    const res = await post(`${instance.url}/api/generate`, {
+    const res = await post(`/api/generate`, {
       model: "deepseek-r1",
       prompt: "plain",
       stream: true,
