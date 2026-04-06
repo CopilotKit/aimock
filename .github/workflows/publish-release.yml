@@ -35,7 +35,10 @@ jobs:
 
       - name: Build and publish
         if: steps.check.outputs.published == 'false'
-        run: pnpm build && npm publish --access public --provenance
+        run: |
+          # Clear the placeholder token so npm uses OIDC instead
+          npm config set //registry.npmjs.org/:_authToken ""
+          pnpm build && npm publish --access public --provenance
 
       - name: Ensure git tag exists
         if: steps.check.outputs.published == 'false'
