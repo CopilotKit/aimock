@@ -508,7 +508,7 @@
         display: grid;
         grid-template-columns: 1fr 1.2fr;
         gap: 4rem;
-        align-items: center;
+        align-items: start;
       }
       .record-label {
         display: inline-flex;
@@ -528,11 +528,7 @@
         animation: pulse 1.5s infinite;
       }
       .record-left h2 {
-        font-size: clamp(1.8rem, 4vw, 2.8rem);
-        font-weight: 700;
-        line-height: 1.15;
-        letter-spacing: -0.02em;
-        margin-bottom: 2rem;
+        display: none; /* moved above grid */
       }
       .steps {
         display: flex;
@@ -1148,14 +1144,28 @@
     <!-- ─── Section 2: Record & Replay ───────────────────────────── -->
     <section class="section-record" id="record">
       <div class="container">
+        <div
+          class="record-label fade-in"
+          style="text-align: center; display: block; margin-bottom: 1rem"
+        >
+          <span class="record-dot" style="display: inline-block; vertical-align: middle"></span>
+          Record &amp; Replay
+        </div>
+        <h2
+          class="fade-in"
+          style="
+            text-align: center;
+            font-size: clamp(1.8rem, 4vw, 2.8rem);
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 3rem;
+          "
+        >
+          From zero to fixtures in one command
+        </h2>
+
         <div class="record-grid">
           <div class="record-left fade-in">
-            <div class="record-label">
-              <span class="record-dot"></span>
-              Record &amp; Replay
-            </div>
-            <h2>From zero to fixtures in one command</h2>
-
             <div class="steps">
               <div class="step">
                 <div class="step-num">1</div>
