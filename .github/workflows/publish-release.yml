@@ -21,6 +21,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
 
+      # Ensure npm is new enough for OIDC trusted publishing (>= 11.5.1)
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Check if version is already published
         id: check
         run: |
@@ -35,10 +39,7 @@ jobs:
 
       - name: Build and publish
         if: steps.check.outputs.published == 'false'
-        run: |
-          # Clear the placeholder token so npm uses OIDC instead
-          npm config set //registry.npmjs.org/:_authToken ""
-          pnpm build && npm publish --access public --provenance
+        run: pnpm build && npm publish --access public
 
       - name: Ensure git tag exists
         if: steps.check.outputs.published == 'false'
