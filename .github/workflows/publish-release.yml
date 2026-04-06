@@ -7,6 +7,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -32,10 +35,7 @@ jobs:
 
       - name: Build and publish
         if: steps.check.outputs.published == 'false'
-        run: pnpm release
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm build && npm publish --access public --provenance
 
       - name: Ensure git tag exists
         if: steps.check.outputs.published == 'false'
@@ -50,7 +50,6 @@ jobs:
         if: steps.check.outputs.published == 'false'
         run: |
           TAG="v${{ steps.check.outputs.version }}"
-          # --verify-tag ensures the tag exists before creating the release
           gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
