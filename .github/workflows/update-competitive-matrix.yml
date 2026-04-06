@@ -54,3 +54,20 @@ jobs:
             --base main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          if [ "${{ steps.changes.outputs.changed }}" = "true" ]; then
+            EMOJI="📊"
+            MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
+          elif [ "${{ job.status }}" = "success" ]; then
+            EMOJI="✅"
+            MSG="Competitive matrix check — no changes detected."
+          else
+            EMOJI="❌"
+            MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
+          fi
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"${EMOJI} ${MSG}\"}"

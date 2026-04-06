@@ -2,6 +2,11 @@ name: Release
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsdown.config.ts"
   workflow_dispatch:
 jobs:
   release:

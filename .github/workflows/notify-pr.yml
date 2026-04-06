@@ -1,0 +1,17 @@
+name: PR Notification
+on:
+  pull_request:
+    types: [opened]
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"🔀 New PR #${PR_NUM} on aimock by *${PR_AUTHOR}*: <${PR_URL}|${PR_TITLE}>\"}"
