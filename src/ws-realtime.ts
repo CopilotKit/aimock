@@ -130,7 +130,14 @@ export function handleWebSocketRealtime(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
 ): void {
   const { logger } = defaults;
   const sessionId = generateId("sess");
@@ -176,7 +183,14 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
 ): Promise<void> {
@@ -246,7 +260,14 @@ async function handleResponseCreate(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
 ): Promise<void> {
@@ -258,7 +279,12 @@ async function handleResponseCreate(
     messages,
   };
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
   const responseId = generateId("resp");
 
   if (fixture) {

@@ -465,7 +465,12 @@ export async function handleCohere(
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = cohereToCompletionRequest(cohereReq);
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures);

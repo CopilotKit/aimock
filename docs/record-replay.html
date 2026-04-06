@@ -355,6 +355,55 @@ $ docker run -d -p 4010:4010 \
   run: docker stop aimock</code></pre>
         </div>
 
+        <h2>Request Transform</h2>
+        <p>
+          Prompts often contain dynamic data &mdash; timestamps, UUIDs, session IDs &mdash; that
+          changes between runs. This causes fixture mismatches on replay because the recorded key no
+          longer matches the live request. The <code>requestTransform</code> option normalizes
+          requests before both matching and recording, stripping out the volatile parts.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Strip timestamps before matching <span class="lang-tag">ts</span>
+          </div>
+          <pre><code>import { LLMock } from "@copilotkit/aimock";
+
+const mock = new LLMock({
+  requestTransform: (req) => ({
+    ...req,
+    messages: req.messages.map((m) => ({
+      ...m,
+      content:
+        typeof m.content === "string"
+          ? m.content.replace(/\d{4}-\d{2}-\d{2}T[\d:.+Z-]+/g, "")
+          : m.content,
+    })),
+  }),
+});
+
+// Fixture uses the cleaned key (no timestamp)
+mock.onMessage("tell me the weather ", { content: "Sunny" });
+
+// Request with a timestamp still matches after transform
+await mock.start();</code></pre>
+        </div>
+
+        <p>
+          When <code>requestTransform</code> is set, string matching for
+          <code>userMessage</code> and <code>inputText</code> switches from substring
+          (<code>includes</code>) to exact equality (<code>===</code>). This prevents shortened keys
+          from accidentally matching unrelated prompts. Without a transform, the existing
+          <code>includes</code> behavior is preserved for backward compatibility.
+        </p>
+
+        <p>
+          The transform is applied in both directions: <strong>recording</strong> saves the
+          transformed match key (no timestamps in the fixture file), and
+          <strong>matching</strong> transforms the incoming request before comparison. This means
+          recorded fixtures and live requests always use the same normalized key.
+        </p>
+
         <h2>Building Fixture Sets</h2>
         <p>A practical workflow for building and maintaining fixture sets:</p>
         <ol>

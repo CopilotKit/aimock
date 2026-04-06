@@ -265,6 +265,16 @@ export interface MockServerOptions {
   strict?: boolean;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
+  /**
+   * Normalize requests before matching and recording. Useful for stripping
+   * dynamic data (timestamps, UUIDs, session IDs) that would cause fixture
+   * mismatches on replay.
+   *
+   * When set, string matching for `userMessage` and `inputText` uses exact
+   * equality (`===`) instead of substring (`includes`) to prevent false
+   * positives from shortened keys.
+   */
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler
@@ -279,4 +289,5 @@ export interface HandlerDefaults {
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
 }

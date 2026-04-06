@@ -171,7 +171,14 @@ export function handleWebSocketGeminiLive(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
 ): void {
   const { logger } = defaults;
   const session: SessionState = {
@@ -206,7 +213,14 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: { latency: number; chunkSize: number; model: string; logger: Logger; strict?: boolean },
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  },
   session: SessionState,
 ): Promise<void> {
   let parsed: GeminiLiveMessage;
@@ -295,7 +309,12 @@ async function processMessage(
     tools: session.tools.length > 0 ? session.tools : undefined,
   };
 
-  const fixture = matchFixture(fixtures, completionReq, journal.fixtureMatchCounts);
+  const fixture = matchFixture(
+    fixtures,
+    completionReq,
+    journal.fixtureMatchCounts,
+    defaults.requestTransform,
+  );
   const path = WS_PATH;
 
   if (fixture) {
