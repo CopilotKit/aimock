@@ -1,5 +1,47 @@
 # @copilotkit/aimock
 
+## 1.8.0
+
+### Minor Changes
+
+- Add `requestTransform` option for deterministic matching and recording — normalizes requests before matching (strips timestamps, UUIDs, session IDs) and switches to exact equality when set. Applied across all 15 provider handlers and the recorder. (#79, based on design by @iskhakovt in #63)
+- Add reasoning/thinking support for OpenAI Chat Completions — `reasoning` field in fixtures generates `reasoning_content` in responses and streaming `reasoning` deltas (#62 by @erezcor)
+- Add reasoning support for Gemini (`thoughtParts`), AWS Bedrock InvokeModel + Converse (`thinking` blocks), and Ollama (`think` tags) (#81)
+- Add web search result events for OpenAI Responses API (#62)
+
+### Patch Changes
+
+- Fix migration page examples: replace fragile `time.sleep` with health check loops against `/__aimock/health`; fix Python npx example `stderr=subprocess.PIPE` deadlock (#80)
+- Fix stream collapse to handle reasoning events correctly
+- Update all GitHub repo URLs from CopilotKit/llmock to CopilotKit/aimock
+- Add Open Graph image and meta tags for social sharing
+- Reframe drift detection docs for users ("your mocks never go stale") with restored drift report output
+- CI: add `npm` environment to release workflow for deployment tracking; add `workflow_dispatch` to Python test workflow
+
+## 1.7.0
+
+### Minor Changes
+
+- Rename package from `@copilotkit/llmock` to `@copilotkit/aimock`
+- Add MCPMock — Model Context Protocol mock with tools, resources, prompts, session management
+- Add A2AMock — Agent-to-Agent protocol mock with SSE streaming
+- Add VectorMock — Pinecone, Qdrant, ChromaDB compatible vector DB mock
+- Add search (Tavily), rerank (Cohere), and moderation (OpenAI) service mocks
+- Add `/__aimock/*` control API for external fixture management
+- Add `aimock` CLI with JSON config file support
+- Add mount composition for running multiple protocol handlers on one server
+- Add JSON-RPC 2.0 transport with batch and notifications
+- Add `aimock-pytest` pip package for native Python testing
+- Add converter scripts: `convert-vidaimock` (Tera → JSON) and `convert-mockllm` (YAML → JSON)
+- Add drift automation skill updates — `fix-drift.ts` now updates `skills/write-fixtures/SKILL.md` alongside source fixes
+- Rename Prometheus metrics to `aimock_*` with new MCP/A2A/Vector counters
+- Rebrand logger `[aimock]`, chaos headers `x-aimock-chaos-*`, CLI startup message
+- Docker: dual-push `ghcr.io/copilotkit/aimock` + `ghcr.io/copilotkit/llmock` (compat)
+- Helm chart renamed to `charts/aimock/`
+- 6 migration guides: MSW, VidaiMock, mock-llm, piyook, Python mocks, Mokksy
+- Homepage redesigned (Treatment 3: Progressive Disclosure)
+- Docs: sidebar.js, cli-tabs.js, section bar, competitive matrix with 25 rows
+
 ## 1.6.1
 
 ### Patch Changes
