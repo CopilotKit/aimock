@@ -172,3 +172,96 @@ describe("POST /v1/chat/completions (reasoning streaming)", () => {
     expect(reasoningDeltas).toHaveLength(0);
   });
 });
+
+// ─── Gemini: Reasoning ──────────────────────────────────────────────────────
+
+function parseGeminiSSEChunks(body: string): unknown[] {
+  const chunks: unknown[] = [];
+  for (const line of body.split("\n")) {
+    if (line.startsWith("data: ")) {
+      chunks.push(JSON.parse(line.slice(6)));
+    }
+  }
+  return chunks;
+}
+
+describe("POST /v1beta/models/{model}:generateContent (reasoning non-streaming)", () => {
+  it("includes thought part before text part", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "think" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    const parts = body.candidates[0].content.parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0].thought).toBe(true);
+    expect(parts[0].text).toBe("Let me think step by step about this problem.");
+    expect(parts[1].text).toBe("The answer is 42.");
+    expect(parts[1].thought).toBeUndefined();
+  });
+
+  it("no thought part when reasoning is absent", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "plain" }] }],
+    });
+
+    const body = JSON.parse(res.body);
+    const parts = body.candidates[0].content.parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].text).toBe("Just plain text.");
+    expect(parts[0].thought).toBeUndefined();
+  });
+});
+
+describe("POST /v1beta/models/{model}:streamGenerateContent (reasoning streaming)", () => {
+  it("streams thought chunks before text chunks", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "think" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { role: string; parts: { text?: string; thought?: boolean }[] };
+        finishReason?: string;
+      }[];
+    }[];
+
+    const thoughtChunks = chunks.filter((c) => c.candidates[0].content.parts[0].thought === true);
+    const textChunks = chunks.filter((c) => c.candidates[0].content.parts[0].thought === undefined);
+
+    expect(thoughtChunks.length).toBeGreaterThan(0);
+    expect(textChunks.length).toBeGreaterThan(0);
+
+    const fullThought = thoughtChunks
+      .map((c) => c.candidates[0].content.parts[0].text ?? "")
+      .join("");
+    expect(fullThought).toBe("Let me think step by step about this problem.");
+
+    const fullText = textChunks.map((c) => c.candidates[0].content.parts[0].text ?? "").join("");
+    expect(fullText).toBe("The answer is 42.");
+
+    const lastChunk = chunks[chunks.length - 1];
+    expect(lastChunk.candidates[0].finishReason).toBe("STOP");
+  });
+
+  it("no thought chunks when reasoning is absent", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.5-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "plain" }] }],
+    });
+
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { parts: { text?: string; thought?: boolean }[] };
+      }[];
+    }[];
+
+    const thoughtChunks = chunks.filter((c) => c.candidates[0].content.parts[0].thought === true);
+    expect(thoughtChunks).toHaveLength(0);
+  });
+});

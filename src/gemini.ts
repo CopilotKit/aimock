@@ -36,6 +36,7 @@ import { proxyAndRecord } from "./recorder.js";
 
 interface GeminiPart {
   text?: string;
+  thought?: boolean;
   functionCall?: { name: string; args: Record<string, unknown>; id?: string };
   functionResponse?: { name: string; response: unknown };
 }
@@ -187,10 +188,29 @@ interface GeminiResponseChunk {
   };
 }
 
-function buildGeminiTextStreamChunks(content: string, chunkSize: number): GeminiResponseChunk[] {
+function buildGeminiTextStreamChunks(
+  content: string,
+  chunkSize: number,
+  reasoning?: string,
+): GeminiResponseChunk[] {
   const chunks: GeminiResponseChunk[] = [];
 
-  // Content chunks
+  // Reasoning chunks (thought: true)
+  if (reasoning) {
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      chunks.push({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: slice, thought: true }] },
+            index: 0,
+          },
+        ],
+      });
+    }
+  }
+
+  // Content chunks (original logic unchanged)
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);
     const isLast = i + chunkSize >= content.length;
@@ -215,7 +235,7 @@ function buildGeminiTextStreamChunks(content: string, chunkSize: number): Gemini
     chunks.push(chunk);
   }
 
-  // Handle empty content
+  // Handle empty content (original logic unchanged)
   if (content.length === 0) {
     chunks.push({
       candidates: [
@@ -276,11 +296,17 @@ function buildGeminiToolCallStreamChunks(
 
 // Non-streaming response builders
 
-function buildGeminiTextResponse(content: string): GeminiResponseChunk {
+function buildGeminiTextResponse(content: string, reasoning?: string): GeminiResponseChunk {
+  const parts: GeminiPart[] = [];
+  if (reasoning) {
+    parts.push({ text: reasoning, thought: true });
+  }
+  parts.push({ text: content });
+
   return {
     candidates: [
       {
-        content: { role: "model", parts: [{ text: content }] },
+        content: { role: "model", parts },
         finishReason: "STOP",
         index: 0,
       },
@@ -528,11 +554,11 @@ export async function handleGemini(
       response: { status: 200, fixture },
     });
     if (!streaming) {
-      const body = buildGeminiTextResponse(response.content);
+      const body = buildGeminiTextResponse(response.content, response.reasoning);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildGeminiTextStreamChunks(response.content, chunkSize);
+      const chunks = buildGeminiTextStreamChunks(response.content, chunkSize, response.reasoning);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
