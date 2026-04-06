@@ -154,6 +154,16 @@
         <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>, <span class="str">"-v"</span>, <span class="str">"./fixtures:/fixtures"</span>,
         <span class="str">"ghcr.io/copilotkit/aimock"</span>, <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>)
         .<span class="fn">start</span>().<span class="fn">waitFor</span>()
+    <span class="cm">// Wait for server to be ready</span>
+    <span class="kw">repeat</span>(<span class="num">30</span>) {
+        <span class="kw">try</span> {
+            <span class="type">java.net.URL</span>(<span class="str">"http://localhost:4010/__aimock/health"</span>)
+                .<span class="fn">readText</span>()
+            <span class="kw">return</span>
+        } <span class="kw">catch</span> (_: <span class="type">Exception</span>) {
+            <span class="type">Thread</span>.<span class="fn">sleep</span>(<span class="num">200</span>)
+        }
+    }
 }
 
 <span class="kw">@AfterAll</span>
