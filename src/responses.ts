@@ -505,7 +505,7 @@ function buildWebSearchStreamEvents(
         type: "web_search_call",
         id: searchId,
         status: "in_progress",
-        query: queries[i],
+        action: { query: queries[i] },
       },
     });
 
@@ -516,7 +516,7 @@ function buildWebSearchStreamEvents(
         type: "web_search_call",
         id: searchId,
         status: "completed",
-        query: queries[i],
+        action: { query: queries[i] },
       },
     });
   }
@@ -550,7 +550,7 @@ function buildTextResponse(
         type: "web_search_call",
         id: generateId("ws"),
         status: "completed",
-        query,
+        action: { query },
       });
     }
   }

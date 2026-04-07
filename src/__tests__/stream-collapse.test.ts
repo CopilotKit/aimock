@@ -1715,12 +1715,12 @@ describe("collapseOpenAISSE with reasoning", () => {
       "",
       `data: ${JSON.stringify({
         type: "response.output_item.done",
-        item: { type: "web_search_call", status: "completed", query: "test query" },
+        item: { type: "web_search_call", status: "completed", action: { query: "test query" } },
       })}`,
       "",
       `data: ${JSON.stringify({
         type: "response.output_item.done",
-        item: { type: "web_search_call", status: "completed", query: "another query" },
+        item: { type: "web_search_call", status: "completed", action: { query: "another query" } },
       })}`,
       "",
       `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Result" })}`,
