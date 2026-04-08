@@ -87,7 +87,10 @@
   ];
 
   // ─── Detect current page ────────────────────────────────────────
-  var pathParts = window.location.pathname.replace(/\/index\.html$/, "/").replace(/\/$/, "").split("/");
+  var pathParts = window.location.pathname
+    .replace(/\/index\.html$/, "/")
+    .replace(/\/$/, "")
+    .split("/");
   var currentPage = "/" + (pathParts[pathParts.length - 1] || "");
   if (currentPage === "/") currentPage = "index.html";
 
