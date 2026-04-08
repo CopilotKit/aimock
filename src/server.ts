@@ -18,8 +18,11 @@ import {
   buildToolCallChunks,
   buildTextCompletion,
   buildToolCallCompletion,
+  buildContentWithToolCallsChunks,
+  buildContentWithToolCallsCompletion,
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   flattenHeaders,
 } from "./helpers.js";
@@ -446,6 +449,47 @@ async function handleCompletions(
       response: { status, fixture },
     });
     writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Content + tool calls response
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body,
+      response: { status: 200, fixture },
+    });
+    if (body.stream !== true) {
+      const completion = buildContentWithToolCallsCompletion(
+        response.content,
+        response.toolCalls,
+        body.model,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(completion));
+    } else {
+      const chunks = buildContentWithToolCallsChunks(
+        response.content,
+        response.toolCalls,
+        body.model,
+        chunkSize,
+      );
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeSSEStream(res, chunks, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
     return;
   }
 

@@ -20,6 +20,7 @@ import type {
 import {
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   generateToolCallId,
   flattenHeaders,
@@ -256,24 +257,22 @@ function buildGeminiTextStreamChunks(
   return chunks;
 }
 
+function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
+  let argsObj: Record<string, unknown>;
+  try {
+    argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
+    argsObj = {};
+  }
+  return { functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() } };
+}
+
 function buildGeminiToolCallStreamChunks(
   toolCalls: ToolCall[],
   logger: Logger,
 ): GeminiResponseChunk[] {
-  const parts: GeminiPart[] = toolCalls.map((tc) => {
-    let argsObj: Record<string, unknown>;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() },
-    };
-  });
+  const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
 
   // Gemini sends all tool calls in a single response chunk
   return [
@@ -320,20 +319,84 @@ function buildGeminiTextResponse(content: string, reasoning?: string): GeminiRes
 }
 
 function buildGeminiToolCallResponse(toolCalls: ToolCall[], logger: Logger): GeminiResponseChunk {
-  const parts: GeminiPart[] = toolCalls.map((tc) => {
-    let argsObj: Record<string, unknown>;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
+  const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
+
+  return {
+    candidates: [
+      {
+        content: { role: "model", parts },
+        finishReason: "FUNCTION_CALL",
+        index: 0,
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: 0,
+      candidatesTokenCount: 0,
+      totalTokenCount: 0,
+    },
+  };
+}
+
+function buildGeminiContentWithToolCallsStreamChunks(
+  content: string,
+  toolCalls: ToolCall[],
+  chunkSize: number,
+  logger: Logger,
+): GeminiResponseChunk[] {
+  const chunks: GeminiResponseChunk[] = [];
+
+  if (content.length === 0) {
+    chunks.push({
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "" }] },
+          index: 0,
+        },
+      ],
+    });
+  } else {
+    for (let i = 0; i < content.length; i += chunkSize) {
+      const slice = content.slice(i, i + chunkSize);
+      chunks.push({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: slice }] },
+            index: 0,
+          },
+        ],
+      });
     }
-    return {
-      functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() },
-    };
+  }
+
+  const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
+
+  chunks.push({
+    candidates: [
+      {
+        content: { role: "model", parts },
+        finishReason: "FUNCTION_CALL",
+        index: 0,
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: 0,
+      candidatesTokenCount: 0,
+      totalTokenCount: 0,
+    },
   });
+
+  return chunks;
+}
+
+function buildGeminiContentWithToolCallsResponse(
+  content: string,
+  toolCalls: ToolCall[],
+  logger: Logger,
+): GeminiResponseChunk {
+  const parts: GeminiPart[] = [
+    { text: content },
+    ...toolCalls.map((tc) => parseToolCallPart(tc, logger)),
+  ];
 
   return {
     candidates: [
@@ -546,6 +609,47 @@ export async function handleGemini(
       },
     };
     writeErrorResponse(res, status, JSON.stringify(geminiError));
+    return;
+  }
+
+  // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    if (!streaming) {
+      const body = buildGeminiContentWithToolCallsResponse(
+        response.content,
+        response.toolCalls,
+        logger,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    } else {
+      const chunks = buildGeminiContentWithToolCallsStreamChunks(
+        response.content,
+        response.toolCalls,
+        chunkSize,
+        logger,
+      );
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeGeminiSSEStream(res, chunks, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
     return;
   }
 

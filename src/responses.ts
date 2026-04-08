@@ -21,6 +21,7 @@ import {
   generateToolCallId,
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   flattenHeaders,
 } from "./helpers.js";
@@ -168,129 +169,20 @@ export function buildTextStreamEvents(
   reasoning?: string,
   webSearches?: string[],
 ): ResponsesSSEEvent[] {
-  const respId = responseId();
-  const msgId = itemId();
-  const created = Math.floor(Date.now() / 1000);
-  const events: ResponsesSSEEvent[] = [];
+  const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+  );
 
-  let msgOutputIndex = 0;
-  const prefixOutputItems: object[] = [];
+  const { events: msgEvents, msgItem } = buildMessageOutputEvents(
+    content,
+    chunkSize,
+    nextOutputIndex,
+  );
+  events.push(...msgEvents);
 
-  // response.created
-  events.push({
-    type: "response.created",
-    response: {
-      id: respId,
-      object: "response",
-      created_at: created,
-      model,
-      status: "in_progress",
-      output: [],
-    },
-  });
-
-  // response.in_progress
-  events.push({
-    type: "response.in_progress",
-    response: {
-      id: respId,
-      object: "response",
-      created_at: created,
-      model,
-      status: "in_progress",
-      output: [],
-    },
-  });
-
-  if (reasoning) {
-    const reasoningEvents = buildReasoningStreamEvents(reasoning, model, chunkSize);
-    events.push(...reasoningEvents);
-    const doneEvent = reasoningEvents.find(
-      (e) =>
-        e.type === "response.output_item.done" &&
-        (e.item as { type: string })?.type === "reasoning",
-    );
-    if (doneEvent) prefixOutputItems.push(doneEvent.item as object);
-    msgOutputIndex++;
-  }
-
-  if (webSearches && webSearches.length > 0) {
-    const searchEvents = buildWebSearchStreamEvents(webSearches, msgOutputIndex);
-    events.push(...searchEvents);
-    const doneEvents = searchEvents.filter(
-      (e) =>
-        e.type === "response.output_item.done" &&
-        (e.item as { type: string })?.type === "web_search_call",
-    );
-    for (const de of doneEvents) prefixOutputItems.push(de.item as object);
-    msgOutputIndex += webSearches.length;
-  }
-
-  // output_item.added (message)
-  events.push({
-    type: "response.output_item.added",
-    output_index: msgOutputIndex,
-    item: {
-      type: "message",
-      id: msgId,
-      status: "in_progress",
-      role: "assistant",
-      content: [],
-    },
-  });
-
-  // content_part.added
-  events.push({
-    type: "response.content_part.added",
-    output_index: msgOutputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: "" },
-  });
-
-  // text deltas
-  for (let i = 0; i < content.length; i += chunkSize) {
-    const slice = content.slice(i, i + chunkSize);
-    events.push({
-      type: "response.output_text.delta",
-      item_id: msgId,
-      output_index: msgOutputIndex,
-      content_index: 0,
-      delta: slice,
-    });
-  }
-
-  // output_text.done
-  events.push({
-    type: "response.output_text.done",
-    output_index: msgOutputIndex,
-    content_index: 0,
-    text: content,
-  });
-
-  // content_part.done
-  events.push({
-    type: "response.content_part.done",
-    output_index: msgOutputIndex,
-    content_index: 0,
-    part: { type: "output_text", text: content },
-  });
-
-  const msgItem = {
-    type: "message",
-    id: msgId,
-    status: "completed",
-    role: "assistant",
-    content: [{ type: "output_text", text: content }],
-  };
-
-  // output_item.done
-  events.push({
-    type: "response.output_item.done",
-    output_index: msgOutputIndex,
-    item: msgItem,
-  });
-
-  // response.completed
   events.push({
     type: "response.completed",
     response: {
@@ -300,11 +192,7 @@ export function buildTextStreamEvents(
       model,
       status: "completed",
       output: [...prefixOutputItems, msgItem],
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-      },
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
     },
   });
 
@@ -524,16 +412,142 @@ function buildWebSearchStreamEvents(
   return events;
 }
 
-// Non-streaming response builders
+// ─── Shared streaming helpers ────────────────────────────────────────────────
 
-function buildTextResponse(
-  content: string,
+interface PreambleResult {
+  respId: string;
+  created: number;
+  events: ResponsesSSEEvent[];
+  prefixOutputItems: object[];
+  nextOutputIndex: number;
+}
+
+function buildResponsePreamble(
   model: string,
+  chunkSize: number,
   reasoning?: string,
   webSearches?: string[],
-): object {
+): PreambleResult {
   const respId = responseId();
+  const created = Math.floor(Date.now() / 1000);
+  const events: ResponsesSSEEvent[] = [];
+  const prefixOutputItems: object[] = [];
+  let nextOutputIndex = 0;
+
+  events.push({
+    type: "response.created",
+    response: {
+      id: respId,
+      object: "response",
+      created_at: created,
+      model,
+      status: "in_progress",
+      output: [],
+    },
+  });
+  events.push({
+    type: "response.in_progress",
+    response: {
+      id: respId,
+      object: "response",
+      created_at: created,
+      model,
+      status: "in_progress",
+      output: [],
+    },
+  });
+
+  if (reasoning) {
+    const reasoningEvents = buildReasoningStreamEvents(reasoning, model, chunkSize);
+    events.push(...reasoningEvents);
+    const doneEvent = reasoningEvents.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as { type: string })?.type === "reasoning",
+    );
+    if (doneEvent) prefixOutputItems.push(doneEvent.item as object);
+    nextOutputIndex++;
+  }
+
+  if (webSearches && webSearches.length > 0) {
+    const searchEvents = buildWebSearchStreamEvents(webSearches, nextOutputIndex);
+    events.push(...searchEvents);
+    const doneEvents = searchEvents.filter(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as { type: string })?.type === "web_search_call",
+    );
+    for (const de of doneEvents) prefixOutputItems.push(de.item as object);
+    nextOutputIndex += webSearches.length;
+  }
+
+  return { respId, created, events, prefixOutputItems, nextOutputIndex };
+}
+
+interface MessageBlockResult {
+  events: ResponsesSSEEvent[];
+  msgItem: object;
+}
+
+function buildMessageOutputEvents(
+  content: string,
+  chunkSize: number,
+  outputIndex: number,
+): MessageBlockResult {
   const msgId = itemId();
+  const events: ResponsesSSEEvent[] = [];
+
+  events.push({
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: { type: "message", id: msgId, status: "in_progress", role: "assistant", content: [] },
+  });
+  events.push({
+    type: "response.content_part.added",
+    output_index: outputIndex,
+    content_index: 0,
+    part: { type: "output_text", text: "" },
+  });
+
+  for (let i = 0; i < content.length; i += chunkSize) {
+    events.push({
+      type: "response.output_text.delta",
+      item_id: msgId,
+      output_index: outputIndex,
+      content_index: 0,
+      delta: content.slice(i, i + chunkSize),
+    });
+  }
+
+  events.push({
+    type: "response.output_text.done",
+    output_index: outputIndex,
+    content_index: 0,
+    text: content,
+  });
+  events.push({
+    type: "response.content_part.done",
+    output_index: outputIndex,
+    content_index: 0,
+    part: { type: "output_text", text: content },
+  });
+
+  const msgItem = {
+    type: "message",
+    id: msgId,
+    status: "completed",
+    role: "assistant",
+    content: [{ type: "output_text", text: content }],
+  };
+
+  events.push({ type: "response.output_item.done", output_index: outputIndex, item: msgItem });
+
+  return { events, msgItem };
+}
+
+// ─── Non-streaming response builders ────────────────────────────────────────
+
+function buildOutputPrefix(content: string, reasoning?: string, webSearches?: string[]): object[] {
   const output: object[] = [];
 
   if (reasoning) {
@@ -557,14 +571,18 @@ function buildTextResponse(
 
   output.push({
     type: "message",
-    id: msgId,
+    id: itemId(),
     status: "completed",
     role: "assistant",
     content: [{ type: "output_text", text: content }],
   });
 
+  return output;
+}
+
+function buildResponseEnvelope(model: string, output: object[]): object {
   return {
-    id: respId,
+    id: responseId(),
     object: "response",
     created_at: Math.floor(Date.now() / 1000),
     model,
@@ -574,15 +592,19 @@ function buildTextResponse(
   };
 }
 
+function buildTextResponse(
+  content: string,
+  model: string,
+  reasoning?: string,
+  webSearches?: string[],
+): object {
+  return buildResponseEnvelope(model, buildOutputPrefix(content, reasoning, webSearches));
+}
+
 function buildToolCallResponse(toolCalls: ToolCall[], model: string): object {
-  const respId = responseId();
-  return {
-    id: respId,
-    object: "response",
-    created_at: Math.floor(Date.now() / 1000),
+  return buildResponseEnvelope(
     model,
-    status: "completed",
-    output: toolCalls.map((tc) => ({
+    toolCalls.map((tc) => ({
       type: "function_call",
       id: generateId("fc"),
       call_id: tc.id || generateToolCallId(),
@@ -590,8 +612,114 @@ function buildToolCallResponse(toolCalls: ToolCall[], model: string): object {
       arguments: tc.arguments,
       status: "completed",
     })),
-    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-  };
+  );
+}
+
+export function buildContentWithToolCallsStreamEvents(
+  content: string,
+  toolCalls: ToolCall[],
+  model: string,
+  chunkSize: number,
+  reasoning?: string,
+  webSearches?: string[],
+): ResponsesSSEEvent[] {
+  const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+  );
+
+  const { events: msgEvents, msgItem } = buildMessageOutputEvents(
+    content,
+    chunkSize,
+    nextOutputIndex,
+  );
+  events.push(...msgEvents);
+
+  const fcOutputItems: object[] = [];
+  for (let idx = 0; idx < toolCalls.length; idx++) {
+    const tc = toolCalls[idx];
+    const callId = tc.id || generateToolCallId();
+    const fcId = generateId("fc");
+    const fcOutputIndex = nextOutputIndex + 1 + idx;
+    const args = tc.arguments;
+
+    events.push({
+      type: "response.output_item.added",
+      output_index: fcOutputIndex,
+      item: {
+        type: "function_call",
+        id: fcId,
+        call_id: callId,
+        name: tc.name,
+        arguments: "",
+        status: "in_progress",
+      },
+    });
+
+    for (let i = 0; i < args.length; i += chunkSize) {
+      events.push({
+        type: "response.function_call_arguments.delta",
+        item_id: fcId,
+        output_index: fcOutputIndex,
+        delta: args.slice(i, i + chunkSize),
+      });
+    }
+
+    events.push({
+      type: "response.function_call_arguments.done",
+      output_index: fcOutputIndex,
+      arguments: args,
+    });
+
+    const doneItem = {
+      type: "function_call",
+      id: fcId,
+      call_id: callId,
+      name: tc.name,
+      arguments: args,
+      status: "completed",
+    };
+    events.push({ type: "response.output_item.done", output_index: fcOutputIndex, item: doneItem });
+    fcOutputItems.push(doneItem);
+  }
+
+  events.push({
+    type: "response.completed",
+    response: {
+      id: respId,
+      object: "response",
+      created_at: created,
+      model,
+      status: "completed",
+      output: [...prefixOutputItems, msgItem, ...fcOutputItems],
+      usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    },
+  });
+
+  return events;
+}
+
+function buildContentWithToolCallsResponse(
+  content: string,
+  toolCalls: ToolCall[],
+  model: string,
+  reasoning?: string,
+  webSearches?: string[],
+): object {
+  const output = buildOutputPrefix(content, reasoning, webSearches);
+  for (const tc of toolCalls) {
+    output.push({
+      type: "function_call",
+      id: generateId("fc"),
+      call_id: tc.id || generateToolCallId(),
+      name: tc.name,
+      arguments: tc.arguments,
+      status: "completed",
+    });
+  }
+  return buildResponseEnvelope(model, output);
 }
 
 // ─── SSE writer for Responses API ───────────────────────────────────────────
@@ -773,6 +901,51 @@ export async function handleResponses(
       response: { status, fixture },
     });
     writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Combined content + tool calls response
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    if (responsesReq.stream !== true) {
+      const body = buildContentWithToolCallsResponse(
+        response.content,
+        response.toolCalls,
+        completionReq.model,
+        response.reasoning,
+        response.webSearches,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    } else {
+      const events = buildContentWithToolCallsStreamEvents(
+        response.content,
+        response.toolCalls,
+        completionReq.model,
+        chunkSize,
+        response.reasoning,
+        response.webSearches,
+      );
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeResponsesSSEStream(res, events, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
     return;
   }
 

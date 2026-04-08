@@ -21,6 +21,7 @@ import {
   generateToolUseId,
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   flattenHeaders,
 } from "./helpers.js";
@@ -415,6 +416,183 @@ function buildClaudeToolCallResponse(toolCalls: ToolCall[], model: string, logge
   };
 }
 
+function buildClaudeContentWithToolCallsStreamEvents(
+  content: string,
+  toolCalls: ToolCall[],
+  model: string,
+  chunkSize: number,
+  logger: Logger,
+  reasoning?: string,
+): ClaudeSSEEvent[] {
+  const msgId = generateMessageId();
+  const events: ClaudeSSEEvent[] = [];
+
+  // message_start
+  events.push({
+    type: "message_start",
+    message: {
+      id: msgId,
+      type: "message",
+      role: "assistant",
+      content: [],
+      model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  });
+
+  let blockIndex = 0;
+
+  // Optional thinking block
+  if (reasoning) {
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "thinking", thinking: "" },
+    });
+
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: { type: "thinking_delta", thinking: slice },
+      });
+    }
+
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    });
+
+    blockIndex++;
+  }
+
+  // Text content block
+  events.push({
+    type: "content_block_start",
+    index: blockIndex,
+    content_block: { type: "text", text: "" },
+  });
+
+  for (let i = 0; i < content.length; i += chunkSize) {
+    const slice = content.slice(i, i + chunkSize);
+    events.push({
+      type: "content_block_delta",
+      index: blockIndex,
+      delta: { type: "text_delta", text: slice },
+    });
+  }
+
+  events.push({
+    type: "content_block_stop",
+    index: blockIndex,
+  });
+
+  blockIndex++;
+
+  // Tool use blocks
+  for (const tc of toolCalls) {
+    const toolUseId = tc.id || generateToolUseId();
+
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    const argsJson = JSON.stringify(argsObj);
+
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: {
+        type: "tool_use",
+        id: toolUseId,
+        name: tc.name,
+        input: {},
+      },
+    });
+
+    for (let i = 0; i < argsJson.length; i += chunkSize) {
+      const slice = argsJson.slice(i, i + chunkSize);
+      events.push({
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: { type: "input_json_delta", partial_json: slice },
+      });
+    }
+
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    });
+
+    blockIndex++;
+  }
+
+  // message_delta
+  events.push({
+    type: "message_delta",
+    delta: { stop_reason: "tool_use", stop_sequence: null },
+    usage: { output_tokens: 0 },
+  });
+
+  // message_stop
+  events.push({ type: "message_stop" });
+
+  return events;
+}
+
+function buildClaudeContentWithToolCallsResponse(
+  content: string,
+  toolCalls: ToolCall[],
+  model: string,
+  logger: Logger,
+  reasoning?: string,
+): object {
+  const contentBlocks: object[] = [];
+
+  if (reasoning) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning });
+  }
+
+  contentBlocks.push({ type: "text", text: content });
+
+  for (const tc of toolCalls) {
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    contentBlocks.push({
+      type: "tool_use",
+      id: tc.id || generateToolUseId(),
+      name: tc.name,
+      input: argsObj,
+    });
+  }
+
+  return {
+    id: generateMessageId(),
+    type: "message",
+    role: "assistant",
+    content: contentBlocks,
+    model,
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  };
+}
+
 // ─── SSE writer for Claude Messages API ─────────────────────────────────────
 
 interface ClaudeStreamOptions {
@@ -605,6 +783,51 @@ export async function handleMessages(
       },
     };
     writeErrorResponse(res, status, JSON.stringify(anthropicError));
+    return;
+  }
+
+  // Content + tool calls response (must be checked before text/tool-only branches)
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    if (claudeReq.stream !== true) {
+      const body = buildClaudeContentWithToolCallsResponse(
+        response.content,
+        response.toolCalls,
+        completionReq.model,
+        logger,
+        response.reasoning,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    } else {
+      const events = buildClaudeContentWithToolCallsStreamEvents(
+        response.content,
+        response.toolCalls,
+        completionReq.model,
+        chunkSize,
+        logger,
+        response.reasoning,
+      );
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeClaudeSSEStream(res, events, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
     return;
   }
 
