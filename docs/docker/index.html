@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Docker &amp; Helm — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Docker &amp; Helm</h1>
+        <p class="lead">
+          Run aimock as a container in Docker or deploy it to Kubernetes with the included Helm
+          chart. The image is based on <code>node:22-alpine</code> with zero runtime dependencies.
+        </p>
+
+        <h2>Docker</h2>
+
+        <h3>Build the image</h3>
+        <div class="code-block">
+          <div class="code-block-header">Build <span class="lang-tag">shell</span></div>
+          <pre><code>docker build -t aimock .</code></pre>
+        </div>
+
+        <h3>Run with local fixtures</h3>
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">Run <span class="lang-tag">shell</span></div>
+              <pre><code>$ npx aimock --fixtures ./fixtures
+
+<span class="cm"># Custom port</span>
+$ npx aimock --fixtures ./fixtures --port 5555</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">Run <span class="lang-tag">shell</span></div>
+              <pre><code><span class="cm"># Mount your fixture directory into the container</span>
+$ docker run -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock
+
+<span class="cm"># Custom port</span>
+$ docker run -p 5555:5555 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --fixtures /fixtures --port 5555
+
+<span class="cm"># Pull from GitHub Container Registry</span>
+$ docker pull ghcr.io/copilotkit/aimock:latest
+$ docker run -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h3>Dockerfile</h3>
+        <p>
+          The multi-stage Dockerfile builds the TypeScript source and copies only the compiled
+          output:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">Dockerfile <span class="lang-tag">docker</span></div>
+          <pre><code><span class="cm"># --- Build stage ---</span>
+<span class="kw">FROM</span> node:22-alpine <span class="kw">AS</span> build
+<span class="kw">RUN</span> corepack enable && corepack prepare pnpm@10.28.2 --activate
+<span class="kw">WORKDIR</span> /app
+<span class="kw">COPY</span> package.json pnpm-lock.yaml ./
+<span class="kw">RUN</span> pnpm install --frozen-lockfile
+<span class="kw">COPY</span> tsconfig.json tsdown.config.ts ./
+<span class="kw">COPY</span> src/ src/
+<span class="kw">RUN</span> pnpm run build
+
+<span class="cm"># --- Production stage ---</span>
+<span class="kw">FROM</span> node:22-alpine
+<span class="kw">WORKDIR</span> /app
+<span class="kw">COPY</span> --from=build /app/dist/ dist/
+<span class="kw">COPY</span> fixtures/ fixtures/
+<span class="kw">EXPOSE</span> <span class="num">4010</span>
+<span class="kw">ENTRYPOINT</span> [<span class="str">"node"</span>, <span class="str">"dist/cli.js"</span>]
+<span class="kw">CMD</span> [<span class="str">"--fixtures"</span>, <span class="str">"/fixtures"</span>, <span class="str">"--host"</span>, <span class="str">"0.0.0.0"</span>]</code></pre>
+        </div>
+
+        <h2>Helm Chart</h2>
+        <p>Deploy to Kubernetes using the Helm chart in <code>charts/aimock/</code>.</p>
+
+        <h3>Install</h3>
+        <div class="code-block">
+          <div class="code-block-header">Helm install <span class="lang-tag">shell</span></div>
+          <pre><code>helm install aimock ./charts/aimock
+
+<span class="cm"># With custom values</span>
+helm install aimock ./charts/aimock \
+  --set image.tag=1.4.0 \
+  --set service.port=5555 \
+  --set replicaCount=2</code></pre>
+        </div>
+
+        <h3>Configuration (values.yaml)</h3>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            charts/aimock/values.yaml <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code><span class="prop">replicaCount</span>: <span class="num">1</span>
+
+<span class="prop">image</span>:
+  <span class="prop">repository</span>: <span class="str">ghcr.io/copilotkit/aimock</span>
+  <span class="prop">tag</span>: <span class="str">""</span>            <span class="cm"># defaults to Chart appVersion</span>
+  <span class="prop">pullPolicy</span>: <span class="str">IfNotPresent</span>
+
+<span class="prop">service</span>:
+  <span class="prop">type</span>: <span class="str">ClusterIP</span>
+  <span class="prop">port</span>: <span class="num">4010</span>
+
+<span class="prop">fixtures</span>:
+  <span class="prop">mountPath</span>: <span class="str">/app/fixtures</span>
+  <span class="prop">existingClaim</span>: <span class="str">""</span>  <span class="cm"># Use a PVC for fixture files</span>
+
+<span class="prop">resources</span>: {}
+  <span class="cm"># limits:</span>
+  <span class="cm">#   cpu: 200m</span>
+  <span class="cm">#   memory: 256Mi</span></code></pre>
+        </div>
+
+        <h3>Fixture Loading</h3>
+        <p>
+          To load custom fixtures in Kubernetes, create a PersistentVolumeClaim with your fixture
+          JSON files and set <code>fixtures.existingClaim</code> in your values. The chart mounts
+          the PVC at <code>fixtures.mountPath</code> (default <code>/app/fixtures</code>).
+        </p>
+
+        <h3>Health Checks</h3>
+        <p>
+          The deployment includes liveness and readiness probes using <code>httpGet</code> on
+          <code>/health</code> (liveness, starts after 5 seconds) and <code>/ready</code>
+          (readiness, starts after 2 seconds).
+        </p>
+
+        <h2>v1.6.0 Features</h2>
+        <p>The Docker image supports all v1.6.0 features out of the box:</p>
+        <ul>
+          <li>
+            <strong>Chaos testing</strong> &mdash; configure via <code>--chaos-drop</code>,
+            <code>--chaos-malformed</code>, and <code>--chaos-disconnect</code> flags
+          </li>
+          <li>
+            <strong>Prometheus metrics</strong> &mdash; exposed at <code>/metrics</code> when
+            enabled with <code>--metrics</code>
+          </li>
+          <li>
+            <strong>Record &amp; replay</strong> &mdash; proxy to real APIs with
+            <code>--record</code> flag
+          </li>
+          <li>
+            <strong>Strict mode</strong> &mdash; return 503 for unmatched requests with
+            <code>--strict</code>
+          </li>
+          <li><strong>Streaming physics</strong> &mdash; TTFT, TPS, and jitter simulation</li>
+          <li><strong>AWS Bedrock streaming</strong> &mdash; Event Stream binary protocol</li>
+          <li><strong>Converse API</strong> &mdash; Bedrock Converse and Converse-stream</li>
+        </ul>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>

@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Record &amp; Replay — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div id="section-bar"></div>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Record &amp; Replay</h1>
+        <p class="lead">
+          VCR-style record-and-replay support. When a request doesn't match any fixture, aimock
+          proxies it to the real upstream provider, records the response as a fixture on disk and in
+          memory, then replays it on subsequent identical requests.
+        </p>
+
+        <h2>How It Works</h2>
+        <ol>
+          <li>Client sends a request to aimock</li>
+          <li>aimock attempts fixture matching as usual</li>
+          <li>
+            <strong>On miss:</strong> the request is forwarded to the configured upstream provider
+          </li>
+          <li>The upstream response is relayed back to the client immediately</li>
+          <li>
+            The response is collapsed (if streaming) and saved as a fixture to disk and memory
+          </li>
+          <li>Subsequent identical requests match the newly recorded fixture</li>
+        </ol>
+
+        <h2>Quick Start</h2>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
+              <pre><code>$ npx aimock --fixtures ./fixtures \
+  --record \
+  --provider-openai https://api.openai.com \
+  --provider-anthropic https://api.anthropic.com</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --fixtures /fixtures \
+  --record \
+  --provider-openai https://api.openai.com \
+  --provider-anthropic https://api.anthropic.com</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h2>CLI Flags</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Flag</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--record</code></td>
+              <td>Enable record mode (proxy-on-miss)</td>
+            </tr>
+            <tr>
+              <td><code>--strict</code></td>
+              <td>Strict mode: return 503 (not 404) on unmatched requests</td>
+            </tr>
+            <tr>
+              <td><code>--provider-openai &lt;url&gt;</code></td>
+              <td>Upstream URL for OpenAI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-anthropic &lt;url&gt;</code></td>
+              <td>Upstream URL for Anthropic</td>
+            </tr>
+            <tr>
+              <td><code>--provider-gemini &lt;url&gt;</code></td>
+              <td>Upstream URL for Gemini</td>
+            </tr>
+            <tr>
+              <td><code>--provider-vertexai &lt;url&gt;</code></td>
+              <td>Upstream URL for Vertex AI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-bedrock &lt;url&gt;</code></td>
+              <td>Upstream URL for Bedrock</td>
+            </tr>
+            <tr>
+              <td><code>--provider-azure &lt;url&gt;</code></td>
+              <td>Upstream URL for Azure OpenAI</td>
+            </tr>
+            <tr>
+              <td><code>--provider-ollama &lt;url&gt;</code></td>
+              <td>Upstream URL for Ollama</td>
+            </tr>
+            <tr>
+              <td><code>--provider-cohere &lt;url&gt;</code></td>
+              <td>Upstream URL for Cohere</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Programmatic API</h2>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Programmatic recording <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">import</span> { <span class="op">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="cmt">// Enable recording with upstream providers</span>
+<span class="op">mock</span>.<span class="fn">enableRecording</span>({
+  <span class="prop">providers</span>: {
+    <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+    <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+  },
+  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+});
+
+<span class="cmt">// Make requests — unmatched ones are proxied and recorded</span>
+<span class="cmt">// ...</span>
+
+<span class="cmt">// Disable recording — recorded fixtures persist on disk</span>
+<span class="op">mock</span>.<span class="fn">disableRecording</span>();</code></pre>
+        </div>
+
+        <h2>Stream Collapsing</h2>
+        <p>
+          When the upstream provider returns a streaming response, aimock collapses it into a
+          non-streaming fixture. Six streaming formats are supported:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Provider</th>
+              <th>Content-Type</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>OpenAI SSE</td>
+              <td>OpenAI, Azure</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Anthropic SSE</td>
+              <td>Anthropic</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Gemini SSE</td>
+              <td>Gemini, Vertex AI</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Cohere SSE</td>
+              <td>Cohere</td>
+              <td><code>text/event-stream</code></td>
+            </tr>
+            <tr>
+              <td>Ollama NDJSON</td>
+              <td>Ollama</td>
+              <td><code>application/x-ndjson</code></td>
+            </tr>
+            <tr>
+              <td>Bedrock EventStream</td>
+              <td>AWS Bedrock</td>
+              <td><code>application/vnd.amazon.eventstream</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The collapse extracts text content and tool calls from streaming chunks and produces a
+          simple <code>{ content }</code> or <code>{ toolCalls }</code> fixture response.
+        </p>
+
+        <h2>Auth Header Forwarding</h2>
+        <p>
+          When proxying to upstream providers, aimock forwards these headers from the original
+          request:
+        </p>
+        <ul>
+          <li><code>authorization</code></li>
+          <li><code>x-api-key</code></li>
+          <li><code>content-type</code></li>
+          <li><code>accept</code></li>
+        </ul>
+        <p>
+          <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture only
+          contains the match criteria (derived from the last user message) and the response content.
+        </p>
+
+        <h2>Strict Mode</h2>
+        <p>
+          When <code>--strict</code> is enabled, unmatched requests that cannot be proxied (no
+          upstream configured for that provider) return <strong>503 Service Unavailable</strong>
+          instead of the default 404. This is useful for CI environments where you want to catch
+          unexpected API calls.
+        </p>
+
+        <h2>Fixture Auto-Generation</h2>
+        <p>Recorded fixtures are saved to disk with timestamped filenames:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recorded fixture file <span class="lang-tag">json</span>
+          </div>
+          <pre><code><span class="cmt">// fixtures/recorded/openai-2025-01-15T10-30-00-000Z-0.json</span>
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "What is the weather?" },
+      "response": { "content": "I don't have real-time weather data..." }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <p>
+          Match criteria are derived from the original request: the last user message becomes
+          <code>userMessage</code>, or for embedding requests, the input becomes
+          <code>inputText</code>. If no match criteria can be derived (e.g., empty messages), the
+          fixture is saved to disk with a warning but not registered in memory.
+        </p>
+
+        <h2>Fixture Lifecycle</h2>
+        <ul>
+          <li>
+            <strong>On disk:</strong> Fixtures persist in the configured
+            <code>fixturePath</code> directory (default: <code>./fixtures/recorded</code>)
+          </li>
+          <li>
+            <strong>In memory:</strong> Recorded fixtures are immediately available for matching
+            subsequent requests in the same session
+          </li>
+          <li>
+            <strong>After restart:</strong> Load the recorded fixture directory to replay previous
+            recordings
+          </li>
+        </ul>
+        <h2>Local Development Workflow</h2>
+        <p>
+          Record once against real APIs, then replay from fixtures for fast, offline development.
+        </p>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Record then replay <span class="lang-tag">shell</span>
+              </div>
+              <pre><code># First run: record real API responses
+$ npx aimock --record --provider-openai https://api.openai.com -f ./fixtures
+
+# Subsequent runs: replay from recorded fixtures
+$ npx aimock -f ./fixtures</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Record then replay <span class="lang-tag">shell</span>
+              </div>
+              <pre><code># First run: record real API responses
+$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock --record --provider-openai https://api.openai.com -f /fixtures
+
+# Subsequent runs: replay from recorded fixtures
+$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock -f /fixtures</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h2>CI Pipeline Workflow</h2>
+        <p>
+          Use the Docker image in CI with <code>--strict</code> mode to ensure every request matches
+          a recorded fixture. No API keys needed, no flaky network calls.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            GitHub Actions example <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code>- name: Start aimock
+  run: |
+    docker run -d --name aimock \
+      -v ./fixtures:/fixtures \
+      -p 4010:4010 \
+      ghcr.io/copilotkit/aimock \
+      npx aimock --strict -f /fixtures
+
+- name: Run tests
+  env:
+    OPENAI_BASE_URL: http://localhost:4010/v1
+  run: pnpm test
+
+- name: Stop aimock
+  run: docker stop aimock</code></pre>
+        </div>
+
+        <h2>Request Transform</h2>
+        <p>
+          Prompts often contain dynamic data &mdash; timestamps, UUIDs, session IDs &mdash; that
+          changes between runs. This causes fixture mismatches on replay because the recorded key no
+          longer matches the live request. The <code>requestTransform</code> option normalizes
+          requests before both matching and recording, stripping out the volatile parts.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Strip timestamps before matching <span class="lang-tag">ts</span>
+          </div>
+          <pre><code>import { LLMock } from "@copilotkit/aimock";
+
+const mock = new LLMock({
+  requestTransform: (req) => ({
+    ...req,
+    messages: req.messages.map((m) => ({
+      ...m,
+      content:
+        typeof m.content === "string"
+          ? m.content.replace(/\d{4}-\d{2}-\d{2}T[\d:.+Z-]+/g, "")
+          : m.content,
+    })),
+  }),
+});
+
+// Fixture uses the cleaned key (no timestamp)
+mock.onMessage("tell me the weather ", { content: "Sunny" });
+
+// Request with a timestamp still matches after transform
+await mock.start();</code></pre>
+        </div>
+
+        <p>
+          When <code>requestTransform</code> is set, string matching for
+          <code>userMessage</code> and <code>inputText</code> switches from substring
+          (<code>includes</code>) to exact equality (<code>===</code>). This prevents shortened keys
+          from accidentally matching unrelated prompts. Without a transform, the existing
+          <code>includes</code> behavior is preserved for backward compatibility.
+        </p>
+
+        <p>
+          The transform is applied in both directions: <strong>recording</strong> saves the
+          transformed match key (no timestamps in the fixture file), and
+          <strong>matching</strong> transforms the incoming request before comparison. This means
+          recorded fixtures and live requests always use the same normalized key.
+        </p>
+
+        <h2>Building Fixture Sets</h2>
+        <p>A practical workflow for building and maintaining fixture sets:</p>
+        <ol>
+          <li>Run with <code>--record</code> against real APIs during development</li>
+          <li>Review recorded fixtures in <code>fixtures/recorded/</code></li>
+          <li>Move and rename to organized fixture directories</li>
+          <li>Switch to <code>--strict</code> mode in CI</li>
+          <li>Re-record when upstream APIs change (drift detection catches this)</li>
+        </ol>
+
+        <h2>Cross-Language Testing</h2>
+        <p>
+          The Docker image serves any language that speaks HTTP. Point your client at the mock
+          server's URL instead of the real API.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Any language, one server <span class="lang-tag">bash</span>
+          </div>
+          <pre><code># Docker image serves all languages
+docker run -d -p 4010:4010 ghcr.io/copilotkit/aimock npx aimock -f /fixtures
+
+# Python
+import openai
+client = openai.OpenAI(base_url="http://localhost:4010/v1", api_key="mock")
+
+# Go
+client := openai.NewClient(option.WithBaseURL("http://localhost:4010/v1"))
+
+# Rust
+let client = Client::new().with_base_url("http://localhost:4010/v1");</code></pre>
+        </div>
+      </main>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="sidebar.js"></script>
+    <script src="cli-tabs.js"></script>
+  </body>
+</html>
