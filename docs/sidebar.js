@@ -5,90 +5,91 @@
     {
       title: "Getting Started",
       links: [
-        { label: "Overview", href: "docs.html" },
-        { label: "Record & Replay", href: "record-replay.html" },
-        { label: "Quick Start: LLM", href: "chat-completions.html" },
-        { label: "Quick Start: aimock", href: "aimock-cli.html" },
+        { label: "Overview", href: "/docs" },
+        { label: "Record & Replay", href: "/record-replay" },
+        { label: "Quick Start: LLM", href: "/chat-completions" },
+        { label: "Quick Start: aimock", href: "/aimock-cli" },
       ],
     },
     {
       title: "LLM Providers",
       links: [
-        { label: "Chat Completions (OpenAI)", href: "chat-completions.html" },
-        { label: "Responses API (OpenAI)", href: "responses-api.html" },
-        { label: "Claude Messages", href: "claude-messages.html" },
-        { label: "Gemini", href: "gemini.html" },
-        { label: "Azure OpenAI", href: "azure-openai.html" },
-        { label: "AWS Bedrock", href: "aws-bedrock.html" },
-        { label: "Ollama", href: "ollama.html" },
-        { label: "Cohere", href: "cohere.html" },
-        { label: "Vertex AI", href: "vertex-ai.html" },
-        { label: "Compatible Providers", href: "compatible-providers.html" },
+        { label: "Chat Completions (OpenAI)", href: "/chat-completions" },
+        { label: "Responses API (OpenAI)", href: "/responses-api" },
+        { label: "Claude Messages", href: "/claude-messages" },
+        { label: "Gemini", href: "/gemini" },
+        { label: "Azure OpenAI", href: "/azure-openai" },
+        { label: "AWS Bedrock", href: "/aws-bedrock" },
+        { label: "Ollama", href: "/ollama" },
+        { label: "Cohere", href: "/cohere" },
+        { label: "Vertex AI", href: "/vertex-ai" },
+        { label: "Compatible Providers", href: "/compatible-providers" },
       ],
     },
     {
       title: "LLM Features",
       links: [
-        { label: "Embeddings", href: "embeddings.html" },
-        { label: "Structured Output", href: "structured-output.html" },
-        { label: "Sequential Responses", href: "sequential-responses.html" },
-        { label: "Fixtures", href: "fixtures.html" },
-        { label: "Error Injection", href: "error-injection.html" },
-        { label: "Chaos Testing", href: "chaos-testing.html" },
-        { label: "Streaming Physics", href: "streaming-physics.html" },
-        { label: "WebSocket APIs", href: "websocket.html" },
-        { label: "Prometheus Metrics", href: "metrics.html" },
-        { label: "Mount & Composition", href: "mount.html" },
+        { label: "Embeddings", href: "/embeddings" },
+        { label: "Structured Output", href: "/structured-output" },
+        { label: "Sequential Responses", href: "/sequential-responses" },
+        { label: "Fixtures", href: "/fixtures" },
+        { label: "Error Injection", href: "/error-injection" },
+        { label: "Chaos Testing", href: "/chaos-testing" },
+        { label: "Streaming Physics", href: "/streaming-physics" },
+        { label: "WebSocket APIs", href: "/websocket" },
+        { label: "Prometheus Metrics", href: "/metrics" },
+        { label: "Mount & Composition", href: "/mount" },
       ],
     },
     {
       title: "Additional Mocks",
       links: [
-        { label: "MCPMock", href: "mcp-mock.html" },
-        { label: "A2AMock", href: "a2a-mock.html" },
-        { label: "VectorMock", href: "vector-mock.html" },
-        { label: "Services", href: "services.html" },
+        { label: "MCPMock", href: "/mcp-mock" },
+        { label: "A2AMock", href: "/a2a-mock" },
+        { label: "VectorMock", href: "/vector-mock" },
+        { label: "Services", href: "/services" },
       ],
     },
     {
       title: "Orchestration",
       links: [
-        { label: "aimock CLI & Config", href: "aimock-cli.html" },
-        { label: "Docker & Helm", href: "docker.html" },
-        { label: "Drift Detection", href: "drift-detection.html" },
+        { label: "aimock CLI & Config", href: "/aimock-cli" },
+        { label: "Docker & Helm", href: "/docker" },
+        { label: "Drift Detection", href: "/drift-detection" },
       ],
     },
     {
       title: "Switching to aimock",
       links: [
-        { label: "From MSW", href: "migrate-from-msw.html" },
-        { label: "From VidaiMock", href: "migrate-from-vidaimock.html" },
-        { label: "From mock-llm", href: "migrate-from-mock-llm.html" },
-        { label: "From piyook/llm-mock", href: "migrate-from-piyook.html" },
-        { label: "From Python Mocks", href: "migrate-from-python-mocks.html" },
-        { label: "From Mokksy", href: "migrate-from-mokksy.html" },
+        { label: "From MSW", href: "/migrate-from-msw" },
+        { label: "From VidaiMock", href: "/migrate-from-vidaimock" },
+        { label: "From mock-llm", href: "/migrate-from-mock-llm" },
+        { label: "From piyook/llm-mock", href: "/migrate-from-piyook" },
+        { label: "From Python Mocks", href: "/migrate-from-python-mocks" },
+        { label: "From Mokksy", href: "/migrate-from-mokksy" },
       ],
     },
   ];
 
   // ─── Section Bar Items ──────────────────────────────────────────
   var sectionBarItems = [
-    { icon: "&#128225;", label: "LLM Mocking", color: "pill-green", href: "chat-completions.html" },
-    { icon: "&#128268;", label: "MCP Protocol", color: "pill-blue", href: "mcp-mock.html" },
-    { icon: "&#129309;", label: "A2A Protocol", color: "pill-purple", href: "a2a-mock.html" },
-    { icon: "&#128230;", label: "Vector DBs", color: "pill-amber", href: "vector-mock.html" },
-    { icon: "&#128269;", label: "Search &amp; Rerank", color: "pill-red", href: "services.html" },
+    { icon: "&#128225;", label: "LLM Mocking", color: "pill-green", href: "/chat-completions" },
+    { icon: "&#128268;", label: "MCP Protocol", color: "pill-blue", href: "/mcp-mock" },
+    { icon: "&#129309;", label: "A2A Protocol", color: "pill-purple", href: "/a2a-mock" },
+    { icon: "&#128230;", label: "Vector DBs", color: "pill-amber", href: "/vector-mock" },
+    { icon: "&#128269;", label: "Search &amp; Rerank", color: "pill-red", href: "/services" },
     {
       icon: "&#9881;",
       label: "Chaos &amp; DevOps",
       color: "pill-gray",
-      href: "chaos-testing.html",
+      href: "/chaos-testing",
     },
   ];
 
   // ─── Detect current page ────────────────────────────────────────
-  var currentPage = window.location.pathname.split("/").pop() || "index.html";
-  if (currentPage === "" || currentPage === "/") currentPage = "index.html";
+  var pathParts = window.location.pathname.replace(/\/index\.html$/, "/").replace(/\/$/, "").split("/");
+  var currentPage = "/" + (pathParts[pathParts.length - 1] || "");
+  if (currentPage === "/") currentPage = "index.html";
 
   // ─── Build Sidebar HTML ─────────────────────────────────────────
   function buildSidebar() {
