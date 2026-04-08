@@ -3,7 +3,8 @@
  *
  * Each function takes a raw streaming response body (SSE, NDJSON, or binary
  * EventStream) and collapses it into a non-streaming fixture response
- * containing either `{ content }` or `{ toolCalls }`.
+ * containing `{ content }`, `{ toolCalls }`, or both when the stream includes
+ * text followed by tool calls.
  */
 
 import { crc32 } from "node:zlib";
@@ -140,6 +141,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
   if (toolCallMap.size > 0) {
     const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
     return {
+      ...(content ? { content } : {}),
       toolCalls: sorted.map(([, tc]) => ({
         name: tc.name,
         arguments: tc.arguments,
@@ -229,6 +231,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   if (toolCallMap.size > 0) {
     const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
     return {
+      ...(content ? { content } : {}),
       toolCalls: sorted.map(([, tc]) => ({
         name: tc.name,
         arguments: tc.arguments,
@@ -260,6 +263,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
   const lines = body.split("\n\n").filter((l) => l.trim().length > 0);
   let content = "";
   let droppedChunks = 0;
+  const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
     const dataLine = line.split("\n").find((l) => l.startsWith("data:"));
@@ -284,32 +288,25 @@ export function collapseGeminiSSE(body: string): CollapseResult {
     const parts = candidateContent.parts as Array<Record<string, unknown>> | undefined;
     if (!parts || parts.length === 0) continue;
 
-    // Handle functionCall parts
-    const fnCallParts = parts.filter((p) => p.functionCall);
-    if (fnCallParts.length > 0) {
-      const toolCallMap = new Map<number, { name: string; arguments: string }>();
-      for (let i = 0; i < fnCallParts.length; i++) {
-        const fc = fnCallParts[i].functionCall as Record<string, unknown>;
-        toolCallMap.set(i, {
+    for (const part of parts) {
+      if (part.functionCall) {
+        const fc = part.functionCall as Record<string, unknown>;
+        toolCalls.push({
           name: String(fc.name ?? ""),
           arguments: typeof fc.args === "string" ? (fc.args as string) : JSON.stringify(fc.args),
         });
-      }
-      if (toolCallMap.size > 0) {
-        const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
-        return {
-          toolCalls: sorted.map(([, tc]) => ({
-            name: tc.name,
-            arguments: tc.arguments,
-          })),
-          ...(droppedChunks > 0 ? { droppedChunks } : {}),
-        };
+      } else if (typeof part.text === "string") {
+        content += part.text;
       }
     }
+  }
 
-    if (typeof parts[0].text === "string") {
-      content += parts[0].text;
-    }
+  if (toolCalls.length > 0) {
+    return {
+      ...(content ? { content } : {}),
+      toolCalls,
+      ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    };
   }
 
   return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
@@ -372,7 +369,11 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
   }
 
   if (toolCalls.length > 0) {
-    return { toolCalls, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
+    return {
+      ...(content ? { content } : {}),
+      toolCalls,
+      ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    };
   }
 
   return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
