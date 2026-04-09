@@ -220,6 +220,7 @@ body::before {
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--border);
+  scroll-margin-top: 80px;
 }
 
 .docs-content h3 {
@@ -227,6 +228,7 @@ body::before {
   font-weight: 600;
   margin-top: 2rem;
   margin-bottom: 0.75rem;
+  scroll-margin-top: 80px;
 }
 
 .docs-content p {
@@ -541,6 +543,63 @@ body::before {
   font-size: 1.25rem;
   cursor: pointer;
   padding: 0.25rem;
+}
+
+/* ─── Page TOC (right sidebar) ───────────────────────────────── */
+.page-toc {
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  width: 220px;
+  flex-shrink: 0;
+  padding: 1rem 0;
+  font-size: 0.78rem;
+}
+
+.page-toc-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  padding: 0 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.page-toc a {
+  display: block;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.page-toc a:hover {
+  color: var(--text-primary);
+  background: var(--bg-card);
+  text-decoration: none;
+}
+
+.page-toc a.active {
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.page-toc a.toc-h3 {
+  padding-left: 1.25rem;
+  font-size: 0.74rem;
+}
+
+@media (max-width: 1200px) {
+  .page-toc {
+    display: none;
+  }
 }
 
 /* ─── Responsive ─────────────────────────────────────────────── */
