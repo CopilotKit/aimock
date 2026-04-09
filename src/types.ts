@@ -265,6 +265,8 @@ export type RecordProviderKey =
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
   fixturePath?: string;
+  /** Proxy unmatched requests without saving fixtures or caching in memory. */
+  proxyOnly?: boolean;
 }
 
 export interface MockServerOptions {

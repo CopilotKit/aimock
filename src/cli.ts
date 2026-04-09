@@ -21,7 +21,8 @@ Options:
       --log-level <level>   Log verbosity: silent, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
       --metrics             Enable Prometheus metrics at GET /metrics
-      --record              Record mode: proxy unmatched requests to real APIs
+      --record              Record mode: proxy unmatched requests and save fixtures
+      --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
       --provider-anthropic <url>  Upstream URL for Anthropic
@@ -49,6 +50,7 @@ const { values } = parseArgs({
     "validate-on-load": { type: "boolean", default: false },
     metrics: { type: "boolean", default: false },
     record: { type: "boolean", default: false },
+    "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "provider-openai": { type: "string" },
     "provider-anthropic": { type: "string" },
@@ -139,9 +141,9 @@ let chaos: ChaosConfig | undefined;
   }
 }
 
-// Parse record config from CLI flags
+// Parse record/proxy config from CLI flags
 let record: RecordConfig | undefined;
-if (values.record) {
+if (values.record || values["proxy-only"]) {
   const providers: RecordConfig["providers"] = {};
   if (values["provider-openai"]) providers.openai = values["provider-openai"];
   if (values["provider-anthropic"]) providers.anthropic = values["provider-anthropic"];
@@ -153,11 +155,17 @@ if (values.record) {
   if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
 
   if (Object.keys(providers).length === 0) {
-    console.error("Error: --record requires at least one --provider-* flag");
+    console.error(
+      `Error: --${values["proxy-only"] ? "proxy-only" : "record"} requires at least one --provider-* flag`,
+    );
     process.exit(1);
   }
 
-  record = { providers, fixturePath: resolve(fixturePath, "recorded") };
+  record = {
+    providers,
+    fixturePath: resolve(fixturePath, "recorded"),
+    proxyOnly: values["proxy-only"],
+  };
 }
 
 async function main() {

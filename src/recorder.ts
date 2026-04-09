@@ -190,45 +190,50 @@ export async function proxyAndRecord(
     );
   }
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
-  const filepath = path.join(fixturePath, filename);
+  // In proxy-only mode, skip recording to disk and in-memory caching
+  if (!defaults.record?.proxyOnly) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
+    const filepath = path.join(fixturePath, filename);
 
-  let writtenToDisk = false;
-  try {
-    // Ensure fixture directory exists
-    fs.mkdirSync(fixturePath, { recursive: true });
+    let writtenToDisk = false;
+    try {
+      // Ensure fixture directory exists
+      fs.mkdirSync(fixturePath, { recursive: true });
 
-    // Collect warnings for the fixture file
-    const warnings: string[] = [];
-    if (isEmptyMatch) {
-      warnings.push("Empty match criteria — this fixture will not match any request");
-    }
-    if (collapsed?.truncated) {
-      warnings.push("Stream response was truncated — fixture may be incomplete");
+      // Collect warnings for the fixture file
+      const warnings: string[] = [];
+      if (isEmptyMatch) {
+        warnings.push("Empty match criteria — this fixture will not match any request");
+      }
+      if (collapsed?.truncated) {
+        warnings.push("Stream response was truncated — fixture may be incomplete");
+      }
+
+      // Auth headers are forwarded to upstream but excluded from saved fixtures for security
+      const fileContent: Record<string, unknown> = { fixtures: [fixture] };
+      if (warnings.length > 0) {
+        fileContent._warning = warnings.join("; ");
+      }
+      fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
+      writtenToDisk = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+      defaults.logger.error(`Failed to save fixture to disk: ${msg}`);
+      res.setHeader("X-LLMock-Record-Error", msg);
     }
 
-    // Auth headers are forwarded to upstream but excluded from saved fixtures for security
-    const fileContent: Record<string, unknown> = { fixtures: [fixture] };
-    if (warnings.length > 0) {
-      fileContent._warning = warnings.join("; ");
+    if (writtenToDisk) {
+      // Register in memory so subsequent identical requests match (skip if empty match)
+      if (!isEmptyMatch) {
+        fixtures.push(fixture);
+      }
+      defaults.logger.warn(`Response recorded → ${filepath}`);
+    } else {
+      defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
     }
-    fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
-    writtenToDisk = true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown filesystem error";
-    defaults.logger.error(`Failed to save fixture to disk: ${msg}`);
-    res.setHeader("X-LLMock-Record-Error", msg);
-  }
-
-  if (writtenToDisk) {
-    // Register in memory so subsequent identical requests match (skip if empty match)
-    if (!isEmptyMatch) {
-      fixtures.push(fixture);
-    }
-    defaults.logger.warn(`Response recorded → ${filepath}`);
   } else {
-    defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
+    defaults.logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
   }
 
   // Relay upstream response to client
