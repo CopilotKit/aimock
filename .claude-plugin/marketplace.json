@@ -9,7 +9,7 @@
       "source": {
         "source": "npm",
         "package": "@copilotkit/aimock",
-        "version": "^1.9.0"
+        "version": "^1.10.0"
       },
       "description": "Fixture authoring skill for @copilotkit/aimock — match fields, response types, embeddings, structured output, sequential responses, streaming physics, agent loop patterns, gotchas, and debugging"
     }

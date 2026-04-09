@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## 1.10.0
+
+### Minor Changes
+
+- Add `--proxy-only` flag — proxy unmatched requests to upstream providers without saving fixtures to disk or caching in memory. Every unmatched request always hits the real provider, preventing stale recorded responses in demo/live environments (#99)
+
 ## 1.9.0
 
 ### Minor Changes
