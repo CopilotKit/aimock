@@ -1,6 +1,6 @@
 {
   "name": "llmock",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Fixture authoring guidance for @copilotkit/aimock",
   "author": {
     "name": "CopilotKit"

@@ -1,5 +1,15 @@
 # @copilotkit/aimock
 
+## 1.11.0
+
+### Minor Changes
+
+- Add `AGUIMock` — mock the AG-UI (Agent-to-UI) protocol for CopilotKit frontend testing. All 33 event types, 11 convenience builders, fluent registration API, SSE streaming with disconnect handling (#100)
+- Add AG-UI record & replay with tee streaming — proxy to real AG-UI agents, record event streams as fixtures, replay on subsequent requests. Includes `--proxy-only` mode for demos (#100)
+- Add AG-UI schema drift detection — compares aimock event types against canonical `@ag-ui/core` Zod schemas to catch protocol changes (#100)
+- Add `--agui-record`, `--agui-upstream`, `--agui-proxy-only` CLI flags (#100)
+- Remove section bar from docs pages (cleanup)
+
 ## 1.10.0
 
 ### Minor Changes
