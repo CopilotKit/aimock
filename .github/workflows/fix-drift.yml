@@ -115,8 +115,21 @@ jobs:
 
       # Step 5: Create PR on success
       - name: Create PR
+        id: pr
         if: success() && steps.check.outputs.skip != 'true'
-        run: npx tsx scripts/fix-drift.ts --create-pr
+        run: |
+          npx tsx scripts/fix-drift.ts --create-pr 2>&1 | tee /tmp/pr-output.txt
+          PR_URL=$(grep -oP 'https://github.com/[^ ]+/pull/\d+' /tmp/pr-output.txt | head -1)
+          echo "url=$PR_URL" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 5.5: Auto-merge the drift fix PR
+      - name: Auto-merge PR
+        if: success() && steps.pr.outputs.url != ''
+        run: |
+          PR_URL="${{ steps.pr.outputs.url }}"
+          gh pr merge "$PR_URL" --merge --admin
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -126,3 +139,21 @@ jobs:
         run: npx tsx scripts/fix-drift.ts --create-issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 7: Slack notification on successful fix
+      - name: Notify Slack on fix success
+        if: success() && steps.pr.outputs.url != ''
+        run: |
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"✅ *Drift auto-fixed and merged*\nPR: ${{ steps.pr.outputs.url }}\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+
+      # Step 8: Slack notification on fix failure
+      - name: Notify Slack on fix failure
+        if: failure() && steps.check.outputs.skip != 'true'
+        run: |
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"❌ *Drift auto-fix failed* — issue created\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
