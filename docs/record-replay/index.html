@@ -70,6 +70,72 @@
           <li>Subsequent identical requests match the newly recorded fixture</li>
         </ol>
 
+        <h2>Proxy-Only Mode</h2>
+        <p>
+          Use <code>--proxy-only</code> instead of <code>--record</code> when you want unmatched
+          requests to always reach the real provider &mdash; no fixture files are written to disk
+          and no responses are cached in memory. Matched fixtures still work normally.
+        </p>
+        <p>
+          This is ideal for <strong>demos and live environments</strong> where you have canned
+          fixtures for repeatable demo scenarios you want to show off, but also want regular
+          interactions to work normally by proxying to the real provider. Without
+          <code>--proxy-only</code>, the first real API call would get recorded and cached, and
+          subsequent identical requests would get the stale recorded response instead of hitting the
+          live provider.
+        </p>
+
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Proxy-only mode <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx aimock --fixtures ./fixtures \
+  --proxy-only \
+  --provider-openai https://api.openai.com</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block">
+              <div class="code-block-header">
+                Proxy-only mode <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v ./fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  npx aimock -f /fixtures \
+  --proxy-only \
+  --provider-openai https://api.openai.com</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th>Unmatched request</th>
+              <th>Writes to disk</th>
+              <th>Caches in memory</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>--record</code></td>
+              <td>Proxy &rarr; save &rarr; replay next time</td>
+              <td>Yes</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>--proxy-only</code></td>
+              <td>Proxy &rarr; relay &rarr; proxy again next time</td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+          </tbody>
+        </table>
+
         <h2>Quick Start</h2>
 
         <div class="cli-docker-tabs">
@@ -107,7 +173,11 @@
           <tbody>
             <tr>
               <td><code>--record</code></td>
-              <td>Enable record mode (proxy-on-miss)</td>
+              <td>Enable record mode (proxy, save, and cache on miss)</td>
+            </tr>
+            <tr>
+              <td><code>--proxy-only</code></td>
+              <td>Proxy mode (forward on miss, no saving or caching)</td>
             </tr>
             <tr>
               <td><code>--strict</code></td>
@@ -166,6 +236,7 @@
     <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
   },
   <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+  <span class="prop">proxyOnly</span>: <span class="kw">true</span>,  <span class="cmt">// omit to record fixtures</span>
 });
 
 <span class="cmt">// Make requests — unmatched ones are proxied and recorded</span>
