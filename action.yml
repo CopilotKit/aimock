@@ -1,4 +1,4 @@
-name: "aimock"
+name: "Setup aimock"
 description: "Start an aimock server for AI application testing — LLM APIs, MCP, A2A, AG-UI, vector DBs"
 branding:
   icon: "server"
