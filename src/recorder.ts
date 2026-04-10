@@ -134,7 +134,21 @@ export async function proxyAndRecord(
 
   let fixtureResponse: FixtureResponse;
 
-  if (collapsed) {
+  // TTS response — binary audio, not JSON
+  const isAudioResponse = ctString.toLowerCase().startsWith("audio/");
+  if (isAudioResponse && rawBuffer.length > 0) {
+    // Derive format from Content-Type (audio/mpeg→mp3, audio/opus→opus, etc.)
+    const audioFormat = ctString
+      .toLowerCase()
+      .replace("audio/", "")
+      .replace("mpeg", "mp3")
+      .split(";")[0]
+      .trim();
+    fixtureResponse = {
+      audio: rawBuffer.toString("base64"),
+      ...(audioFormat && audioFormat !== "mp3" ? { format: audioFormat } : {}),
+    };
+  } else if (collapsed) {
     // Streaming response — use collapsed result
     defaults.logger.warn(`Streaming response detected (${ctString}) — collapsing to fixture`);
     if (collapsed.truncated) {
@@ -348,6 +362,69 @@ function buildFixtureResponse(
         // Corrupted base64 or non-float32 data — fall through to error
       }
     }
+    // OpenAI image generation: { created, data: [{ url, b64_json, revised_prompt }] }
+    if (first.url || first.b64_json) {
+      const images = (obj.data as Array<Record<string, unknown>>).map((item) => ({
+        ...(item.url ? { url: String(item.url) } : {}),
+        ...(item.b64_json ? { b64Json: String(item.b64_json) } : {}),
+        ...(item.revised_prompt ? { revisedPrompt: String(item.revised_prompt) } : {}),
+      }));
+      if (images.length === 1) {
+        return { image: images[0] };
+      }
+      return { images };
+    }
+  }
+
+  // Gemini Imagen: { predictions: [...] }
+  if (Array.isArray(obj.predictions)) {
+    const images = (obj.predictions as Array<Record<string, unknown>>).map((p) => ({
+      ...(p.bytesBase64Encoded ? { b64Json: String(p.bytesBase64Encoded) } : {}),
+      ...(p.mimeType ? { mimeType: String(p.mimeType) } : {}),
+    }));
+    if (images.length === 1) {
+      return { image: images[0] };
+    }
+    return { images };
+  }
+
+  // OpenAI transcription: { text: "...", ... }
+  if (
+    typeof obj.text === "string" &&
+    (obj.task === "transcribe" || obj.language !== undefined || obj.duration !== undefined)
+  ) {
+    return {
+      transcription: {
+        text: obj.text as string,
+        ...(obj.language ? { language: String(obj.language) } : {}),
+        ...(obj.duration !== undefined ? { duration: Number(obj.duration) } : {}),
+        ...(Array.isArray(obj.words) ? { words: obj.words } : {}),
+        ...(Array.isArray(obj.segments) ? { segments: obj.segments } : {}),
+      },
+    };
+  }
+
+  // OpenAI video generation: { id, status, ... }
+  if (
+    typeof obj.id === "string" &&
+    typeof obj.status === "string" &&
+    (obj.status === "completed" || obj.status === "in_progress" || obj.status === "failed")
+  ) {
+    if (obj.status === "completed" && obj.url) {
+      return {
+        video: {
+          id: String(obj.id),
+          status: "completed" as const,
+          url: String(obj.url),
+        },
+      };
+    }
+    return {
+      video: {
+        id: String(obj.id),
+        status: obj.status === "failed" ? ("failed" as const) : ("processing" as const),
+      },
+    };
   }
 
   // Direct embedding: { embedding: [...] }
@@ -491,23 +568,34 @@ function buildFixtureResponse(
 /**
  * Derive fixture match criteria from the original request.
  */
+type EndpointType = "chat" | "image" | "speech" | "transcription" | "video" | "embedding";
+
 function buildFixtureMatch(request: ChatCompletionRequest): {
   userMessage?: string;
   inputText?: string;
+  endpoint?: EndpointType;
 } {
-  // Embedding request
-  if (request.embeddingInput) {
-    return { inputText: request.embeddingInput };
+  const match: { userMessage?: string; inputText?: string; endpoint?: EndpointType } = {};
+
+  // Include endpoint type for multimedia fixtures
+  if (request._endpointType && request._endpointType !== "chat") {
+    match.endpoint = request._endpointType as EndpointType;
   }
 
-  // Chat request — match on the last user message
+  // Embedding request
+  if (request.embeddingInput) {
+    match.inputText = request.embeddingInput;
+    return match;
+  }
+
+  // Chat/multimedia request — match on the last user message
   const lastUser = getLastMessageByRole(request.messages ?? [], "user");
   if (lastUser) {
     const text = getTextContent(lastUser.content);
     if (text) {
-      return { userMessage: text };
+      match.userMessage = text;
     }
   }
 
-  return {};
+  return match;
 }
