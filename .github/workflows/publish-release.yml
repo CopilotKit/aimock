@@ -66,6 +66,13 @@ jobs:
             git push origin "${TAG}"
           fi
 
+      - name: Update major version tag for GitHub Action
+        if: steps.check.outputs.published == 'false'
+        run: |
+          MAJOR="v$(echo "${{ steps.check.outputs.version }}" | cut -d. -f1)"
+          git tag -f "${MAJOR}"
+          git push origin "${MAJOR}" --force
+
       - name: Create GitHub Release
         if: steps.check.outputs.published == 'false'
         run: |
