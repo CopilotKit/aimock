@@ -74,12 +74,12 @@ The embedding vector is returned for each input in the request. If no embedding 
 // Single image
 {
   image: {
-    url: "https://example.com/generated.png";
+    url: "https://example.com/generated.png"
   }
 }
 // Multiple images
 {
-  images: [{ url: "https://example.com/1.png" }, { b64Json: "iVBOR..." }];
+  images: [{ url: "https://example.com/1.png" }, { b64Json: "iVBOR..." }]
 }
 ```
 
