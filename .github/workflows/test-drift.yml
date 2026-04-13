@@ -67,19 +67,41 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Check previous run status
+        id: prev
+        if: always()
+        run: |
+          PREV=$(gh run list --workflow="Drift Tests" --branch=main --limit=2 --json conclusion --jq '.[1].conclusion // "unknown"')
+          echo "conclusion=$PREV" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Notify Slack
         if: always()
         run: |
-          if [ "${{ steps.drift.outputs.exit_code }}" = "2" ]; then
+          if [ -z "${{ secrets.SLACK_WEBHOOK }}" ]; then exit 0; fi
+
+          PREV="${{ steps.prev.outputs.conclusion }}"
+          NOW="${{ job.status }}"
+          DRIFT="${{ steps.drift.outputs.exit_code }}"
+
+          # Drift detected — always notify
+          if [ "$DRIFT" = "2" ]; then
             EMOJI="🚨"
             MSG="*Drift detected* in aimock — providers changed response formats. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
-          elif [ "${{ job.status }}" = "success" ]; then
-            EMOJI="✅"
-            MSG="Drift tests passed — all providers match."
-          else
+          # Infra failure — always notify
+          elif [ "$NOW" != "success" ]; then
             EMOJI="❌"
             MSG="*Drift tests failed* (infra error). <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
+          # Recovery: previous was bad, now good — notify once
+          elif [ "$PREV" = "failure" ]; then
+            EMOJI="✅"
+            MSG="Drift tests passing again — all providers match."
+          # Good → good — stay quiet
+          else
+            exit 0
           fi
+
           curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
             -H "Content-Type: application/json" \
             -d "{\"text\": \"${EMOJI} ${MSG}\"}"
