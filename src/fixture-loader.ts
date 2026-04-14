@@ -18,6 +18,7 @@ export function entryToFixture(entry: FixtureFileEntry): Fixture {
       toolName: entry.match.toolName,
       model: entry.match.model,
       responseFormat: entry.match.responseFormat,
+      endpoint: entry.match.endpoint,
       ...(entry.match.sequenceIndex !== undefined && { sequenceIndex: entry.match.sequenceIndex }),
     },
     response: entry.response,
@@ -371,6 +372,7 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
     // Catch-all not in last position
     const match = f.match;
     const hasDiscriminator =
+      match.endpoint !== undefined ||
       match.userMessage !== undefined ||
       match.inputText !== undefined ||
       match.responseFormat !== undefined ||

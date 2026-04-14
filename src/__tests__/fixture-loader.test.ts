@@ -99,6 +99,35 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].match.userMessage).toBe("hello world");
   });
 
+  it("copies endpoint match field from JSON", () => {
+    const filePath = writeJson(tmpDir, "endpoint.json", {
+      fixtures: [
+        {
+          match: { inputText: "hello world", endpoint: "embedding" },
+          response: { embedding: [0.1, -0.2, 0.3] },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].match.endpoint).toBe("embedding");
+  });
+
+  it("leaves match.endpoint undefined when not present in JSON", () => {
+    const filePath = writeJson(tmpDir, "no-endpoint.json", {
+      fixtures: [
+        {
+          match: { userMessage: "hello" },
+          response: { content: "Hi!" },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures[0].match.endpoint).toBeUndefined();
+  });
+
   it("loads inputText match field from JSON", () => {
     const filePath = writeJson(tmpDir, "embed.json", {
       fixtures: [
