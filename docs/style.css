@@ -197,12 +197,15 @@ body::before {
 
 /* ─── Main Content ────────────────────────────────────────────── */
 .docs-content {
-  margin-left: var(--sidebar-width);
   flex: 1;
   padding: 3rem 4rem;
   max-width: 960px;
+  min-width: 0;
   margin-right: auto;
-  margin-left: calc(var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 960px) / 2));
+  margin-left: calc(
+    var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 220px - 960px) / 2)
+  );
+  overflow-wrap: break-word;
 }
 
 .docs-content h1 {
@@ -500,7 +503,9 @@ body::before {
 
 /* ─── Footer ─────────────────────────────────────────────────── */
 .docs-footer {
-  margin-left: calc(var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 960px) / 2));
+  margin-left: calc(
+    var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 220px - 960px) / 2)
+  );
   margin-right: auto;
   padding: 3rem 4rem;
   max-width: 960px;
@@ -599,6 +604,12 @@ body::before {
 @media (max-width: 1200px) {
   .page-toc {
     display: none;
+  }
+  .docs-content {
+    margin-left: calc(var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 960px) / 2));
+  }
+  .docs-footer {
+    margin-left: calc(var(--sidebar-width) + max(0px, (100vw - var(--sidebar-width) - 960px) / 2));
   }
 }
 
