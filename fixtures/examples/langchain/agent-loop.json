@@ -1,0 +1,27 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 0 },
+      "response": {
+        "content": "I'll help plan your trip. Let me look up some options."
+      }
+    },
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 1 },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "search_flights",
+            "arguments": "{\"origin\":\"SFO\",\"dest\":\"NRT\"}"
+          }
+        ]
+      }
+    },
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 2 },
+      "response": {
+        "content": "I found 3 flights from SFO to Tokyo Narita. The best option is..."
+      }
+    }
+  ]
+}

@@ -88,9 +88,13 @@ npx aimock convert mockllm ./config.yaml ./fixtures/
 docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures
 ```
 
+## Framework Guides
+
+Test your AI agents with aimock — no API keys, no network calls: [LangChain](https://aimock.copilotkit.dev/integrate-langchain) · [CrewAI](https://aimock.copilotkit.dev/integrate-crewai) · [PydanticAI](https://aimock.copilotkit.dev/integrate-pydanticai) · [LlamaIndex](https://aimock.copilotkit.dev/integrate-llamaindex) · [Mastra](https://aimock.copilotkit.dev/integrate-mastra) · [Google ADK](https://aimock.copilotkit.dev/integrate-adk)
+
 ## Switching from other tools?
 
-Step-by-step migration guides: [MSW](https://aimock.copilotkit.dev/migrate-from-msw) · [VidaiMock](https://aimock.copilotkit.dev/migrate-from-vidaimock) · [mock-llm](https://aimock.copilotkit.dev/migrate-from-mock-llm) · [Python mocks](https://aimock.copilotkit.dev/migrate-from-python-mocks) · [Mokksy](https://aimock.copilotkit.dev/migrate-from-mokksy)
+Step-by-step migration guides: [MSW](https://aimock.copilotkit.dev/migrate-from-msw) · [VidaiMock](https://aimock.copilotkit.dev/migrate-from-vidaimock) · [mock-llm](https://aimock.copilotkit.dev/migrate-from-mock-llm) · [piyook/llm-mock](https://aimock.copilotkit.dev/migrate-from-piyook) · [Python mocks](https://aimock.copilotkit.dev/migrate-from-python-mocks) · [Mokksy](https://aimock.copilotkit.dev/migrate-from-mokksy)
 
 ## Documentation
 

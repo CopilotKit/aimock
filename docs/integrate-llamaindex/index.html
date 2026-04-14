@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LlamaIndex — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>LlamaIndex</h1>
+        <p class="lead">
+          Test your LlamaIndex RAG pipelines end-to-end. aimock mocks both the LLM and the vector
+          database &mdash; retriever and generator in one server.
+        </p>
+
+        <h2>Quick Start</h2>
+        <p>
+          Point the LlamaIndex OpenAI LLM at aimock instead of the real API. No code changes to your
+          RAG pipeline &mdash; just swap the base URL.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Python <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> llama_index.llms.openai <span class="kw">import</span> OpenAI
+
+<span class="cm"># Point at aimock instead of api.openai.com</span>
+llm = OpenAI(
+    api_base=<span class="str">"http://localhost:4010/v1"</span>,
+    api_key=<span class="str">"test"</span>,
+)
+
+<span class="cm"># Configure LlamaIndex to use aimock for both LLM and embeddings</span>
+<span class="kw">from</span> llama_index.core <span class="kw">import</span> Settings, VectorStoreIndex, SimpleDirectoryReader
+<span class="kw">from</span> llama_index.embeddings.openai <span class="kw">import</span> OpenAIEmbedding
+
+Settings.llm = llm
+Settings.embed_model = OpenAIEmbedding(api_base=<span class="str">"http://localhost:4010/v1"</span>, api_key=<span class="str">"test"</span>)
+
+documents = SimpleDirectoryReader(<span class="str">"data"</span>).load_data()
+index = VectorStoreIndex.from_documents(documents)
+query_engine = index.as_query_engine()
+response = query_engine.query(<span class="str">"What is gravity?"</span>)</code></pre>
+        </div>
+        <p>Start aimock with fixtures that match the queries your pipeline will send:</p>
+        <div class="code-block">
+          <div class="code-block-header">Terminal <span class="lang-tag">shell</span></div>
+          <pre><code>npx aimock --fixtures ./fixtures/llamaindex</code></pre>
+        </div>
+
+        <h2>Mock Both LLM and Vector DB</h2>
+        <p>
+          This is where aimock shines for RAG testing. A LlamaIndex RAG pipeline has two external
+          dependencies: the <strong>retriever</strong> (vector database) and the
+          <strong>generator</strong> (LLM). aimock serves both on one port, so a single server
+          replaces Pinecone/Qdrant <em>and</em> OpenAI/Anthropic.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/rag-pipeline.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"What is gravity?"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"Based on the retrieved documents, gravity is a fundamental force of nature that attracts objects with mass toward one another. It is described by Newton's law of universal gravitation and Einstein's general theory of relativity."</span>
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"inputText"</span>: <span class="str">"What is gravity?"</span>, <span class="prop">"endpoint"</span>: <span class="str">"embedding"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"embedding"</span>: [<span class="num">0.9</span>, <span class="num">0.1</span>, <span class="num">0.05</span>]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"llm"</span>: {
+    <span class="prop">"fixtures"</span>: <span class="str">"./fixtures/rag-pipeline.json"</span>
+  },
+  <span class="prop">"vector"</span>: {
+    <span class="prop">"collections"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"knowledge-base"</span>,
+        <span class="prop">"dimension"</span>: <span class="num">3</span>,
+        <span class="prop">"vectors"</span>: [
+          {
+            <span class="prop">"id"</span>: <span class="str">"doc-gravity"</span>,
+            <span class="prop">"values"</span>: [<span class="num">0.9</span>, <span class="num">0.1</span>, <span class="num">0.05</span>],
+            <span class="prop">"metadata"</span>: { <span class="prop">"source"</span>: <span class="str">"physics.pdf"</span>, <span class="prop">"page"</span>: <span class="num">12</span> }
+          }
+        ],
+        <span class="prop">"queryResults"</span>: [
+          {
+            <span class="prop">"id"</span>: <span class="str">"doc-gravity"</span>,
+            <span class="prop">"score"</span>: <span class="num">0.97</span>,
+            <span class="prop">"metadata"</span>: { <span class="prop">"source"</span>: <span class="str">"physics.pdf"</span>, <span class="prop">"page"</span>: <span class="num">12</span> }
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          Load both with <code>npx aimock --config aimock.json</code>. The config points to the
+          fixture file via <code>llm.fixtures</code>, so aimock handles both legs of the RAG
+          pipeline:
+        </p>
+        <ul>
+          <li><code>/v1/chat/completions</code> &mdash; matches LLM fixtures for the generator</li>
+          <li><code>/vector</code> &mdash; serves vector query results for the retriever</li>
+        </ul>
+        <div class="code-block">
+          <div class="code-block-header">
+            Python &mdash; dual mock <span class="lang-tag">python</span>
+          </div>
+          <pre><code><span class="kw">from</span> llama_index.llms.openai <span class="kw">import</span> OpenAI
+<span class="kw">from</span> llama_index.embeddings.openai <span class="kw">import</span> OpenAIEmbedding
+<span class="kw">from</span> llama_index.vector_stores.qdrant <span class="kw">import</span> QdrantVectorStore
+
+<span class="cm"># Generator: LLM pointed at aimock</span>
+llm = OpenAI(
+    api_base=<span class="str">"http://localhost:4010/v1"</span>,
+    api_key=<span class="str">"test"</span>,
+)
+
+<span class="cm"># Embeddings: also served by aimock</span>
+embed_model = OpenAIEmbedding(
+    api_base=<span class="str">"http://localhost:4010/v1"</span>,
+    api_key=<span class="str">"test"</span>,
+)
+
+<span class="cm"># Retriever: aimock's vector endpoint</span>
+<span class="cm"># Point your vector store client at localhost:4010/vector</span>
+<span class="cm"># aimock implements the Qdrant-compatible REST API</span>
+
+<span class="cm"># Now your entire RAG pipeline runs against one mock server</span></code></pre>
+        </div>
+
+        <h2>Embedding Fixtures</h2>
+        <p>
+          LlamaIndex indexes documents by generating embeddings. Use <code>inputText</code> matching
+          to return deterministic embedding vectors for specific inputs, ensuring your indexing and
+          retrieval paths produce consistent results in tests.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/embeddings.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"inputText"</span>: <span class="str">"What is gravity?"</span>, <span class="prop">"endpoint"</span>: <span class="str">"embedding"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"embedding"</span>: [<span class="num">0.9</span>, <span class="num">0.1</span>, <span class="num">0.05</span>]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"inputText"</span>: <span class="str">"Gravity is a fundamental force"</span>, <span class="prop">"endpoint"</span>: <span class="str">"embedding"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"embedding"</span>: [<span class="num">0.88</span>, <span class="num">0.12</span>, <span class="num">0.07</span>]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          The <code>inputText</code> matcher performs substring matching, so
+          <code>"gravity"</code> matches any input containing that word. Use exact strings when you
+          need precision.
+        </p>
+
+        <h2>With aimock-pytest</h2>
+        <p>
+          The <code>aimock-pytest</code> plugin starts and stops the server automatically per test.
+          Install with <code>pip install aimock-pytest</code>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">test_rag.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> llama_index.llms.openai <span class="kw">import</span> OpenAI
+
+<span class="kw">def</span> <span class="fn">test_rag_query</span>(aimock):
+    <span class="cm"># Load fixtures before making LLM calls</span>
+    aimock.load_fixtures(<span class="str">"./fixtures/llamaindex/rag.json"</span>)
+
+    llm = OpenAI(
+        api_base=f<span class="str">"{aimock.url}/v1"</span>,
+        api_key=<span class="str">"test"</span>,
+    )
+    response = llm.complete(<span class="str">"What is gravity?"</span>)
+    <span class="kw">assert</span> <span class="str">"force"</span> <span class="kw">in</span> str(response).lower()</code></pre>
+        </div>
+
+        <h2>CI with GitHub Action</h2>
+        <p>
+          Run your LlamaIndex test suite in CI with the aimock GitHub Action. The action starts
+          aimock as a background service and exposes it on the default port.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            .github/workflows/test.yml <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code><span class="prop">name</span>: LlamaIndex Tests
+
+<span class="prop">on</span>: [push, pull_request]
+
+<span class="prop">jobs</span>:
+  <span class="prop">test</span>:
+    <span class="prop">runs-on</span>: ubuntu-latest
+    <span class="prop">steps</span>:
+      - <span class="prop">uses</span>: actions/checkout@v4
+
+      - <span class="prop">name</span>: Start aimock
+        <span class="prop">uses</span>: CopilotKit/aimock@v1
+        <span class="prop">with</span>:
+          <span class="prop">fixtures</span>: ./fixtures/llamaindex
+
+      - <span class="prop">name</span>: Install dependencies
+        <span class="prop">run</span>: pip install -r requirements.txt
+
+      - <span class="prop">name</span>: Run tests
+        <span class="prop">run</span>: pytest tests/
+        <span class="prop">env</span>:
+          <span class="prop">OPENAI_BASE_URL</span>: http://127.0.0.1:4010/v1
+          <span class="prop">OPENAI_API_KEY</span>: test</code></pre>
+        </div>
+        <p>
+          No API keys needed in CI. Your LlamaIndex pipeline talks to aimock, which returns
+          deterministic responses from fixtures.
+        </p>
+
+        <h2>Record &amp; Replay</h2>
+        <p>
+          Record a RAG query end-to-end against real services, then replay it in tests. aimock
+          captures both the LLM completions and the embedding calls, so the full pipeline is
+          reproducible.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Record mode <span class="lang-tag">shell</span></div>
+          <pre><code><span class="cm"># Record LLM and embedding calls from a live session</span>
+npx aimock \
+  --record \
+  --provider-openai https://api.openai.com \
+  --fixtures ./fixtures/llamaindex
+
+<span class="cm"># Run your LlamaIndex pipeline against aimock</span>
+python my_rag_pipeline.py
+
+<span class="cm"># aimock saves fixtures to ./fixtures/llamaindex/</span>
+<span class="cm"># Next run replays them without hitting the real API</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Replay in tests <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">def</span> <span class="fn">test_rag_query</span>(aimock):
+    <span class="cm"># Load the recorded fixtures</span>
+    aimock.load_fixtures(<span class="str">"./fixtures/llamaindex/recorded.json"</span>)
+
+    <span class="kw">from</span> llama_index.llms.openai <span class="kw">import</span> OpenAI
+    llm = OpenAI(api_base=f<span class="str">"{aimock.url}/v1"</span>, api_key=<span class="str">"test"</span>)
+    <span class="cm"># ... run your RAG pipeline, assert on results</span></code></pre>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

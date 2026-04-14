@@ -1,0 +1,16 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "research" },
+      "response": {
+        "content": "Based on my research, the key findings are:\n\n1. LLM testing with fixture-based mocks eliminates flaky tests caused by non-deterministic API responses.\n2. Proxy recording captures real interactions for replay in CI without API keys.\n3. Multi-agent frameworks like CrewAI benefit most because each agent multiplies the number of LLM calls per run."
+      }
+    },
+    {
+      "match": { "userMessage": "write" },
+      "response": {
+        "content": "# Testing LLMs in CI\n\nFixture-based mocking brings determinism to AI-powered applications. By replacing real API calls with recorded responses, teams ship faster with confidence.\n\n## Why It Matters\n\nEvery agent in a CrewAI crew makes independent LLM calls. Without mocking, a two-agent crew means two sources of non-determinism per run. With aimock, every call returns the exact same response every time."
+      }
+    }
+  ]
+}

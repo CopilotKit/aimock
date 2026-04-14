@@ -1,0 +1,47 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather" },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"San Francisco\",\"unit\":\"fahrenheit\"}"
+          }
+        ]
+      }
+    },
+    {
+      "match": { "userMessage": "hello" },
+      "response": {
+        "content": "Hello! I'm an ADK agent running on aimock. How can I help you today?"
+      }
+    },
+    {
+      "match": { "userMessage": "search" },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "google_search",
+            "arguments": "{\"query\":\"latest AI news\"}"
+          }
+        ]
+      }
+    },
+    {
+      "match": { "userMessage": "multi-tool" },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"New York\",\"unit\":\"celsius\"}"
+          },
+          {
+            "name": "get_time",
+            "arguments": "{\"timezone\":\"America/New_York\"}"
+          }
+        ]
+      }
+    }
+  ]
+}

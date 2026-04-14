@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PydanticAI — aimock</title>
+    <meta
+      name="description"
+      content="Test PydanticAI agents with aimock — deterministic structured output, tool calls, and streaming without API keys."
+    />
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>PydanticAI</h1>
+        <p class="lead">
+          Test your PydanticAI agents with deterministic responses. aimock handles structured output
+          validation, tool calls, and streaming &mdash; all without API keys.
+        </p>
+
+        <h2>Quick Start</h2>
+        <p>
+          PydanticAI agents accept a custom <code>base_url</code> through their model configuration.
+          Point it at aimock and use any string for the API key:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">agent.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> pydantic_ai <span class="kw">import</span> Agent
+<span class="kw">from</span> pydantic_ai.models.openai <span class="kw">import</span> OpenAIChatModel
+<span class="kw">from</span> pydantic_ai.providers.openai <span class="kw">import</span> OpenAIProvider
+
+model = OpenAIChatModel(
+    <span class="str">"gpt-4o"</span>,
+    provider=OpenAIProvider(
+        base_url=<span class="str">"http://localhost:4010/v1"</span>,
+        api_key=<span class="str">"test"</span>,
+    ),
+)
+agent = Agent(model)</code></pre>
+        </div>
+
+        <p>Start aimock with a fixture file, then run your agent:</p>
+        <div class="code-block">
+          <div class="code-block-header">Terminal <span class="lang-tag">shell</span></div>
+          <pre><code><span class="cm"># Terminal 1 — start aimock</span>
+npx aimock --fixtures ./fixtures
+
+<span class="cm"># Terminal 2 — run the agent</span>
+python agent.py</code></pre>
+        </div>
+
+        <h2>With aimock-pytest</h2>
+        <p>
+          The <code>aimock-pytest</code> plugin starts and stops the server automatically per test.
+          Install with <code>pip install aimock-pytest</code>. The <code>aimock</code>
+          fixture is provided automatically &mdash; just request it in your test function.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">test_agent.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> pydantic_ai <span class="kw">import</span> Agent
+<span class="kw">from</span> pydantic_ai.models.openai <span class="kw">import</span> OpenAIChatModel
+<span class="kw">from</span> pydantic_ai.providers.openai <span class="kw">import</span> OpenAIProvider
+
+<span class="kw">async def</span> <span class="fn">test_agent_responds</span>(aimock):
+    <span class="cm"># Load fixtures before making LLM calls</span>
+    aimock.load_fixtures(<span class="str">"./fixtures/pydanticai.json"</span>)
+
+    model = OpenAIChatModel(
+        <span class="str">"gpt-4o"</span>,
+        provider=OpenAIProvider(
+            base_url=aimock.url + <span class="str">"/v1"</span>,
+            api_key=<span class="str">"test"</span>,
+        ),
+    )
+    agent = Agent(model)
+    result = <span class="kw">await</span> agent.run(<span class="str">"What is the weather?"</span>)
+    <span class="kw">assert</span> result.output <span class="kw">is not</span> <span class="kw">None</span></code></pre>
+        </div>
+
+        <h2>Structured Output</h2>
+        <p>
+          PydanticAI validates LLM responses against Pydantic models. When your agent expects
+          structured output, PydanticAI uses <strong>tool calls</strong> by default to extract
+          structured data &mdash; not <code>response_format</code>. This means your fixture should
+          return a tool call whose arguments match your Pydantic schema. Use aimock&rsquo;s
+          <code>toolCalls</code> fixture to serve the expected structured response:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/structured-output.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"Weather"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"final_result"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"city\": \"SF\", \"temp\": 72, \"unit\": \"fahrenheit\"}"</span>
+          }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p class="note">
+          <strong>Note:</strong> PydanticAI generates a tool named <code>final_result</code> (by
+          default) whose schema matches your <code>output_type</code> model. The LLM
+          &ldquo;calls&rdquo; this tool with the structured data, and PydanticAI validates the
+          arguments against your Pydantic model. If you need to use
+          <code>response_format</code> instead, you can opt in via
+          <code>Agent(..., result_tool_name=None)</code>, in which case a
+          <code>responseFormat</code> fixture would apply:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/structured-output-response-format.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code><span class="cm">// Only needed if you disable tool-based structured output</span>
+{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"responseFormat"</span>: <span class="str">"json_object"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"{\"city\": \"SF\", \"temp\": 72, \"unit\": \"fahrenheit\"}"</span>
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <p>The corresponding PydanticAI agent with a typed output:</p>
+        <div class="code-block">
+          <div class="code-block-header">
+            structured_agent.py <span class="lang-tag">python</span>
+          </div>
+          <pre><code><span class="kw">from</span> pydantic <span class="kw">import</span> BaseModel
+<span class="kw">from</span> pydantic_ai <span class="kw">import</span> Agent
+<span class="kw">from</span> pydantic_ai.models.openai <span class="kw">import</span> OpenAIChatModel
+<span class="kw">from</span> pydantic_ai.providers.openai <span class="kw">import</span> OpenAIProvider
+
+<span class="kw">class</span> <span class="fn">Weather</span>(BaseModel):
+    city: str
+    temp: int
+    unit: str
+
+model = OpenAIChatModel(
+    <span class="str">"gpt-4o"</span>,
+    provider=OpenAIProvider(
+        base_url=<span class="str">"http://localhost:4010/v1"</span>,
+        api_key=<span class="str">"test"</span>,
+    ),
+)
+agent = Agent(model, output_type=Weather)
+
+result = agent.run_sync(<span class="str">"Weather in San Francisco"</span>)
+<span class="cm"># result.output is a validated Weather instance</span>
+<span class="kw">assert</span> result.output.city == <span class="str">"SF"</span>
+<span class="kw">assert</span> result.output.temp == <span class="num">72</span></code></pre>
+        </div>
+
+        <h2>Tool Calls</h2>
+        <p>
+          PydanticAI tools use typed function arguments. When an agent invokes a tool, the LLM
+          returns a tool call that PydanticAI validates and dispatches. Use aimock&rsquo;s
+          <code>toolCalls</code> fixture to return deterministic tool invocations:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/tool-call.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"weather"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"city\": \"San Francisco\"}"</span>
+          }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <p>The PydanticAI agent that registers and handles the tool:</p>
+        <div class="code-block">
+          <div class="code-block-header">tool_agent.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> pydantic_ai <span class="kw">import</span> Agent, RunContext
+<span class="kw">from</span> pydantic_ai.models.openai <span class="kw">import</span> OpenAIChatModel
+<span class="kw">from</span> pydantic_ai.providers.openai <span class="kw">import</span> OpenAIProvider
+
+model = OpenAIChatModel(
+    <span class="str">"gpt-4o"</span>,
+    provider=OpenAIProvider(
+        base_url=<span class="str">"http://localhost:4010/v1"</span>,
+        api_key=<span class="str">"test"</span>,
+    ),
+)
+agent = Agent(model)
+
+<span class="kw">@agent.tool</span>
+<span class="kw">async def</span> <span class="fn">get_weather</span>(ctx: RunContext[<span class="kw">None</span>], city: str) -> str:
+    <span class="kw">return</span> <span class="str">f"72F and sunny in {city}"</span>
+
+result = agent.run_sync(<span class="str">"What's the weather?"</span>)
+<span class="cm"># aimock triggers the tool call, PydanticAI dispatches get_weather</span></code></pre>
+        </div>
+
+        <h2>CI with GitHub Action</h2>
+        <p>
+          Use the aimock GitHub Action to run a mock server alongside your Python test suite. No API
+          keys or network access required:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            .github/workflows/test.yml <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code><span class="prop">name</span>: <span class="str">Tests</span>
+<span class="prop">on</span>: [<span class="str">push</span>, <span class="str">pull_request</span>]
+
+<span class="prop">jobs</span>:
+  <span class="prop">test</span>:
+    <span class="prop">runs-on</span>: <span class="str">ubuntu-latest</span>
+    <span class="prop">steps</span>:
+      - <span class="prop">uses</span>: <span class="str">actions/checkout@v4</span>
+
+      - <span class="prop">uses</span>: <span class="str">actions/setup-python@v5</span>
+        <span class="prop">with</span>:
+          <span class="prop">python-version</span>: <span class="str">"3.12"</span>
+
+      - <span class="prop">uses</span>: <span class="str">CopilotKit/aimock@v1</span>
+        <span class="prop">with</span>:
+          <span class="prop">fixtures</span>: <span class="str">./fixtures</span>
+
+      - <span class="prop">run</span>: <span class="str">pip install pydantic-ai pytest</span>
+
+      - <span class="prop">run</span>: <span class="str">pytest</span>
+        <span class="prop">env</span>:
+          <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://127.0.0.1:4010/v1</span>
+          <span class="prop">OPENAI_API_KEY</span>: <span class="str">test</span></code></pre>
+        </div>
+        <p>
+          The action starts aimock as a background service on port 4010. Your tests connect via
+          <code>OPENAI_BASE_URL</code> and never hit a real API. See the
+          <a href="/github-action">GitHub Action</a> page for all available inputs.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

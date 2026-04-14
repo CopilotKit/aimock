@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CrewAI — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>CrewAI</h1>
+        <p class="lead">
+          Test your CrewAI crews without API keys. Each agent in a crew makes its own LLM calls
+          &mdash; aimock handles them all with fixture-based responses.
+        </p>
+
+        <h2>Quick Start</h2>
+        <p>
+          CrewAI agents make OpenAI-compatible LLM calls by default. Point them at aimock and every
+          agent in your crew will send requests to the mock server instead of the real API. The
+          recommended approach is to use CrewAI's <code>LLM</code> class with an explicit
+          <code>base_url</code>, shown in the examples below.
+        </p>
+        <div class="cli-tabs" data-sync="install">
+          <div class="cli-tab-bar">
+            <button class="cli-tab active" data-tab="cli">CLI</button>
+            <button class="cli-tab" data-tab="python">Python</button>
+          </div>
+          <div class="cli-tab-content active" data-tab="cli">
+            <div class="code-block">
+              <div class="code-block-header">
+                Start aimock, then run the crew
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Terminal 1 &mdash; start the mock server</span>
+npx aimock --fixtures ./fixtures
+
+<span class="cm"># Terminal 2 &mdash; run your CrewAI script</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=test
+python crew.py</code></pre>
+            </div>
+          </div>
+          <div class="cli-tab-content" data-tab="python">
+            <div class="code-block">
+              <div class="code-block-header">crew.py <span class="lang-tag">python</span></div>
+              <pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Agent, Task, Crew, LLM
+
+<span class="cm"># Recommended: use the LLM class with an explicit base_url</span>
+llm = LLM(
+    model=<span class="str">"openai/gpt-4o"</span>,
+    base_url=<span class="str">"http://localhost:4010/v1"</span>,
+    api_key=<span class="str">"test"</span>,
+)
+
+researcher = Agent(
+    role=<span class="str">"Researcher"</span>,
+    goal=<span class="str">"Research topics"</span>,
+    backstory=<span class="str">"Expert researcher"</span>,
+    llm=llm,
+)
+
+task = Task(
+    description=<span class="str">"Research the history of testing"</span>,
+    expected_output=<span class="str">"A short summary"</span>,
+    agent=researcher,
+)
+
+crew = Crew(agents=[researcher], tasks=[task])
+result = crew.kickoff()
+print(result)</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>Environment variables vs <code>LLM(base_url=...)</code></strong> &mdash; Setting
+          <code>OPENAI_BASE_URL</code> works when agents use the default OpenAI provider, but the
+          <code>LLM(base_url=...)</code> approach is more reliable across all configurations and is
+          the recommended way to point CrewAI at aimock.
+        </div>
+
+        <h2>With aimock-pytest</h2>
+        <p>
+          The <code>aimock-pytest</code> plugin starts and stops the server automatically per test,
+          so you never need to manage a background process.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Install <span class="lang-tag">shell</span></div>
+          <pre><code>pip install aimock-pytest</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">conftest.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">import</span> os, pytest
+
+@pytest.fixture(autouse=<span class="kw">True</span>)
+<span class="kw">def</span> <span class="fn">mock_llm</span>(aimock):
+    <span class="str">"""aimock-pytest provides the `aimock` fixture automatically.
+    It starts a fresh server for each test that requests it (function-scoped).
+    You must set OPENAI_BASE_URL yourself so CrewAI agents route to aimock."""</span>
+    os.environ[<span class="str">"OPENAI_BASE_URL"</span>] = aimock.url + <span class="str">"/v1"</span>
+    os.environ[<span class="str">"OPENAI_API_KEY"</span>] = <span class="str">"test"</span>
+    aimock.load_fixtures(<span class="str">"./fixtures/crewai-crew.json"</span>)
+    <span class="kw">yield</span> aimock</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">test_crew.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Agent, Task, Crew
+
+<span class="kw">def</span> <span class="fn">test_researcher_crew</span>():
+    researcher = Agent(
+        role=<span class="str">"Researcher"</span>,
+        goal=<span class="str">"Research topics"</span>,
+        backstory=<span class="str">"Expert researcher"</span>,
+    )
+    task = Task(
+        description=<span class="str">"Summarize recent AI breakthroughs"</span>,
+        expected_output=<span class="str">"A short summary"</span>,
+        agent=researcher,
+    )
+    crew = Crew(agents=[researcher], tasks=[task])
+    result = crew.kickoff()
+    <span class="kw">assert</span> <span class="str">"AI"</span> <span class="kw">in</span> str(result)</code></pre>
+        </div>
+
+        <h2>Multi-Agent Crews</h2>
+        <p>
+          In a CrewAI crew, each agent makes independent LLM calls. The researcher agent sends its
+          own chat completion request, then the writer agent sends a separate one. Because aimock
+          matches on the <code>userMessage</code> field, you can write fixtures that target each
+          agent's prompt pattern independently.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/crewai-crew.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"research"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"Based on my research, the key findings are:\n\n1. LLM testing with fixture-based mocks eliminates flaky tests caused by non-deterministic API responses.\n2. Proxy recording captures real interactions for replay in CI without API keys.\n3. Multi-agent frameworks like CrewAI benefit most because each agent multiplies the number of LLM calls per run."</span>
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"write"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"# Testing LLMs in CI\n\nFixture-based mocking brings determinism to AI-powered applications. By replacing real API calls with recorded responses, teams ship faster with confidence.\n\n## Why It Matters\n\nEvery agent in a CrewAI crew makes independent LLM calls. Without mocking, a two-agent crew means two sources of non-determinism per run. With aimock, every call returns the exact same response every time."</span>
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Two-agent crew <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Agent, Task, Crew, Process
+
+researcher = Agent(
+    role=<span class="str">"Researcher"</span>,
+    goal=<span class="str">"Research topics thoroughly"</span>,
+    backstory=<span class="str">"Senior research analyst"</span>,
+)
+
+writer = Agent(
+    role=<span class="str">"Writer"</span>,
+    goal=<span class="str">"Write compelling articles"</span>,
+    backstory=<span class="str">"Technical content writer"</span>,
+)
+
+research_task = Task(
+    description=<span class="str">"Research LLM testing best practices"</span>,
+    expected_output=<span class="str">"Key findings as bullet points"</span>,
+    agent=researcher,
+)
+
+write_task = Task(
+    description=<span class="str">"Write a blog post from the research"</span>,
+    expected_output=<span class="str">"A short blog post in markdown"</span>,
+    agent=writer,
+)
+
+crew = Crew(
+    agents=[researcher, writer],
+    tasks=[research_task, write_task],
+    process=Process.sequential,
+)
+result = crew.kickoff()</code></pre>
+        </div>
+        <p>
+          The researcher's prompt contains "research", matching the first fixture. The writer's
+          prompt contains "write", matching the second. Each agent gets its own deterministic
+          response.
+        </p>
+
+        <h2>Tool Calls</h2>
+        <p>
+          CrewAI agents can use tools. When an agent invokes a tool, CrewAI sends a chat completion
+          with <code>tool_choice</code> and expects a tool-call response. aimock fixtures handle
+          this with the <code>toolCalls</code> response field.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/crewai-tools.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"search"</span>, <span class="prop">"sequenceIndex"</span>: <span class="num">0</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"web_search"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"query\": \"LLM testing frameworks 2025\"}"</span>
+          }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"search"</span>, <span class="prop">"sequenceIndex"</span>: <span class="num">1</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"Based on the search results, the top LLM testing frameworks are aimock, promptfoo, and deepeval."</span>
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Agent with tools <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Agent, Task, Crew
+<span class="kw">from</span> crewai_tools <span class="kw">import</span> SerperDevTool
+
+search_tool = SerperDevTool()
+
+researcher = Agent(
+    role=<span class="str">"Researcher"</span>,
+    goal=<span class="str">"Search the web for information"</span>,
+    backstory=<span class="str">"Expert web researcher"</span>,
+    tools=[search_tool],
+)
+
+task = Task(
+    description=<span class="str">"Search for the latest LLM testing frameworks"</span>,
+    expected_output=<span class="str">"A ranked list of frameworks"</span>,
+    agent=researcher,
+)
+
+crew = Crew(agents=[researcher], tasks=[task])
+result = crew.kickoff()</code></pre>
+        </div>
+        <p>
+          The first fixture triggers the tool call. After CrewAI processes the tool result and sends
+          it back to the LLM, the second fixture matches the follow-up message and returns the final
+          answer.
+        </p>
+
+        <h2>CI with GitHub Action</h2>
+        <p>
+          Use the <code>CopilotKit/aimock</code> GitHub Action to run aimock as a background service
+          in your CI pipeline.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            .github/workflows/test.yml <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code><span class="prop">name</span>: Test CrewAI Crew
+<span class="prop">on</span>: [push, pull_request]
+<span class="prop">jobs</span>:
+  <span class="prop">test</span>:
+    <span class="prop">runs-on</span>: ubuntu-latest
+    <span class="prop">steps</span>:
+      - <span class="prop">uses</span>: actions/checkout@v4
+      - <span class="prop">uses</span>: actions/setup-python@v5
+        <span class="prop">with</span>:
+          <span class="prop">python-version</span>: <span class="str">"3.11"</span>
+      - <span class="prop">uses</span>: CopilotKit/aimock@v1
+        <span class="prop">with</span>:
+          <span class="prop">fixtures</span>: ./fixtures
+      - <span class="prop">run</span>: pip install crewai pytest aimock-pytest
+      - <span class="prop">run</span>: pytest
+        <span class="prop">env</span>:
+          <span class="prop">OPENAI_BASE_URL</span>: http://127.0.0.1:4010/v1
+          <span class="prop">OPENAI_API_KEY</span>: test</code></pre>
+        </div>
+        <p>
+          The action starts aimock on port 4010, loads your fixtures, and keeps the server running
+          for the duration of the job. No real API keys needed.
+        </p>
+
+        <h2>Record &amp; Replay</h2>
+        <p>
+          Record a full crew execution against a real LLM, then replay it deterministically in tests
+          and CI. This is especially useful for capturing complex multi-agent interactions.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Record a crew run <span class="lang-tag">shell</span></div>
+          <pre><code><span class="cm"># Start aimock in record mode &mdash; unmatched requests go to OpenAI</span>
+npx aimock --fixtures ./fixtures \
+  --record \
+  --provider-openai https://api.openai.com
+
+<span class="cm"># Run your crew with the real API key (proxied through aimock)</span>
+<span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
+<span class="kw">export</span> OPENAI_API_KEY=sk-your-real-key
+python crew.py
+
+<span class="cm"># New fixtures appear in ./fixtures/recorded/</span>
+<span class="cm"># Commit them to your repo for deterministic replay</span></code></pre>
+        </div>
+        <p>
+          On subsequent runs without <code>--record</code>, aimock replays the recorded fixtures.
+          Every agent in the crew gets the exact same response it received during the original
+          recording, making your tests fully reproducible.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

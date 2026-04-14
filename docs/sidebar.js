@@ -62,6 +62,17 @@
       ],
     },
     {
+      title: "Framework Guides",
+      links: [
+        { label: "LangChain / LangGraph", href: "/integrate-langchain" },
+        { label: "CrewAI", href: "/integrate-crewai" },
+        { label: "PydanticAI", href: "/integrate-pydanticai" },
+        { label: "LlamaIndex", href: "/integrate-llamaindex" },
+        { label: "Mastra", href: "/integrate-mastra" },
+        { label: "Google ADK", href: "/integrate-adk" },
+      ],
+    },
+    {
       title: "Orchestration",
       links: [
         { label: "aimock CLI & Config", href: "/aimock-cli" },

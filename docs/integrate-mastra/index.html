@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mastra — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Mastra</h1>
+        <p class="lead">
+          Test your Mastra agents with deterministic LLM responses and AG-UI event streams. aimock
+          integrates natively with CopilotKit's Mastra support.
+        </p>
+
+        <h2>Quick Start</h2>
+        <p>
+          Mastra agents support multiple LLM providers through its model configuration. For
+          OpenAI-compatible models, set the base URL to point at aimock. The simplest approach is
+          setting the <code>OPENAI_BASE_URL</code> environment variable.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Point your agent at aimock <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { Agent } <span class="kw">from</span> <span class="str">"@mastra/core/agent"</span>;
+
+<span class="kw">const</span> agent = <span class="kw">new</span> <span class="fn">Agent</span>({
+  <span class="prop">name</span>: <span class="str">"my-agent"</span>,
+  <span class="prop">instructions</span>: <span class="str">"You are a helpful assistant"</span>,
+  <span class="prop">model</span>: {
+    <span class="prop">provider</span>: <span class="str">"OPEN_AI"</span>,
+    <span class="prop">name</span>: <span class="str">"gpt-4o"</span>,
+    <span class="prop">toolChoice</span>: <span class="str">"auto"</span>,
+  },
+});
+
+<span class="cm">// Set OPENAI_BASE_URL=http://localhost:4010/v1 to redirect to aimock</span>
+<span class="cm">// All completions will be served from aimock fixtures</span></code></pre>
+        </div>
+
+        <h2>With Vitest Plugin</h2>
+        <p>
+          The <code>useAimock</code> plugin starts and stops the aimock server automatically around
+          your test suite. No manual setup or teardown required.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            mastra-agent.test.ts <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { describe, it, expect } <span class="kw">from</span> <span class="str">"vitest"</span>;
+<span class="kw">import</span> { useAimock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock/vitest"</span>;
+<span class="kw">import</span> { Agent } <span class="kw">from</span> <span class="str">"@mastra/core/agent"</span>;
+
+<span class="kw">const</span> mock = <span class="fn">useAimock</span>({ <span class="prop">fixtures</span>: <span class="str">"./fixtures"</span> });
+
+<span class="fn">describe</span>(<span class="str">"Mastra agent"</span>, () =&gt; {
+  <span class="fn">it</span>(<span class="str">"handles a travel planning request"</span>, <span class="kw">async</span> () =&gt; {
+    process.env.<span class="prop">OPENAI_BASE_URL</span> = mock().<span class="prop">url</span> + <span class="str">"/v1"</span>;
+
+    <span class="kw">const</span> agent = <span class="kw">new</span> <span class="fn">Agent</span>({
+      <span class="prop">name</span>: <span class="str">"travel-planner"</span>,
+      <span class="prop">instructions</span>: <span class="str">"You are a travel planning assistant"</span>,
+      <span class="prop">model</span>: { <span class="prop">provider</span>: <span class="str">"OPEN_AI"</span>, <span class="prop">name</span>: <span class="str">"gpt-4o"</span> },
+    });
+    <span class="kw">const</span> result = <span class="kw">await</span> agent.<span class="fn">generate</span>(<span class="str">"plan a trip to Tokyo"</span>);
+    <span class="fn">expect</span>(result.text).<span class="fn">toContain</span>(<span class="str">"Tokyo"</span>);
+  });
+});</code></pre>
+        </div>
+
+        <h2>Tool Call Workflows</h2>
+        <p>
+          Mastra agents use tools extensively for travel planning, API calls, and multi-step
+          workflows. Define tool call fixtures to test these interactions deterministically.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/mastra-tools.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"plan a trip"</span>, <span class="prop">"sequenceIndex"</span>: <span class="num">0</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"search_flights"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"origin\":\"SFO\",\"destination\":\"NRT\",\"date\":\"2025-03-15\"}"</span>
+          }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"plan a trip"</span>, <span class="prop">"sequenceIndex"</span>: <span class="num">1</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"search_hotels"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"city\":\"Tokyo\",\"checkIn\":\"2025-03-15\",\"checkOut\":\"2025-03-22\"}"</span>
+          }
+        ]
+      }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"plan a trip"</span>, <span class="prop">"sequenceIndex"</span>: <span class="num">2</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"content"</span>: <span class="str">"I found a great itinerary for your Tokyo trip!\n\n**Flight:** SFO &rarr; NRT on March 15, departing 11:30 AM (United UA837) &mdash; $890 round trip\n\n**Hotel:** Hotel Gracery Shinjuku, March 15&ndash;22 &mdash; $185/night\n\nWould you like me to book these, or would you prefer different options?"</span>
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          Each fixture fires once in sequence using <code>sequenceIndex</code>. The first call
+          triggers a flight search, the second searches for hotels, and the third returns the
+          combined itinerary. See <a href="/fixtures">Fixtures</a> for the full matching syntax.
+        </p>
+
+        <h2>AG-UI Frontend Testing</h2>
+        <p>
+          When using Mastra with CopilotKit, the frontend receives AG-UI event streams. Use
+          <code>AGUIMock</code> to test the frontend separately from the agent — no running Mastra
+          server required.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Mock the AG-UI layer <span class="lang-tag">typescript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { LLMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+<span class="kw">import</span> { AGUIMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">const</span> llm = <span class="kw">new</span> <span class="fn">LLMock</span>();
+<span class="kw">const</span> agui = <span class="kw">new</span> <span class="fn">AGUIMock</span>();
+
+agui.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, <span class="str">"Hi from the agent!"</span>);
+agui.<span class="fn">onToolCall</span>(<span class="op">/search/</span>, <span class="str">"web_search"</span>, <span class="str">'{"q":"test"}'</span>, { <span class="prop">result</span>: <span class="str">"[]"</span> });
+
+llm.<span class="fn">mount</span>(<span class="str">"/agui"</span>, agui);
+<span class="kw">const</span> url = <span class="kw">await</span> llm.<span class="fn">start</span>();
+
+<span class="cm">// Point your CopilotKit frontend at url + "/agui"</span>
+<span class="cm">// It receives deterministic AG-UI SSE event streams</span></code></pre>
+        </div>
+        <p>
+          This lets you develop and test CopilotKit UI components against canned agent responses
+          without running Mastra or any LLM provider. See
+          <a href="/agui-mock">AGUIMock</a> for the full API.
+        </p>
+
+        <h2>CI with GitHub Action</h2>
+        <p>
+          Run your Mastra agent tests in CI with a single step. The aimock GitHub Action starts the
+          server, waits for it to be healthy, and cleans up when the job finishes.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">workflow.yml <span class="lang-tag">yaml</span></div>
+          <pre><code><span class="prop">steps</span>:
+  - <span class="prop">uses</span>: <span class="str">actions/checkout@v4</span>
+  - <span class="prop">uses</span>: <span class="str">CopilotKit/aimock@v1</span>
+    <span class="prop">with</span>:
+      <span class="prop">fixtures</span>: <span class="str">./fixtures</span>
+  - <span class="prop">run</span>: <span class="str">pnpm test</span>
+    <span class="prop">env</span>:
+      <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://127.0.0.1:4010/v1</span></code></pre>
+        </div>
+        <p>See <a href="/github-action">GitHub Action</a> for all available inputs and outputs.</p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google ADK — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Google ADK</h1>
+        <p class="lead">
+          Test your Google ADK agents without Gemini API keys. aimock speaks the Gemini API format
+          natively &mdash; <code>generateContent</code>, <code>streamGenerateContent</code>, and
+          function calling.
+        </p>
+
+        <h2>Quick Start</h2>
+        <p>
+          Point the Google Gen AI SDK at your aimock instance. ADK uses the Gen AI SDK under the
+          hood, so this is all you need:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Configure the Gen AI client <span class="lang-tag">python</span>
+          </div>
+          <pre><code><span class="kw">from</span> google <span class="kw">import</span> genai
+
+client = genai.<span class="fn">Client</span>(
+    vertexai=<span class="kw">False</span>,
+    api_key=<span class="str">"test"</span>,
+    http_options={<span class="str">"api_version"</span>: <span class="str">"v1beta"</span>, <span class="str">"base_url"</span>: <span class="str">"http://localhost:4010"</span>},
+)</code></pre>
+        </div>
+        <p>
+          Start aimock with a Gemini-format fixture, then run your ADK agent. Requests to
+          <code>generateContent</code> and <code>streamGenerateContent</code> are handled
+          automatically.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Start aimock <span class="lang-tag">shell</span></div>
+          <pre><code>npx aimock --fixtures fixtures/examples/adk/gemini-agent.json</code></pre>
+        </div>
+
+        <h2>Gemini API Format</h2>
+        <p>
+          aimock handles the Gemini native request and response format. ADK agents hit these
+          endpoints:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Format</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/v1beta/models/{model}:generateContent</code></td>
+              <td>JSON</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td><code>/v1beta/models/{model}:streamGenerateContent</code></td>
+              <td>JSON stream / SSE (with <code>?alt=sse</code>)</td>
+            </tr>
+            <tr>
+              <td>WS</td>
+              <td><code>/ws/google.ai.generativelanguage.*</code></td>
+              <td>Gemini Live WebSocket</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Gemini uses <code>contents</code> with <code>parts</code> rather than OpenAI's
+          <code>messages</code> array. aimock translates Gemini requests to the unified fixture
+          format internally, so the same <code>match.userMessage</code> works regardless of which
+          provider endpoint the request arrives on.
+        </p>
+
+        <h2>Function Calling</h2>
+        <p>
+          ADK agents rely heavily on Gemini function calling. The Gemini format uses
+          <code>functionCall</code> and <code>functionResponse</code> parts instead of the
+          OpenAI-style <code>tool_calls</code> array. aimock generates the correct Gemini response
+          shape from the same fixture format:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Function calling fixture <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"weather"</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [
+          {
+            <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+            <span class="prop">"arguments"</span>: <span class="str">"{\"city\":\"San Francisco\",\"unit\":\"fahrenheit\"}"</span>
+          }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          When a Gemini endpoint receives this fixture, aimock returns it as a
+          <code>functionCall</code> part:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Gemini response shape <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"candidates"</span>: [{
+    <span class="prop">"content"</span>: {
+      <span class="prop">"role"</span>: <span class="str">"model"</span>,
+      <span class="prop">"parts"</span>: [{
+        <span class="prop">"functionCall"</span>: {
+          <span class="prop">"id"</span>: <span class="str">"call_abc123"</span>,
+          <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+          <span class="prop">"args"</span>: { <span class="prop">"city"</span>: <span class="str">"San Francisco"</span>, <span class="prop">"unit"</span>: <span class="str">"fahrenheit"</span> }
+        }
+      }]
+    }
+  }]
+}</code></pre>
+        </div>
+
+        <h2>With aimock-pytest</h2>
+        <p>
+          The <code>aimock-pytest</code> plugin provides a <code>aimock</code> fixture that starts
+          and stops the server automatically:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">conftest.py <span class="lang-tag">python</span></div>
+          <pre><code><span class="kw">import</span> pytest
+
+<span class="cm"># The aimock fixture is provided by aimock-pytest</span>
+<span class="cm"># pip install aimock-pytest</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">
+            test_adk_agent.py <span class="lang-tag">python</span>
+          </div>
+          <pre><code><span class="kw">from</span> google <span class="kw">import</span> genai
+
+<span class="kw">def</span> <span class="fn">test_agent_weather_tool</span>(aimock):
+    <span class="cm">"""Test that ADK agent calls get_weather tool."""</span>
+    aimock.<span class="fn">load_fixtures</span>(<span class="str">"fixtures/examples/adk/gemini-agent.json"</span>)
+
+    client = genai.<span class="fn">Client</span>(
+        vertexai=<span class="kw">False</span>,
+        api_key=<span class="str">"test"</span>,
+        http_options={<span class="str">"api_version"</span>: <span class="str">"v1beta"</span>, <span class="str">"base_url"</span>: aimock.url},
+    )
+
+    response = client.models.<span class="fn">generate_content</span>(
+        model=<span class="str">"gemini-2.0-flash"</span>,
+        contents=<span class="str">"what is the weather in San Francisco?"</span>,
+    )
+
+    <span class="cm"># Verify the tool call was returned</span>
+    part = response.candidates[<span class="num">0</span>].content.parts[<span class="num">0</span>]
+    <span class="kw">assert</span> part.function_call.name == <span class="str">"get_weather"</span></code></pre>
+        </div>
+
+        <h2>CI with GitHub Action</h2>
+        <p>
+          Use the <a href="/github-action">aimock GitHub Action</a> to run aimock as a service in
+          CI:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            .github/workflows/test.yml <span class="lang-tag">yaml</span>
+          </div>
+          <pre><code><span class="prop">steps</span>:
+  - <span class="prop">uses</span>: actions/checkout@v4
+  - <span class="prop">name</span>: <span class="str">Start aimock</span>
+    <span class="prop">uses</span>: CopilotKit/aimock@v1
+    <span class="prop">with</span>:
+      <span class="prop">fixtures</span>: fixtures/examples/adk/gemini-agent.json
+
+  - <span class="prop">name</span>: <span class="str">Run ADK tests</span>
+    <span class="prop">run</span>: pytest tests/</code></pre>
+        </div>
+        <p>
+          No real Gemini API keys needed in CI &mdash; aimock does not validate them. Note that ADK
+          / the Google Gen AI SDK does not support a <code>base_url</code> environment variable
+          override, so you must configure the base URL programmatically in your test code using
+          <code>http_options</code> (see the pytest example above).
+        </p>
+
+        <h2>Arbitrary Path Prefixes</h2>
+        <p>
+          If your ADK configuration or a proxy layer adds a non-standard base URL prefix (e.g.
+          <code>/my-app/v1beta/models/...</code>), aimock normalizes it automatically. The
+          <code>normalizeCompatPath</code> feature strips arbitrary prefixes and rewrites paths
+          ending in known suffixes to their canonical form.
+        </p>
+        <p>
+          This means your ADK agent can use any base URL structure and aimock will still route the
+          request correctly to the Gemini handler.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Non-standard prefix example <span class="lang-tag">python</span>
+          </div>
+          <pre><code><span class="cm"># Even with a custom prefix, aimock routes correctly</span>
+client = genai.<span class="fn">Client</span>(
+    vertexai=<span class="kw">False</span>,
+    api_key=<span class="str">"test"</span>,
+    http_options={
+        <span class="str">"api_version"</span>: <span class="str">"v1beta"</span>,
+        <span class="str">"base_url"</span>: <span class="str">"http://localhost:4010/my-proxy"</span>,
+    },
+)</code></pre>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

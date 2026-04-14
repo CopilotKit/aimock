@@ -1,0 +1,34 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "What is gravity?" },
+      "response": {
+        "content": "Based on the retrieved documents, gravity is a fundamental force of nature that attracts objects with mass toward one another. It is described by Newton's law of universal gravitation and Einstein's general theory of relativity."
+      }
+    },
+    {
+      "match": { "userMessage": "Summarize the document" },
+      "response": {
+        "content": "The document covers three main topics: gravitational force, orbital mechanics, and tidal effects. It explains how gravity governs planetary motion and influences ocean tides on Earth."
+      }
+    },
+    {
+      "match": { "inputText": "What is gravity?", "endpoint": "embedding" },
+      "response": {
+        "embedding": [0.9, 0.1, 0.05]
+      }
+    },
+    {
+      "match": { "inputText": "Gravity is a fundamental force", "endpoint": "embedding" },
+      "response": {
+        "embedding": [0.88, 0.12, 0.07]
+      }
+    },
+    {
+      "match": { "inputText": "orbital mechanics and planetary motion", "endpoint": "embedding" },
+      "response": {
+        "embedding": [0.75, 0.3, 0.15]
+      }
+    }
+  ]
+}

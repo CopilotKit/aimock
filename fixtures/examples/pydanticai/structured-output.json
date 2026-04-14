@@ -1,0 +1,15 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "Weather" },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "final_result",
+            "arguments": "{\"city\": \"SF\", \"temp\": 72, \"unit\": \"fahrenheit\"}"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 0 },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "search_flights",
+            "arguments": "{\"origin\":\"SFO\",\"destination\":\"NRT\",\"date\":\"2025-03-15\"}"
+          }
+        ]
+      }
+    },
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 1 },
+      "response": {
+        "toolCalls": [
+          {
+            "name": "search_hotels",
+            "arguments": "{\"city\":\"Tokyo\",\"checkIn\":\"2025-03-15\",\"checkOut\":\"2025-03-22\"}"
+          }
+        ]
+      }
+    },
+    {
+      "match": { "userMessage": "plan a trip", "sequenceIndex": 2 },
+      "response": {
+        "content": "I found a great itinerary for your Tokyo trip!\n\n**Flight:** SFO → NRT on March 15, departing 11:30 AM (United UA837) — $890 round trip\n\n**Hotel:** Hotel Gracery Shinjuku, March 15–22 — $185/night\n\nWould you like me to book these, or would you prefer different options?"
+      }
+    }
+  ]
+}
