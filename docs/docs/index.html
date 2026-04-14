@@ -17,114 +17,6 @@
     />
     <link rel="stylesheet" href="../style.css" />
     <style>
-      /* ─── Suite Cards Grid (new component) ─────────────────────── */
-      .suite-grid {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 1.25rem;
-        margin-top: 2rem;
-        margin-bottom: 2rem;
-      }
-      .suite-card {
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-        padding: 1.5rem;
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        transition:
-          border-color 0.3s,
-          transform 0.3s,
-          box-shadow 0.3s;
-      }
-      .suite-card:hover {
-        border-color: var(--border-bright);
-        transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
-      }
-      .suite-card.border-green {
-        border-top: 2px solid var(--accent);
-      }
-      .suite-card.border-blue {
-        border-top: 2px solid var(--blue);
-      }
-      .suite-card.border-purple {
-        border-top: 2px solid var(--purple);
-      }
-      .suite-card.border-amber {
-        border-top: 2px solid var(--warning);
-      }
-      .suite-card.border-red {
-        border-top: 2px solid var(--error);
-      }
-      .suite-card.border-gray {
-        border-top: 2px solid var(--text-dim);
-      }
-      .suite-card-header {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-      }
-      .suite-card-icon {
-        font-size: 1.5rem;
-        line-height: 1;
-      }
-      .suite-card-title {
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-      .suite-card-desc {
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-        line-height: 1.5;
-        margin: 0;
-      }
-      .suite-card-links {
-        list-style: none;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-        margin: 0;
-      }
-      .suite-card-links li {
-        font-size: 0.8rem;
-        padding-left: 0.85rem;
-        position: relative;
-        margin: 0;
-      }
-      .suite-card-links li::before {
-        content: "\203A";
-        position: absolute;
-        left: 0;
-        color: var(--text-dim);
-      }
-      .suite-card-links a {
-        color: var(--text-secondary);
-        font-size: 0.8rem;
-        transition: color 0.15s;
-      }
-      .suite-card-links a:hover {
-        color: var(--accent);
-      }
-      .suite-card-cta {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        font-weight: 500;
-        color: var(--accent);
-        margin-top: auto;
-        padding-top: 0.25rem;
-        transition: gap 0.2s var(--ease-out-expo);
-      }
-      .suite-card:hover .suite-card-cta {
-        gap: 0.6rem;
-      }
-
       /* ─── Quick Start Paths ────────────────────────────────────── */
       .quick-start-paths {
         display: grid;
@@ -146,12 +38,138 @@
         color: var(--text-primary);
       }
 
+      /* ─── Highlight Cards (What's New) ─────────────────────────── */
+      .highlight-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1rem;
+        margin-top: 1.5rem;
+        margin-bottom: 2rem;
+      }
+      .highlight-card {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 1rem 1.15rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        transition:
+          border-color 0.3s,
+          transform 0.3s,
+          box-shadow 0.3s;
+      }
+      .highlight-card:hover {
+        border-color: var(--border-bright);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      }
+      .highlight-card-title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .highlight-card-desc {
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        line-height: 1.45;
+        margin: 0;
+        flex: 1;
+      }
+      .highlight-card-cta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--accent);
+        margin-top: auto;
+        transition: gap 0.2s;
+      }
+      .highlight-card:hover .highlight-card-cta {
+        gap: 0.55rem;
+      }
+
+      /* ─── Suite Table ──────────────────────────────────────────── */
+      .suite-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        margin-bottom: 2rem;
+        font-size: 0.88rem;
+      }
+      .suite-table th {
+        text-align: left;
+        font-weight: 600;
+        color: var(--text-primary);
+        padding: 0.6rem 0.75rem;
+        border-bottom: 2px solid var(--border);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .suite-table td {
+        padding: 0.6rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        color: var(--text-secondary);
+        vertical-align: top;
+      }
+      .suite-table tr:last-child td {
+        border-bottom: none;
+      }
+      .suite-table td:first-child {
+        font-weight: 600;
+        color: var(--text-primary);
+        white-space: nowrap;
+      }
+      .suite-table td:last-child {
+        white-space: nowrap;
+      }
+      .suite-table a {
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        font-weight: 500;
+      }
+      .suite-table a:hover {
+        text-decoration: underline;
+      }
+
+      /* ─── Compact link lists ───────────────────────────────────── */
+      .link-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.25rem;
+        margin-top: 0.75rem;
+        margin-bottom: 2rem;
+      }
+      .link-row a {
+        font-size: 0.88rem;
+        color: var(--text-secondary);
+        transition: color 0.15s;
+      }
+      .link-row a:hover {
+        color: var(--accent);
+      }
+      .link-row .sep {
+        color: var(--text-dim);
+        user-select: none;
+      }
+
       /* ─── Responsive overrides ─────────────────────────────────── */
+      @media (max-width: 900px) {
+        .highlight-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
       @media (max-width: 768px) {
-        .suite-grid {
+        .quick-start-paths {
           grid-template-columns: 1fr;
         }
-        .quick-start-paths {
+      }
+      @media (max-width: 560px) {
+        .highlight-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -196,130 +214,15 @@
       <main class="docs-content">
         <h1>aimock Documentation</h1>
         <p class="lead">
-          aimock is the complete mock infrastructure for AI application testing. Start with LLM API
-          mocking, add MCP tools, A2A agents, vector databases, and services as your stack grows.
-          One package. Zero dependencies.
+          Complete mock infrastructure for AI application testing. One package, zero dependencies.
         </p>
 
-        <h2>The Suite</h2>
-
-        <div class="suite-grid">
-          <!-- LLM Mocking -->
-          <div class="suite-card border-green">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#128225;</span>
-              <span class="suite-card-title">LLM Mocking</span>
-            </div>
-            <p class="suite-card-desc">Mock 10+ LLM providers with fixture-driven responses</p>
-            <ul class="suite-card-links">
-              <li><a href="/chat-completions">Chat Completions</a></li>
-              <li><a href="/claude-messages">Claude Messages</a></li>
-              <li><a href="/gemini">Gemini</a></li>
-              <li><a href="/aws-bedrock">Bedrock</a></li>
-              <li><a href="/record-replay">Record &amp; Replay</a></li>
-            </ul>
-            <a href="/chat-completions" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- MCP Protocol -->
-          <div class="suite-card border-blue">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#128268;</span>
-              <span class="suite-card-title">MCP Protocol</span>
-            </div>
-            <p class="suite-card-desc">Mock MCP servers with tools, resources, and prompts</p>
-            <ul class="suite-card-links">
-              <li><a href="/mcp-mock">Tool handlers</a></li>
-              <li><a href="/mcp-mock">Resources</a></li>
-              <li><a href="/mcp-mock">Prompts</a></li>
-              <li><a href="/mcp-mock">Session management</a></li>
-            </ul>
-            <a href="/mcp-mock" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- A2A Protocol -->
-          <div class="suite-card border-purple">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#129309;</span>
-              <span class="suite-card-title">A2A Protocol</span>
-            </div>
-            <p class="suite-card-desc">Mock agent-to-agent interactions with streaming</p>
-            <ul class="suite-card-links">
-              <li><a href="/a2a-mock">Agent cards</a></li>
-              <li><a href="/a2a-mock">Message routing</a></li>
-              <li><a href="/a2a-mock">Task streaming</a></li>
-            </ul>
-            <a href="/a2a-mock" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- AG-UI Protocol -->
-          <div class="suite-card border-purple">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#129502;</span>
-              <span class="suite-card-title">AG-UI Protocol</span>
-            </div>
-            <p class="suite-card-desc">Mock agent-to-UI event streams for frontend testing</p>
-            <ul class="suite-card-links">
-              <li><a href="/agui-mock">Event types</a></li>
-              <li><a href="/agui-mock">Builders</a></li>
-              <li><a href="/agui-mock">Record &amp; replay</a></li>
-            </ul>
-            <a href="/agui-mock" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- Vector Databases -->
-          <div class="suite-card border-amber">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#128230;</span>
-              <span class="suite-card-title">Vector Databases</span>
-            </div>
-            <p class="suite-card-desc">Mock Pinecone, Qdrant, and ChromaDB endpoints</p>
-            <ul class="suite-card-links">
-              <li><a href="/vector-mock">Upsert &amp; query</a></li>
-              <li><a href="/vector-mock">Collections</a></li>
-              <li><a href="/vector-mock">Custom handlers</a></li>
-            </ul>
-            <a href="/vector-mock" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- Services -->
-          <div class="suite-card border-red">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#128269;</span>
-              <span class="suite-card-title">Services</span>
-            </div>
-            <p class="suite-card-desc">Search, rerank, and moderation API mocks</p>
-            <ul class="suite-card-links">
-              <li><a href="/services">Tavily search</a></li>
-              <li><a href="/services">Cohere rerank</a></li>
-              <li><a href="/services">OpenAI moderation</a></li>
-            </ul>
-            <a href="/services" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-
-          <!-- Testing & Operations -->
-          <div class="suite-card border-gray">
-            <div class="suite-card-header">
-              <span class="suite-card-icon">&#9881;</span>
-              <span class="suite-card-title">Testing &amp; Operations</span>
-            </div>
-            <p class="suite-card-desc">Chaos testing, metrics, drift detection, Docker</p>
-            <ul class="suite-card-links">
-              <li><a href="/test-plugins">Vitest &amp; Jest plugins</a></li>
-              <li><a href="/chaos-testing">Chaos testing</a></li>
-              <li><a href="/drift-detection">Drift detection</a></li>
-              <li><a href="/docker">Docker &amp; Helm</a></li>
-            </ul>
-            <a href="/chaos-testing" class="suite-card-cta">Get started <span>&rarr;</span></a>
-          </div>
-        </div>
-
+        <!-- ─── Quick Start ─────────────────────────────────────────── -->
         <h2>Quick Start</h2>
 
         <div class="quick-start-paths">
-          <!-- Path 1: LLM only -->
           <div class="quick-start-path">
-            <h3>I want to mock LLM APIs</h3>
+            <h3>Mock LLM APIs</h3>
             <div class="code-block">
               <div class="code-block-header">
                 Programmatic usage
@@ -332,12 +235,11 @@
 
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi there!"</span> });</code></pre>
             </div>
-            <p><a href="/docs">Quick Start: LLM &rarr;</a></p>
+            <p><a href="/chat-completions">Quick Start: LLM &rarr;</a></p>
           </div>
 
-          <!-- Path 2: Full suite -->
           <div class="quick-start-path">
-            <h3>I want to mock my entire AI stack</h3>
+            <h3>Mock your entire stack</h3>
             <div class="code-block">
               <div class="code-block-header">
                 aimock.json config
@@ -350,10 +252,120 @@
   <span class="key">"vector"</span>: { <span class="key">"provider"</span>: <span class="str">"pinecone"</span> }
 }</code></pre>
             </div>
-            <p><a href="/aimock-cli">Quick Start: aimock suite &rarr;</a></p>
+            <p><a href="/aimock-cli">Quick Start: full suite &rarr;</a></p>
           </div>
         </div>
+
+        <!-- ─── What's New ──────────────────────────────────────────── -->
+        <h2>What's New</h2>
+
+        <div class="highlight-grid">
+          <div class="highlight-card">
+            <span class="highlight-card-title">Framework Guides</span>
+            <p class="highlight-card-desc">
+              Test your LangChain, CrewAI, PydanticAI, LlamaIndex, Mastra, or ADK agents
+            </p>
+            <a href="/integrate-langchain" class="highlight-card-cta">Guides <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">Multimedia APIs</span>
+            <p class="highlight-card-desc">
+              Image generation, text-to-speech, transcription, and video mocking
+            </p>
+            <a href="/images" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">AG-UI Protocol</span>
+            <p class="highlight-card-desc">
+              Mock agent-to-UI event streams for CopilotKit frontends
+            </p>
+            <a href="/agui-mock" class="highlight-card-cta">Docs <span>&rarr;</span></a>
+          </div>
+
+          <div class="highlight-card">
+            <span class="highlight-card-title">GitHub Action</span>
+            <p class="highlight-card-desc">One-line CI setup for mock-backed test suites</p>
+            <a href="/github-action" class="highlight-card-cta">Setup <span>&rarr;</span></a>
+          </div>
+        </div>
+
+        <!-- ─── The Suite (compact table) ───────────────────────────── -->
+        <h2>The Suite</h2>
+
+        <table class="suite-table">
+          <thead>
+            <tr>
+              <th>Mock</th>
+              <th>What it does</th>
+              <th>Docs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>LLM Providers</td>
+              <td>OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere</td>
+              <td><a href="/chat-completions">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>Multimedia</td>
+              <td>Image generation, TTS, transcription, video</td>
+              <td><a href="/images">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>MCP Protocol</td>
+              <td>Tools, resources, prompts, session management</td>
+              <td><a href="/mcp-mock">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>A2A Protocol</td>
+              <td>Agent cards, message routing, SSE streaming</td>
+              <td><a href="/a2a-mock">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>AG-UI Protocol</td>
+              <td>Event streams for CopilotKit frontends</td>
+              <td><a href="/agui-mock">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>Vector DBs</td>
+              <td>Pinecone, Qdrant, ChromaDB</td>
+              <td><a href="/vector-mock">Docs &rarr;</a></td>
+            </tr>
+            <tr>
+              <td>Services</td>
+              <td>Search, rerank, moderation</td>
+              <td><a href="/services">Docs &rarr;</a></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- ─── Framework Guides ────────────────────────────────────── -->
+        <h2>Framework Guides</h2>
+
+        <div class="link-row">
+          <a href="/integrate-langchain">LangChain</a> <span class="sep">&middot;</span>
+          <a href="/integrate-crewai">CrewAI</a> <span class="sep">&middot;</span>
+          <a href="/integrate-pydanticai">PydanticAI</a> <span class="sep">&middot;</span>
+          <a href="/integrate-llamaindex">LlamaIndex</a> <span class="sep">&middot;</span>
+          <a href="/integrate-mastra">Mastra</a> <span class="sep">&middot;</span>
+          <a href="/integrate-adk">Google ADK</a>
+        </div>
+
+        <!-- ─── Migration Guides ────────────────────────────────────── -->
+        <h2>Switching from other tools?</h2>
+
+        <div class="link-row">
+          <a href="/migrate-from-msw">MSW</a> <span class="sep">&middot;</span>
+          <a href="/migrate-from-vidaimock">VidaiMock</a> <span class="sep">&middot;</span>
+          <a href="/migrate-from-mock-llm">mock-llm</a> <span class="sep">&middot;</span>
+          <a href="/migrate-from-piyook">piyook/llm-mock</a> <span class="sep">&middot;</span>
+          <a href="/migrate-from-python-mocks">Python mocks</a> <span class="sep">&middot;</span>
+          <a href="/migrate-from-mokksy">Mokksy</a>
+        </div>
       </main>
+      <aside class="page-toc" id="page-toc"></aside>
     </div>
 
     <!-- ═══ Footer ═══════════════════════════════════════════════════ -->
