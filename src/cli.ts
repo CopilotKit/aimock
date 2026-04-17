@@ -25,6 +25,7 @@ Options:
       --record              Record mode: proxy unmatched requests and save fixtures
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests
+      --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
       --provider-anthropic <url>  Upstream URL for Anthropic
       --provider-gemini <url>     Upstream URL for Gemini
@@ -70,6 +71,7 @@ const { values } = parseArgs({
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
+    "journal-max": { type: "string", default: "1000" },
     help: { type: "boolean", default: false },
   },
   strict: true,
@@ -107,6 +109,12 @@ if (Number.isNaN(latency) || latency < 0) {
 
 if (Number.isNaN(chunkSize) || chunkSize < 1) {
   console.error(`Invalid chunk-size: ${values["chunk-size"]}`);
+  process.exit(1);
+}
+
+const journalMax = Number(values["journal-max"]);
+if (Number.isNaN(journalMax) || !Number.isInteger(journalMax)) {
+  console.error(`Invalid journal-max: ${values["journal-max"]} (must be an integer)`);
   process.exit(1);
 }
 
@@ -256,6 +264,7 @@ async function main() {
       metrics: values.metrics,
       record,
       strict: values.strict,
+      journalMaxEntries: journalMax,
     },
     mounts,
   );

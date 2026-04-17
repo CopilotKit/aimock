@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## 1.14.1
+
+### Patch Changes
+
+- Cap in-memory journal (and fixture-match-counts map) to prevent heap OOM under sustained load. `Journal.entries` was unbounded, causing heap growth ~3.8MB/sec to 4GB → OOM in ~18 minutes on production Railway deployments. Default cap for CLI (`serve`) is now 1000 entries; programmatic `createServer()` remains unbounded by default (back-compat). See `--journal-max` flag.
+
 ## 1.14.0
 
 ### Minor Changes

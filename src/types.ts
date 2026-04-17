@@ -399,6 +399,16 @@ export interface MockServerOptions {
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
   /**
+   * Maximum number of request/response entries to retain in the in-memory
+   * journal. Oldest entries are dropped FIFO when the cap is exceeded.
+   * Set to 0 (or a negative value) for unbounded retention.
+   *
+   * Defaults vary by invocation path: the CLI applies a finite cap suitable
+   * for long-running servers (see `cli.ts`); programmatic callers default
+   * to unbounded to preserve prior behavior for short-lived test runs.
+   */
+  journalMaxEntries?: number;
+  /**
    * Normalize requests before matching and recording. Useful for stripping
    * dynamic data (timestamps, UUIDs, session IDs) that would cause fixture
    * mismatches on replay.

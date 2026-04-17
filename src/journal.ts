@@ -29,9 +29,31 @@ function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
   );
 }
 
+export interface JournalOptions {
+  /**
+   * Maximum number of entries to retain. When exceeded, oldest entries are
+   * dropped FIFO. Set to 0 (or a negative value) for unbounded retention
+   * (the historical default — suitable for short-lived test runs only).
+   *
+   * Long-running servers (e.g. mock proxies in CI/demo environments) should
+   * always set a finite cap: every request appends an entry holding the
+   * request body + headers + fixture reference, and without a cap the
+   * journal grows until the process OOMs.
+   */
+  maxEntries?: number;
+}
+
 export class Journal {
   private entries: JournalEntry[] = [];
   private readonly fixtureMatchCountsByTestId: Map<string, Map<Fixture, number>> = new Map();
+  private readonly maxEntries: number;
+
+  constructor(options: JournalOptions = {}) {
+    // Treat 0 or negative as "unbounded" to preserve prior behavior when
+    // the option is omitted or explicitly disabled.
+    const cap = options.maxEntries;
+    this.maxEntries = cap !== undefined && cap > 0 ? cap : 0;
+  }
 
   /** Backwards-compatible accessor — returns the default (no testId) count map. */
   get fixtureMatchCounts(): Map<Fixture, number> {
@@ -45,6 +67,12 @@ export class Journal {
       ...entry,
     };
     this.entries.push(full);
+    // FIFO eviction when over capacity. shift() in a tight loop would be
+    // O(n^2); we only ever overshoot by one per add, so a single shift is
+    // amortized O(1) per request.
+    if (this.maxEntries > 0 && this.entries.length > this.maxEntries) {
+      this.entries.shift();
+    }
     return full;
   }
 

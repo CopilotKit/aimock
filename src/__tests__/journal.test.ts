@@ -308,4 +308,69 @@ describe("Journal", () => {
       expect(journal.getLast()!.id).toBe(entry.id);
     });
   });
+
+  describe("maxEntries (FIFO eviction)", () => {
+    it("caps entries to maxEntries, dropping oldest (FIFO)", () => {
+      const journal = new Journal({ maxEntries: 3 });
+
+      journal.add(makeEntry({ path: "/a" }));
+      journal.add(makeEntry({ path: "/b" }));
+      journal.add(makeEntry({ path: "/c" }));
+      journal.add(makeEntry({ path: "/d" }));
+      journal.add(makeEntry({ path: "/e" }));
+
+      expect(journal.size).toBe(3);
+      const all = journal.getAll();
+      expect(all.map((e) => e.path)).toEqual(["/c", "/d", "/e"]);
+    });
+
+    it("does not cap when maxEntries is unset (backwards compat)", () => {
+      const journal = new Journal();
+      for (let i = 0; i < 5000; i++) journal.add(makeEntry({ path: `/${i}` }));
+      expect(journal.size).toBe(5000);
+    });
+
+    it("treats maxEntries = 0 or negative as uncapped", () => {
+      const journal0 = new Journal({ maxEntries: 0 });
+      const journalNeg = new Journal({ maxEntries: -1 });
+      for (let i = 0; i < 100; i++) {
+        journal0.add(makeEntry({ path: `/${i}` }));
+        journalNeg.add(makeEntry({ path: `/${i}` }));
+      }
+      expect(journal0.size).toBe(100);
+      expect(journalNeg.size).toBe(100);
+    });
+
+    it("getLast returns the most recent after eviction", () => {
+      const journal = new Journal({ maxEntries: 2 });
+      journal.add(makeEntry({ path: "/a" }));
+      journal.add(makeEntry({ path: "/b" }));
+      const last = journal.add(makeEntry({ path: "/c" }));
+      expect(journal.getLast()!.id).toBe(last.id);
+      expect(journal.getLast()!.path).toBe("/c");
+    });
+
+    it("findByFixture only returns surviving entries after eviction", () => {
+      const journal = new Journal({ maxEntries: 2 });
+      const fixture: Fixture = { match: { userMessage: "x" }, response: { content: "X" } };
+
+      journal.add(makeEntry({ response: { status: 200, fixture } }));
+      journal.add(makeEntry({ response: { status: 200, fixture } }));
+      journal.add(makeEntry({ response: { status: 200, fixture } }));
+
+      expect(journal.findByFixture(fixture)).toHaveLength(2);
+    });
+
+    it("memory does not grow unbounded under sustained load with cap", () => {
+      // Red-green anchor for the leak fix: 100k adds with cap=500 must stay at 500.
+      const journal = new Journal({ maxEntries: 500 });
+      for (let i = 0; i < 100_000; i++) {
+        journal.add(makeEntry({ path: `/${i}` }));
+      }
+      expect(journal.size).toBe(500);
+      // Last 500 paths preserved, oldest 99,500 evicted
+      expect(journal.getLast()!.path).toBe("/99999");
+      expect(journal.getAll()[0].path).toBe("/99500");
+    });
+  });
 });

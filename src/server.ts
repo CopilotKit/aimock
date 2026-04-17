@@ -715,7 +715,7 @@ export async function createServer(
     }
   }
 
-  const journal = new Journal();
+  const journal = new Journal({ maxEntries: options?.journalMaxEntries });
   const videoStates: VideoStateMap = new Map();
 
   // Share journal and metrics registry with mounted services
