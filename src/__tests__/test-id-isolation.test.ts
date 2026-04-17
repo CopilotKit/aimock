@@ -11,11 +11,14 @@ describe("Journal per-testId match counting", () => {
       response: { content: "Hi" },
     };
 
+    journal.incrementFixtureMatchCount(f, [f], "test-A");
+    journal.incrementFixtureMatchCount(f, [f], "test-A");
+
+    // Reads are non-mutating: fetch the maps AFTER writes so we observe
+    // the live backing maps for known testIds. Unknown testIds return
+    // a transient empty map (does not insert into the cache).
     const mapA = journal.getFixtureMatchCountsForTest("test-A");
     const mapB = journal.getFixtureMatchCountsForTest("test-B");
-
-    journal.incrementFixtureMatchCount(f, [f], "test-A");
-    journal.incrementFixtureMatchCount(f, [f], "test-A");
 
     expect(mapA.get(f)).toBe(2);
     expect(mapB.get(f)).toBeUndefined();
@@ -28,8 +31,8 @@ describe("Journal per-testId match counting", () => {
       response: { content: "Hi" },
     };
 
-    const defaultMap = journal.getFixtureMatchCountsForTest(DEFAULT_TEST_ID);
     journal.incrementFixtureMatchCount(f, [f]);
+    const defaultMap = journal.getFixtureMatchCountsForTest(DEFAULT_TEST_ID);
 
     expect(defaultMap.get(f)).toBe(1);
   });

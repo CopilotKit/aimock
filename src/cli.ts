@@ -26,6 +26,7 @@ Options:
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
+      --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
       --provider-anthropic <url>  Upstream URL for Anthropic
       --provider-gemini <url>     Upstream URL for Gemini
@@ -72,6 +73,7 @@ const { values } = parseArgs({
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
     "journal-max": { type: "string", default: "1000" },
+    "fixture-counts-max": { type: "string", default: "500" },
     help: { type: "boolean", default: false },
   },
   strict: true,
@@ -113,8 +115,19 @@ if (Number.isNaN(chunkSize) || chunkSize < 1) {
 }
 
 const journalMax = Number(values["journal-max"]);
-if (Number.isNaN(journalMax) || !Number.isInteger(journalMax)) {
-  console.error(`Invalid journal-max: ${values["journal-max"]} (must be an integer)`);
+if (Number.isNaN(journalMax) || !Number.isInteger(journalMax) || journalMax < 0) {
+  console.error(
+    `Invalid journal-max: ${values["journal-max"]} (must be a non-negative integer; 0 or omitted = unbounded)`,
+  );
+  process.exit(1);
+}
+
+const fixtureCountsMaxStr = values["fixture-counts-max"];
+const fixtureCountsMax = Number(fixtureCountsMaxStr);
+if (Number.isNaN(fixtureCountsMax) || !Number.isInteger(fixtureCountsMax) || fixtureCountsMax < 0) {
+  console.error(
+    `Invalid fixture-counts-max: ${fixtureCountsMaxStr} (must be a non-negative integer; 0 = unbounded)`,
+  );
   process.exit(1);
 }
 
@@ -265,6 +278,7 @@ async function main() {
       record,
       strict: values.strict,
       journalMaxEntries: journalMax,
+      fixtureCountsMaxTestIds: fixtureCountsMax,
     },
     mounts,
   );

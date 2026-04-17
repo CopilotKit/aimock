@@ -715,7 +715,13 @@ export async function createServer(
     }
   }
 
-  const journal = new Journal({ maxEntries: options?.journalMaxEntries });
+  // Programmatic default: finite caps so long-running embedders don't inherit
+  // an unbounded journal / fixture-count map. Callers that need unbounded
+  // retention (e.g. short-lived test harnesses) can opt in by passing 0.
+  const journal = new Journal({
+    maxEntries: options?.journalMaxEntries ?? 1000,
+    fixtureCountsMaxTestIds: options?.fixtureCountsMaxTestIds ?? 500,
+  });
   const videoStates: VideoStateMap = new Map();
 
   // Share journal and metrics registry with mounted services

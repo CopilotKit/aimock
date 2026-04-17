@@ -373,4 +373,88 @@ describe("Journal", () => {
       expect(journal.getAll()[0].path).toBe("/99500");
     });
   });
+
+  describe("fixtureCountsMaxTestIds (FIFO eviction on testId map)", () => {
+    // Minimal fixture shared by these tests — only the reference matters.
+    const fixture: Fixture = { match: { userMessage: "x" }, response: { content: "X" } };
+
+    it("does not cap when fixtureCountsMaxTestIds is unset (backwards compat)", () => {
+      const journal = new Journal();
+      for (let i = 0; i < 2000; i++) {
+        journal.incrementFixtureMatchCount(fixture, undefined, `test-${i}`);
+      }
+      // Every testId retained under unbounded default (historical behavior).
+      expect(journal.getFixtureMatchCount(fixture, "test-0")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "test-1999")).toBe(1);
+    });
+
+    it("treats fixtureCountsMaxTestIds = 0 or negative as uncapped", () => {
+      const j0 = new Journal({ fixtureCountsMaxTestIds: 0 });
+      const jNeg = new Journal({ fixtureCountsMaxTestIds: -1 });
+      for (let i = 0; i < 100; i++) {
+        j0.incrementFixtureMatchCount(fixture, undefined, `test-${i}`);
+        jNeg.incrementFixtureMatchCount(fixture, undefined, `test-${i}`);
+      }
+      expect(j0.getFixtureMatchCount(fixture, "test-0")).toBe(1);
+      expect(jNeg.getFixtureMatchCount(fixture, "test-0")).toBe(1);
+    });
+
+    it("evicts the oldest testId when size exceeds the cap (FIFO)", () => {
+      const journal = new Journal({ fixtureCountsMaxTestIds: 3 });
+
+      journal.incrementFixtureMatchCount(fixture, undefined, "t1");
+      journal.incrementFixtureMatchCount(fixture, undefined, "t2");
+      journal.incrementFixtureMatchCount(fixture, undefined, "t3");
+      // At cap (3). All three retained.
+      expect(journal.getFixtureMatchCount(fixture, "t1")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t2")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t3")).toBe(1);
+
+      // Fourth unique testId triggers eviction of the oldest (t1).
+      journal.incrementFixtureMatchCount(fixture, undefined, "t4");
+
+      // After eviction, t1's prior count is gone. Reads are non-mutating,
+      // so looking up t1 returns 0 without re-inserting.
+      expect(journal.getFixtureMatchCount(fixture, "t1")).toBe(0);
+      expect(journal.getFixtureMatchCount(fixture, "t2")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t3")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t4")).toBe(1);
+    });
+
+    it("getFixtureMatchCount does NOT mutate cache on unknown testId", () => {
+      const journal = new Journal({ fixtureCountsMaxTestIds: 3 });
+
+      journal.incrementFixtureMatchCount(fixture, undefined, "t1");
+      journal.incrementFixtureMatchCount(fixture, undefined, "t2");
+      journal.incrementFixtureMatchCount(fixture, undefined, "t3");
+      // Snapshot the internal size via a retained-testId probe: t1 is still
+      // present (count=1). Reading an unknown testId must not evict it.
+      expect(journal.getFixtureMatchCount(fixture, "t1")).toBe(1);
+
+      // Read many unknown testIds — each would have triggered insert+evict
+      // under the old behavior, evicting t1/t2/t3 one by one.
+      for (let i = 0; i < 50; i++) {
+        expect(journal.getFixtureMatchCount(fixture, `unknown-${i}`)).toBe(0);
+      }
+
+      // All original testIds must still be intact.
+      expect(journal.getFixtureMatchCount(fixture, "t1")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t2")).toBe(1);
+      expect(journal.getFixtureMatchCount(fixture, "t3")).toBe(1);
+    });
+
+    it("holds steady at the cap under sustained load with many unique testIds", () => {
+      // Red-green anchor: 10k unique testIds with cap=100 must stay at 100.
+      const journal = new Journal({ fixtureCountsMaxTestIds: 100 });
+      for (let i = 0; i < 10_000; i++) {
+        journal.incrementFixtureMatchCount(fixture, undefined, `t-${i}`);
+      }
+      // Only the last 100 testIds should have counts > 0 retained.
+      // Access an early one — since it was evicted, getFixtureMatchCount
+      // returns 0 (the read path is non-mutating on miss).
+      expect(journal.getFixtureMatchCount(fixture, "t-0")).toBe(0);
+      // Most recently added testIds retained.
+      expect(journal.getFixtureMatchCount(fixture, "t-9999")).toBe(1);
+    });
+  });
 });

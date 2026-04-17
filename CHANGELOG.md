@@ -1,5 +1,20 @@
 # @copilotkit/aimock
 
+## 1.14.2
+
+### Fixed
+
+- `Journal.getFixtureMatchCount()` is now read-only: calling it with an unknown testId no longer inserts an empty map or triggers FIFO eviction of a live testId. Reads never mutate cache state.
+- CLI rejects negative values for `--journal-max` and `--fixture-counts-max` with a clear error (previously silently treated as unbounded).
+
+### Changed
+
+- `createServer()` programmatic default: `journalMaxEntries` and `fixtureCountsMaxTestIds` now default to finite caps (1000 / 500) instead of unbounded. Long-running embedders that relied on unbounded retention must now opt in explicitly by passing `0`. Back-compat with test harnesses using `new Journal()` directly is preserved (they still default to unbounded).
+
+### Added
+
+- New `--fixture-counts-max <n>` CLI flag (default 500) to cap the fixture-match-counts map by testId.
+
 ## 1.14.1
 
 ### Patch Changes

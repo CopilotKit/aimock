@@ -793,6 +793,51 @@ describe("journal", () => {
   });
 });
 
+describe("createServer journal caps (defaults)", () => {
+  it("applies a finite default journalMaxEntries (1000) when not specified", async () => {
+    // Red-green anchor: programmatic embedders must inherit a finite cap.
+    instance = await createServer(allFixtures);
+    // Seed 1500 synthetic entries via the journal add() API (much faster
+    // than 1500 HTTP requests; the cap lives on the Journal itself).
+    for (let i = 0; i < 1500; i++) {
+      instance.journal.add({
+        method: "POST",
+        path: "/v1/chat/completions",
+        headers: {},
+        body: { model: "gpt-4", messages: [{ role: "user", content: `msg-${i}` }] },
+        response: { status: 200, fixture: null },
+      });
+    }
+    expect(instance.journal.size).toBe(1000);
+  });
+
+  it("honors explicit journalMaxEntries: 0 (opt-in to unbounded)", async () => {
+    instance = await createServer(allFixtures, { journalMaxEntries: 0 });
+    for (let i = 0; i < 1500; i++) {
+      instance.journal.add({
+        method: "POST",
+        path: "/v1/chat/completions",
+        headers: {},
+        body: { model: "gpt-4", messages: [{ role: "user", content: `msg-${i}` }] },
+        response: { status: 200, fixture: null },
+      });
+    }
+    expect(instance.journal.size).toBe(1500);
+  });
+
+  it("applies a finite default fixtureCountsMaxTestIds (500) when not specified", async () => {
+    instance = await createServer(allFixtures);
+    const fixture: Fixture = { match: { userMessage: "x" }, response: { content: "X" } };
+    for (let i = 0; i < 1000; i++) {
+      instance.journal.incrementFixtureMatchCount(fixture, undefined, `test-${i}`);
+    }
+    // Oldest testId (test-0) should be evicted under the default cap.
+    expect(instance.journal.getFixtureMatchCount(fixture, "test-0")).toBe(0);
+    // Most-recently-added testId retained.
+    expect(instance.journal.getFixtureMatchCount(fixture, "test-999")).toBe(1);
+  });
+});
+
 describe("readBody error path", () => {
   it("returns 500 when the request body stream is destroyed mid-read", async () => {
     instance = await createServer(allFixtures);

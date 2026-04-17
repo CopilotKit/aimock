@@ -401,13 +401,27 @@ export interface MockServerOptions {
   /**
    * Maximum number of request/response entries to retain in the in-memory
    * journal. Oldest entries are dropped FIFO when the cap is exceeded.
-   * Set to 0 (or a negative value) for unbounded retention.
+   * Set to 0 (or omit) for unbounded retention. Negative values are
+   * rejected at the CLI parse layer; programmatically they are treated
+   * as 0 (unbounded) for back-compat.
    *
-   * Defaults vary by invocation path: the CLI applies a finite cap suitable
-   * for long-running servers (see `cli.ts`); programmatic callers default
-   * to unbounded to preserve prior behavior for short-lived test runs.
+   * Default: 1000 (applied by `createServer` when omitted). The CLI passes
+   * through its own default. Short-lived test harnesses that want every
+   * request recorded can opt in to unbounded retention by passing 0.
    */
   journalMaxEntries?: number;
+  /**
+   * Maximum number of unique testIds retained in the journal's fixture
+   * match-count map. Oldest testIds are dropped FIFO when the cap is
+   * exceeded. Set to 0 (or omit) for unbounded retention. Negative values
+   * are rejected at the CLI parse layer; programmatically they are treated
+   * as 0 (unbounded) for back-compat.
+   *
+   * Default: 500 (applied by `createServer` when omitted). Without a cap
+   * this map can grow over time in long-running servers that see many
+   * unique testIds.
+   */
+  fixtureCountsMaxTestIds?: number;
   /**
    * Normalize requests before matching and recording. Useful for stripping
    * dynamic data (timestamps, UUIDs, session IDs) that would cause fixture

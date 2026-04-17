@@ -125,6 +125,32 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: argument validation", () => {
     expect(stderr).toContain("Invalid chunk-size");
     expect(code).toBe(1);
   });
+
+  it("rejects --journal-max=-5 (negative)", async () => {
+    const { stderr, code } = await runCli(["--journal-max=-5"]);
+    expect(stderr).toContain("Invalid journal-max");
+    expect(stderr).toContain("non-negative");
+    expect(code).toBe(1);
+  });
+
+  it("rejects --journal-max=-1 (negative)", async () => {
+    const { stderr, code } = await runCli(["--journal-max=-1"]);
+    expect(stderr).toContain("Invalid journal-max");
+    expect(code).toBe(1);
+  });
+
+  it("rejects --journal-max 1.5 (non-integer)", async () => {
+    const { stderr, code } = await runCli(["--journal-max", "1.5"]);
+    expect(stderr).toContain("Invalid journal-max");
+    expect(code).toBe(1);
+  });
+
+  it("rejects --fixture-counts-max=-1 (negative)", async () => {
+    const { stderr, code } = await runCli(["--fixture-counts-max=-1"]);
+    expect(stderr).toContain("Invalid fixture-counts-max");
+    expect(stderr).toContain("non-negative");
+    expect(code).toBe(1);
+  });
 });
 
 describe.skipIf(!CLI_AVAILABLE)("CLI: fixture loading", () => {
