@@ -348,6 +348,50 @@
         color: var(--accent);
       }
 
+      /* Variant: a single install-box housing multiple run commands
+         separated by an "or" divider. Stacks vertically instead of
+         the default single-line inline-flex layout. */
+      .install-box.install-box--multi {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.25rem;
+        padding: 0.75rem 1.25rem;
+        max-width: 100%;
+      }
+      .install-box--multi .run-cmd {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+      .install-box--multi .run-cmd code {
+        overflow-x: auto;
+        flex: 1;
+        white-space: nowrap;
+      }
+      .install-box--multi .run-or {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        text-align: center;
+        padding: 0.25rem 0;
+        user-select: none;
+      }
+      .install-secondary {
+        margin-top: 1rem;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        animation: fadeUp 0.8s var(--ease-out-expo) 0.35s both;
+      }
+      .install-secondary code {
+        font-family: var(--font-mono);
+        color: var(--text-primary);
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.15rem 0.45rem;
+        font-size: 0.85em;
+      }
+
       /* ─── Demo Panels ────────────────────────────────────────────── */
       .demo-grid {
         display: grid;
@@ -1057,6 +1101,14 @@
           flex-wrap: wrap;
           font-size: 0.8rem;
         }
+        .install-box--multi .run-cmd {
+          flex-wrap: wrap;
+        }
+        .install-box--multi .run-cmd code {
+          white-space: normal;
+          word-break: break-all;
+          min-width: 0;
+        }
       }
 
       @media (max-width: 480px) {
@@ -1125,11 +1177,25 @@
           suite grows with your stack.
         </p>
 
-        <div class="install-box">
-          <span class="prompt-sign">$</span>
-          <code>npm install @copilotkit/aimock</code>
-          <button class="copy-btn" onclick="copyInstall(this)">Copy</button>
+        <div class="install-box install-box--multi">
+          <div class="run-cmd">
+            <span class="prompt-sign">$</span>
+            <code>npx -p @copilotkit/aimock llmock -f ./fixtures</code>
+            <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+          </div>
+          <div class="run-or">or</div>
+          <div class="run-cmd">
+            <span class="prompt-sign">$</span>
+            <code
+              >docker run -v $(pwd)/fixtures:/fixtures -p 4010:4010 ghcr.io/copilotkit/aimock</code
+            >
+            <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+          </div>
         </div>
+
+        <p class="install-secondary">
+          Or install as a library: <code>npm install @copilotkit/aimock</code>
+        </p>
 
         <div class="demo-grid">
           <!-- Left: fixture.json -->
@@ -1844,9 +1910,14 @@
 
     <!-- ─── Scripts ──────────────────────────────────────────────── -->
     <script>
-      // Copy install command
-      function copyInstall(btn) {
-        navigator.clipboard.writeText("npm install @copilotkit/aimock").then(function () {
+      // Copy the command from the adjacent <code> inside the same .run-cmd row.
+      // Scoped per-row so multiple commands can share one .install-box card.
+      function copyCmd(btn) {
+        var row = btn.closest(".run-cmd");
+        var codeEl = row && row.querySelector("code");
+        var cmd = codeEl ? codeEl.textContent : "";
+        if (!cmd) return;
+        navigator.clipboard.writeText(cmd).then(function () {
           btn.textContent = "Copied!";
           setTimeout(function () {
             btn.textContent = "Copy";
