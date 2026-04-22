@@ -267,6 +267,62 @@ describe("proxy-only mode", () => {
 
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
+
+  it("applies malformed chaos AFTER proxying (upstream called, body corrupted, journaled)", async () => {
+    const countingUpstream = await createCountingUpstream("valid content");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "aimock-chaos-postresponse-"),
+        )),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Upstream IS called: malformed is a post-response mutation, not a pre-flight drop
+    expect(countingUpstream.getCount()).toBe(1);
+    // Client sees 200 with a body that does NOT parse as JSON
+    expect(resp.status).toBe(200);
+    expect(() => JSON.parse(resp.body)).toThrow();
+    // Journal records the chaos action exactly once (no double-entry from the
+    // chaos path + the default proxy-relay path)
+    expect(recorder.journal.size).toBe(1);
+    const last = recorder.journal.getLast();
+    expect(last?.response.chaosAction).toBe("malformed");
+    expect(last?.response.fixture).toBeNull();
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("preserves upstream content-type on replay when no chaos fires", async () => {
+    const countingUpstream = await createCountingUpstream("valid content");
+
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-proxy-ct-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(200);
+    const ct = resp.headers["content-type"];
+    expect(typeof ct === "string" ? ct : "").toContain("application/json");
+    // Body is valid JSON and round-trips
+    expect(JSON.parse(resp.body).choices[0].message.content).toBe("valid content");
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");

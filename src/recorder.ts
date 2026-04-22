@@ -37,6 +37,28 @@ const STRIP_HEADERS = new Set([
 ]);
 
 /**
+ * Captured upstream response, exposed to the `beforeWriteResponse` hook so
+ * callers can decide whether to relay it or mutate it (e.g. chaos injection).
+ */
+export interface ProxyCapturedResponse {
+  status: number;
+  contentType: string;
+  body: Buffer;
+  isBinary: boolean;
+}
+
+export interface ProxyOptions {
+  /**
+   * Called after the upstream response has been captured and recorded, but
+   * before the relay to the client. If the hook writes its own response and
+   * returns `true`, the default relay is skipped. Returning `false` (or
+   * omitting the hook) lets proxyAndRecord relay the upstream response
+   * normally. Rejected promises propagate and leave the response unwritten.
+   */
+  beforeWriteResponse?: (response: ProxyCapturedResponse) => boolean | Promise<boolean>;
+}
+
+/**
  * Proxy an unmatched request to the real upstream provider, record the
  * response as a fixture on disk and in memory, then relay the response
  * back to the original client.
@@ -57,6 +79,7 @@ export async function proxyAndRecord(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   },
   rawBody?: string,
+  options?: ProxyOptions,
 ): Promise<boolean> {
   const record = defaults.record;
   if (!record) return false;
@@ -258,6 +281,19 @@ export async function proxyAndRecord(
   // progressively by makeUpstreamRequest — headers and body are already on
   // the wire).
   if (!streamedToClient) {
+    // Give the caller a chance to mutate or replace the response before relay.
+    // Used by the chaos layer to turn a successful proxy into a malformed body.
+    // `body` is the raw upstream bytes so binary payloads survive round-tripping.
+    if (options?.beforeWriteResponse) {
+      const handled = await options.beforeWriteResponse({
+        status: upstreamStatus,
+        contentType: ctString,
+        body: rawBuffer,
+        isBinary: isBinaryStream,
+      });
+      if (handled) return true;
+    }
+
     const relayHeaders: Record<string, string> = {};
     if (ctString) {
       relayHeaders["Content-Type"] = ctString;
