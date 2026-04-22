@@ -66,10 +66,10 @@
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">Run <span class="lang-tag">shell</span></div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures
+              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures
 
 <span class="cm"># Custom port</span>
-$ npx @copilotkit/aimock --fixtures ./fixtures --port 5555</code></pre>
+$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures --port 5555</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -84,7 +84,7 @@ $ docker run -p 4010:4010 \
 $ docker run -p 5555:5555 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  --fixtures /fixtures --port 5555
+  --fixtures /fixtures --host 0.0.0.0 --port 5555
 
 <span class="cm"># Pull from GitHub Container Registry</span>
 $ docker pull ghcr.io/copilotkit/aimock:latest

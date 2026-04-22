@@ -80,7 +80,7 @@
               <div class="code-block-header">
                 Enable metrics <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures --metrics</code></pre>
+              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures --metrics</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -91,7 +91,7 @@
               <pre><code>$ docker run -d -p 4010:4010 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --fixtures /fixtures --metrics</code></pre>
+  -f /fixtures -h 0.0.0.0 --metrics</code></pre>
             </div>
           </div>
         </div>

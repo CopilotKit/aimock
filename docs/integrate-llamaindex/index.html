@@ -83,7 +83,7 @@ response = query_engine.query(<span class="str">"What is gravity?"</span>)</code
         <p>Start aimock with fixtures that match the queries your pipeline will send:</p>
         <div class="code-block">
           <div class="code-block-header">Terminal <span class="lang-tag">shell</span></div>
-          <pre><code>npx @copilotkit/aimock --fixtures ./fixtures/llamaindex</code></pre>
+          <pre><code>npx -p @copilotkit/aimock llmock --fixtures ./fixtures/llamaindex</code></pre>
         </div>
 
         <h2>Mock Both LLM and Vector DB</h2>
@@ -281,7 +281,7 @@ embed_model = OpenAIEmbedding(
         <div class="code-block">
           <div class="code-block-header">Record mode <span class="lang-tag">shell</span></div>
           <pre><code><span class="cm"># Record LLM and embedding calls from a live session</span>
-npx @copilotkit/aimock \
+npx -p @copilotkit/aimock llmock \
   --record \
   --provider-openai https://api.openai.com \
   --fixtures ./fixtures/llamaindex
