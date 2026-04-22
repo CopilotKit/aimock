@@ -119,7 +119,7 @@
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi from Ollama!"</span> });
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Point the Ollama SDK at aimock</span>
+<span class="cm">// Point the Ollama SDK at aimock</span>
 <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/api/chat`</span>, {
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">body</span>: <span class="fn">JSON.stringify</span>({

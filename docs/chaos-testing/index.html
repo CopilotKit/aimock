@@ -112,12 +112,12 @@
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi!"</span> });
 
-<span class="cmt">// 50% of all requests will be dropped with a 500</span>
+<span class="cm">// 50% of all requests will be dropped with a 500</span>
 <span class="op">mock</span>.<span class="fn">setChaos</span>({ <span class="prop">dropRate</span>: <span class="num">0.5</span> });
 
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Later, remove chaos</span>
+<span class="cm">// Later, remove chaos</span>
 <span class="op">mock</span>.<span class="fn">clearChaos</span>();</code></pre>
         </div>
 
@@ -127,14 +127,14 @@
           <div class="code-block-header">
             Programmatic chaos control <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="cmt">// Set server-level chaos (returns `this` for chaining)</span>
+          <pre><code><span class="cm">// Set server-level chaos (returns `this` for chaining)</span>
 <span class="op">mock</span>.<span class="fn">setChaos</span>({
-  <span class="prop">dropRate</span>: <span class="num">0.1</span>,        <span class="cmt">// 10% drop rate</span>
-  <span class="prop">malformedRate</span>: <span class="num">0.05</span>,  <span class="cmt">// 5% malformed rate</span>
-  <span class="prop">disconnectRate</span>: <span class="num">0.02</span>, <span class="cmt">// 2% disconnect rate</span>
+  <span class="prop">dropRate</span>: <span class="num">0.1</span>,        <span class="cm">// 10% drop rate</span>
+  <span class="prop">malformedRate</span>: <span class="num">0.05</span>,  <span class="cm">// 5% malformed rate</span>
+  <span class="prop">disconnectRate</span>: <span class="num">0.02</span>, <span class="cm">// 2% disconnect rate</span>
 });
 
-<span class="cmt">// Remove all server-level chaos</span>
+<span class="cm">// Remove all server-level chaos</span>
 <span class="op">mock</span>.<span class="fn">clearChaos</span>();</code></pre>
         </div>
 
@@ -197,7 +197,7 @@
           <div class="code-block-header">
             Per-request chaos via headers <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="cmt">// Force 100% disconnect on this specific request</span>
+          <pre><code><span class="cm">// Force 100% disconnect on this specific request</span>
 <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/chat/completions`</span>, {
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">headers</span>: {
@@ -217,7 +217,7 @@
               <div class="code-block-header">
                 CLI chaos flags <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
   --chaos-disconnect 0.02</code></pre>
@@ -231,7 +231,7 @@
               <pre><code>$ docker run -d -p 4010:4010 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --fixtures /fixtures \
+  -f /fixtures -h 0.0.0.0 \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
   --chaos-disconnect 0.02</code></pre>
@@ -254,7 +254,7 @@
   "path": "/v1/chat/completions",
   "response": {
     "status": 500,
-    "fixture": { "..." },
+    "fixture": { "...": "elided for brevity" },
     "chaosAction": "drop"
   }
 }</code></pre>
