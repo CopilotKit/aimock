@@ -177,7 +177,7 @@ export function applyChaosAction(
   registry?: MetricsRegistry,
 ): void {
   if (registry) {
-    registry.incrementCounter("aimock_chaos_triggered_total", { action });
+    registry.incrementCounter("aimock_chaos_triggered_total", { action, source });
   }
 
   switch (action) {

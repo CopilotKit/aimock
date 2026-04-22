@@ -158,7 +158,11 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
-  // Detect streaming response and collapse if necessary
+  // Detect streaming response and collapse if necessary.
+  // NOTE: collapse buffers the entire upstream body in memory. Fine for
+  // current chat-completions traffic (responses are small), but revisit if
+  // this path ever proxies long-lived or large streams — both the buffer
+  // here and the hook below receive the full payload.
   const contentType = upstreamHeaders["content-type"];
   const ctString = Array.isArray(contentType) ? contentType.join(", ") : (contentType ?? "");
   const isBinaryStream = ctString.toLowerCase().includes("application/vnd.amazon.eventstream");
@@ -261,7 +265,10 @@ export async function proxyAndRecord(
         warnings.push("Stream response was truncated — fixture may be incomplete");
       }
 
-      // Auth headers are forwarded to upstream but excluded from saved fixtures for security
+      // Auth headers are forwarded to upstream but excluded from saved fixtures for security.
+      // NOTE: the persisted fixture is always the real upstream response, even when chaos
+      // later mutates the relay (e.g. malformed via beforeWriteResponse). Chaos is a live-traffic
+      // decoration; the recorded artifact must stay truthful so replay sees what upstream said.
       const fileContent: Record<string, unknown> = { fixtures: [fixture] };
       if (warnings.length > 0) {
         fileContent._warning = warnings.join("; ");
