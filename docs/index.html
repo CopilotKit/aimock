@@ -1225,7 +1225,7 @@
                 <span class="title">terminal</span>
               </div>
               <div class="demo-body">
-                <pre><span class="t-green">$</span> npx @copilotkit/aimock --record --provider-openai https://api.openai.com
+                <pre><span class="t-green">$</span> npx -p @copilotkit/aimock llmock --record --provider-openai https://api.openai.com
 
 <span class="t-blue">&#9889;</span> Listening on http://localhost:4010
 
@@ -1876,7 +1876,11 @@
       // ── Terminal demo animation ──────────────────────────────────────
       var termSteps = [
         // Step 1: User types command
-        { type: "prompt", text: "npx @copilotkit/aimock -p 4010 -f ./fixture.json", delay: 600 },
+        {
+          type: "prompt",
+          text: "npx -p @copilotkit/aimock llmock -p 4010 -f ./fixture.json",
+          delay: 600,
+        },
         // Step 2: Server starts
         {
           type: "line",

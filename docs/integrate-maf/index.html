@@ -69,7 +69,7 @@
 <span class="kw">from</span> agent_framework_openai <span class="kw">import</span> OpenAIChatClient
 <span class="kw">import</span> asyncio
 
-<span class="cm"># Start aimock first: npx @copilotkit/aimock --fixtures ./fixtures</span>
+<span class="cm"># Start aimock first: npx -p @copilotkit/aimock llmock --fixtures ./fixtures</span>
 client = OpenAIChatClient(
     model=<span class="str">"gpt-4o"</span>,
     base_url=<span class="str">"http://localhost:4010/v1"</span>,
@@ -99,7 +99,7 @@ asyncio.run(main())</code></pre>
               <pre><code><span class="kw">using</span> <span class="type">Microsoft.Extensions.AI</span>;
 <span class="kw">using</span> <span class="type">OpenAI</span>;
 
-<span class="cm">// Start aimock first: npx @copilotkit/aimock --fixtures ./fixtures</span>
+<span class="cm">// Start aimock first: npx -p @copilotkit/aimock llmock --fixtures ./fixtures</span>
 <span class="kw">var</span> openaiClient = <span class="kw">new</span> <span class="type">OpenAIClient</span>(
     <span class="kw">new</span> <span class="type">ApiKeyCredential</span>(<span class="str">"test"</span>),
     <span class="kw">new</span> <span class="type">OpenAIClientOptions</span>
@@ -574,7 +574,7 @@ asyncio.run(main())</code></pre>
             Record an agent session <span class="lang-tag">shell</span>
           </div>
           <pre><code><span class="cm"># Start aimock in record mode &mdash; unmatched requests go to OpenAI</span>
-npx @copilotkit/aimock --fixtures ./fixtures \
+npx -p @copilotkit/aimock llmock --fixtures ./fixtures \
   --record \
   --provider-openai https://api.openai.com
 

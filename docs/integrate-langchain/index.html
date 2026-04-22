@@ -62,7 +62,7 @@
           <div class="code-block-header">Minimal setup <span class="lang-tag">python</span></div>
           <pre><code><span class="kw">from</span> langchain_openai <span class="kw">import</span> ChatOpenAI
 
-<span class="cm"># Start aimock first: npx @copilotkit/aimock --fixtures ./fixtures</span>
+<span class="cm"># Start aimock first: npx -p @copilotkit/aimock llmock --fixtures ./fixtures</span>
 llm = <span class="fn">ChatOpenAI</span>(
     base_url=<span class="str">"http://localhost:4010/v1"</span>,
     api_key=<span class="str">"test"</span>,
@@ -182,7 +182,7 @@ result = llm.<span class="fn">invoke</span>(<span class="str">"hello"</span>)
         </p>
         <div class="code-block">
           <div class="code-block-header">Record a session <span class="lang-tag">shell</span></div>
-          <pre><code>npx @copilotkit/aimock --record --provider-openai https://api.openai.com -f ./fixtures</code></pre>
+          <pre><code>npx -p @copilotkit/aimock llmock --record --provider-openai https://api.openai.com -f ./fixtures</code></pre>
         </div>
         <p>
           Then point your LangChain code at <code>http://localhost:4010/v1</code> and run your agent
@@ -192,7 +192,7 @@ result = llm.<span class="fn">invoke</span>(<span class="str">"hello"</span>)
         <div class="code-block">
           <div class="code-block-header">Replay in tests <span class="lang-tag">shell</span></div>
           <pre><code><span class="cm"># Replay mode (default when fixtures exist)</span>
-npx @copilotkit/aimock -f ./fixtures
+npx -p @copilotkit/aimock llmock -f ./fixtures
 
 <span class="cm"># Run your tests against the recorded fixtures</span>
 pytest tests/</code></pre>
