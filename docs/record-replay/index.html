@@ -89,7 +89,7 @@
               <div class="code-block-header">
                 Proxy-only mode <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
   --proxy-only \
   --provider-openai https://api.openai.com</code></pre>
             </div>
@@ -100,9 +100,9 @@
                 Proxy-only mode <span class="lang-tag">shell</span>
               </div>
               <pre><code>$ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock -f /fixtures \
+  -f /fixtures -h 0.0.0.0 \
   --proxy-only \
   --provider-openai https://api.openai.com</code></pre>
             </div>
@@ -140,7 +140,7 @@
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
   --record \
   --provider-openai https://api.openai.com \
   --provider-anthropic https://api.anthropic.com</code></pre>
@@ -150,9 +150,9 @@
             <div class="code-block">
               <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
               <pre><code>$ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --fixtures /fixtures \
+  -f /fixtures -h 0.0.0.0 \
   --record \
   --provider-openai https://api.openai.com \
   --provider-anthropic https://api.anthropic.com</code></pre>
@@ -160,7 +160,7 @@
           </div>
         </div>
 
-        <h2>CLI Flags</h2>
+        <h2>Record &amp; Replay CLI Flags</h2>
         <table class="endpoint-table">
           <thead>
             <tr>
@@ -169,6 +169,18 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td><code>-f, --fixtures &lt;path&gt;</code></td>
+              <td>Path to fixtures directory or file (default: <code>./fixtures</code>)</td>
+            </tr>
+            <tr>
+              <td><code>-p, --port &lt;port&gt;</code></td>
+              <td>Port to listen on (default: <code>4010</code>)</td>
+            </tr>
+            <tr>
+              <td><code>-h, --host &lt;host&gt;</code></td>
+              <td>Host to bind to (default: <code>127.0.0.1</code>)</td>
+            </tr>
             <tr>
               <td><code>--record</code></td>
               <td>Enable record mode (proxy, save, and cache on miss)</td>
@@ -180,6 +192,37 @@
             <tr>
               <td><code>--strict</code></td>
               <td>Strict mode: return 503 (not 404) on unmatched requests</td>
+            </tr>
+            <tr>
+              <td><code>-w, --watch</code></td>
+              <td>Watch fixture path for changes and reload</td>
+            </tr>
+            <tr>
+              <td><code>--log-level &lt;level&gt;</code></td>
+              <td>
+                Log verbosity: <code>silent</code>, <code>info</code>, <code>debug</code> (default:
+                <code>info</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>--validate-on-load</code></td>
+              <td>Validate fixture schemas at startup</td>
+            </tr>
+            <tr>
+              <td><code>--journal-max &lt;n&gt;</code></td>
+              <td>
+                Max request entries retained in memory (default: <code>1000</code> for both
+                <code>serve</code> and <code>createServer()</code> since v1.14.2; <code>0</code> =
+                unbounded; direct <code>new Journal()</code> instantiation still defaults to
+                unbounded for back-compat)
+              </td>
+            </tr>
+            <tr>
+              <td><code>--fixture-counts-max &lt;n&gt;</code></td>
+              <td>
+                Max unique testIds retained in the fixture match-count map (default:
+                <code>500</code>; <code>0</code> = unbounded)
+              </td>
             </tr>
             <tr>
               <td><code>--provider-openai &lt;url&gt;</code></td>
@@ -213,6 +256,38 @@
               <td><code>--provider-cohere &lt;url&gt;</code></td>
               <td>Upstream URL for Cohere</td>
             </tr>
+            <tr>
+              <td><code>--agui-record</code></td>
+              <td>Enable AG-UI recording (proxy unmatched AG-UI requests)</td>
+            </tr>
+            <tr>
+              <td><code>--agui-proxy-only</code></td>
+              <td>AG-UI proxy mode (forward on miss, no saving or caching)</td>
+            </tr>
+            <tr>
+              <td><code>--agui-upstream &lt;url&gt;</code></td>
+              <td>
+                Upstream AG-UI agent URL (used with <code>--agui-record</code> /
+                <code>--agui-proxy-only</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>--chaos-drop &lt;rate&gt;</code></td>
+              <td>
+                Probability (<code>0</code>&ndash;<code>1</code>) of dropping requests with 500
+              </td>
+            </tr>
+            <tr>
+              <td><code>--chaos-malformed &lt;rate&gt;</code></td>
+              <td>Probability (<code>0</code>&ndash;<code>1</code>) of returning malformed JSON</td>
+            </tr>
+            <tr>
+              <td><code>--chaos-disconnect &lt;rate&gt;</code></td>
+              <td>
+                Probability (<code>0</code>&ndash;<code>1</code>) of destroying the connection
+                mid-stream
+              </td>
+            </tr>
           </tbody>
         </table>
 
@@ -227,21 +302,51 @@
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Enable recording with upstream providers</span>
-<span class="op">mock</span>.<span class="fn">enableRecording</span>({
-  <span class="prop">providers</span>: {
-    <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
-    <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
-  },
-  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
-  <span class="prop">proxyOnly</span>: <span class="kw">true</span>,  <span class="cmt">// omit to record fixtures</span>
-});
+<span class="kw">try</span> {
+  <span class="cm">// Enable recording — unmatched requests are proxied AND saved as fixtures</span>
+  <span class="op">mock</span>.<span class="fn">enableRecording</span>({
+    <span class="prop">providers</span>: {
+      <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+      <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+    },
+    <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+  });
 
-<span class="cmt">// Make requests — unmatched ones are proxied and recorded</span>
-<span class="cmt">// ...</span>
+  <span class="cm">// Make requests — unmatched ones are proxied and recorded</span>
+  <span class="cm">// ...</span>
 
-<span class="cmt">// Disable recording — recorded fixtures persist on disk</span>
-<span class="op">mock</span>.<span class="fn">disableRecording</span>();</code></pre>
+  <span class="cm">// Disable recording — recorded fixtures persist on disk</span>
+  <span class="op">mock</span>.<span class="fn">disableRecording</span>();
+} <span class="kw">finally</span> {
+  <span class="cm">// Always release the port, even if a test above threw</span>
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
+}</code></pre>
+        </div>
+
+        <p>
+          To proxy unmatched requests without writing fixtures to disk, set
+          <code>proxyOnly: true</code> and omit <code>fixturePath</code>. Despite the method name,
+          <code>enableRecording({ proxyOnly: true })</code> does <strong>not</strong> write fixtures
+          &mdash; omit or set <code>proxyOnly: false</code> to actually record. Remember to
+          <code>mock.stop()</code> when done:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Proxy-only (no recording) <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">try</span> {
+  <span class="op">mock</span>.<span class="fn">enableRecording</span>({
+    <span class="prop">providers</span>: {
+      <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+      <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+    },
+    <span class="prop">proxyOnly</span>: <span class="kw">true</span>,
+  });
+  <span class="cm">// ...make requests; unmatched ones proxy through without being saved</span>
+} <span class="kw">finally</span> {
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
+}</code></pre>
         </div>
 
         <h2>Stream Collapsing</h2>
@@ -295,16 +400,31 @@
           simple <code>{ content }</code> or <code>{ toolCalls }</code> fixture response.
         </p>
 
-        <h2>Auth Header Forwarding</h2>
+        <h2>Header Forwarding</h2>
         <p>
-          When proxying to upstream providers, aimock forwards these headers from the original
-          request:
+          When proxying to upstream providers, aimock forwards <strong>every header</strong> from
+          the original request except hop-by-hop headers (per RFC 2616 §13.5.1) and headers the
+          upstream HTTP client must set from the target URL or body. This pass-through behavior (in
+          place since v1.6.1) means custom gateway headers, <code>openai-organization</code>,
+          <code>anthropic-version</code>, and any other provider-specific auth or routing header all
+          reach the upstream as-is.
         </p>
+        <p>The following headers are stripped before proxying:</p>
         <ul>
-          <li><code>authorization</code></li>
-          <li><code>x-api-key</code></li>
-          <li><code>content-type</code></li>
-          <li><code>accept</code></li>
+          <li>
+            <strong>Hop-by-hop (RFC 2616 §13.5.1):</strong>
+            <code>connection</code>, <code>keep-alive</code>, <code>transfer-encoding</code>,
+            <code>te</code>, <code>trailer</code>, <code>upgrade</code>,
+            <code>proxy-authorization</code>, <code>proxy-authenticate</code>
+          </li>
+          <li>
+            <strong>Set by the HTTP client from the target URL / body:</strong>
+            <code>host</code>, <code>content-length</code>
+          </li>
+          <li>
+            <strong>Not relevant for LLM APIs (avoid leaking or mismatched encoding):</strong>
+            <code>cookie</code>, <code>accept-encoding</code>
+          </li>
         </ul>
         <p>
           <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture only
@@ -326,7 +446,7 @@
           <div class="code-block-header">
             Recorded fixture file <span class="lang-tag">json</span>
           </div>
-          <pre><code><span class="cmt">// fixtures/recorded/openai-2025-01-15T10-30-00-000Z-0.json</span>
+          <pre><code><span class="cm">// fixtures/recorded/openai-&lt;YYYY-MM-DD&gt;T&lt;HH-MM-SS&gt;-000Z-0.json</span>
 {
   "fixtures": [
     {
@@ -371,10 +491,10 @@
                 Record then replay <span class="lang-tag">shell</span>
               </div>
               <pre><code># First run: record real API responses
-$ npx @copilotkit/aimock --record --provider-openai https://api.openai.com -f ./fixtures
+$ npx -p @copilotkit/aimock llmock --record --provider-openai https://api.openai.com -f ./fixtures
 
 # Subsequent runs: replay from recorded fixtures
-$ npx @copilotkit/aimock -f ./fixtures</code></pre>
+$ npx -p @copilotkit/aimock llmock -f ./fixtures</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -384,15 +504,15 @@ $ npx @copilotkit/aimock -f ./fixtures</code></pre>
               </div>
               <pre><code># First run: record real API responses
 $ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --record --provider-openai https://api.openai.com -f /fixtures
+  --record --provider-openai https://api.openai.com -f /fixtures -h 0.0.0.0
 
 # Subsequent runs: replay from recorded fixtures
 $ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock -f /fixtures</code></pre>
+  -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
@@ -409,11 +529,11 @@ $ docker run -d -p 4010:4010 \
           </div>
           <pre><code>- name: Start aimock
   run: |
-    docker run -d --name aimock \
-      -v ./fixtures:/fixtures \
+    docker run -d --rm --name aimock \
+      -v $(pwd)/fixtures:/fixtures \
       -p 4010:4010 \
       ghcr.io/copilotkit/aimock \
-      npx @copilotkit/aimock --strict -f /fixtures
+      --strict -f /fixtures -h 0.0.0.0
 
 - name: Run tests
   env:
@@ -421,7 +541,8 @@ $ docker run -d -p 4010:4010 \
   run: pnpm test
 
 - name: Stop aimock
-  run: docker stop aimock</code></pre>
+  if: always()
+  run: docker rm -f aimock</code></pre>
         </div>
 
         <h2>Request Transform</h2>
@@ -445,14 +566,14 @@ const mock = new LLMock({
       ...m,
       content:
         typeof m.content === "string"
-          ? m.content.replace(/\d{4}-\d{2}-\d{2}T[\d:.+Z-]+/g, "")
+          ? m.content.replace(/\d{4}-\d{2}-\d{2}T[\d:.+Z-]+/g, "").trim()
           : m.content,
     })),
   }),
 });
 
 // Fixture uses the cleaned key (no timestamp)
-mock.onMessage("tell me the weather ", { content: "Sunny" });
+mock.onMessage("tell me the weather", { content: "Sunny" });
 
 // Request with a timestamp still matches after transform
 await mock.start();</code></pre>
@@ -483,6 +604,85 @@ await mock.start();</code></pre>
           <li>Re-record when upstream APIs change (drift detection catches this)</li>
         </ol>
 
+        <h2 id="recording-multi-turn-conversations">Recording Multi-Turn Conversations</h2>
+        <p>
+          The recorder is <strong>stateless across turns</strong>. Every incoming request is treated
+          as an independent unit: aimock derives fixture match criteria from a
+          <em>single</em> request at a time, and it doesn&rsquo;t remember or hash prior turns of
+          the same test session. Two post-record remedies handle the two flavors of collision: add
+          <a href="/multi-turn"><code>toolCallId</code></a> for tool-round follow-ups (covered on
+          the <a href="/multi-turn">Multi-Turn Conversations</a> page), or add
+          <code>sequenceIndex</code> for the same user prompt repeating (covered below).
+        </p>
+
+        <p>
+          Specifically, for chat requests the recorder reads only the
+          <strong>last user message</strong> of the request and saves it as
+          <code>match.userMessage</code>. For embedding requests it uses the input text. There is no
+          history-based keying &mdash; unlike VCR-style recorders that fingerprint the full request
+          body, aimock keys fixtures purely on the last user message.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recorder match derivation <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="cm">// src/recorder.ts (simplified; real implementation guards against a null last-user-message)</span>
+<span class="kw">function</span> <span class="fn">buildFixtureMatch</span>(request) {
+  <span class="kw">if</span> (request.embeddingInput) {
+    <span class="kw">return</span> { <span class="prop">inputText</span>: request.embeddingInput };
+  }
+  <span class="cm">// Chat/multimedia — key on the LAST user message only</span>
+  <span class="kw">const</span> lastUser = <span class="fn">getLastMessageByRole</span>(request.messages, <span class="str">"user"</span>);
+  <span class="kw">return</span> { <span class="prop">userMessage</span>: <span class="fn">getTextContent</span>(lastUser.content) };
+}</code></pre>
+        </div>
+
+        <h3>Consequence: identical final prompts collide</h3>
+        <p>
+          Two turns of the same conversation that happen to end with the same user message produce
+          two fixture entries that share the same <code>match.userMessage</code>. On replay, the
+          router picks the <strong>first fixture that matches</strong> (first-wins by file load
+          order), and the second fixture is effectively shadowed. This matters whenever a test says
+          &ldquo;continue&rdquo;, &ldquo;yes&rdquo;, &ldquo;retry&rdquo;, or any other short prompt
+          twice in a row.
+        </p>
+
+        <h3>Recommended workflow</h3>
+        <ol>
+          <li>
+            Run the test once under <code>--record</code> and let aimock capture one fixture per
+            turn as usual.
+          </li>
+          <li>
+            Review the recorded fixtures. For turns whose purpose is answering a tool call, rewrite
+            the match to key on
+            <a href="/multi-turn"><code>toolCallId</code></a> instead of
+            <code>userMessage</code> &mdash; this is the canonical tool-round idiom.
+          </li>
+          <li>
+            For genuine repeats of the same user prompt, add
+            <a href="/sequential-responses"><code>sequenceIndex</code></a> (<code>0</code>,
+            <code>1</code>, &hellip;) to each fixture to differentiate them by call order.
+          </li>
+          <li>
+            Move the hand-edited fixtures into your organized
+            <a href="/fixtures">fixture directory</a> and switch to <code>--strict</code> for replay
+            in CI.
+          </li>
+        </ol>
+
+        <h3>Gotcha: shadowed repeats</h3>
+        <p>
+          If you record a conversation that sends &ldquo;continue&rdquo; twice, you will get two
+          fixtures with identical <code>match.userMessage: "continue"</code>. On replay, the second
+          one will never fire until you add <code>sequenceIndex</code> post-record. See
+          <a href="/sequential-responses">Sequential / Stateful Responses</a> for the mechanics. For
+          tool-round conversations where each post-tool turn carries a distinct
+          <code>tool_call_id</code>, prefer keying by <code>toolCallId</code> &mdash; see
+          <a href="/multi-turn">Multi-Turn Conversations</a>.
+        </p>
+
         <h2>Cross-Language Testing</h2>
         <p>
           The Docker image serves any language that speaks HTTP. Point your client at the mock
@@ -494,17 +694,22 @@ await mock.start();</code></pre>
             Any language, one server <span class="lang-tag">bash</span>
           </div>
           <pre><code># Docker image serves all languages
-docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures
+docker run -d -p 4010:4010 -v $(pwd)/fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
 
 # Python
 import openai
 client = openai.OpenAI(base_url="http://localhost:4010/v1", api_key="mock")
 
-# Go
-client := openai.NewClient(option.WithBaseURL("http://localhost:4010/v1"))
+# Go — github.com/sashabaranov/go-openai
+config := openai.DefaultConfig("mock")
+config.BaseURL = "http://localhost:4010/v1"
+client := openai.NewClientWithConfig(config)
 
-# Rust
-let client = Client::new().with_base_url("http://localhost:4010/v1");</code></pre>
+# Rust — async-openai
+let config = OpenAIConfig::new()
+    .with_api_base("http://localhost:4010/v1")
+    .with_api_key("mock");
+let client = Client::with_config(config);</code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
