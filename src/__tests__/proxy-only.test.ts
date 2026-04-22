@@ -268,6 +268,24 @@ describe("proxy-only mode", () => {
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
 
+  it("pre-flight chaos short-circuits even when fixture would match", async () => {
+    // fixture that WOULD match
+    const fixture = {
+      match: { userMessage: "capital of France" },
+      response: { content: "Paris" },
+    };
+
+    recorder = await createServer([fixture], {
+      port: 0,
+      chaos: { dropRate: 1.0 },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // should be dropped before fixture is used
+    expect(resp.status).toBe(500);
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");
