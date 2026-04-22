@@ -323,6 +323,59 @@ describe("proxy-only mode", () => {
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
 
+  it("proxy failure produces 502 end-to-end and journals the failure", async () => {
+    // Integration test: unit tests prove recorder.ts writes 502 on upstream
+    // failure; this pins that handleCompletions handles the "relayed" outcome
+    // correctly (journals, doesn't hang).
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: "http://127.0.0.1:1" }, // port 1 — unreachable
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-proxy-fail-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(502);
+    expect(recorder.journal.size).toBe(1);
+    const entry = recorder.journal.getLast();
+    expect(entry?.response.status).toBe(502);
+    expect(entry?.response.fixture).toBeNull();
+    expect(entry?.response.source).toBe("proxy");
+    expect(entry?.response.chaosAction).toBeUndefined();
+  });
+
+  it("chaos + proxy failure: malformed was rolled but upstream failed → 502, no chaosAction", async () => {
+    // Integration test: when chaos rolls malformed but the upstream request
+    // fails, proxyAndRecord synthesizes a 502 before the hook is invoked. The
+    // journal should reflect what actually happened (502, no chaos) rather
+    // than what was intended.
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: "http://127.0.0.1:1" }, // unreachable
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-fail-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Client sees the proxy failure, NOT a malformed-JSON body
+    expect(resp.status).toBe(502);
+    expect(() => JSON.parse(resp.body)).not.toThrow();
+
+    expect(recorder.journal.size).toBe(1);
+    const entry = recorder.journal.getLast();
+    expect(entry?.response.status).toBe(502);
+    expect(entry?.response.source).toBe("proxy");
+    // Chaos was rolled but never applied — journal must not claim it fired
+    expect(entry?.response.chaosAction).toBeUndefined();
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");
