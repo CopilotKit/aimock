@@ -1,5 +1,34 @@
 # @copilotkit/aimock
 
+## 1.14.4
+
+### Added
+
+- Multi-turn conversations documentation page covering the tool-round idiom, matching semantics across turns, and how to author/record multi-turn fixtures.
+- Matching Semantics section on the Fixtures page documenting last-message-only matching, first-wins file order, substring-vs-exact matching, and shadowing warnings.
+- Recording guidance for multi-turn conversations on the Record & Replay page.
+- CLI Flags table on the Record & Replay page expanded to cover `-f/--fixtures`, `--journal-max`, `--fixture-counts-max`, `--agui-*`, `--chaos-*`, `--watch`, `-p`, `-h`, `--log-level`, `--validate-on-load`.
+- README note clarifying that the `llmock` CLI bin is a legacy alias pointing at a narrower flag-driven CLI without `--config` or `convert` support.
+
+### Fixed
+
+- Docker examples in the Record & Replay guide no longer prefix `npx @copilotkit/aimock` before the image ENTRYPOINT (the four snippets would have failed with strict parseArgs rejecting positional args).
+- Auth Header Forwarding documentation now reflects the strip-list behavior that has been in place since v1.6.1 (all headers forwarded except hop-by-hop and client-set).
+- `requestTransform` example fixture key no longer carries an undocumented load-bearing trailing space.
+- Completed the Claude model-id migration (v1.14.3) for the remaining test fixtures that still referenced `claude-sonnet-4-20250514`.
+- README LLM Providers count corrected from "11" to "8" to match the enumeration and Provider Support Matrix.
+- Corrected `toolCallId` matching semantics on the Fixtures page to describe the "last `role: "tool"` message" rule from `router.ts` (not "last message being a tool").
+- Added `-h 0.0.0.0` to every Docker example in the README and Record & Replay page so the default `127.0.0.1` host bind doesn't silently break `-p` port mapping when user args override the image CMD.
+- Extended the Docker host-bind fix across all migration guides, tutorials, and the Docker/aimock-cli/metrics/chaos-testing pages — every Docker example that passes user args now includes `-h 0.0.0.0` so `docker -p` port mapping works.
+- Updated `--journal-max` default wording on the Record & Replay page to reflect post-v1.14.2 behavior (finite `1000` cap for both `serve` and `createServer()`; only direct `new Journal()` instantiation remains unbounded).
+- Stripped redundant `npx @copilotkit/aimock` / `aimock` prefixes from Docker examples in migration pages (mokksy, vidaimock, mock-llm, piyook, openai-responses); all were silently broken under strict parseArgs because the prefix became a positional arg to the image's `node dist/cli.js` entrypoint.
+- Replaced `--config` Docker examples across `docs/aimock-cli`, `docs/metrics`, `docs/chaos-testing`, and migration guides with flag-driven Docker equivalents or explicit npx/local-install notes (the published image's ENTRYPOINT runs the `llmock` CLI which does not support `--config`).
+- Synchronized LLM provider counts across all migration pages to the canonical "8" (previously "10+" / "11+" / "11 vs 5" / "10 vs 1" depending on page).
+- Corrected the `sequenceIndex` gotcha on `/multi-turn` — `validateFixtures` does not factor `sequenceIndex`, `toolCallId`, `model`, or `predicate` into the duplicate-`userMessage` warning; the warning is advisory when a runtime differentiator is present.
+- Fixed the Programmatic Recording example on `/record-replay` to stop contradicting itself by pairing `proxyOnly: true` with `fixturePath`; now shows record mode and proxy-only mode as two distinct examples.
+- Reconciled provider-count phrasing across migration pages — mock-llm lead paragraph no longer says "9 more providers", enumerated lists no longer trail the count with "and OpenAI-compatible providers" / "and more". Aligned the `validateFixtures` shadowing wording between the Fixtures and Multi-Turn pages (both now correctly describe the warning as advisory when a runtime differentiator is present).
+- Replaced broken `class="cmt"` CSS class with correct `class="cm"` across `docs/cohere`, `docs/test-plugins`, `docs/vertex-ai`, `docs/ollama`, `docs/record-replay`, and `docs/chaos-testing` code blocks (21 occurrences) — `.cmt` is not defined in `docs/style.css`, so these code-block comments were rendering as default text instead of the dimmed comment color.
+
 ## 1.14.3
 
 ### Added
