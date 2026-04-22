@@ -42,7 +42,8 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 ## Features
 
 - **[Record & Replay](https://aimock.copilotkit.dev/record-replay)** — Proxy real APIs, save as fixtures, replay deterministically forever
-- **[11 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere — full streaming support
+- **[Multi-turn Conversations](https://aimock.copilotkit.dev/multi-turn)** — Record and replay multi-turn traces with tool rounds; match distinct turns via `toolCallId`, `sequenceIndex`, or custom predicates
+- **[8 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere — full streaming support
 - **[Multimedia APIs](https://aimock.copilotkit.dev/images)** — Image generation (DALL-E, Imagen), text-to-speech, audio transcription, video generation
 - **[MCP / A2A / AG-UI / Vector](https://aimock.copilotkit.dev/mcp-mock)** — Mock every protocol your AI agents use
 - **[Chaos Testing](https://aimock.copilotkit.dev/chaos-testing)** — 500 errors, malformed JSON, mid-stream disconnects at any probability
@@ -86,8 +87,10 @@ npx @copilotkit/aimock convert vidaimock ./templates/ ./fixtures/
 npx @copilotkit/aimock convert mockllm ./config.yaml ./fixtures/
 
 # Docker
-docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures
+docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
 ```
+
+> **Note on `llmock` vs `aimock` CLIs.** The `llmock` bin is retained as a compat alias for users of the pre-1.7.0 `@copilotkit/llmock` package. It runs a narrower flag-driven CLI without `--config` or the `convert` subcommand. New projects should use `aimock` (or `npx @copilotkit/aimock`) for full feature support.
 
 ## Framework Guides
 
