@@ -400,7 +400,8 @@ async function handleCompletions(
   const method = req.method ?? "POST";
   const path = req.url ?? COMPLETIONS_PATH;
   const flatHeaders = flattenHeaders(req.headers);
-  // Ensure endpoint type is present for pre-flight journal entries
+
+  // Set endpoint type once early so router/recorder and journal see it
   body._endpointType = "chat";
 
   // Pre-flight chaos: run before fixture matching or proxying
