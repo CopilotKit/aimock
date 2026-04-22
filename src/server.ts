@@ -397,8 +397,34 @@ async function handleCompletions(
     return;
   }
 
-  // Match fixture
+  const method = req.method ?? "POST";
+  const path = req.url ?? COMPLETIONS_PATH;
+  const flatHeaders = flattenHeaders(req.headers);
+
+  // Set endpoint type once early so router/recorder and journal see it
   body._endpointType = "chat";
+
+  // Pre-flight chaos: run before fixture matching or proxying
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method,
+        path,
+        headers: flatHeaders,
+        body,
+      },
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  // Match fixture
   const testId = getTestId(req);
   const fixture = matchFixture(
     fixtures,
@@ -411,11 +437,10 @@ async function handleCompletions(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const method = req.method ?? "POST";
-  const path = req.url ?? COMPLETIONS_PATH;
-  const flatHeaders = flattenHeaders(req.headers);
-
-  // Apply chaos before normal response handling
+  // NOTE: Chaos may be evaluated twice (pre-flight + post-match), which
+  // increases effective trigger probability for non-boundary rates.
+  // This is an intentional tradeoff to enable pre-flight chaos without
+  // refactoring the existing applyChaos flow.
   if (
     applyChaos(
       res,
