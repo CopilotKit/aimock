@@ -183,7 +183,7 @@
             <pre><code><span class="kw">from</span> openai <span class="kw">import</span> OpenAI
 
 <span class="kw">def</span> <span class="fn">test_chat</span>(aimock):
-    aimock.on_message(<span class="str">"hi"</span>, content=<span class="str">"Hello!"</span>)
+    aimock.on_message(<span class="str">"hi"</span>, {<span class="str">"content"</span>: <span class="str">"Hello!"</span>})
     client = OpenAI(base_url=aimock.url + <span class="str">"/v1"</span>, api_key=<span class="str">"test"</span>)
     result = client.chat.completions.create(
         model=<span class="str">"gpt-4o"</span>, messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"hi"</span>}]
@@ -266,7 +266,7 @@
             </tr>
             <tr>
               <td><code>openai_mock.chat.completions.create.response = {...}</code></td>
-              <td><code>aimock.on_message("pattern", content="...")</code></td>
+              <td><code>aimock.on_message("pattern", {"content": "..."})</code></td>
             </tr>
             <tr>
               <td>Partial envelope (choices required, other fields auto-filled)</td>
