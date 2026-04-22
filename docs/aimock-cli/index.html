@@ -65,14 +65,27 @@
           <div class="tab-docker">
             <div class="code-block">
               <div class="code-block-header">Run aimock <span class="lang-tag">shell</span></div>
-              <pre><code>$ docker run -d -p 4010:4010 \
-  -v ./aimock.json:/config.json \
+              <pre><code><span class="cm"># --config is an aimock-CLI feature, not available in the published image.</span>
+<span class="cm"># Run aimock on your host via npx (or install @copilotkit/aimock in your</span>
+<span class="cm"># own container image) to use the config-driven CLI:</span>
+$ npx @copilotkit/aimock --config aimock.json --port 4010 --host 0.0.0.0
+
+<span class="cm"># If you only need flag-driven fixture serving, the published image works:</span>
+$ docker run -d -p 4010:4010 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --config /config.json --port 4010</code></pre>
+  -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
+
+        <p style="color: var(--text-dim); font-size: 0.9em">
+          <strong>Note:</strong> The published Docker image (<code>ghcr.io/copilotkit/aimock</code>)
+          runs the flag-driven <code>llmock</code> CLI (ENTRYPOINT <code>node dist/cli.js</code>),
+          which does not support <code>--config</code> or the <code>convert</code> subcommand. For
+          config-driven mode, run aimock on your host via <code>npx</code> or install
+          <code>@copilotkit/aimock</code> inside your own image.
+        </p>
 
         <h2>Config File Format</h2>
         <p>
@@ -234,14 +247,11 @@
           <div class="tab-docker">
             <div class="code-block">
               <div class="code-block-header">
-                Docker run with config <span class="lang-tag">shell</span>
+                Run with config (local / npx) <span class="lang-tag">shell</span>
               </div>
-              <pre><code><span class="cm"># Mount config and fixtures into the container</span>
-$ docker run -p 4010:4010 \
-  -v ./aimock.json:/config.json \
-  -v ./fixtures:/fixtures \
-  ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock --config /config.json --host 0.0.0.0</code></pre>
+              <pre><code><span class="cm"># --config isn't available in the published Docker image's llmock entrypoint.</span>
+<span class="cm"># Run aimock locally with npx to load config.json:</span>
+$ npx @copilotkit/aimock --config aimock.json --host 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
@@ -301,23 +311,31 @@ $ npx @copilotkit/aimock convert vidaimock ./templates/</code></pre>
 
         <h2>Docker Compose</h2>
 
+        <p style="color: var(--text-dim); font-size: 0.9em">
+          The published image's ENTRYPOINT runs the flag-driven
+          <code>llmock</code> CLI &mdash; it supports <code>-f/--fixtures</code>,
+          <code>-p/--port</code>, <code>-h/--host</code>, and the chaos / record flags, but not
+          <code>--config</code>. Use the compose snippet below for flag-driven fixture serving. For
+          full config-driven mode (LLM + MCP + A2A + AG-UI on one port), either build your own image
+          with <code>@copilotkit/aimock</code> installed, or run
+          <code>npx @copilotkit/aimock --config ...</code> on the host.
+        </p>
+
         <div class="code-block">
           <div class="code-block-header">docker-compose.yml <span class="lang-tag">yaml</span></div>
           <pre><code><span class="prop">services</span>:
   <span class="prop">aimock</span>:
     <span class="prop">image</span>: <span class="str">ghcr.io/copilotkit/aimock:latest</span>
-    <span class="prop">command</span>: <span class="str">aimock --config /app/aimock.json --host 0.0.0.0</span>
+    <span class="prop">command</span>: <span class="str">["-f", "/app/fixtures", "-h", "0.0.0.0"]</span>
     <span class="prop">ports</span>:
       - <span class="str">"4010:4010"</span>
     <span class="prop">volumes</span>:
-      - <span class="str">./aimock.json:/app/aimock.json:ro</span>
       - <span class="str">./fixtures:/app/fixtures:ro</span>
 
   <span class="prop">app</span>:
     <span class="prop">build</span>: <span class="str">.</span>
     <span class="prop">environment</span>:
       <span class="prop">OPENAI_BASE_URL</span>: <span class="str">http://aimock:4010/v1</span>
-      <span class="prop">MCP_SERVER_URL</span>: <span class="str">http://aimock:4010/mcp</span>
     <span class="prop">depends_on</span>:
       - <span class="str">aimock</span></code></pre>
         </div>

@@ -84,7 +84,7 @@ $ docker run -p 4010:4010 \
 $ docker run -p 5555:5555 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  --fixtures /fixtures --port 5555
+  --fixtures /fixtures --host 0.0.0.0 --port 5555
 
 <span class="cm"># Pull from GitHub Container Registry</span>
 $ docker pull ghcr.io/copilotkit/aimock:latest

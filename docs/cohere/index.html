@@ -106,7 +106,7 @@
 <span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"hello"</span>, { <span class="prop">content</span>: <span class="str">"Hi from Cohere!"</span> });
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cmt">// Point the Cohere SDK at aimock</span>
+<span class="cm">// Point the Cohere SDK at aimock</span>
 <span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v2/chat`</span>, {
   <span class="prop">method</span>: <span class="str">"POST"</span>,
   <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },

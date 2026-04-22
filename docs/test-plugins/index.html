@@ -61,7 +61,7 @@
 <span class="kw">const</span> mock = <span class="fn">useAimock</span>({ <span class="prop">fixtures</span>: <span class="str">"./fixtures"</span> });
 
 <span class="fn">it</span>(<span class="str">"responds to hello"</span>, <span class="kw">async</span> () =&gt; {
-  <span class="cmt">// OPENAI_BASE_URL is already set</span>
+  <span class="cm">// OPENAI_BASE_URL is already set</span>
   <span class="kw">const</span> res = <span class="kw">await</span> myApp.<span class="fn">chat</span>(<span class="str">"hello"</span>);
   <span class="fn">expect</span>(res).<span class="fn">toBe</span>(<span class="str">"Hi there!"</span>);
 });</code></pre>
@@ -159,7 +159,7 @@
 
 <span class="fn">it</span>(<span class="str">"custom fixture"</span>, <span class="kw">async</span> () =&gt; {
   mock().<span class="prop">llm</span>.<span class="fn">onMessage</span>(<span class="str">"custom"</span>, { <span class="prop">content</span>: <span class="str">"Custom response"</span> });
-  <span class="cmt">// ...</span>
+  <span class="cm">// ...</span>
 });</code></pre>
         </div>
 
