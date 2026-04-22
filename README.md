@@ -11,13 +11,20 @@ npm install @copilotkit/aimock
 ```
 
 ```typescript
+// The class is still named `LLMock` for back-compat after the v1.7.0 package
+// rename from `@copilotkit/llmock` to `@copilotkit/aimock`.
 import { LLMock } from "@copilotkit/aimock";
 
 const mock = new LLMock({ port: 0 });
 mock.onMessage("hello", { content: "Hi there!" });
 await mock.start();
 
+// Set env BEFORE importing/constructing the OpenAI (or other provider) client.
+// Many SDKs cache the base URL at construction time — if the client is built
+// before these are set, it will talk to the real API (surprise bills) instead
+// of aimock.
 process.env.OPENAI_BASE_URL = `${mock.url}/v1`;
+process.env.OPENAI_API_KEY = "mock"; // SDK requires a value, even when base URL is mocked
 
 // ... run your tests ...
 
@@ -44,8 +51,8 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 - **[Record & Replay](https://aimock.copilotkit.dev/record-replay)** — Proxy real APIs, save as fixtures, replay deterministically forever
 - **[Multi-turn Conversations](https://aimock.copilotkit.dev/multi-turn)** — Record and replay multi-turn traces with tool rounds; match distinct turns via `toolCallId`, `sequenceIndex`, or custom predicates
 - **[11 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI Chat, OpenAI Responses, OpenAI Realtime, Claude, Gemini, Gemini Live, Azure, Bedrock, Vertex AI, Ollama, Cohere — full streaming support
-- **[Multimedia APIs](https://aimock.copilotkit.dev/images)** — Image generation (DALL-E, Imagen), text-to-speech, audio transcription, video generation
-- **[MCP / A2A / AG-UI / Vector](https://aimock.copilotkit.dev/mcp-mock)** — Mock every protocol your AI agents use
+- **Multimedia APIs** — [image generation](https://aimock.copilotkit.dev/images) (DALL-E, Imagen), [text-to-speech](https://aimock.copilotkit.dev/speech), [audio transcription](https://aimock.copilotkit.dev/transcription), [video generation](https://aimock.copilotkit.dev/video)
+- **[MCP](https://aimock.copilotkit.dev/mcp-mock) / [A2A](https://aimock.copilotkit.dev/a2a-mock) / [AG-UI](https://aimock.copilotkit.dev/agui-mock) / [Vector](https://aimock.copilotkit.dev/vector-mock)** — Mock every protocol your AI agents use
 - **[Chaos Testing](https://aimock.copilotkit.dev/chaos-testing)** — 500 errors, malformed JSON, mid-stream disconnects at any probability
 - **[Drift Detection](https://aimock.copilotkit.dev/drift-detection)** — Daily CI validation against real APIs
 - **[Streaming Physics](https://aimock.copilotkit.dev/streaming-physics)** — Configurable `ttft`, `tps`, and `jitter`
@@ -87,7 +94,7 @@ npx @copilotkit/aimock convert vidaimock ./templates/ ./fixtures/
 npx @copilotkit/aimock convert mockllm ./config.yaml ./fixtures/
 
 # Docker
-docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
+docker run -d -p 4010:4010 -v "$(pwd)/fixtures:/fixtures" ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
 ```
 
 > **Note on `llmock` vs `aimock` CLIs.** The `llmock` bin is retained as a compat alias for users of the pre-1.7.0 `@copilotkit/llmock` package. It runs a narrower flag-driven CLI without `--config` or the `convert` subcommand. New projects should use `aimock` (or `npx @copilotkit/aimock`) for full feature support.
