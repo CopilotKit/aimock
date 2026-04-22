@@ -466,6 +466,11 @@ async function handleCompletions(
       const hookOptions =
         chaosAction === "malformed"
           ? {
+              // Malformed is emitted as a hardcoded invalid-JSON body, so the
+              // captured upstream response isn't used here (the parameter is
+              // intentionally omitted rather than declared-and-ignored).
+              // Future dispatch (phase 3: non-JSON / streaming) will accept
+              // the response and branch on contentType.
               beforeWriteResponse: () => {
                 applyChaosAction(
                   chaosAction,
