@@ -89,7 +89,7 @@
               <div class="code-block-header">
                 Proxy-only mode <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx @copilotkit/aimock -f ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
   --proxy-only \
   --provider-openai https://api.openai.com</code></pre>
             </div>
@@ -140,7 +140,7 @@
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
-              <pre><code>$ npx @copilotkit/aimock -f ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
   --record \
   --provider-openai https://api.openai.com \
   --provider-anthropic https://api.anthropic.com</code></pre>
@@ -302,20 +302,25 @@
 <span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="fn">LLMock</span>();
 <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
 
-<span class="cm">// Enable recording — unmatched requests are proxied AND saved as fixtures</span>
-<span class="op">mock</span>.<span class="fn">enableRecording</span>({
-  <span class="prop">providers</span>: {
-    <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
-    <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
-  },
-  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
-});
+<span class="kw">try</span> {
+  <span class="cm">// Enable recording — unmatched requests are proxied AND saved as fixtures</span>
+  <span class="op">mock</span>.<span class="fn">enableRecording</span>({
+    <span class="prop">providers</span>: {
+      <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+      <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+    },
+    <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+  });
 
-<span class="cm">// Make requests — unmatched ones are proxied and recorded</span>
-<span class="cm">// ...</span>
+  <span class="cm">// Make requests — unmatched ones are proxied and recorded</span>
+  <span class="cm">// ...</span>
 
-<span class="cm">// Disable recording — recorded fixtures persist on disk</span>
-<span class="op">mock</span>.<span class="fn">disableRecording</span>();</code></pre>
+  <span class="cm">// Disable recording — recorded fixtures persist on disk</span>
+  <span class="op">mock</span>.<span class="fn">disableRecording</span>();
+} <span class="kw">finally</span> {
+  <span class="cm">// Always release the port, even if a test above threw</span>
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
+}</code></pre>
         </div>
 
         <p>
@@ -478,10 +483,10 @@
                 Record then replay <span class="lang-tag">shell</span>
               </div>
               <pre><code># First run: record real API responses
-$ npx @copilotkit/aimock --record --provider-openai https://api.openai.com -f ./fixtures
+$ npx -p @copilotkit/aimock llmock --record --provider-openai https://api.openai.com -f ./fixtures
 
 # Subsequent runs: replay from recorded fixtures
-$ npx @copilotkit/aimock -f ./fixtures</code></pre>
+$ npx -p @copilotkit/aimock llmock -f ./fixtures</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -516,7 +521,7 @@ $ docker run -d -p 4010:4010 \
           </div>
           <pre><code>- name: Start aimock
   run: |
-    docker run -d --name aimock \
+    docker run -d --rm --name aimock \
       -v ./fixtures:/fixtures \
       -p 4010:4010 \
       ghcr.io/copilotkit/aimock \
@@ -528,7 +533,8 @@ $ docker run -d -p 4010:4010 \
   run: pnpm test
 
 - name: Stop aimock
-  run: docker stop aimock</code></pre>
+  if: always()
+  run: docker rm -f aimock</code></pre>
         </div>
 
         <h2>Request Transform</h2>
@@ -686,11 +692,16 @@ docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f 
 import openai
 client = openai.OpenAI(base_url="http://localhost:4010/v1", api_key="mock")
 
-# Go
-client := openai.NewClient(option.WithBaseURL("http://localhost:4010/v1"))
+# Go — github.com/sashabaranov/go-openai
+config := openai.DefaultConfig("mock")
+config.BaseURL = "http://localhost:4010/v1"
+client := openai.NewClientWithConfig(config)
 
-# Rust
-let client = Client::new().with_base_url("http://localhost:4010/v1");</code></pre>
+# Rust — async-openai
+let config = OpenAIConfig::new()
+    .with_api_base("http://localhost:4010/v1")
+    .with_api_key("mock");
+let client = Client::with_config(config);</code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
