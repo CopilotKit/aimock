@@ -105,13 +105,17 @@
               <td>toolCallId</td>
               <td>string</td>
               <td>
-                Match on <code>tool_call_id</code> of the last <code>role: "tool"</code> message
+                Match on <code>tool_call_id</code> of the last <code>role: "tool"</code> message.
+                The <code>onToolResult(id, response)</code> helper is sugar over this field
               </td>
             </tr>
             <tr>
               <td>toolName</td>
               <td>string</td>
-              <td>Match on tool function name</td>
+              <td>
+                Match on tool function name &mdash; compared against the names of tool definitions
+                in the request&rsquo;s <code>tools:</code> array
+              </td>
             </tr>
             <tr>
               <td>model</td>
@@ -132,7 +136,9 @@
               <td>endpoint</td>
               <td>string</td>
               <td>
-                Restrict to endpoint type: chat, image, speech, transcription, video, embedding
+                Restrict to endpoint type: chat, image, speech, transcription, video, embedding.
+                Search, rerank, and moderation services (added in 1.7.0) are registered through
+                their own fixture APIs rather than via this field
               </td>
             </tr>
             <tr>
@@ -213,23 +219,25 @@
         <ul>
           <li>
             <strong>Duplicate <code>userMessage</code></strong> &mdash; two fixtures with the same
-            string <code>userMessage</code> produces:
-            <code>duplicate userMessage '&lt;value&gt;' — shadows fixture &lt;N&gt;</code>. This is
-            advisory, not a hard error: the check looks at <code>userMessage</code> alone, so if
-            you've added a runtime differentiator (<code>sequenceIndex</code>,
-            <code>toolCallId</code>, <code>model</code>, or a <code>predicate</code>) the fixtures
-            won't actually shadow each other at match time. Only fixtures with no differentiator at
-            all truly shadow on match &mdash; that's the case where the second is never reached
-            because the first wins. Safe to ignore in the former case; investigate in the latter.
+            string <code>userMessage</code> produce a warning of the form
+            <code>duplicate userMessage 'hello' — shadows fixture 0</code>, where
+            <code>'hello'</code> is the duplicated message and <code>0</code> is the zero-based
+            index of the earlier fixture being shadowed. This is advisory, not a hard error: the
+            check looks at <code>userMessage</code> alone, so if you've added a runtime
+            differentiator (<code>sequenceIndex</code>, <code>toolCallId</code>, <code>model</code>,
+            or a <code>predicate</code>) the fixtures won't actually shadow each other at match
+            time. Only fixtures with no differentiator at all truly shadow on match &mdash; that's
+            the case where the second is never reached because the first wins. Safe to ignore in the
+            former case; investigate in the latter.
           </li>
           <li>
             <strong>Catch-all not last</strong> &mdash; a fixture with an empty <code>match</code>
             (no discriminator fields) matches everything. If it is not the final fixture, every
-            fixture after it is unreachable:
+            fixture after it is unreachable. The warning is of the form
             <code
-              >empty match acts as catch-all but is not the last fixture — shadows fixtures
-              &lt;N&gt;+</code
-            >.
+              >empty match acts as catch-all but is not the last fixture — shadows fixtures 3+</code
+            >, where <code>3</code> is the zero-based index of the first shadowed fixture (i.e.
+            every fixture from that index onward).
           </li>
         </ul>
 
@@ -374,12 +382,13 @@
               <td>string</td>
               <td>
                 Override finish reason (default: "stop" or "tool_calls"). Provider mappings:
-                <code>stop</code> &rarr; <code>end_turn</code> (Claude), <code>STOP</code> (Gemini);
-                <code>tool_calls</code> &rarr; <code>tool_use</code> (Claude),
-                <code>FUNCTION_CALL</code> (Gemini); <code>length</code> &rarr;
-                <code>max_tokens</code> (Claude), <code>MAX_TOKENS</code> (Gemini);
-                <code>content_filter</code> &rarr; <code>SAFETY</code> (Gemini),
-                <code>failed</code> (Responses API)
+                <code>stop</code> &rarr; <code>end_turn</code> (Claude), <code>STOP</code> (Gemini),
+                <code>completed</code> (Responses API); <code>tool_calls</code> &rarr;
+                <code>tool_use</code> (Claude), <code>FUNCTION_CALL</code> (Gemini),
+                <code>completed</code> (Responses API); <code>length</code> &rarr;
+                <code>max_tokens</code> (Claude), <code>MAX_TOKENS</code> (Gemini),
+                <code>incomplete</code> (Responses API); <code>content_filter</code> &rarr;
+                <code>SAFETY</code> (Gemini), <code>failed</code> (Responses API)
               </td>
             </tr>
             <tr>
@@ -499,6 +508,15 @@
           </p>
         </div>
 
+        <div class="info-box">
+          <p>
+            <code>onTranscription</code> takes the response object directly &mdash; there is no
+            user-provided input to match against, unlike <code>onMessage</code> /
+            <code>onToolCall</code> / <code>onEmbedding</code>. Every transcription request matches
+            the same fixture.
+          </p>
+        </div>
+
         <h2>Provider Support Matrix</h2>
         <table class="endpoint-table">
           <thead>
@@ -573,7 +591,7 @@
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
-              <td>&mdash;</td>
+              <td>Yes</td>
               <td>&mdash;</td>
             </tr>
             <tr>
@@ -596,12 +614,16 @@
               <td>Yes</td>
               <td>Yes</td>
               <td>&mdash;</td>
-              <td>Yes</td>
+              <td>Yes<sup>*</sup></td>
               <td>&mdash;</td>
               <td>&mdash;</td>
             </tr>
           </tbody>
         </table>
+        <p class="footnote">
+          <sup>*</sup> Azure inherits OpenAI&rsquo;s override support because Azure OpenAI routes
+          through the OpenAI Chat Completions response format internally.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>
