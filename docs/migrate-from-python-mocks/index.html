@@ -253,7 +253,7 @@
         <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>,
         <span class="str">"-v"</span>, <span class="str">f"{os.getcwd()}/fixtures:/fixtures"</span>,
         <span class="str">"ghcr.io/copilotkit/aimock:latest"</span>,
-        <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>
+        <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>, <span class="str">"-h"</span>, <span class="str">"0.0.0.0"</span>
     ])
     <span class="cm"># Wait for health endpoint</span>
     <span class="kw">import</span> requests
@@ -313,7 +313,7 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">&#128225;</div>
-            <h3>10+ LLM providers</h3>
+            <h3>8 LLM providers</h3>
             <p>
               OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. The Python
               libraries only cover OpenAI (and sometimes Anthropic).
@@ -390,7 +390,7 @@
             <tr>
               <td>Multi-provider</td>
               <td style="color: var(--text-dim)">1&ndash;2 providers</td>
-              <td style="color: var(--accent)">10+</td>
+              <td style="color: var(--accent)">8</td>
               <td></td>
             </tr>
             <tr>
@@ -455,7 +455,7 @@ pytest</code></pre>
 docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -f /fixtures
+  -f /fixtures -h 0.0.0.0
 
 <span class="cm"># Point your Python app at the mock</span>
 <span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1

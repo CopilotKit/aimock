@@ -90,7 +90,7 @@
               <pre><code>docker run -d -p 4010:4010 \
   -v ./fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
-  npx @copilotkit/aimock -p 4010 -f /fixtures</code></pre>
+  -p 4010 -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
@@ -246,7 +246,7 @@
             <tr>
               <td>LLM providers</td>
               <td>11+</td>
-              <td>10+</td>
+              <td>8</td>
             </tr>
             <tr>
               <td>Prometheus metrics</td>
@@ -315,13 +315,25 @@ docker pull ghcr.io/copilotkit/aimock:latest
 
 docker run -p 4010:4010 \
   -v $(pwd)/fixtures:/fixtures \
-  ghcr.io/copilotkit/aimock
+  ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0</code></pre>
+            </div>
 
-<span class="cm"># With a config file</span>
-docker run -p 4010:4010 \
-  -v $(pwd)/aimock.json:/app/aimock.json \
-  -v $(pwd)/fixtures:/app/fixtures \
-  ghcr.io/copilotkit/aimock aimock --config /app/aimock.json --host 0.0.0.0</code></pre>
+            <p style="color: var(--text-dim); font-size: 0.9em; margin-top: 0.75em">
+              <strong>Note:</strong> <code>--config</code> (and the <code>convert</code> subcommand)
+              are only available through the <code>npx @copilotkit/aimock</code> entrypoint or a
+              local install. The published Docker image at
+              <code>ghcr.io/copilotkit/aimock</code> runs the narrower flag-driven
+              <code>llmock</code> CLI &mdash; for config-driven mode, run aimock on your host via
+              npx, or install <code>@copilotkit/aimock</code> inside your own container.
+            </p>
+
+            <div class="code-block">
+              <div class="code-block-header">
+                Config-driven (local / npx)
+                <span class="lang-tag">shell</span>
+              </div>
+              <pre><code><span class="cm"># Full config-driven setup (LLM + MCP + A2A + AG-UI on one port)</span>
+npx @copilotkit/aimock --config aimock.json --port 4010</code></pre>
             </div>
 
             <div class="code-block">
@@ -332,11 +344,10 @@ docker run -p 4010:4010 \
               <pre><code><span class="prop">services</span>:
   <span class="prop">aimock</span>:
     <span class="prop">image</span>: <span class="str">ghcr.io/copilotkit/aimock:latest</span>
-    <span class="prop">command</span>: <span class="str">aimock --config /app/aimock.json --host 0.0.0.0</span>
+    <span class="prop">command</span>: <span class="str">["-f", "/app/fixtures", "-h", "0.0.0.0"]</span>
     <span class="prop">ports</span>:
       - <span class="str">"4010:4010"</span>
     <span class="prop">volumes</span>:
-      - <span class="str">./aimock.json:/app/aimock.json:ro</span>
       - <span class="str">./fixtures:/app/fixtures:ro</span>
 
   <span class="prop">app</span>:

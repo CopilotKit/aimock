@@ -6,7 +6,7 @@
     <title>From openai-responses — aimock</title>
     <meta
       name="description"
-      content="Migrate from openai-responses to aimock — replace httpx monkey-patching with fixture-driven mocking across 11 LLM providers."
+      content="Migrate from openai-responses to aimock — replace httpx monkey-patching with fixture-driven mocking across 8 LLM providers."
     />
     <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -324,7 +324,7 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">&#9889;</div>
-            <h3>Built-in SSE for 10+ providers</h3>
+            <h3>Built-in SSE for 8 providers</h3>
             <p>
               OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. No manual chunk
               construction.
@@ -412,7 +412,7 @@
               <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -p <span class="num">4010</span> -f /fixtures</code></pre>
+  -p <span class="num">4010</span> -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>

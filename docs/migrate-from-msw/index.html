@@ -241,7 +241,7 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">&#9889;</div>
-            <h3>Built-in SSE for 10+ providers</h3>
+            <h3>Built-in SSE for 8 providers</h3>
             <p>
               OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. No manual chunk
               construction.
@@ -307,7 +307,7 @@
               <td>Streaming SSE</td>
               <td style="color: var(--text-dim)">Manual</td>
               <td style="color: var(--accent)">Built-in</td>
-              <td>10+ providers</td>
+              <td>8 providers</td>
             </tr>
             <tr>
               <td>WebSocket</td>
@@ -381,7 +381,7 @@
               <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -p <span class="num">4010</span> -f /fixtures</code></pre>
+  -p <span class="num">4010</span> -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>

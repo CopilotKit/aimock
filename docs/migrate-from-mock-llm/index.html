@@ -144,7 +144,7 @@
       <main class="docs-content">
         <h1>Switching from mock-llm to aimock</h1>
         <p class="lead">
-          mock-llm is solid for OpenAI mocking with Kubernetes. aimock gives you 9 more providers,
+          mock-llm is solid for OpenAI mocking with Kubernetes. aimock gives you 7 more providers,
           zero dependencies, and full MCP/A2A/AG-UI/Vector support&mdash;with the same Helm chart
           workflow you're used to.
         </p>
@@ -228,11 +228,8 @@
         <div class="features-grid">
           <div class="feature-card">
             <div class="feature-icon green">&#127760;</div>
-            <h3>Multi-provider (10 vs 1)</h3>
-            <p>
-              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere, and
-              OpenAI-compatible providers.
-            </p>
+            <h3>Multi-provider (8 vs 1)</h3>
+            <p>OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere.</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">0</div>
@@ -497,14 +494,12 @@ npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
 docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -p <span class="num">4010</span> -f /fixtures
+  -p <span class="num">4010</span> -f /fixtures -h 0.0.0.0
 
-<span class="cm"># With a config file</span>
-docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
-  -v <span class="str">$(pwd)/aimock.json:/app/aimock.json</span> \
-  -v <span class="str">$(pwd)/fixtures:/app/fixtures</span> \
-  ghcr.io/copilotkit/aimock \
-  aimock --config /app/aimock.json --host 0.0.0.0
+<span class="cm"># Config-driven mode (runs on your host, not in the image)</span>
+<span class="cm"># The published Docker image runs the flag-driven llmock CLI</span>
+<span class="cm"># which does not support --config. Use npx locally instead:</span>
+npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
 
 <span class="cm"># Point your app at the mock</span>
 <span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1</code></pre>

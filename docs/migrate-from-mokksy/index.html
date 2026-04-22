@@ -151,7 +151,7 @@
 <span class="kw">fun</span> <span class="fn">setup</span>() {
     <span class="type">ProcessBuilder</span>(<span class="str">"docker"</span>, <span class="str">"run"</span>, <span class="str">"-d"</span>, <span class="str">"--name"</span>, <span class="str">"aimock"</span>,
         <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>, <span class="str">"-v"</span>, <span class="str">"./fixtures:/fixtures"</span>,
-        <span class="str">"ghcr.io/copilotkit/aimock"</span>, <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>)
+        <span class="str">"ghcr.io/copilotkit/aimock"</span>, <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>, <span class="str">"-h"</span>, <span class="str">"0.0.0.0"</span>)
         .<span class="fn">start</span>().<span class="fn">waitFor</span>()
     <span class="cm">// Wait for server to be ready</span>
     <span class="kw">repeat</span>(<span class="num">30</span>) {
@@ -205,10 +205,10 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon amber">&#128225;</div>
-            <h3>More providers (11 vs 5)</h3>
+            <h3>More providers (8 vs 5)</h3>
             <p>
-              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere, and more. Mokksy
-              covers OpenAI, Anthropic, Google, Ollama, and MistralAI.
+              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. Mokksy covers
+              OpenAI, Anthropic, Google, Ollama, and MistralAI.
             </p>
           </div>
           <div class="feature-card">
@@ -290,7 +290,7 @@
             <tr>
               <td>LLM providers</td>
               <td>5 (OpenAI, Anthropic, Google, Ollama, MistralAI)</td>
-              <td>11+</td>
+              <td>8</td>
             </tr>
             <tr>
               <td>Streaming SSE</td>
@@ -367,7 +367,7 @@
     <span class="kw">init</span> {
         <span class="fn">withExposedPorts</span>(<span class="num">4010</span>)
         <span class="fn">withFileSystemBind</span>(<span class="str">"./fixtures"</span>, <span class="str">"/fixtures"</span>)
-        <span class="fn">withCommand</span>(<span class="str">"-f"</span>, <span class="str">"/fixtures"</span>)
+        <span class="fn">withCommand</span>(<span class="str">"-f"</span>, <span class="str">"/fixtures"</span>, <span class="str">"-h"</span>, <span class="str">"0.0.0.0"</span>)
         <span class="fn">waitingFor</span>(<span class="type">Wait</span>.<span class="fn">forHttp</span>(<span class="str">"/health"</span>).<span class="fn">forPort</span>(<span class="num">4010</span>))
     }
 }</code></pre>
@@ -412,7 +412,7 @@
               <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -f /fixtures</code></pre>
+  -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>
