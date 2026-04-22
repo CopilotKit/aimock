@@ -233,7 +233,7 @@ describe("proxy-only mode", () => {
       chaos: { dropRate: 1.0 },
       record: {
         providers: { openai: countingUpstream.url },
-        fixturePath: fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-")),
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-"))),
         proxyOnly: true,
       },
     });
@@ -242,6 +242,30 @@ describe("proxy-only mode", () => {
 
     expect(resp.status).toBe(500);
     expect(countingUpstream.getCount()).toBe(0);
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("applies chaos BEFORE proxying (disconnect)", async () => {
+    const countingUpstream = await createCountingUpstream("should not be hit");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { disconnectRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "aimock-chaos-proxy-disconnect-"),
+        )),
+        proxyOnly: true,
+      },
+    });
+
+    await expect(post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST)).rejects.toThrow();
+
+    expect(countingUpstream.getCount()).toBe(0);
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
 
   it("regular record mode DOES cache in memory — second request served from cache", async () => {

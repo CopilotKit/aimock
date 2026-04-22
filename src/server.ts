@@ -425,7 +425,6 @@ async function handleCompletions(
     return;
 
   // Match fixture
-  body._endpointType = "chat";
   const testId = getTestId(req);
   const fixture = matchFixture(
     fixtures,
