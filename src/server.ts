@@ -48,7 +48,7 @@ import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
-import { applyChaos, applyChaosAction, evaluateChaos } from "./chaos.js";
+import { applyChaosAction, evaluateChaos } from "./chaos.js";
 import { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 
@@ -404,25 +404,9 @@ async function handleCompletions(
   // Set endpoint type once early so router/recorder and journal see it
   body._endpointType = "chat";
 
-  // Pre-flight chaos: only transport-level actions (drop, disconnect) fire
-  // before upstream is called. Malformed is deferred to post-response so the
-  // proxy path actually calls upstream before mutating the body. Rolling the
-  // dice here and dispatching explicitly (rather than calling applyChaos,
-  // which would re-roll internally) keeps the pre-flight action committed.
-  const preflightAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-  if (preflightAction === "drop" || preflightAction === "disconnect") {
-    applyChaosAction(
-      preflightAction,
-      res,
-      null,
-      journal,
-      { method, path, headers: flatHeaders, body },
-      defaults.registry,
-    );
-    return;
-  }
-
-  // Match fixture
+  // Match fixture first — chaos resolution depends on fixture-level overrides
+  // (headers > fixture.chaos > server defaults), so the fixture has to be
+  // known before we can roll with the right config.
   const testId = getTestId(req);
   const fixture = matchFixture(
     fixtures,
@@ -435,40 +419,45 @@ async function handleCompletions(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  // Post-match chaos: only for the fixture path. When there's no fixture, the
-  // request either goes to the proxy (which does its own post-response chaos
-  // via the beforeWriteResponse hook below) or falls through to strict/404.
-  // NOTE: Chaos may still be evaluated twice on the fixture path (pre-flight
-  // + post-match), which increases effective trigger probability for
-  // non-boundary rates. Intentional tradeoff to preserve fixture-level chaos
-  // overrides without refactoring applyChaos's roll.
-  if (fixture) {
-    if (
-      applyChaos(
-        res,
-        fixture,
-        defaults.chaos,
-        req.headers,
-        journal,
-        {
-          method,
-          path,
-          headers: flatHeaders,
-          body,
-        },
-        defaults.registry,
-        defaults.logger,
-      )
-    )
-      return;
+  // Roll chaos once per request. Dispatch by action + path:
+  //   drop / disconnect → apply immediately; upstream is never called and no
+  //                       response body is produced.
+  //   malformed, fixture path → write invalid JSON instead of the fixture.
+  //   malformed, proxy path  → proxy to upstream, then swap body via the
+  //                            beforeWriteResponse hook (closure captures the
+  //                            pre-rolled action so the hook doesn't re-roll).
+  const chaosAction = evaluateChaos(fixture, defaults.chaos, req.headers, defaults.logger);
+
+  if (chaosAction === "drop" || chaosAction === "disconnect") {
+    applyChaosAction(
+      chaosAction,
+      res,
+      fixture,
+      journal,
+      { method, path, headers: flatHeaders, body },
+      defaults.registry,
+    );
+    return;
+  }
+
+  if (fixture && chaosAction === "malformed") {
+    applyChaosAction(
+      chaosAction,
+      res,
+      fixture,
+      journal,
+      { method, path, headers: flatHeaders, body },
+      defaults.registry,
+    );
+    return;
   }
 
   if (!fixture) {
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
-      // If chaos rolls malformed post-upstream, the hook writes + journals
-      // and signals "handled" so the default relay + outer journal are
-      // skipped (prevents double-journaling the same request).
+      // If chaos rolled malformed, the hook writes invalid JSON + journals
+      // with chaosAction and signals "handled" so the default relay + outer
+      // journal are skipped (prevents double-journaling the same request).
       let chaosHandled = false;
       const proxied = await proxyAndRecord(
         req,
@@ -481,10 +470,9 @@ async function handleCompletions(
         raw,
         {
           beforeWriteResponse: () => {
-            const action = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-            if (action !== "malformed") return false;
+            if (chaosAction !== "malformed") return false;
             applyChaosAction(
-              action,
+              chaosAction,
               res,
               null,
               journal,
