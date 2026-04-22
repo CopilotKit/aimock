@@ -78,7 +78,7 @@
                 aimock (equivalent)
                 <span class="lang-tag">shell</span>
               </div>
-              <pre><code>npx @copilotkit/aimock -p 4010 -f ./fixtures</code></pre>
+              <pre><code>npx -p @copilotkit/aimock llmock -p 4010 -f ./fixtures</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -286,8 +286,8 @@
                 Install &amp; run
                 <span class="lang-tag">shell</span>
               </div>
-              <pre><code><span class="cm"># Run the mock server</span>
-npx @copilotkit/aimock -p 4010 -f ./fixtures
+              <pre><code><span class="cm"># Run the mock server (flag-driven llmock bin)</span>
+npx -p @copilotkit/aimock llmock -p 4010 -f ./fixtures
 
 <span class="cm"># Point your app at it</span>
 <span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
