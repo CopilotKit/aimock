@@ -138,6 +138,105 @@
           </tbody>
         </table>
 
+        <h2>Matching Semantics</h2>
+        <p>
+          These are the rules the router uses to pick a fixture for a given request. All fields on
+          <code>match</code> are AND-ed &mdash; every one must pass for the fixture to be selected.
+        </p>
+
+        <h3>1. <code>userMessage</code> matches only the LAST user message</h3>
+        <p>
+          <code>userMessage</code> is compared against the content of the <em>last</em> message with
+          <code>role: "user"</code> in the request. Earlier user messages in the conversation
+          history are ignored. A request that contains ten turns of prior history plus one new user
+          turn only matches against that final turn &mdash; never against anything earlier.
+        </p>
+        <p>
+          This is the single rule that trips people up most often. If you need to differentiate
+          conversations by earlier context (for example, to return a different response on the
+          second round of a tool-using conversation), use <code>toolCallId</code>,
+          <code>sequenceIndex</code>, or a <code>predicate</code> instead of piling keywords into
+          <code>userMessage</code>. See <a href="/multi-turn">Multi-Turn Conversations</a> for the
+          tool-round idiom.
+        </p>
+
+        <h3>2. <code>toolCallId</code> matches the LAST tool message</h3>
+        <p>
+          When the request ends with a <code>role: "tool"</code> message (the post-tool-execution
+          turn sent back to the model), the fixture's <code>toolCallId</code> is compared against
+          the <code>tool_call_id</code> field of that last tool message. If the last message is not
+          a tool message, <code>toolCallId</code> never matches. See
+          <a href="/multi-turn">Multi-Turn Conversations</a> for the tool-round idiom.
+        </p>
+
+        <h3>3. First match wins, in file order</h3>
+        <p>
+          Fixtures are evaluated in the order they were registered. The first fixture whose
+          <code>match</code> criteria all pass is returned &mdash; subsequent fixtures are not
+          consulted. For file-loaded fixtures, that means order within the JSON array. For
+          <code>loadFixtureDir()</code>, files are loaded in sorted filename order, so a
+          <code>00-catchall.json</code> loaded before <code>10-specific.json</code> will shadow the
+          specific fixture. Put more specific fixtures before broader ones.
+        </p>
+        <p>
+          <code>sequenceIndex</code> lets a single pattern return different responses on repeated
+          matches &mdash; see <a href="/sequential-responses">Sequential Responses</a>.
+        </p>
+
+        <h3>4. Substring by default, exact when a <code>requestTransform</code> is set</h3>
+        <p>
+          By default, string <code>userMessage</code> (and <code>inputText</code>) match via
+          <code>String.includes</code> &mdash; <code>userMessage: "hello"</code> matches
+          <code>"say hello world"</code>. Pass a <code>RegExp</code> when you need pattern matching.
+        </p>
+        <p>
+          If the router is configured with a <code>requestTransform</code> (typically used to strip
+          dynamic data like timestamps or UUIDs from the request before matching), string
+          <code>userMessage</code> and <code>inputText</code> flip to strict equality
+          (<code>===</code>). The rationale: transforms normalize requests to a canonical form, and
+          once normalized, the sensible comparison is exact &mdash; substring matching on a
+          normalized string is more likely to hide bugs than catch flexible input.
+        </p>
+
+        <h3>5. Validation warnings surface shadowing at load time</h3>
+        <p>
+          <code>validateFixtures()</code> runs when fixtures are loaded and emits warnings for
+          common shadowing mistakes:
+        </p>
+        <ul>
+          <li>
+            <strong>Duplicate <code>userMessage</code></strong> &mdash; two fixtures with the same
+            string <code>userMessage</code> produces:
+            <code>duplicate userMessage '&lt;value&gt;' — shadows fixture &lt;N&gt;</code>. The
+            second will never be reached because the first wins.
+          </li>
+          <li>
+            <strong>Catch-all not last</strong> &mdash; a fixture with an empty <code>match</code>
+            (no discriminator fields) matches everything. If it is not the final fixture, every
+            fixture after it is unreachable:
+            <code
+              >empty match acts as catch-all but is not the last fixture — shadows fixtures
+              &lt;N&gt;+</code
+            >.
+          </li>
+        </ul>
+
+        <h3>6. Use <code>predicate</code> for arbitrary logic</h3>
+        <p>
+          When the built-in match fields can't express the condition you need, a
+          <code>predicate</code> function receives the full request and returns a boolean. It is the
+          escape hatch for anything from inspecting the assistant's prior tool call arguments to
+          gating on system-prompt content. Predicates are programmatic-only &mdash; JSON fixture
+          files cannot serialize functions.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">predicate.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">predicate</span>: (<span class="op">req</span>) <span class="kw">=&gt;</span> <span class="op">req</span>.<span class="prop">messages</span>.<span class="fn">at</span>(-<span class="num">1</span>)?.<span class="prop">role</span> === <span class="str">"tool"</span> },
+  { <span class="prop">content</span>: <span class="str">"Done!"</span> }
+);</code></pre>
+        </div>
+
         <h2>Response Types</h2>
 
         <table class="endpoint-table">
