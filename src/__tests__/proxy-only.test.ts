@@ -267,7 +267,6 @@ describe("proxy-only mode", () => {
 
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
-
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");
