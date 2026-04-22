@@ -255,21 +255,41 @@
         <span class="str">"ghcr.io/copilotkit/aimock:latest"</span>,
         <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>, <span class="str">"-h"</span>, <span class="str">"0.0.0.0"</span>
     ])
-    <span class="cm"># Wait for health endpoint</span>
+    <span class="cm"># Wait for health endpoint — fail loudly if aimock never comes up</span>
     <span class="kw">import</span> requests
     <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">30</span>):
+        <span class="kw">if</span> proc.poll() <span class="kw">is not None</span>:
+            <span class="kw">raise</span> RuntimeError(<span class="str">f"aimock exited early with code {proc.returncode}"</span>)
         <span class="kw">try</span>:
-            <span class="kw">if</span> requests.get(<span class="str">"http://localhost:4010/__aimock/health"</span>).ok:
+            <span class="kw">if</span> requests.get(<span class="str">"http://localhost:4010/health"</span>).ok:
                 <span class="kw">break</span>
         <span class="kw">except</span> requests.ConnectionError:
-            time.sleep(<span class="num">0.2</span>)
+            <span class="kw">pass</span>
+        time.sleep(<span class="num">0.2</span>)
+    <span class="kw">else</span>:
+        <span class="kw">raise</span> RuntimeError(<span class="str">"aimock did not become healthy after 30 attempts"</span>)
 
+    <span class="cm"># Save originals so we don't clobber real credentials in the test process</span>
+    prev_base = os.environ.get(<span class="str">"OPENAI_BASE_URL"</span>)
+    prev_key = os.environ.get(<span class="str">"OPENAI_API_KEY"</span>)
     os.environ[<span class="str">"OPENAI_BASE_URL"</span>] = <span class="str">"http://localhost:4010/v1"</span>
     os.environ[<span class="str">"OPENAI_API_KEY"</span>] = <span class="str">"mock-key"</span>
 
-    <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
-    proc.terminate()
-    proc.wait()</code></pre>
+    <span class="kw">try</span>:
+        <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
+    <span class="kw">finally</span>:
+        proc.terminate()
+        <span class="kw">try</span>:
+            proc.wait(timeout=<span class="num">10</span>)
+        <span class="kw">except</span> subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=<span class="num">5</span>)
+        <span class="cm"># Restore originals (or remove if there were none)</span>
+        <span class="kw">for</span> name, val <span class="kw">in</span> ((<span class="str">"OPENAI_BASE_URL"</span>, prev_base), (<span class="str">"OPENAI_API_KEY"</span>, prev_key)):
+            <span class="kw">if</span> val <span class="kw">is None</span>:
+                os.environ.pop(name, <span class="kw">None</span>)
+            <span class="kw">else</span>:
+                os.environ[name] = val</code></pre>
           </div>
 
           <div class="code-block">
@@ -435,8 +455,8 @@
               <div class="code-block-header">
                 Install &amp; run <span class="lang-tag">sh</span>
               </div>
-              <pre><code><span class="cm"># Run the mock server (requires Node.js)</span>
-npx @copilotkit/aimock -p <span class="num">4010</span> -f ./fixtures
+              <pre><code><span class="cm"># Run the mock server (requires Node.js, flag-driven llmock bin)</span>
+npx -p @copilotkit/aimock llmock -p <span class="num">4010</span> -f ./fixtures
 
 <span class="cm"># Point your Python app at the mock</span>
 <span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1
@@ -490,24 +510,44 @@ pytest</code></pre>
 <span class="op">@pytest.fixture</span>(scope=<span class="str">"session"</span>)
 <span class="kw">def</span> <span class="fn">aimock_server</span>():
     proc = subprocess.Popen(
-        [<span class="str">"npx"</span>, <span class="str">"aimock"</span>, <span class="str">"-p"</span>, <span class="str">"4010"</span>, <span class="str">"-f"</span>, <span class="str">"./fixtures"</span>],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        [<span class="str">"npx"</span>, <span class="str">"-p"</span>, <span class="str">"@copilotkit/aimock"</span>, <span class="str">"llmock"</span>, <span class="str">"-p"</span>, <span class="str">"4010"</span>, <span class="str">"-f"</span>, <span class="str">"./fixtures"</span>],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
-    <span class="cm"># Wait for health endpoint</span>
+    <span class="cm"># Wait for health endpoint — fail loudly if aimock never comes up</span>
     <span class="kw">import</span> requests
     <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">30</span>):
+        <span class="kw">if</span> proc.poll() <span class="kw">is not None</span>:
+            <span class="kw">raise</span> RuntimeError(<span class="str">f"aimock exited early with code {proc.returncode}"</span>)
         <span class="kw">try</span>:
-            <span class="kw">if</span> requests.get(<span class="str">"http://localhost:4010/__aimock/health"</span>).ok:
+            <span class="kw">if</span> requests.get(<span class="str">"http://localhost:4010/health"</span>).ok:
                 <span class="kw">break</span>
         <span class="kw">except</span> requests.ConnectionError:
-            time.sleep(<span class="num">0.2</span>)
+            <span class="kw">pass</span>
+        time.sleep(<span class="num">0.2</span>)
+    <span class="kw">else</span>:
+        <span class="kw">raise</span> RuntimeError(<span class="str">"aimock did not become healthy after 30 attempts"</span>)
 
+    <span class="cm"># Save originals so we don't clobber real credentials in the test process</span>
+    prev_base = os.environ.get(<span class="str">"OPENAI_BASE_URL"</span>)
+    prev_key = os.environ.get(<span class="str">"OPENAI_API_KEY"</span>)
     os.environ[<span class="str">"OPENAI_BASE_URL"</span>] = <span class="str">"http://localhost:4010/v1"</span>
     os.environ[<span class="str">"OPENAI_API_KEY"</span>] = <span class="str">"mock-key"</span>
 
-    <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
-    proc.terminate()
-    proc.wait()</code></pre>
+    <span class="kw">try</span>:
+        <span class="kw">yield</span> <span class="str">"http://localhost:4010"</span>
+    <span class="kw">finally</span>:
+        proc.terminate()
+        <span class="kw">try</span>:
+            proc.wait(timeout=<span class="num">10</span>)
+        <span class="kw">except</span> subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=<span class="num">5</span>)
+        <span class="cm"># Restore originals (or remove if there were none)</span>
+        <span class="kw">for</span> name, val <span class="kw">in</span> ((<span class="str">"OPENAI_BASE_URL"</span>, prev_base), (<span class="str">"OPENAI_API_KEY"</span>, prev_key)):
+            <span class="kw">if</span> val <span class="kw">is None</span>:
+                os.environ.pop(name, <span class="kw">None</span>)
+            <span class="kw">else</span>:
+                os.environ[name] = val</code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
