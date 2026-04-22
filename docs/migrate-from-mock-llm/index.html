@@ -242,7 +242,7 @@
           <div class="feature-card">
             <div class="feature-icon purple">&#128230;</div>
             <h3>Vector DB mocking</h3>
-            <p>Mock Pinecone, Qdrant, Weaviate, and ChromaDB endpoints for RAG pipeline testing.</p>
+            <p>Mock Pinecone, Qdrant, and ChromaDB endpoints for RAG pipeline testing.</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon amber">&#9210;</div>
@@ -446,6 +446,20 @@
   <span class="prop">mountPath</span>: <span class="str">/app/fixtures</span>
   <span class="prop">existingClaim</span>: <span class="str">""</span>  <span class="cm"># PVC for fixture files</span>
 
+<span class="prop">livenessProbe</span>:
+  <span class="prop">httpGet</span>:
+    <span class="prop">path</span>: <span class="str">/health</span>
+    <span class="prop">port</span>: <span class="num">4010</span>
+  <span class="prop">initialDelaySeconds</span>: <span class="num">5</span>
+  <span class="prop">periodSeconds</span>: <span class="num">10</span>
+
+<span class="prop">readinessProbe</span>:
+  <span class="prop">httpGet</span>:
+    <span class="prop">path</span>: <span class="str">/ready</span>
+    <span class="prop">port</span>: <span class="num">4010</span>
+  <span class="prop">initialDelaySeconds</span>: <span class="num">2</span>
+  <span class="prop">periodSeconds</span>: <span class="num">5</span>
+
 <span class="prop">resources</span>: {}
   <span class="cm"># limits:</span>
   <span class="cm">#   cpu: 200m</span>
@@ -477,8 +491,8 @@
               <div class="code-block-header">
                 Install &amp; run <span class="lang-tag">sh</span>
               </div>
-              <pre><code><span class="cm"># Run the mock server</span>
-npx @copilotkit/aimock -p <span class="num">4010</span> -f ./fixtures
+              <pre><code><span class="cm"># Run the mock server (flag-driven llmock bin)</span>
+npx -p @copilotkit/aimock llmock -p <span class="num">4010</span> -f ./fixtures
 
 <span class="cm"># With a full config file</span>
 npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
