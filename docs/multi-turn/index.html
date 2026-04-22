@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Turn Conversations — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Multi-Turn Conversations</h1>
+        <p class="lead">
+          How aimock routes requests that carry a full conversation history &mdash; user turns,
+          assistant tool calls, tool results, and follow-ups &mdash; using match fields on the
+          <em>tail</em> of the message array.
+        </p>
+
+        <h2>How matching works across turns</h2>
+        <p>
+          aimock&rsquo;s router does not look at the whole conversation. It inspects only the
+          <strong>tail</strong> of the <code>messages</code> array:
+        </p>
+        <ul>
+          <li>
+            <code>userMessage</code> matches against the content of the
+            <strong>last message with <code>role: "user"</code></strong> &mdash; everything before
+            it is ignored.
+          </li>
+          <li>
+            <code>toolCallId</code> matches against the <code>tool_call_id</code> of the
+            <strong>last message with <code>role: "tool"</code></strong> &mdash; this is how you
+            distinguish the turn that <em>requests</em> a tool from the turn that
+            <em>follows up</em> on a tool result.
+          </li>
+        </ul>
+        <p>
+          A request carrying a 20-message history still only matches on its last user message (and,
+          if present, its last tool message). Prior turns do not participate in matching.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>Substring by default, exact when transformed.</strong>
+            <code>userMessage</code> is a substring match by default (<code>"hello"</code> matches
+            <code>"say hello world"</code>). When you register a <code>requestTransform</code>,
+            matching flips to <strong>exact string equality</strong> &mdash; but only for
+            <code>userMessage</code> and <code>inputText</code>; other fields like
+            <code>toolName</code> and <code>toolCallId</code> are always exact. This trips people up
+            &mdash; see <a href="#gotchas">Gotchas</a> below.
+          </p>
+        </div>
+
+        <h2>The tool-round idiom</h2>
+        <p>
+          A single &ldquo;tool round&rdquo; is a two-turn pattern: the user asks for something, the
+          assistant emits a tool call, your client executes it and sends the result back, and the
+          assistant produces a final answer. aimock handles this with two fixtures &mdash; one keyed
+          on the user message, one keyed on the tool call id.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/example-multi-turn.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"toolCallId"</span>: <span class="str">"call_background"</span> },
+      <span class="key">"response"</span>: { <span class="key">"content"</span>: <span class="str">"Done! I've changed the background."</span> }
+    },
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"change background to blue"</span> },
+      <span class="key">"response"</span>: {
+        <span class="key">"toolCalls"</span>: [
+          {
+            <span class="key">"id"</span>: <span class="str">"call_background"</span>,
+            <span class="key">"name"</span>: <span class="str">"change_background"</span>,
+            <span class="key">"arguments"</span>: { <span class="key">"background"</span>: <span class="str">"blue"</span> }
+          }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h3>Turn 1 &mdash; user asks, assistant calls the tool</h3>
+        <p>
+          The client sends a request whose last message is
+          <code>{ role: "user", content: "change background to blue" }</code>. There is no tool
+          message in the history yet, so the first fixture&rsquo;s <code>toolCallId</code> criterion
+          cannot match and the router falls through to the second fixture. That fixture
+          substring-matches the last user message and returns the <code>tool_calls</code> response.
+          Pinning the tool call&rsquo;s <code>id</code> (<code>"call_background"</code>) in the
+          fixture is what lets turn 2 match &mdash; if you omit it, aimock auto-generates a fresh id
+          and the first fixture&rsquo;s <code>toolCallId</code> criterion will never match.
+        </p>
+
+        <h3>Turn 2 &mdash; client runs the tool, sends the result</h3>
+        <p>
+          The client executes <code>change_background</code>, then sends a new request whose history
+          now contains the original user turn, the assistant&rsquo;s tool-call turn, and a new
+          <code>{ role: "tool", tool_call_id: "call_background", content: "..." }</code> message at
+          the end. The last user message is still <code>"change background to blue"</code>, but
+          there is now also a last tool message with <code>tool_call_id: "call_background"</code>.
+          The first fixture&rsquo;s <code>toolCallId</code> criterion matches and returns the final
+          text response &mdash; the broader <code>userMessage</code> fixture is never consulted.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong
+              >Order matters: put <code>toolCallId</code> before <code>userMessage</code>.</strong
+            >
+            Matching is <a href="/fixtures">first-wins</a>, and turn 2 still has the same last user
+            message as turn 1. If the broader <code>userMessage</code> fixture were listed first, it
+            would shadow the <code>toolCallId</code> fixture on turn 2 and the follow-up response
+            would never fire. More-specific fixtures (<code>toolCallId</code>) must precede broader
+            ones (<code>userMessage</code>). As an alternative to ordering, gate
+            <strong>both</strong> fixtures with predicates on the last message&rsquo;s role: the
+            turn-1 fixture only matches when <code>last.role === "user"</code>, and the turn-2
+            fixture only matches when <code>last.role === "tool"</code>. Then the two fixtures are
+            mutually exclusive regardless of registration order.
+          </p>
+        </div>
+
+        <h2>Choosing between sequenceIndex, toolCallId, and predicate</h2>
+        <p>
+          Three mechanisms handle three different shapes of &ldquo;the same prompt twice&rdquo;:
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>You need&hellip;</th>
+              <th>Use</th>
+              <th>Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Same user prompt, different response per call (retry loops, multi-step plans)</td>
+              <td><code>sequenceIndex</code></td>
+              <td>
+                Stateful per-fixture counter. Reset on <code>mock.reset()</code>. See
+                <a href="/sequential-responses">Sequential Responses</a>.
+              </td>
+            </tr>
+            <tr>
+              <td>Different behavior before vs. after tool execution (tool-call round trip)</td>
+              <td><code>toolCallId</code></td>
+              <td>
+                Matches the <code>tool_call_id</code> of the last <code>role: "tool"</code>
+                message. Turn 1 has no tool message; turn 2 does.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Arbitrary inspection &mdash; message count, specific content at any position, custom
+                conversation state
+              </td>
+              <td><code>predicate</code></td>
+              <td>
+                A <code>(req) =&gt; boolean</code> you supply. Receives the original request.
+                Programmatic only &mdash; not expressible in JSON fixtures.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            predicate-by-turn-count.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="cm">// Different response depending on how far into the conversation we are</span>
+<span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">predicate</span>: (<span class="op">req</span>) <span class="kw">=&gt;</span> <span class="op">req</span>.<span class="prop">messages</span>.<span class="prop">length</span> <span class="kw">&lt;=</span> <span class="num">2</span> },
+  { <span class="prop">content</span>: <span class="str">"Welcome! What can I help with?"</span> }
+);
+<span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">predicate</span>: (<span class="op">req</span>) <span class="kw">=&gt;</span> <span class="op">req</span>.<span class="prop">messages</span>.<span class="prop">length</span> <span class="kw">&gt;</span> <span class="num">2</span> },
+  { <span class="prop">content</span>: <span class="str">"Continuing our conversation..."</span> }
+);</code></pre>
+        </div>
+        <p>
+          These two predicates are disjoint &mdash; every request matches exactly one, so
+          registration order doesn&rsquo;t matter <em>for this specific example</em>. But if you
+          later widen the second predicate from <code>&gt; 2</code> to <code>&gt;= 2</code>, the two
+          ranges overlap at <code>length === 2</code> and first-wins means whichever fixture is
+          registered first wins both turns. Register the more-specific predicate first.
+        </p>
+
+        <h2>Recording multi-turn conversations</h2>
+        <p>
+          aimock&rsquo;s recorder is <strong>stateless across turns</strong>. Every recorded fixture
+          is keyed on the <em>last <code>role: "user"</code> message</em> of the request that
+          produced it &mdash; the recorder does not infer that two requests are part of the same
+          conversation. On a tool-round follow-up request, the last user message is still the
+          original turn-1 user message, because the assistant&rsquo;s tool call and the
+          client&rsquo;s tool result have different roles. So the recorder emits two fixtures with
+          <em>identical</em> <code>match.userMessage</code> &mdash; on replay the second will be
+          shadowed by the first until you disambiguate it (add <code>toolCallId</code>,
+          <code>sequenceIndex</code>, or a <code>predicate</code>).
+        </p>
+        <p>
+          After recording, you will usually hand-edit the follow-up fixture to key on
+          <code>toolCallId</code> so replay routes correctly. Two remedies exist for recorder
+          collisions: rewrite the <code>match</code> to use <code>toolCallId</code> (the right fix
+          for tool rounds, covered here) or add <code>sequenceIndex</code> (the right fix for the
+          same user prompt repeating, covered on the record-replay page). See
+          <a href="/record-replay#recording-multi-turn-conversations"
+            >Recording Multi-Turn Conversations</a
+          >
+          on the Record &amp; Replay page for the full recorder workflow and the
+          <code>sequenceIndex</code> remedy.
+        </p>
+
+        <h2 id="gotchas">Gotchas</h2>
+        <ul>
+          <li>
+            <strong>Substring vs. exact matching.</strong> Default matching is substring. Adding a
+            <code>requestTransform</code> (e.g. to strip timestamps or request ids) flips matching
+            to exact string equality &mdash; fixtures that previously matched as substrings will
+            silently stop matching. Only <code>userMessage</code> and <code>inputText</code> flip;
+            fields like <code>toolName</code> and <code>toolCallId</code> are always exact. Pin
+            exact strings in your fixtures when you use a transform.
+          </li>
+          <li>
+            <strong>Duplicate <code>userMessage</code> warnings.</strong>
+            <code>validateFixtures</code> warns when two fixtures share the same string
+            <code>userMessage</code>. The check looks at <code>userMessage</code> only &mdash; it
+            does <em>not</em> factor in <code>sequenceIndex</code>, <code>toolCallId</code>,
+            <code>model</code>, or <code>predicate</code>, so the warning still fires when those
+            discriminators are present. Treat it as advisory: if a runtime differentiator is in
+            place, the fixtures won't actually shadow each other at match time. Only fixtures with
+            <em>no</em> differentiator at all will truly shadow on match.
+          </li>
+          <li>
+            <strong>First-wins ordering.</strong> Fixtures are evaluated in registration order (and,
+            when loaded from a directory, in filename-sorted order). A broader fixture registered
+            first will shadow narrower fixtures registered later. See the full routing rules on
+            <a href="/fixtures">Fixtures</a>.
+          </li>
+          <li>
+            <strong>Prior turns are invisible.</strong> If you need to vary behavior based on
+            something in the <em>middle</em> of the conversation &mdash; e.g. &ldquo;did the user
+            mention &lsquo;urgent&rsquo; three turns ago?&rdquo; &mdash; use <code>predicate</code>.
+            No built-in match field inspects non-tail messages.
+          </li>
+        </ul>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>
