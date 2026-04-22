@@ -483,6 +483,82 @@ await mock.start();</code></pre>
           <li>Re-record when upstream APIs change (drift detection catches this)</li>
         </ol>
 
+        <h2>Recording Multi-Turn Conversations</h2>
+        <p>
+          The recorder is <strong>stateless across turns</strong>. Every incoming request is treated
+          as an independent unit: aimock derives fixture match criteria from a
+          <em>single</em> request at a time, and it doesn&rsquo;t remember or hash prior turns of
+          the same test session.
+        </p>
+
+        <p>
+          Specifically, for chat requests the recorder reads only the
+          <strong>last user message</strong> of the request and saves it as
+          <code>match.userMessage</code>. For embedding requests it uses the input text. There is no
+          history-based keying &mdash; unlike VCR-style recorders that fingerprint the full request
+          body, aimock keys fixtures purely on the last user message.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recorder match derivation <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="cmt">// src/recorder.ts (simplified)</span>
+<span class="kw">function</span> <span class="fn">buildFixtureMatch</span>(request) {
+  <span class="kw">if</span> (request.embeddingInput) {
+    <span class="kw">return</span> { <span class="prop">inputText</span>: request.embeddingInput };
+  }
+  <span class="cmt">// Chat/multimedia — key on the LAST user message only</span>
+  <span class="kw">const</span> lastUser = <span class="fn">getLastMessageByRole</span>(request.messages, <span class="str">"user"</span>);
+  <span class="kw">return</span> { <span class="prop">userMessage</span>: <span class="fn">getTextContent</span>(lastUser.content) };
+}</code></pre>
+        </div>
+
+        <h3>Consequence: identical final prompts collide</h3>
+        <p>
+          Two turns of the same conversation that happen to end with the same user message produce
+          two fixture entries that share the same <code>match.userMessage</code>. On replay, the
+          router picks the <strong>first fixture that matches</strong> (first-wins by file load
+          order), and the second fixture is effectively shadowed. This matters whenever a test says
+          &ldquo;continue&rdquo;, &ldquo;yes&rdquo;, &ldquo;retry&rdquo;, or any other short prompt
+          twice in a row.
+        </p>
+
+        <h3>Recommended workflow</h3>
+        <ol>
+          <li>
+            Run the test once under <code>--record</code> and let aimock capture one fixture per
+            turn as usual.
+          </li>
+          <li>
+            Review the recorded fixtures. For turns whose purpose is answering a tool call, rewrite
+            the match to key on
+            <a href="/multi-turn"><code>toolCallId</code></a> instead of
+            <code>userMessage</code> &mdash; this is the canonical tool-round idiom.
+          </li>
+          <li>
+            For genuine repeats of the same user prompt, add
+            <a href="/sequential-responses"><code>sequenceIndex</code></a> (<code>0</code>,
+            <code>1</code>, &hellip;) to each fixture to differentiate them by call order.
+          </li>
+          <li>
+            Move the hand-edited fixtures into your organized
+            <a href="/fixtures">fixture directory</a> and switch to <code>--strict</code> for replay
+            in CI.
+          </li>
+        </ol>
+
+        <h3>Gotcha: shadowed repeats</h3>
+        <p>
+          If you record a conversation that sends &ldquo;continue&rdquo; twice, you will get two
+          fixtures with identical <code>match.userMessage: "continue"</code>. On replay, the second
+          one will never fire until you add <code>sequenceIndex</code> post-record. See
+          <a href="/sequential-responses">Sequential / Stateful Responses</a> for the mechanics. For
+          tool-round conversations where each post-tool turn carries a distinct
+          <code>tool_call_id</code>, prefer keying by <code>toolCallId</code> &mdash; see
+          <a href="/multi-turn">Multi-Turn Conversations</a>.
+        </p>
+
         <h2>Cross-Language Testing</h2>
         <p>
           The Docker image serves any language that speaks HTTP. Point your client at the mock
