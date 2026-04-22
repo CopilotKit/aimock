@@ -3259,3 +3259,98 @@ describe("recorder binary EventStream relay integrity", () => {
     expect(fixtureContent.fixtures[0].response.content).toBe("Binary integrity test");
   });
 });
+
+// ---------------------------------------------------------------------------
+// SSE progressive streaming — recorder must tee upstream chunks to the
+// client as they arrive, not buffer and replay in a single write.
+// ---------------------------------------------------------------------------
+
+describe("recorder SSE progressive streaming", () => {
+  let rawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  it("streams SSE frames progressively to the client (not buffered)", async () => {
+    // Raw upstream that emits 5 SSE `data:` frames spaced by 50ms each.
+    // The recorder must relay each chunk as it arrives; if it buffers
+    // and replays via a single res.end(), the client observes all frames
+    // within microseconds of each other.
+    const FRAME_DELAY_MS = 50;
+    const NUM_FRAMES = 5;
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+      });
+      let i = 0;
+      const emit = () => {
+        if (i < NUM_FRAMES) {
+          res.write(`data: {"chunk":${i}}\n\n`);
+          i++;
+          setTimeout(emit, FRAME_DELAY_MS);
+        } else {
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }
+      };
+      setTimeout(emit, FRAME_DELAY_MS);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-sse-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    // Issue request and capture the wall-clock arrival time of each
+    // client-visible data event.
+    const arrivalTimes: number[] = [];
+    const body = JSON.stringify({
+      model: "gpt-4",
+      messages: [{ role: "user", content: "stream me" }],
+      stream: true,
+    });
+    const parsedUrl = new URL(recorder.url);
+    await new Promise<void>((resolve, reject) => {
+      const clientReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: "/v1/chat/completions",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          res.on("data", () => {
+            arrivalTimes.push(Date.now());
+          });
+          res.on("end", () => resolve());
+          res.on("error", reject);
+        },
+      );
+      clientReq.on("error", reject);
+      clientReq.write(body);
+      clientReq.end();
+    });
+
+    // We should observe multiple client-visible data events, and the span
+    // between first and last should reflect the upstream frame spacing.
+    // With buffer-and-replay, everything arrives in one write within ~0ms.
+    expect(arrivalTimes.length).toBeGreaterThanOrEqual(2);
+    const span = arrivalTimes[arrivalTimes.length - 1] - arrivalTimes[0];
+    // NUM_FRAMES frames spaced by 50ms = >=200ms expected span; allow
+    // slack for scheduler jitter but require clearly more than "all at once".
+    expect(span).toBeGreaterThanOrEqual(100);
+  });
+});

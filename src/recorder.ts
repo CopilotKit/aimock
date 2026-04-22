@@ -103,12 +103,16 @@ export async function proxyAndRecord(
   let upstreamBody: string;
   let rawBuffer: Buffer;
 
+  // Track whether we streamed SSE progressively to the client; if so,
+  // skip the final res.writeHead/res.end relay at the bottom of this fn.
+  let streamedToClient = false;
   try {
-    const result = await makeUpstreamRequest(target, forwardHeaders, requestBody);
+    const result = await makeUpstreamRequest(target, forwardHeaders, requestBody, res);
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
     upstreamBody = result.body;
     rawBuffer = result.rawBuffer;
+    streamedToClient = result.streamedToClient;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -250,13 +254,17 @@ export async function proxyAndRecord(
     defaults.logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
   }
 
-  // Relay upstream response to client
-  const relayHeaders: Record<string, string> = {};
-  if (ctString) {
-    relayHeaders["Content-Type"] = ctString;
+  // Relay upstream response to client (skip when SSE was already streamed
+  // progressively by makeUpstreamRequest — headers and body are already on
+  // the wire).
+  if (!streamedToClient) {
+    const relayHeaders: Record<string, string> = {};
+    if (ctString) {
+      relayHeaders["Content-Type"] = ctString;
+    }
+    res.writeHead(upstreamStatus, relayHeaders);
+    res.end(isBinaryStream ? rawBuffer : upstreamBody);
   }
-  res.writeHead(upstreamStatus, relayHeaders);
-  res.end(isBinaryStream ? rawBuffer : upstreamBody);
 
   return true;
 }
@@ -269,7 +277,14 @@ function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
   body: string,
-): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string; rawBuffer: Buffer }> {
+  clientRes?: http.ServerResponse,
+): Promise<{
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+  rawBuffer: Buffer;
+  streamedToClient: boolean;
+}> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
     const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -288,16 +303,39 @@ function makeUpstreamRequest(
         res.setTimeout(BODY_TIMEOUT_MS, () => {
           req.destroy(new Error(`Upstream response timed out after ${BODY_TIMEOUT_MS / 1000}s`));
         });
+        // Detect Server-Sent Events so we can tee upstream chunks to the
+        // client as they arrive rather than buffering the entire stream and
+        // replaying it in a single res.end() at the bottom of proxyAndRecord.
+        // Buffering collapses every SSE frame into one client-visible write,
+        // which defeats progressive rendering in downstream consumers.
+        const ct = res.headers["content-type"];
+        const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
+        const isSSE = ctStr.toLowerCase().includes("text/event-stream");
+        let streamedToClient = false;
+        if (isSSE && clientRes && !clientRes.headersSent) {
+          const relayHeaders: Record<string, string> = {};
+          if (ctStr) relayHeaders["Content-Type"] = ctStr;
+          clientRes.writeHead(res.statusCode ?? 200, relayHeaders);
+          // Flush headers immediately so the client starts parsing frames
+          // before the first data chunk arrives.
+          if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
+          streamedToClient = true;
+        }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+          if (streamedToClient) clientRes!.write(chunk);
+        });
         res.on("error", reject);
         res.on("end", () => {
           const rawBuffer = Buffer.concat(chunks);
+          if (streamedToClient) clientRes!.end();
           resolve({
             status: res.statusCode ?? 500,
             headers: res.headers,
             body: rawBuffer.toString(),
             rawBuffer,
+            streamedToClient,
           });
         });
       },
