@@ -42,14 +42,18 @@
 
 ## 1.14.2
 
+> **BREAKING** — CLI flag parsing: `--journal-max=-1` (and `--fixture-counts-max=-1`) no longer silently maps to "unbounded"; it is now rejected with a clear error. Migration: drop the flag entirely, or pass `--journal-max=0` / `--fixture-counts-max=0` if you intended unbounded retention.
+>
+> **⚠ BEHAVIOR CHANGE (should have been MINOR per SemVer)** — `createServer()` programmatic defaults for `journalMaxEntries` and `fixtureCountsMaxTestIds` flipped from unbounded to finite caps (1000 / 500). Auto-update consumers on long-running embedders: review your retention assumptions and opt in to unbounded explicitly by passing `0` if that was the prior relied-upon behavior. Released as a PATCH; in retrospect this warranted a MINOR bump.
+
 ### Fixed
 
 - `Journal.getFixtureMatchCount()` is now read-only: calling it with an unknown testId no longer inserts an empty map or triggers FIFO eviction of a live testId. Reads never mutate cache state.
-- CLI rejects negative values for `--journal-max` and `--fixture-counts-max` with a clear error (previously silently treated as unbounded).
+- CLI rejects negative values for `--journal-max` and `--fixture-counts-max` with a clear error (previously silently treated as unbounded). **Breaking for anyone passing `-1` expecting unbounded** — see note above.
 
 ### Changed
 
-- `createServer()` programmatic default: `journalMaxEntries` and `fixtureCountsMaxTestIds` now default to finite caps (1000 / 500) instead of unbounded. Long-running embedders that relied on unbounded retention must now opt in explicitly by passing `0`. Back-compat with test harnesses using `new Journal()` directly is preserved (they still default to unbounded).
+- `createServer()` programmatic default: `journalMaxEntries` and `fixtureCountsMaxTestIds` now default to finite caps (1000 / 500) instead of unbounded. Long-running embedders that relied on unbounded retention must now opt in explicitly by passing `0`. Back-compat with test harnesses using `new Journal()` directly is preserved (they still default to unbounded). **Note:** this is a behavior change that in retrospect warranted a MINOR bump rather than PATCH.
 
 ### Added
 
@@ -57,39 +61,42 @@
 
 ## 1.14.1
 
-### Patch Changes
+### Fixed
 
-- Cap in-memory journal (and fixture-match-counts map) to prevent heap OOM under sustained load. `Journal.entries` was unbounded, causing heap growth ~3.8MB/sec to 4GB → OOM in ~18 minutes on production Railway deployments. Default cap for CLI (`serve`) is now 1000 entries; programmatic `createServer()` remains unbounded by default (back-compat). See `--journal-max` flag.
+- Cap in-memory journal (and fixture-match-counts map) to prevent heap OOM under sustained load. `Journal.entries` was unbounded, causing heap growth ~3.8MB/sec to 4GB → OOM in ~18 minutes on long-running production deployments. Default cap for CLI (`serve`) is now 1000 entries; programmatic `createServer()` remains unbounded by default (back-compat). See `--journal-max` flag.
 
 ## 1.14.0
 
-### Minor Changes
+### Added
 
 - Response template merging — override `id`, `created`, `model`, `usage`, `finishReason`, `role`, `systemFingerprint` on fixture responses across all 4 provider formats (OpenAI, Claude, Gemini, Responses API) (#111)
 - JSON auto-stringify — fixture `arguments` and `content` fields accept objects that are auto-stringified by the loader, eliminating escaped JSON pain (#111)
 - Migration guide from openai-responses-python (#111)
 - All fixture examples and docs converted to object syntax (#111)
+- `ResponseOverrides` field validation in `validateFixtures` — catches invalid types for `id`, `created`, `model`, `usage`, `finishReason`, `role`, `systemFingerprint`
 
-### Patch Changes
+### Fixed
 
-- Fix `onTranscription` docs to show correct 1-argument signature
-- Fix `validateFixtures` to recognize ContentWithToolCalls and multimedia response types
-- Add `ResponseOverrides` field validation in `validateFixtures` — catches invalid types for `id`, `created`, `model`, `usage`, `finishReason`, `role`, `systemFingerprint`
+- `onTranscription` docs now show correct 1-argument signature
+- `validateFixtures` now recognizes ContentWithToolCalls and multimedia response types
 
 ## 1.13.0
 
-### Minor Changes
+### Added
 
-- Add GitHub Action for one-line CI setup — `uses: CopilotKit/aimock@v1` with fixtures, config, port, args, and health check (#102)
-- Wire fixture converters into CLI — `npx @copilotkit/aimock convert vidaimock` and `npx @copilotkit/aimock convert mockllm` as first-class subcommands (#102)
-- Add 30 npm keywords for search discoverability (#102)
-- Add fixture gallery with 11 examples covering all mock types, plus browsable docs page at /examples (#102)
-- Add vitest and jest plugins for zero-config testing — `import { useAimock } from "@copilotkit/aimock/vitest"` (#102)
+- GitHub Action for one-line CI setup — `uses: CopilotKit/aimock@v1` with fixtures, config, port, args, and health check (#102)
+- Fixture converters wired into the CLI — `npx @copilotkit/aimock convert vidaimock` and `npx @copilotkit/aimock convert mockllm` as first-class subcommands (#102)
+- 30 npm keywords for search discoverability (#102)
+- Fixture gallery with 11 examples covering all mock types, plus browsable docs page at /examples (#102)
+- Vitest and jest plugins for zero-config testing — `import { useAimock } from "@copilotkit/aimock/vitest"` (#102)
+
+### Changed
+
 - Strip video URLs from README for npm publishing (#102)
 
 ## 1.12.0
 
-### Minor Changes
+### Added
 
 - Multimedia endpoint support: image generation (OpenAI DALL-E + Gemini Imagen), text-to-speech, audio transcription, and video generation with async polling (#101)
 - `match.endpoint` field for fixture isolation — prevents cross-matching between chat, image, speech, transcription, video, and embedding fixtures (#101)
@@ -102,93 +109,105 @@
 
 ## 1.11.0
 
-### Minor Changes
+### Added
 
-- Add `AGUIMock` — mock the AG-UI (Agent-to-UI) protocol for CopilotKit frontend testing. All 33 event types, 11 convenience builders, fluent registration API, SSE streaming with disconnect handling (#100)
-- Add AG-UI record & replay with tee streaming — proxy to real AG-UI agents, record event streams as fixtures, replay on subsequent requests. Includes `--proxy-only` mode for demos (#100)
-- Add AG-UI schema drift detection — compares aimock event types against canonical `@ag-ui/core` Zod schemas to catch protocol changes (#100)
-- Add `--agui-record`, `--agui-upstream`, `--agui-proxy-only` CLI flags (#100)
-- Remove section bar from docs pages (cleanup)
+- `AGUIMock` — mock the AG-UI (Agent-to-UI) protocol for CopilotKit frontend testing. All 33 event types, 11 convenience builders, fluent registration API, SSE streaming with disconnect handling (#100)
+- AG-UI record & replay with tee streaming — proxy to real AG-UI agents, record event streams as fixtures, replay on subsequent requests. Includes `--proxy-only` mode for demos (#100)
+- AG-UI schema drift detection — compares aimock event types against canonical `@ag-ui/core` Zod schemas to catch protocol changes (#100)
+- `--agui-record`, `--agui-upstream`, `--agui-proxy-only` CLI flags (#100)
+
+### Removed
+
+- Section bar from docs pages (cleanup)
 
 ## 1.10.0
 
-### Minor Changes
+### Added
 
-- Add `--proxy-only` flag — proxy unmatched requests to upstream providers without saving fixtures to disk or caching in memory. Every unmatched request always hits the real provider, preventing stale recorded responses in demo/live environments (#99)
+- `--proxy-only` flag — proxy unmatched requests to upstream providers without saving fixtures to disk or caching in memory. Every unmatched request always hits the real provider, preventing stale recorded responses in demo/live environments (#99)
 
 ## 1.9.0
 
-### Minor Changes
+### Added
 
 - Per-test sequence isolation via `X-Test-Id` header — each test gets its own fixture match counters, wired through all 12 HTTP handlers and 3 WebSocket handlers. No more test pollution from shared sequential state (#93)
 - Combined `content + toolCalls` in fixture responses — new `ContentWithToolCallsResponse` type and type guard, supported across OpenAI Chat, OpenAI Responses, Anthropic Messages, and Gemini, with stream collapse support (#92)
 - OpenRouter `reasoning_content` support in chat completions (#88)
-
-### Patch Changes
-
-- Fix `web_search_call` items to use `action.query` matching real OpenAI API format (#89)
-- Clean up homepage URL (remove `/index.html` suffix) (#90)
-- Center Record & Replay section title and top-align terminal panel (#87)
-- Add demo video to README (#91)
+- Demo video in README (#91)
 - CI: Slack notifications for drift tests, competitive matrix updates, and new PRs (#86)
+- Docs: reasoning and webSearches rows in Response Types table
+
+### Fixed
+
+- `web_search_call` items now use `action.query` matching real OpenAI API format (#89)
+- Homepage URL cleaned up (remove `/index.html` suffix) (#90)
+- Record & Replay section title now centered and terminal panel top-aligned (#87)
 - CI: use `pull_request_target` for fork PR Slack alerts
-- Docs: add reasoning and webSearches to Response Types table
 
 ## 1.8.0
 
-### Minor Changes
+### Added
 
-- Add `requestTransform` option for deterministic matching and recording — normalizes requests before matching (strips timestamps, UUIDs, session IDs) and switches to exact equality when set. Applied across all 15 provider handlers and the recorder. (#79, based on design by @iskhakovt in #63)
-- Add reasoning/thinking support for OpenAI Chat Completions — `reasoning` field in fixtures generates `reasoning_content` in responses and streaming `reasoning` deltas (#62 by @erezcor)
-- Add reasoning support for Gemini (`thoughtParts`), AWS Bedrock InvokeModel + Converse (`thinking` blocks), and Ollama (`think` tags) (#81)
-- Add web search result events for OpenAI Responses API (#62)
+- `requestTransform` option for deterministic matching and recording — normalizes requests before matching (strips timestamps, UUIDs, session IDs) and switches to exact equality when set. Applied across all 15 provider handlers and the recorder. (#79, based on design by @iskhakovt in #63)
+- Reasoning/thinking support for OpenAI Chat Completions — `reasoning` field in fixtures generates `reasoning_content` in responses and streaming `reasoning` deltas (#62 by @erezcor)
+- Reasoning support for Gemini (`thoughtParts`), AWS Bedrock InvokeModel + Converse (`thinking` blocks), and Ollama (`think` tags) (#81)
+- Web search result events for OpenAI Responses API (#62)
+- Open Graph image and meta tags for social sharing
+- CI: `npm` environment to release workflow for deployment tracking; `workflow_dispatch` added to Python test workflow
 
-### Patch Changes
+### Changed
 
-- Fix migration page examples: replace fragile `time.sleep` with health check loops against `/__aimock/health`; fix Python npx example `stderr=subprocess.PIPE` deadlock (#80)
-- Fix stream collapse to handle reasoning events correctly
-- Update all GitHub repo URLs from CopilotKit/llmock to CopilotKit/aimock
-- Add Open Graph image and meta tags for social sharing
-- Reframe drift detection docs for users ("your mocks never go stale") with restored drift report output
-- CI: add `npm` environment to release workflow for deployment tracking; add `workflow_dispatch` to Python test workflow
+- Updated all GitHub repo URLs from CopilotKit/llmock to CopilotKit/aimock
+- Reframed drift detection docs for users ("your mocks never go stale") with restored drift report output
+
+### Fixed
+
+- Migration page examples: replaced fragile `time.sleep` with health check loops against `/__aimock/health`; fixed Python npx example `stderr=subprocess.PIPE` deadlock (#80)
+- Stream collapse now handles reasoning events correctly
 
 ## 1.7.0
 
-### Minor Changes
+### Added
 
-- Rename package from `@copilotkit/llmock` to `@copilotkit/aimock`
-- Add MCPMock — Model Context Protocol mock with tools, resources, prompts, session management
-- Add A2AMock — Agent-to-Agent protocol mock with SSE streaming
-- Add VectorMock — Pinecone, Qdrant, ChromaDB compatible vector DB mock
-- Add search (Tavily), rerank (Cohere), and moderation (OpenAI) service mocks
-- Add `/__aimock/*` control API for external fixture management
-- Add `aimock` CLI with JSON config file support
-- Add mount composition for running multiple protocol handlers on one server
-- Add JSON-RPC 2.0 transport with batch and notifications
-- Add `aimock-pytest` pip package for native Python testing
-- Add converter scripts: `convert-vidaimock` (Tera → JSON) and `convert-mockllm` (YAML → JSON)
-- Add drift automation skill updates — `fix-drift.ts` now updates `skills/write-fixtures/SKILL.md` alongside source fixes
-- Rename Prometheus metrics to `aimock_*` with new MCP/A2A/Vector counters
-- Rebrand logger `[aimock]`, chaos headers `x-aimock-chaos-*`, CLI startup message
+- MCPMock — Model Context Protocol mock with tools, resources, prompts, session management
+- A2AMock — Agent-to-Agent protocol mock with SSE streaming
+- VectorMock — Pinecone, Qdrant, ChromaDB compatible vector DB mock
+- Search (Tavily), rerank (Cohere), and moderation (OpenAI) service mocks
+- `/__aimock/*` control API for external fixture management
+- `aimock` CLI with JSON config file support
+- Mount composition for running multiple protocol handlers on one server
+- JSON-RPC 2.0 transport with batch and notifications
+- `aimock-pytest` pip package for native Python testing
+- Converter scripts: `convert-vidaimock` (Tera → JSON) and `convert-mockllm` (YAML → JSON)
+- Drift automation skill updates — `fix-drift.ts` now updates `skills/write-fixtures/SKILL.md` alongside source fixes
 - Docker: dual-push `ghcr.io/copilotkit/aimock` + `ghcr.io/copilotkit/llmock` (compat)
-- Helm chart renamed to `charts/aimock/`
 - 6 migration guides: MSW, VidaiMock, mock-llm, piyook, Python mocks, Mokksy
-- Homepage redesigned (Treatment 3: Progressive Disclosure)
 - Docs: sidebar.js, cli-tabs.js, section bar, competitive matrix with 25 rows
+
+### Changed
+
+- Renamed package from `@copilotkit/llmock` to `@copilotkit/aimock`
+- Renamed Prometheus metrics to `aimock_*` with new MCP/A2A/Vector counters
+- Rebranded logger `[aimock]`, chaos headers `x-aimock-chaos-*`, CLI startup message
+- Helm chart renamed to `charts/aimock/`
+- Homepage redesigned (Treatment 3: Progressive Disclosure)
 
 ## 1.6.1
 
-### Patch Changes
+### Fixed
 
-- Fix record proxy to preserve upstream URL path prefixes — base URLs like `https://gateway.company.com/llm` now correctly resolve to `gateway.company.com/llm/v1/chat/completions` instead of losing the `/llm` prefix (PR #57)
-- Fix record proxy to forward all request headers to upstream, not just `Content-Type` and auth headers. Hop-by-hop headers (`connection`, `keep-alive`, `transfer-encoding`, etc.) and client-set headers (`host`, `content-length`, `cookie`, `accept-encoding`) are still stripped (PR #58)
-- Fix recorder to decode base64-encoded embeddings when `encoding_format: "base64"` is set in the request. Python's openai SDK uses this by default. Previously these were saved as `proxy_error` fixtures (PR #64)
-- Guard base64 embedding decode against corrupted data (non-float32-aligned buffers fall through gracefully instead of crashing)
-- Add `--summary` flag to competitive matrix update script for markdown-formatted change summaries
+- Record proxy now preserves upstream URL path prefixes — base URLs like `https://gateway.company.com/llm` now correctly resolve to `gateway.company.com/llm/v1/chat/completions` instead of losing the `/llm` prefix (PR #57)
+- Record proxy now forwards all request headers to upstream, not just `Content-Type` and auth headers. Hop-by-hop headers (`connection`, `keep-alive`, `transfer-encoding`, etc.) and client-set headers (`host`, `content-length`, `cookie`, `accept-encoding`) are still stripped (PR #58)
+- Recorder now decodes base64-encoded embeddings when `encoding_format: "base64"` is set in the request. Python's openai SDK uses this by default. Previously these were saved as `proxy_error` fixtures (PR #64)
+- Guarded base64 embedding decode against corrupted data (non-float32-aligned buffers fall through gracefully instead of crashing)
+
+### Added
+
+- `--summary` flag on the competitive matrix update script for markdown-formatted change summaries
 
 ## 1.6.0
 
-### Minor Changes
+### Added
 
 - Provider-specific endpoints: dedicated routes for Bedrock (`/model/{modelId}/invoke`), Ollama (`/api/chat`, `/api/generate`), Cohere (`/v2/chat`), and Azure OpenAI deployment-based routing (`/openai/deployments/{id}/chat/completions`)
 - Chaos injection: `ChaosConfig` type with `drop`, `malformed`, and `disconnect` actions; supports per-fixture chaos via `chaos` config on each fixture and server-wide chaos via `--chaos-drop`, `--chaos-malformed`, and `--chaos-disconnect` CLI flags
@@ -197,13 +216,13 @@
 
 ## 1.5.1
 
-### Patch Changes
+### Fixed
 
-- Fix documentation URLs to use correct domain (llmock.copilotkit.dev)
+- Documentation URLs now use the correct domain (llmock.copilotkit.dev)
 
 ## 1.5.0
 
-### Minor Changes
+### Added
 
 - Embeddings API: `POST /v1/embeddings` endpoint, `onEmbedding()` convenience method, `inputText` match field, `EmbeddingResponse` type, deterministic fallback embeddings from input hash, Azure embedding routing
 - Structured output / JSON mode: `responseFormat` match field, `onJsonOutput()` convenience method
@@ -217,26 +236,32 @@
 - Automated drift remediation: `scripts/drift-report-collector.ts` and `scripts/fix-drift.ts` for CI-driven drift fixes
 - CI automation: competitive matrix update workflow, drift fix workflow
 - `FixtureOpts` and `EmbeddingFixtureOpts` type aliases exported for external consumers
+- `.worktrees/` to eslint ignores
 
-### Patch Changes
+### Changed
 
-- Fix Gemini Live handler crash on malformed `clientContent.turns` and `toolResponse.functionResponses`
-- Add `isClosed` guard before WebSocket finalization events (prevents writes to closed connections)
 - Default to non-streaming for Claude Messages API and Responses API (matching real API defaults)
-- Fix `streamingProfile` missing from convenience method opts types (`on`, `onMessage`, etc.)
-- Fix skills/ symlink direction so npm pack includes the write-fixtures skill
-- Fix `.claude` removed from package.json files (was dead weight — symlink doesn't ship)
-- Add `.worktrees/` to eslint ignores
-- Remove dead `@keyframes sseLine` CSS from docs site
-- Fix watcher cleanup on error (clear debounce timer, null guard)
-- Fix empty-reload guard (keep previous fixtures when reload produces 0)
 - README rewritten as concise overview with links to docs site
 - Write-fixtures skill updated for all v1.5.0 features
 - Docs site: Get Started links to docs, comparison above reliability, npm version badge
 
+### Fixed
+
+- Gemini Live handler no longer crashes on malformed `clientContent.turns` and `toolResponse.functionResponses`
+- Added `isClosed` guard before WebSocket finalization events (prevents writes to closed connections)
+- `streamingProfile` now present on convenience method opts types (`on`, `onMessage`, etc.)
+- skills/ symlink direction corrected so `npm pack` includes the write-fixtures skill
+- `.claude` removed from package.json files (was dead weight — symlink doesn't ship)
+- Watcher cleanup on error (clear debounce timer, null guard)
+- Empty-reload guard (keep previous fixtures when reload produces 0)
+
+### Removed
+
+- Dead `@keyframes sseLine` CSS from docs site
+
 ## 1.4.0
 
-### Minor Changes
+### Added
 
 - `--watch` (`-w`): File-watching with 500ms debounced reload. Keeps previous fixtures on validation failure.
 - `--log-level`: Configurable log verbosity (`silent`, `info`, `debug`). Default `info` for CLI, `silent` for programmatic API.
@@ -246,34 +271,43 @@
 
 ## 1.3.3
 
-### Patch Changes
+### Added
 
-- Fix Responses WS handler to accept flat `response.create` format matching the real OpenAI API (previously required a non-standard nested `response: { ... }` envelope)
 - WebSocket drift detection tests: TLS client for real provider WS endpoints, 4 verified drift tests (Responses WS + Realtime), Gemini Live canary for text-capable model availability
 - Realtime model canary: detects when `gpt-4o-mini-realtime-preview` is deprecated and suggests GA replacement
 - Gemini Live documented as unverified (no text-capable `bidiGenerateContent` model exists yet)
-- Fix README Gemini Live response shape example (`modelTurn.parts`, not `modelTurnComplete`)
+
+### Fixed
+
+- Responses WS handler now accepts flat `response.create` format matching the real OpenAI API (previously required a non-standard nested `response: { ... }` envelope)
+- README Gemini Live response shape example corrected (`modelTurn.parts`, not `modelTurnComplete`)
 
 ## 1.3.2
 
-### Patch Changes
+### Added
 
-- Fix missing `refusal` field on OpenAI Chat Completions responses — both the SDK and real API return `refusal: null` on non-refusal messages, but llmock was omitting it
 - Live API drift detection test suite: three-layer triangulation between SDK types, real API responses, and llmock output across OpenAI (Chat + Responses), Anthropic Claude, and Google Gemini
 - Weekly CI workflow for automated drift checks
 - `DRIFT.md` documentation for the drift detection system
 
+### Fixed
+
+- Missing `refusal` field on OpenAI Chat Completions responses — both the SDK and real API return `refusal: null` on non-refusal messages, but llmock was omitting it
+
 ## 1.3.1
 
-### Patch Changes
+### Added
 
 - Claude Code fixture authoring skill (`/write-fixtures`) — comprehensive guide for match fields, response types, agent loop patterns, gotchas, and debugging
 - Claude Code plugin structure for downstream consumers (`--plugin-dir`, `--add-dir`, or manual copy)
+
+### Changed
+
 - README and docs site updated with Claude Code integration instructions
 
 ## 1.3.0
 
-### Minor Changes
+### Added
 
 - Mid-stream interruption: `truncateAfterChunks` and `disconnectAfterMs` fixture fields to simulate abrupt server disconnects
 - AbortSignal-based cancellation primitives (`createInterruptionSignal`, signal-aware `delay()`)
@@ -285,34 +319,37 @@
 
 ## 1.2.0
 
-### Minor Changes
+### Added
 
 - Zero-dependency RFC 6455 WebSocket framing layer
 - OpenAI Responses API over WebSocket (`/v1/responses`)
 - OpenAI Realtime API over WebSocket (`/v1/realtime`) — text + tool calls
 - Gemini Live BidiGenerateContent over WebSocket — text + tool calls
-
-### Patch Changes
-
-- WebSocket close-frame lifecycle fixes
-- Improved error visibility across WebSocket handlers
 - Future Direction section in README
+
+### Fixed
+
+- WebSocket close-frame lifecycle
+- Improved error visibility across WebSocket handlers
 
 ## 1.1.1
 
-### Patch Changes
+### Added
 
-- Add function call IDs to Gemini tool call responses
-- Remove changesets, simplify release workflow
+- Function call IDs on Gemini tool call responses
+
+### Removed
+
+- Changesets (simplified release workflow)
 
 ## 1.1.0
 
-### Minor Changes
+### Added
 
-- 9948a8b: Add `prependFixture()` and `getFixtures()` public API methods
+- 9948a8b: `prependFixture()` and `getFixtures()` public API methods
 
 ## 1.0.1
 
-### Patch Changes
+### Added
 
-- Add `getTextContent` for array-format message content handling
+- `getTextContent` for array-format message content handling
