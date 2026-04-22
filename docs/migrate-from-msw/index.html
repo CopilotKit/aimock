@@ -241,7 +241,7 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">&#9889;</div>
-            <h3>Built-in SSE for 10+ providers</h3>
+            <h3>Built-in SSE for 8 providers</h3>
             <p>
               OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere. No manual chunk
               construction.
@@ -250,14 +250,21 @@
           <div class="feature-card">
             <div class="feature-icon purple">&#128268;</div>
             <h3>WebSocket APIs</h3>
-            <p>OpenAI Realtime, Responses WS, Gemini Live. MSW cannot intercept WebSocket.</p>
+            <p>
+              OpenAI Realtime, Responses WS, Gemini Live &mdash; all built in. MSW v2 added
+              WebSocket interception via <code>ws.link()</code>, but you still handwrite every
+              frame; aimock ships the full provider handshakes.
+            </p>
           </div>
           <div class="feature-card">
             <div class="feature-icon amber">&#9210;</div>
             <h3>Record &amp; Replay</h3>
             <p>
               Proxy real APIs, save as fixtures, replay forever.
-              <code>npx @copilotkit/aimock --record --provider-openai https://api.openai.com</code>
+              <code
+                >npx -p @copilotkit/aimock llmock --record --provider-openai
+                https://api.openai.com</code
+              >
             </p>
           </div>
           <div class="feature-card">
@@ -307,13 +314,13 @@
               <td>Streaming SSE</td>
               <td style="color: var(--text-dim)">Manual</td>
               <td style="color: var(--accent)">Built-in</td>
-              <td>10+ providers</td>
+              <td>8 providers</td>
             </tr>
             <tr>
               <td>WebSocket</td>
-              <td style="color: var(--error)">&#10007;</td>
-              <td style="color: var(--accent)">&#10003;</td>
-              <td>3 protocols</td>
+              <td style="color: var(--text-dim)">Manual (ws.link, v2+)</td>
+              <td style="color: var(--accent)">Built-in</td>
+              <td>3 AI protocols</td>
             </tr>
             <tr>
               <td>Record &amp; replay</td>
@@ -347,6 +354,7 @@
           <div class="code-block-header">test-setup.ts <span class="lang-tag">ts</span></div>
           <pre><code><span class="cm">// test setup</span>
 <span class="kw">import</span> { <span class="fn">setupServer</span> } <span class="kw">from</span> <span class="str">'msw/node'</span>
+<span class="kw">import</span> { <span class="fn">http</span>, <span class="type">HttpResponse</span> } <span class="kw">from</span> <span class="str">'msw'</span>
 <span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">'@copilotkit/aimock'</span>
 
 <span class="cm">// MSW for REST APIs</span>
@@ -372,7 +380,7 @@
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">CLI <span class="lang-tag">sh</span></div>
-              <pre><code>npx @copilotkit/aimock -p <span class="num">4010</span> -f ./fixtures</code></pre>
+              <pre><code>npx -p @copilotkit/aimock llmock -p <span class="num">4010</span> -f ./fixtures</code></pre>
             </div>
           </div>
           <div class="tab-docker">
@@ -381,7 +389,7 @@
               <pre><code>docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -p <span class="num">4010</span> -f /fixtures</code></pre>
+  -p <span class="num">4010</span> -f /fixtures -h 0.0.0.0</code></pre>
             </div>
           </div>
         </div>

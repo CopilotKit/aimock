@@ -191,14 +191,14 @@
             <pre><code>{
   <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"hello"</span> },
   <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"Hello there"</span> }
-}
-
-<span class="cm">// aimock auto-generates:</span>
-<span class="cm">//   - id, object, created, model</span>
-<span class="cm">//   - choices[].index, finish_reason</span>
-<span class="cm">//   - usage (prompt_tokens, completion_tokens)</span>
-<span class="cm">//   - SSE streaming chunks (when stream: true)</span></code></pre>
+}</code></pre>
           </div>
+          <p style="color: var(--text-dim); font-size: 0.9em; margin-top: 0.5em">
+            aimock auto-generates <code>id</code>, <code>object</code>, <code>created</code>,
+            <code>model</code>, <code>choices[].index</code>, <code>finish_reason</code>,
+            <code>usage</code> (prompt / completion tokens), and SSE streaming chunks when
+            <code>stream: true</code>.
+          </p>
         </div>
 
         <p>
@@ -222,11 +222,8 @@
           </div>
           <div class="feature-card">
             <div class="feature-icon blue">&#127760;</div>
-            <h3>10+ providers</h3>
-            <p>
-              OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere, and any
-              OpenAI-compatible endpoint.
-            </p>
+            <h3>8 providers</h3>
+            <p>OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere.</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon purple">&#128268;</div>
@@ -394,8 +391,8 @@
               <div class="code-block-header">
                 Install &amp; run <span class="lang-tag">sh</span>
               </div>
-              <pre><code><span class="cm"># Run the mock server</span>
-npx @copilotkit/aimock -p <span class="num">4010</span> -f ./fixtures
+              <pre><code><span class="cm"># Run the mock server (flag-driven llmock bin)</span>
+npx -p @copilotkit/aimock llmock -p <span class="num">4010</span> -f ./fixtures
 
 <span class="cm"># With a full config file</span>
 npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
@@ -412,14 +409,12 @@ npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
 docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
   -v <span class="str">$(pwd)/fixtures:/fixtures</span> \
   ghcr.io/copilotkit/aimock:latest \
-  -p <span class="num">4010</span> -f /fixtures
+  -p <span class="num">4010</span> -f /fixtures -h 0.0.0.0
 
-<span class="cm"># With a config file</span>
-docker run -d -p <span class="num">4010</span>:<span class="num">4010</span> \
-  -v <span class="str">$(pwd)/aimock.json:/app/aimock.json</span> \
-  -v <span class="str">$(pwd)/fixtures:/app/fixtures</span> \
-  ghcr.io/copilotkit/aimock \
-  aimock --config /app/aimock.json --host 0.0.0.0
+<span class="cm"># Config-driven mode (runs on your host, not in the image)</span>
+<span class="cm"># The published Docker image runs the flag-driven llmock CLI</span>
+<span class="cm"># which does not support --config. Use npx locally instead:</span>
+npx @copilotkit/aimock --config aimock.json --port <span class="num">4010</span>
 
 <span class="cm"># Point your app at the mock</span>
 <span class="kw">export</span> OPENAI_BASE_URL=http://localhost:4010/v1</code></pre>
