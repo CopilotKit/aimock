@@ -42,6 +42,7 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 ## Features
 
 - **[Record & Replay](https://aimock.copilotkit.dev/record-replay)** — Proxy real APIs, save as fixtures, replay deterministically forever
+- **[Multi-turn Conversations](https://aimock.copilotkit.dev/multi-turn)** — Record and replay multi-turn traces with tool rounds; match distinct turns via `toolCallId`, `sequenceIndex`, or custom predicates
 - **[11 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere — full streaming support
 - **[Multimedia APIs](https://aimock.copilotkit.dev/images)** — Image generation (DALL-E, Imagen), text-to-speech, audio transcription, video generation
 - **[MCP / A2A / AG-UI / Vector](https://aimock.copilotkit.dev/mcp-mock)** — Mock every protocol your AI agents use
