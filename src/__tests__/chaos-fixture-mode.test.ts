@@ -96,4 +96,28 @@ describe("chaos (fixture mode)", () => {
     // Match count reflects that the fixture did participate in the decision
     expect(server.journal.getFixtureMatchCount(fixture)).toBe(1);
   });
+
+  it("disconnect journals the matched fixture with status 0", async () => {
+    // Symmetric to the drop test above. Disconnect's status is 0 (no response
+    // ever written before res.destroy()) which is a slightly unusual shape;
+    // pin it so future refactors don't silently change it to e.g. 500.
+    const fixture = {
+      match: { userMessage: "capital of France" },
+      response: { content: "Paris" },
+    };
+
+    server = await createServer([fixture], {
+      port: 0,
+      chaos: { disconnectRate: 1.0 },
+    });
+
+    // Client sees a socket destroy mid-request → post() rejects
+    await expect(post(`${server.url}/v1/chat/completions`, CHAT_REQUEST)).rejects.toThrow();
+
+    const last = server.journal.getLast();
+    expect(last?.response.chaosAction).toBe("disconnect");
+    expect(last?.response.status).toBe(0);
+    expect(last?.response.fixture).toBe(fixture);
+    expect(server.journal.getFixtureMatchCount(fixture)).toBe(1);
+  });
 });
