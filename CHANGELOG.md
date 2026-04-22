@@ -1,5 +1,20 @@
 # @copilotkit/aimock
 
+## [1.14.6] - 2026-04-23
+
+### Changed
+
+- README DevX: Quick Start sets `OPENAI_BASE_URL` + `OPENAI_API_KEY` before SDK construction with an inline ordering warning; Docker one-liner uses absolute `$(pwd)/fixtures:/fixtures` path; `LLMock` class name asymmetry after the v1.7.0 package rename is explained inline; Multimedia and Protocol-Mock feature bullets now link to each individual feature page.
+- Fixtures page: Vertex AI added to Provider Support Matrix; Ollama Reasoning marked as supported (was incorrectly "—" since v1.8.0); `finishReason` Responses-API mapping fully documented; `toolName` scope clarified; shadowing-warning format matches actual validator output; Azure-inherits-OpenAI override support footnoted.
+- Record & Replay page: Docker examples use absolute `$(pwd)` paths; Rust `async-openai` example corrected to `Client::with_config(OpenAIConfig::new().with_api_base(...))` form; `enableRecording({ proxyOnly: true })` disambiguated; pseudocode annotated as simplified; `enableRecording` example includes `mock.stop()` cleanup; stale 2025 timestamp replaced with generic placeholder.
+- Sidebar: TOC id-assignment now runs unconditionally (previously skipped on pages with fewer than 4 headings, silently breaking cross-page anchor links to short pages).
+- Historical CHANGELOG: v1.14.1 Railway-specific language scrubbed; v1.14.2 `--journal-max=-1` rejection and `createServer()` default flip annotated with BREAKING / BEHAVIOR CHANGE markers; all 15 historical version entries standardized on Keep-a-Changelog categories (Added/Changed/Fixed/Removed) instead of mixed Changesets-style.
+- package.json: `engines.node` raised to `>=24.0.0` to match OIDC publish requirement; `preinstall: only-allow pnpm` guard added; deprecated `@google/generative-ai` swapped for `@google/genai`; `files` includes `CHANGELOG.md`; `repository.url` canonicalized; `typesVersions` gains `.d.cts` entries; optional `peerDependencies` for `vitest`/`jest` added; `prepare: husky || true` tightened to `husky`; `release` script gains `pnpm test && pnpm lint` pre-check.
+
+### Removed
+
+- Stray `package-lock.json` — repo is pnpm-only, now enforced via `preinstall`.
+
 ## 1.14.4
 
 ### Added
