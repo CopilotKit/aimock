@@ -267,7 +267,9 @@ describe("proxy-only mode", () => {
 
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
+});
 
+describe("chaos (fixture mode)", () => {
   it("pre-flight chaos short-circuits even when fixture would match", async () => {
     // fixture that WOULD match
     const fixture = {
@@ -284,6 +286,10 @@ describe("proxy-only mode", () => {
 
     // should be dropped before fixture is used
     expect(resp.status).toBe(500);
+    const body = JSON.parse(resp.body);
+    expect(body).toMatchObject({
+      error: { code: "chaos_drop" },
+    });
   });
 
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
