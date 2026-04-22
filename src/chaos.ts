@@ -150,7 +150,24 @@ export function applyChaos(
 ): boolean {
   const action = evaluateChaos(fixture, serverDefaults, rawHeaders, logger);
   if (!action) return false;
+  applyChaosAction(action, res, fixture, journal, context, registry);
+  return true;
+}
 
+/**
+ * Apply a specific (already-rolled) chaos action. Exposed so callers that roll
+ * the dice themselves can dispatch without re-rolling — important when the
+ * caller wants to branch on the action before committing (e.g. pre-flight vs.
+ * post-response phases).
+ */
+export function applyChaosAction(
+  action: ChaosAction,
+  res: http.ServerResponse,
+  fixture: Fixture | null,
+  journal: Journal,
+  context: ChaosJournalContext,
+  registry?: MetricsRegistry,
+): void {
   if (registry) {
     registry.incrementCounter("aimock_chaos_triggered_total", { action });
   }
@@ -172,7 +189,7 @@ export function applyChaos(
           },
         }),
       );
-      return true;
+      return;
     }
     case "malformed": {
       journal.add({
@@ -181,7 +198,7 @@ export function applyChaos(
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{malformed json: <<<chaos>>>");
-      return true;
+      return;
     }
     case "disconnect": {
       journal.add({
@@ -189,12 +206,12 @@ export function applyChaos(
         response: { status: 0, fixture, chaosAction: "disconnect" },
       });
       res.destroy();
-      return true;
+      return;
     }
     default: {
       const _exhaustive: never = action;
       void _exhaustive;
-      return false;
+      return;
     }
   }
 }

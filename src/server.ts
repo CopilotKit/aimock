@@ -48,7 +48,7 @@ import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { applyChaos, applyChaosAction, evaluateChaos } from "./chaos.js";
 import { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 
@@ -404,25 +404,23 @@ async function handleCompletions(
   // Set endpoint type once early so router/recorder and journal see it
   body._endpointType = "chat";
 
-  // Pre-flight chaos: run before fixture matching or proxying
-  if (
-    applyChaos(
+  // Pre-flight chaos: only transport-level actions (drop, disconnect) fire
+  // before upstream is called. Malformed is deferred to post-response so the
+  // proxy path actually calls upstream before mutating the body. Rolling the
+  // dice here and dispatching explicitly (rather than calling applyChaos,
+  // which would re-roll internally) keeps the pre-flight action committed.
+  const preflightAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+  if (preflightAction === "drop" || preflightAction === "disconnect") {
+    applyChaosAction(
+      preflightAction,
       res,
       null,
-      defaults.chaos,
-      req.headers,
       journal,
-      {
-        method,
-        path,
-        headers: flatHeaders,
-        body,
-      },
+      { method, path, headers: flatHeaders, body },
       defaults.registry,
-      defaults.logger,
-    )
-  )
+    );
     return;
+  }
 
   // Match fixture
   const testId = getTestId(req);
@@ -437,32 +435,41 @@ async function handleCompletions(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  // NOTE: Chaos may be evaluated twice (pre-flight + post-match), which
-  // increases effective trigger probability for non-boundary rates.
-  // This is an intentional tradeoff to enable pre-flight chaos without
-  // refactoring the existing applyChaos flow.
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method,
-        path,
-        headers: flatHeaders,
-        body,
-      },
-      defaults.registry,
-      defaults.logger,
+  // Post-match chaos: only for the fixture path. When there's no fixture, the
+  // request either goes to the proxy (which does its own post-response chaos
+  // via the beforeWriteResponse hook below) or falls through to strict/404.
+  // NOTE: Chaos may still be evaluated twice on the fixture path (pre-flight
+  // + post-match), which increases effective trigger probability for
+  // non-boundary rates. Intentional tradeoff to preserve fixture-level chaos
+  // overrides without refactoring applyChaos's roll.
+  if (fixture) {
+    if (
+      applyChaos(
+        res,
+        fixture,
+        defaults.chaos,
+        req.headers,
+        journal,
+        {
+          method,
+          path,
+          headers: flatHeaders,
+          body,
+        },
+        defaults.registry,
+        defaults.logger,
+      )
     )
-  )
-    return;
+      return;
+  }
 
   if (!fixture) {
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
+      // If chaos rolls malformed post-upstream, the hook writes + journals
+      // and signals "handled" so the default relay + outer journal are
+      // skipped (prevents double-journaling the same request).
+      let chaosHandled = false;
       const proxied = await proxyAndRecord(
         req,
         res,
@@ -472,15 +479,33 @@ async function handleCompletions(
         fixtures,
         defaults,
         raw,
+        {
+          beforeWriteResponse: () => {
+            const action = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+            if (action !== "malformed") return false;
+            applyChaosAction(
+              action,
+              res,
+              null,
+              journal,
+              { method, path, headers: flatHeaders, body },
+              defaults.registry,
+            );
+            chaosHandled = true;
+            return true;
+          },
+        },
       );
       if (proxied) {
-        journal.add({
-          method: req.method ?? "POST",
-          path: req.url ?? COMPLETIONS_PATH,
-          headers: flattenHeaders(req.headers),
-          body,
-          response: { status: res.statusCode ?? 200, fixture: null },
-        });
+        if (!chaosHandled) {
+          journal.add({
+            method: req.method ?? "POST",
+            path: req.url ?? COMPLETIONS_PATH,
+            headers: flattenHeaders(req.headers),
+            body,
+            response: { status: res.statusCode ?? 200, fixture: null },
+          });
+        }
         return;
       }
     }
