@@ -100,7 +100,7 @@
                 Proxy-only mode <span class="lang-tag">shell</span>
               </div>
               <pre><code>$ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
   -f /fixtures -h 0.0.0.0 \
   --proxy-only \
@@ -150,7 +150,7 @@
             <div class="code-block">
               <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
               <pre><code>$ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
   -f /fixtures -h 0.0.0.0 \
   --record \
@@ -325,20 +325,28 @@
 
         <p>
           To proxy unmatched requests without writing fixtures to disk, set
-          <code>proxyOnly: true</code> and omit <code>fixturePath</code>:
+          <code>proxyOnly: true</code> and omit <code>fixturePath</code>. Despite the method name,
+          <code>enableRecording({ proxyOnly: true })</code> does <strong>not</strong> write fixtures
+          &mdash; omit or set <code>proxyOnly: false</code> to actually record. Remember to
+          <code>mock.stop()</code> when done:
         </p>
 
         <div class="code-block">
           <div class="code-block-header">
             Proxy-only (no recording) <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="op">mock</span>.<span class="fn">enableRecording</span>({
-  <span class="prop">providers</span>: {
-    <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
-    <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
-  },
-  <span class="prop">proxyOnly</span>: <span class="kw">true</span>,
-});</code></pre>
+          <pre><code><span class="kw">try</span> {
+  <span class="op">mock</span>.<span class="fn">enableRecording</span>({
+    <span class="prop">providers</span>: {
+      <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span>,
+      <span class="prop">anthropic</span>: <span class="str">"https://api.anthropic.com"</span>,
+    },
+    <span class="prop">proxyOnly</span>: <span class="kw">true</span>,
+  });
+  <span class="cm">// ...make requests; unmatched ones proxy through without being saved</span>
+} <span class="kw">finally</span> {
+  <span class="kw">await</span> <span class="op">mock</span>.<span class="fn">stop</span>();
+}</code></pre>
         </div>
 
         <h2>Stream Collapsing</h2>
@@ -438,7 +446,7 @@
           <div class="code-block-header">
             Recorded fixture file <span class="lang-tag">json</span>
           </div>
-          <pre><code><span class="cm">// fixtures/recorded/openai-2025-01-15T10-30-00-000Z-0.json</span>
+          <pre><code><span class="cm">// fixtures/recorded/openai-&lt;YYYY-MM-DD&gt;T&lt;HH-MM-SS&gt;-000Z-0.json</span>
 {
   "fixtures": [
     {
@@ -496,13 +504,13 @@ $ npx -p @copilotkit/aimock llmock -f ./fixtures</code></pre>
               </div>
               <pre><code># First run: record real API responses
 $ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
   --record --provider-openai https://api.openai.com -f /fixtures -h 0.0.0.0
 
 # Subsequent runs: replay from recorded fixtures
 $ docker run -d -p 4010:4010 \
-  -v ./fixtures:/fixtures \
+  -v $(pwd)/fixtures:/fixtures \
   ghcr.io/copilotkit/aimock \
   -f /fixtures -h 0.0.0.0</code></pre>
             </div>
@@ -522,7 +530,7 @@ $ docker run -d -p 4010:4010 \
           <pre><code>- name: Start aimock
   run: |
     docker run -d --rm --name aimock \
-      -v ./fixtures:/fixtures \
+      -v $(pwd)/fixtures:/fixtures \
       -p 4010:4010 \
       ghcr.io/copilotkit/aimock \
       --strict -f /fixtures -h 0.0.0.0
@@ -619,7 +627,7 @@ await mock.start();</code></pre>
           <div class="code-block-header">
             Recorder match derivation <span class="lang-tag">ts</span>
           </div>
-          <pre><code><span class="cm">// src/recorder.ts (simplified)</span>
+          <pre><code><span class="cm">// src/recorder.ts (simplified; real implementation guards against a null last-user-message)</span>
 <span class="kw">function</span> <span class="fn">buildFixtureMatch</span>(request) {
   <span class="kw">if</span> (request.embeddingInput) {
     <span class="kw">return</span> { <span class="prop">inputText</span>: request.embeddingInput };
@@ -686,7 +694,7 @@ await mock.start();</code></pre>
             Any language, one server <span class="lang-tag">bash</span>
           </div>
           <pre><code># Docker image serves all languages
-docker run -d -p 4010:4010 -v ./fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
+docker run -d -p 4010:4010 -v $(pwd)/fixtures:/fixtures ghcr.io/copilotkit/aimock -f /fixtures -h 0.0.0.0
 
 # Python
 import openai
