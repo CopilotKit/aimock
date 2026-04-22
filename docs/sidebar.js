@@ -42,6 +42,7 @@
         { label: "Embeddings", href: "/embeddings" },
         { label: "Structured Output", href: "/structured-output" },
         { label: "Sequential Responses", href: "/sequential-responses" },
+        { label: "Multi-Turn Conversations", href: "/multi-turn" },
         { label: "Fixtures", href: "/fixtures" },
         { label: "Error Injection", href: "/error-injection" },
         { label: "Chaos Testing", href: "/chaos-testing" },
