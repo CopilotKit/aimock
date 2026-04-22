@@ -28,14 +28,14 @@ await mock.stop();
 
 aimock mocks everything your AI app talks to:
 
-| Tool           | What it mocks                                                     | Docs                                                |
-| -------------- | ----------------------------------------------------------------- | --------------------------------------------------- |
-| **LLMock**     | OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere | [Providers](https://aimock.copilotkit.dev/docs)     |
-| **MCPMock**    | MCP tools, resources, prompts with session management             | [MCP](https://aimock.copilotkit.dev/mcp-mock)       |
-| **A2AMock**    | Agent-to-agent protocol with SSE streaming                        | [A2A](https://aimock.copilotkit.dev/a2a-mock)       |
-| **AGUIMock**   | AG-UI agent-to-UI event streams for frontend testing              | [AG-UI](https://aimock.copilotkit.dev/agui-mock)    |
-| **VectorMock** | Pinecone, Qdrant, ChromaDB compatible endpoints                   | [Vector](https://aimock.copilotkit.dev/vector-mock) |
-| **Services**   | Tavily search, Cohere rerank, OpenAI moderation                   | [Services](https://aimock.copilotkit.dev/services)  |
+| Tool           | What it mocks                                                                                           | Docs                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **LLMock**     | OpenAI (Chat/Responses/Realtime), Claude, Gemini (REST/Live), Bedrock, Azure, Vertex AI, Ollama, Cohere | [Providers](https://aimock.copilotkit.dev/docs)     |
+| **MCPMock**    | MCP tools, resources, prompts with session management                                                   | [MCP](https://aimock.copilotkit.dev/mcp-mock)       |
+| **A2AMock**    | Agent-to-agent protocol with SSE streaming                                                              | [A2A](https://aimock.copilotkit.dev/a2a-mock)       |
+| **AGUIMock**   | AG-UI agent-to-UI event streams for frontend testing                                                    | [AG-UI](https://aimock.copilotkit.dev/agui-mock)    |
+| **VectorMock** | Pinecone, Qdrant, ChromaDB compatible endpoints                                                         | [Vector](https://aimock.copilotkit.dev/vector-mock) |
+| **Services**   | Tavily search, Cohere rerank, OpenAI moderation                                                         | [Services](https://aimock.copilotkit.dev/services)  |
 
 Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or use the programmatic API to compose exactly what you need.
 
@@ -43,7 +43,7 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 
 - **[Record & Replay](https://aimock.copilotkit.dev/record-replay)** — Proxy real APIs, save as fixtures, replay deterministically forever
 - **[Multi-turn Conversations](https://aimock.copilotkit.dev/multi-turn)** — Record and replay multi-turn traces with tool rounds; match distinct turns via `toolCallId`, `sequenceIndex`, or custom predicates
-- **[8 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI, Claude, Gemini, Bedrock, Azure, Vertex AI, Ollama, Cohere — full streaming support
+- **[11 LLM Providers](https://aimock.copilotkit.dev/docs)** — OpenAI Chat, OpenAI Responses, OpenAI Realtime, Claude, Gemini, Gemini Live, Azure, Bedrock, Vertex AI, Ollama, Cohere — full streaming support
 - **[Multimedia APIs](https://aimock.copilotkit.dev/images)** — Image generation (DALL-E, Imagen), text-to-speech, audio transcription, video generation
 - **[MCP / A2A / AG-UI / Vector](https://aimock.copilotkit.dev/mcp-mock)** — Mock every protocol your AI agents use
 - **[Chaos Testing](https://aimock.copilotkit.dev/chaos-testing)** — 500 errors, malformed JSON, mid-stream disconnects at any probability
