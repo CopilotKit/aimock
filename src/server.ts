@@ -397,6 +397,30 @@ async function handleCompletions(
     return;
   }
 
+  const method = req.method ?? "POST";
+  const path = req.url ?? COMPLETIONS_PATH;
+  const flatHeaders = flattenHeaders(req.headers);
+
+  // Pre-flight chaos: run before fixture matching or proxying
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method,
+        path,
+        headers: flatHeaders,
+        body,
+      },
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
   // Match fixture
   body._endpointType = "chat";
   const testId = getTestId(req);
@@ -411,11 +435,7 @@ async function handleCompletions(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  const method = req.method ?? "POST";
-  const path = req.url ?? COMPLETIONS_PATH;
-  const flatHeaders = flattenHeaders(req.headers);
-
-  // Apply chaos before normal response handling
+  // Post-match chaos (preserves existing fixture-level behavior like malformed)
   if (
     applyChaos(
       res,
