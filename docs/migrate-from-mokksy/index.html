@@ -153,16 +153,19 @@
         <span class="str">"-p"</span>, <span class="str">"4010:4010"</span>, <span class="str">"-v"</span>, <span class="str">"./fixtures:/fixtures"</span>,
         <span class="str">"ghcr.io/copilotkit/aimock"</span>, <span class="str">"-f"</span>, <span class="str">"/fixtures"</span>, <span class="str">"-h"</span>, <span class="str">"0.0.0.0"</span>)
         .<span class="fn">start</span>().<span class="fn">waitFor</span>()
-    <span class="cm">// Wait for server to be ready</span>
+    <span class="cm">// Wait for server to be ready — fail loudly if it never comes up</span>
+    <span class="kw">var</span> <span class="op">lastError</span>: <span class="type">Exception</span>? = <span class="kw">null</span>
     <span class="kw">repeat</span>(<span class="num">30</span>) {
         <span class="kw">try</span> {
-            <span class="type">java.net.URL</span>(<span class="str">"http://localhost:4010/__aimock/health"</span>)
+            <span class="type">java.net.URL</span>(<span class="str">"http://localhost:4010/health"</span>)
                 .<span class="fn">readText</span>()
             <span class="kw">return</span>
-        } <span class="kw">catch</span> (_: <span class="type">Exception</span>) {
+        } <span class="kw">catch</span> (<span class="op">e</span>: <span class="type">Exception</span>) {
+            <span class="op">lastError</span> = <span class="op">e</span>
             <span class="type">Thread</span>.<span class="fn">sleep</span>(<span class="num">200</span>)
         }
     }
+    <span class="kw">throw</span> <span class="type">IllegalStateException</span>(<span class="str">"aimock did not become healthy after 30 attempts"</span>, <span class="op">lastError</span>)
 }
 
 <span class="kw">@AfterAll</span>
@@ -403,7 +406,7 @@
           <div class="tab-cli">
             <div class="code-block">
               <div class="code-block-header">CLI <span class="lang-tag">sh</span></div>
-              <pre><code>npx @copilotkit/aimock -p <span class="num">4010</span> -f ./fixtures</code></pre>
+              <pre><code>npx -p @copilotkit/aimock llmock -p <span class="num">4010</span> -f ./fixtures</code></pre>
             </div>
           </div>
           <div class="tab-docker">
