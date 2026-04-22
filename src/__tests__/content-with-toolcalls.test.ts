@@ -265,7 +265,7 @@ describe("Anthropic Messages — content + toolCalls", () => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1024,
         messages: [{ role: "user", content: "test anthropic combined" }],
         stream: true,
@@ -313,7 +313,7 @@ describe("Anthropic Messages — content + toolCalls", () => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1024,
         messages: [{ role: "user", content: "test anthropic combined ns" }],
         stream: false,
@@ -500,7 +500,7 @@ describe("Anthropic — multi-tool-call CWTC streaming", () => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1024,
         messages: [{ role: "user", content: "test claude multi-tc" }],
         stream: true,
