@@ -48,7 +48,7 @@ import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
-import { applyChaos } from "./chaos.js";
+import { applyChaos, evaluateChaos } from "./chaos.js";
 import { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 
@@ -401,8 +401,10 @@ async function handleCompletions(
   const path = req.url ?? COMPLETIONS_PATH;
   const flatHeaders = flattenHeaders(req.headers);
 
-  // Pre-flight chaos: run before fixture matching or proxying
-  if (
+  // Pre-flight chaos: only allow transport-level actions (drop, disconnect)
+  const preflightAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+
+  if (preflightAction === "drop" || preflightAction === "disconnect") {
     applyChaos(
       res,
       null,
@@ -417,9 +419,9 @@ async function handleCompletions(
       },
       defaults.registry,
       defaults.logger,
-    )
-  )
+    );
     return;
+  }
 
   // Match fixture
   body._endpointType = "chat";
@@ -435,29 +437,60 @@ async function handleCompletions(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
-  // Post-match chaos (preserves existing fixture-level behavior like malformed)
-  if (
-    applyChaos(
-      res,
-      fixture,
-      defaults.chaos,
-      req.headers,
-      journal,
-      {
-        method,
-        path,
-        headers: flatHeaders,
-        body,
-      },
-      defaults.registry,
-      defaults.logger,
+  // Post-match chaos (only for fixture path; proxy will handle post-response later)
+  if (fixture) {
+    if (
+      applyChaos(
+        res,
+        fixture,
+        defaults.chaos,
+        req.headers,
+        journal,
+        {
+          method,
+          path,
+          headers: flatHeaders,
+          body,
+        },
+        defaults.registry,
+        defaults.logger,
+      )
     )
-  )
-    return;
+      return;
+  }
 
   if (!fixture) {
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
+      // Intercept proxy writes so we can apply post-response chaos (non-streaming)
+      let buffered = "";
+      const origWrite = res.write.bind(res);
+      const origEnd = res.end.bind(res);
+      const origSetHeader = res.setHeader.bind(res);
+      const headerStore: Record<string, string | number | readonly string[]> = {};
+
+      // capture headers set by proxy
+      // override: capture headers set by proxy
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).setHeader = (name: string, value: unknown) => {
+        headerStore[name.toLowerCase()] = value as string | number | readonly string[];
+        return true;
+      };
+
+      // capture body chunks
+      // override: capture body chunks
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).write = (chunk: unknown) => {
+        if (chunk) buffered += String(chunk);
+        return true;
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).end = (chunk?: unknown) => {
+        if (chunk) buffered += String(chunk);
+        return true;
+      };
+
       const proxied = await proxyAndRecord(
         req,
         res,
@@ -468,7 +501,39 @@ async function handleCompletions(
         defaults,
         raw,
       );
+      // always restore original methods (even if not proxied)
+      // restore original methods
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).write = origWrite;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).end = origEnd;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).setHeader = origSetHeader;
+
       if (proxied) {
+        const action = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+
+        if (action === "malformed") {
+          res.statusCode = 200;
+          try {
+            res.setHeader("content-type", "application/json");
+          } catch {
+            // ignore header set errors
+          }
+          res.end("{malformed json: <<<chaos>>>");
+          return;
+        }
+
+        // replay captured response
+        for (const [k, v] of Object.entries(headerStore)) {
+          try {
+            res.setHeader(k, v as string | number | readonly string[]);
+          } catch {
+            // ignore header replay errors
+          }
+        }
+        res.end(buffered);
+
         journal.add({
           method: req.method ?? "POST",
           path: req.url ?? COMPLETIONS_PATH,

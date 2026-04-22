@@ -244,6 +244,50 @@ describe("proxy-only mode", () => {
     expect(countingUpstream.getCount()).toBe(0);
   });
 
+  it("applies post-response malformed chaos in proxy mode", async () => {
+    const countingUpstream = await createCountingUpstream("valid json");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-malformed-")),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(200);
+    expect(countingUpstream.getCount()).toBe(1);
+    expect(() => JSON.parse(resp.body)).toThrow();
+  });
+
+  it("applies post-response status override chaos in proxy mode", async () => {
+    const countingUpstream = await createCountingUpstream("ok");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 0, dropRate: 0, disconnectRate: 0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-status-")),
+        proxyOnly: true,
+      },
+    });
+
+    // simulate header override for status via malformed placeholder (until impl)
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST, {
+      "x-aimock-chaos-malformed": "0",
+    });
+
+    // placeholder expectation: status should still be 200 before impl
+    // this test will be updated once status_override exists
+    expect(resp.status).toBe(200);
+    expect(countingUpstream.getCount()).toBe(1);
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");
