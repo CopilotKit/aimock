@@ -58,6 +58,7 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,3 +70,62 @@ jobs:
           labels: ${{ steps.meta-primary.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # --- Auto-propagate to CopilotKit/CopilotKit showcase-aimock ---
+      #
+      # The CopilotKit repo builds `ghcr.io/copilotkit/showcase-aimock:latest`
+      # via `FROM ghcr.io/copilotkit/aimock:latest` + `--proxy-only` wrapper
+      # flags in `showcase/aimock/Dockerfile`. That wrapper image only rebuilds
+      # when files under `showcase/aimock/**` change in the CopilotKit repo —
+      # NOT when we publish a new aimock release here. Without this dispatch,
+      # the Railway `showcase-aimock` service keeps pulling an outdated digest
+      # long after a new aimock version hits GHCR (observed ~3min stall on
+      # v1.14.5, required manual `gh workflow run showcase_deploy.yml -f
+      # service=aimock`). This step closes the gap by triggering the downstream
+      # wrapper rebuild + Railway redeploy automatically.
+      #
+      # Gated on tag pushes only. workflow_dispatch + PR builds never fire a
+      # production redeploy, and the step is skipped if the build/push step
+      # above didn't succeed.
+      - name: Mint devops-bot token for cross-repo dispatch
+        id: app-token
+        if: startsWith(github.ref, 'refs/tags/v') && steps.build.outcome == 'success'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: "1108748"
+          private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
+          owner: CopilotKit
+          repositories: CopilotKit
+
+      - name: Trigger showcase-aimock wrapper rebuild
+        id: dispatch-showcase
+        if: startsWith(github.ref, 'refs/tags/v') && steps.build.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: 'CopilotKit',
+              repo: 'CopilotKit',
+              workflow_id: 'showcase_deploy.yml',
+              ref: 'main',
+              inputs: { service: 'aimock' },
+            });
+            core.info('Dispatched CopilotKit/CopilotKit showcase_deploy.yml with service=aimock');
+
+      - name: Notify Slack on dispatch failure
+        if: failure() && steps.dispatch-showcase.outcome == 'failure'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK not set — cannot post alert"
+            exit 0
+          fi
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            --data "{\"text\":\":rotating_light: *aimock release ${TAG}*: GHCR image published but showcase_deploy dispatch FAILED. Showcase-aimock wrapper will not auto-rebuild. Run manually: \`gh workflow run showcase_deploy.yml -f service=aimock --repo CopilotKit/CopilotKit\` <${RUN_URL}|View run>\"}" \
+            "$SLACK_WEBHOOK" || echo "::warning::Slack post failed"
