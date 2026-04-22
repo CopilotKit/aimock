@@ -217,7 +217,7 @@
               <div class="code-block-header">
                 CLI chaos flags <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx @copilotkit/aimock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
   --chaos-disconnect 0.02</code></pre>
@@ -254,7 +254,7 @@
   "path": "/v1/chat/completions",
   "response": {
     "status": 500,
-    "fixture": { "..." },
+    "fixture": { "...": "elided for brevity" },
     "chaosAction": "drop"
   }
 }</code></pre>
