@@ -110,13 +110,13 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("proxyAndRecord", () => {
-  it("returns false when provider is not configured", async () => {
+  it('returns "not_configured" when provider is not configured', async () => {
     const fixtures: Fixture[] = [];
     const logger = new Logger("silent");
     const record: RecordConfig = { providers: {} };
 
     // Create a mock req/res pair — we just need them to exist,
-    // proxyAndRecord should return false before using them
+    // proxyAndRecord should short-circuit before using them
     const { req, res } = createMockReqRes();
 
     const result = await proxyAndRecord(
@@ -129,10 +129,10 @@ describe("proxyAndRecord", () => {
       { record, logger },
     );
 
-    expect(result).toBe(false);
+    expect(result).toBe("not_configured");
   });
 
-  it("returns false when record config is undefined", async () => {
+  it('returns "not_configured" when record config is undefined', async () => {
     const fixtures: Fixture[] = [];
     const logger = new Logger("silent");
 
@@ -148,7 +148,7 @@ describe("proxyAndRecord", () => {
       { record: undefined, logger },
     );
 
-    expect(result).toBe(false);
+    expect(result).toBe("not_configured");
   });
 });
 

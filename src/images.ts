@@ -106,7 +106,7 @@ export async function handleImages(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         syntheticReq,
@@ -116,7 +116,7 @@ export async function handleImages(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method,
           path,

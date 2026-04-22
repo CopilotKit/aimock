@@ -44,7 +44,6 @@ export interface ProxyCapturedResponse {
   status: number;
   contentType: string;
   body: Buffer;
-  isBinary: boolean;
 }
 
 export interface ProxyOptions {
@@ -59,12 +58,23 @@ export interface ProxyOptions {
 }
 
 /**
+ * Outcome of a proxyAndRecord call, returned so the caller can decide whether
+ * to journal, fall through, or stop — without sharing a mutable flag with the
+ * `beforeWriteResponse` hook.
+ *
+ * - `"not_configured"` — no upstream URL for this provider; caller should fall
+ *    through to its next branch (typically strict/404).
+ * - `"relayed"` — the default code path wrote a response (upstream success or
+ *    synthesized 502 error). Caller should journal the outcome.
+ * - `"handled_by_hook"` — the hook wrote + journaled its own response. Caller
+ *    should not double-journal.
+ */
+export type ProxyOutcome = "not_configured" | "relayed" | "handled_by_hook";
+
+/**
  * Proxy an unmatched request to the real upstream provider, record the
  * response as a fixture on disk and in memory, then relay the response
  * back to the original client.
- *
- * Returns `true` if the request was proxied (provider configured),
- * `false` if no upstream URL is configured for the given provider key.
  */
 export async function proxyAndRecord(
   req: http.IncomingMessage,
@@ -80,16 +90,16 @@ export async function proxyAndRecord(
   },
   rawBody?: string,
   options?: ProxyOptions,
-): Promise<boolean> {
+): Promise<ProxyOutcome> {
   const record = defaults.record;
-  if (!record) return false;
+  if (!record) return "not_configured";
 
   const providers = record.providers;
   const upstreamUrl = providers[providerKey];
 
   if (!upstreamUrl) {
     defaults.logger.warn(`No upstream URL configured for provider "${providerKey}" — cannot proxy`);
-    return false;
+    return "not_configured";
   }
 
   const fixturePath = record.fixturePath ?? "./fixtures/recorded";
@@ -105,7 +115,7 @@ export async function proxyAndRecord(
         error: { message: `Invalid upstream URL: ${upstreamUrl}`, type: "proxy_error" },
       }),
     );
-    return true;
+    return "relayed";
   }
 
   defaults.logger.warn(`NO FIXTURE MATCH — proxying to ${upstreamUrl}${pathname}`);
@@ -145,7 +155,7 @@ export async function proxyAndRecord(
         error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
       }),
     );
-    return true;
+    return "relayed";
   }
 
   // Detect streaming response and collapse if necessary
@@ -289,9 +299,8 @@ export async function proxyAndRecord(
         status: upstreamStatus,
         contentType: ctString,
         body: rawBuffer,
-        isBinary: isBinaryStream,
       });
-      if (handled) return true;
+      if (handled) return "handled_by_hook";
     }
 
     const relayHeaders: Record<string, string> = {};
@@ -302,7 +311,7 @@ export async function proxyAndRecord(
     res.end(isBinaryStream ? rawBuffer : upstreamBody);
   }
 
-  return true;
+  return "relayed";
 }
 
 // ---------------------------------------------------------------------------

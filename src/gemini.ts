@@ -570,7 +570,7 @@ export async function handleGemini(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -580,7 +580,7 @@ export async function handleGemini(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path,

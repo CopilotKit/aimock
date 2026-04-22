@@ -424,9 +424,11 @@ async function handleCompletions(
   //                       response body is produced.
   //   malformed, fixture path → write invalid JSON instead of the fixture.
   //   malformed, proxy path  → proxy to upstream, then swap body via the
-  //                            beforeWriteResponse hook (closure captures the
-  //                            pre-rolled action so the hook doesn't re-roll).
+  //                            beforeWriteResponse hook (passed only when the
+  //                            action is malformed, so the hook doesn't need
+  //                            to re-check the action).
   const chaosAction = evaluateChaos(fixture, defaults.chaos, req.headers, defaults.logger);
+  const chaosContext = { method, path, headers: flatHeaders, body };
 
   if (chaosAction === "drop" || chaosAction === "disconnect") {
     applyChaosAction(
@@ -434,7 +436,8 @@ async function handleCompletions(
       res,
       fixture,
       journal,
-      { method, path, headers: flatHeaders, body },
+      chaosContext,
+      fixture ? "fixture" : "proxy",
       defaults.registry,
     );
     return;
@@ -446,7 +449,8 @@ async function handleCompletions(
       res,
       fixture,
       journal,
-      { method, path, headers: flatHeaders, body },
+      chaosContext,
+      "fixture",
       defaults.registry,
     );
     return;
@@ -455,11 +459,29 @@ async function handleCompletions(
   if (!fixture) {
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
-      // If chaos rolled malformed, the hook writes invalid JSON + journals
-      // with chaosAction and signals "handled" so the default relay + outer
-      // journal are skipped (prevents double-journaling the same request).
-      let chaosHandled = false;
-      const proxied = await proxyAndRecord(
+      // Hook is only passed when chaos wants to mutate the response. When
+      // it's passed, it unconditionally applies malformed + journals + tells
+      // proxyAndRecord to skip its default relay. The hook has no branching
+      // logic — that decision is made here, at the call site.
+      const hookOptions =
+        chaosAction === "malformed"
+          ? {
+              beforeWriteResponse: () => {
+                applyChaosAction(
+                  chaosAction,
+                  res,
+                  null,
+                  journal,
+                  chaosContext,
+                  "proxy",
+                  defaults.registry,
+                );
+                return true;
+              },
+            }
+          : undefined;
+
+      const outcome = await proxyAndRecord(
         req,
         res,
         body,
@@ -468,34 +490,20 @@ async function handleCompletions(
         fixtures,
         defaults,
         raw,
-        {
-          beforeWriteResponse: () => {
-            if (chaosAction !== "malformed") return false;
-            applyChaosAction(
-              chaosAction,
-              res,
-              null,
-              journal,
-              { method, path, headers: flatHeaders, body },
-              defaults.registry,
-            );
-            chaosHandled = true;
-            return true;
-          },
-        },
+        hookOptions,
       );
-      if (proxied) {
-        if (!chaosHandled) {
-          journal.add({
-            method: req.method ?? "POST",
-            path: req.url ?? COMPLETIONS_PATH,
-            headers: flattenHeaders(req.headers),
-            body,
-            response: { status: res.statusCode ?? 200, fixture: null },
-          });
-        }
+      if (outcome === "handled_by_hook") return;
+      if (outcome === "relayed") {
+        journal.add({
+          method: req.method ?? "POST",
+          path: req.url ?? COMPLETIONS_PATH,
+          headers: flattenHeaders(req.headers),
+          body,
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+        });
         return;
       }
+      // outcome === "not_configured" — fall through to strict/404
     }
 
     const strictStatus = defaults.strict ? 503 : 404;
