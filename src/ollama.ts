@@ -423,7 +423,7 @@ export async function handleOllama(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -433,7 +433,7 @@ export async function handleOllama(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,
@@ -682,7 +682,7 @@ export async function handleOllamaGenerate(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -692,7 +692,7 @@ export async function handleOllamaGenerate(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,

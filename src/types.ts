@@ -305,6 +305,13 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;
+    /**
+     * What was going to serve this request. "fixture" = a fixture matched (or
+     * would have, before chaos intervened). "proxy" = no fixture matched and
+     * proxy was configured. Absent when the distinction doesn't apply (e.g.
+     * 404/503 fallback where nothing was going to serve).
+     */
+    source?: "fixture" | "proxy";
   };
 }
 

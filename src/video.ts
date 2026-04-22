@@ -85,7 +85,7 @@ export async function handleVideoCreate(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         syntheticReq,
@@ -95,7 +95,7 @@ export async function handleVideoCreate(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method,
           path,

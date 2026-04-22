@@ -150,7 +150,9 @@ export function applyChaos(
 ): boolean {
   const action = evaluateChaos(fixture, serverDefaults, rawHeaders, logger);
   if (!action) return false;
-  applyChaosAction(action, res, fixture, journal, context, registry);
+  // Existing callers (non-chat handlers) only apply chaos in fixture-serving
+  // contexts; "fixture" is the correct default source for them.
+  applyChaosAction(action, res, fixture, journal, context, "fixture", registry);
   return true;
 }
 
@@ -159,6 +161,11 @@ export function applyChaos(
  * the dice themselves can dispatch without re-rolling — important when the
  * caller wants to branch on the action before committing (e.g. pre-flight vs.
  * post-response phases).
+ *
+ * `source` is required (not optional) so callers can't silently omit it on
+ * one branch and journal an ambiguous entry. Pass `"fixture"` when a fixture
+ * matched (or would have) and `"proxy"` when the request was headed for the
+ * proxy path.
  */
 export function applyChaosAction(
   action: ChaosAction,
@@ -166,6 +173,7 @@ export function applyChaosAction(
   fixture: Fixture | null,
   journal: Journal,
   context: ChaosJournalContext,
+  source: "fixture" | "proxy",
   registry?: MetricsRegistry,
 ): void {
   if (registry) {
@@ -176,7 +184,7 @@ export function applyChaosAction(
     case "drop": {
       journal.add({
         ...context,
-        response: { status: 500, fixture, chaosAction: "drop" },
+        response: { status: 500, fixture, chaosAction: "drop", source },
       });
       writeErrorResponse(
         res,
@@ -194,7 +202,7 @@ export function applyChaosAction(
     case "malformed": {
       journal.add({
         ...context,
-        response: { status: 200, fixture, chaosAction: "malformed" },
+        response: { status: 200, fixture, chaosAction: "malformed", source },
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{malformed json: <<<chaos>>>");
@@ -203,7 +211,7 @@ export function applyChaosAction(
     case "disconnect": {
       journal.add({
         ...context,
-        response: { status: 0, fixture, chaosAction: "disconnect" },
+        response: { status: 0, fixture, chaosAction: "disconnect", source },
       });
       res.destroy();
       return;
