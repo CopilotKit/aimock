@@ -1,5 +1,13 @@
 # @copilotkit/aimock
 
+## 1.14.4
+
+### Added
+
+- Multi-turn conversations documentation page covering the tool-round idiom, matching semantics across turns, and how to author/record multi-turn fixtures.
+- Matching Semantics section on the Fixtures page documenting last-message-only matching, first-wins file order, substring-vs-exact matching, and shadowing warnings.
+- Recording guidance for multi-turn conversations on the Record & Replay page.
+
 ## 1.14.3
 
 ### Added
