@@ -38,11 +38,11 @@
   "homepage": "https://aimock.copilotkit.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CopilotKit/aimock"
+    "url": "git+https://github.com/CopilotKit/aimock.git"
   },
   "packageManager": "pnpm@10.28.2",
   "engines": {
-    "node": ">=20.15.0"
+    "node": ">=24.0.0"
   },
   "type": "module",
   "exports": {
@@ -113,19 +113,24 @@
   "typesVersions": {
     "*": {
       "mcp": [
-        "./dist/mcp-stub.d.ts"
+        "./dist/mcp-stub.d.ts",
+        "./dist/mcp-stub.d.cts"
       ],
       "a2a": [
-        "./dist/a2a-stub.d.ts"
+        "./dist/a2a-stub.d.ts",
+        "./dist/a2a-stub.d.cts"
       ],
       "vector": [
-        "./dist/vector-stub.d.ts"
+        "./dist/vector-stub.d.ts",
+        "./dist/vector-stub.d.cts"
       ],
       "vitest": [
-        "./dist/vitest.d.ts"
+        "./dist/vitest.d.ts",
+        "./dist/vitest.d.cts"
       ],
       "jest": [
-        "./dist/jest.d.ts"
+        "./dist/jest.d.ts",
+        "./dist/jest.d.cts"
       ]
     }
   },
@@ -137,24 +142,38 @@
     "dist",
     "fixtures",
     ".claude-plugin",
-    "skills"
+    "skills",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "build": "tsdown",
     "test": "vitest run",
     "test:drift": "vitest run --config vitest.config.drift.ts",
     "test:exports": "publint && attw --pack .",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "release": "pnpm build && npm publish",
-    "prepare": "husky || true"
+    "release": "pnpm build && pnpm test && pnpm lint && npm publish",
+    "prepare": "husky"
   },
   "lint-staged": {
     "*.{ts,mts,js,mjs,cjs,json,html,css,md}": "prettier --write",
     "*.{ts,mts,js,mjs}": "eslint --fix"
+  },
+  "peerDependencies": {
+    "jest": ">=29",
+    "vitest": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "jest": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -162,7 +181,7 @@
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.30.0",
-    "@google/generative-ai": "^0.24.0",
+    "@google/genai": "^1.0.0",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.30.0",
