@@ -342,6 +342,7 @@ export async function handleBedrock(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -350,7 +351,7 @@ export async function handleBedrock(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -360,7 +361,7 @@ export async function handleBedrock(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,
@@ -699,6 +700,7 @@ export async function handleBedrockStream(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -707,7 +709,7 @@ export async function handleBedrockStream(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -717,7 +719,7 @@ export async function handleBedrockStream(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,

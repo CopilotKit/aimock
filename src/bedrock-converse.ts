@@ -298,6 +298,7 @@ export async function handleConverse(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -306,7 +307,7 @@ export async function handleConverse(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -316,7 +317,7 @@ export async function handleConverse(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,
@@ -508,6 +509,7 @@ export async function handleConverseStream(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -516,7 +518,7 @@ export async function handleConverseStream(
 
   if (!fixture) {
     if (defaults.record) {
-      const proxied = await proxyAndRecord(
+      const outcome = await proxyAndRecord(
         req,
         res,
         completionReq,
@@ -526,7 +528,7 @@ export async function handleConverseStream(
         defaults,
         raw,
       );
-      if (proxied) {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,
