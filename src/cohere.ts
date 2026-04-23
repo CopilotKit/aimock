@@ -24,6 +24,7 @@ import {
   generateToolCallId,
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   flattenHeaders,
   getTestId,
@@ -170,6 +171,44 @@ function buildCohereToolCallResponse(toolCalls: ToolCall[], logger: Logger): obj
   };
 }
 
+// Non-streaming content + tool calls response
+function buildCohereContentWithToolCallsResponse(
+  content: string,
+  toolCalls: ToolCall[],
+  logger: Logger,
+): object {
+  const cohereCalls = toolCalls.map((tc) => {
+    try {
+      JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+    }
+    return {
+      id: tc.id || generateToolCallId(),
+      type: "function",
+      function: {
+        name: tc.name,
+        arguments: tc.arguments || "{}",
+      },
+    };
+  });
+
+  return {
+    id: generateMessageId(),
+    finish_reason: "TOOL_CALL",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: content }],
+      tool_calls: cohereCalls,
+      tool_plan: "",
+      citations: [],
+    },
+    usage: ZERO_USAGE,
+  };
+}
+
 // ─── Streaming event builders ───────────────────────────────────────────────
 
 function buildCohereTextStreamEvents(content: string, chunkSize: number): CohereSSEEvent[] {
@@ -272,6 +311,142 @@ function buildCohereToolCallStreamEvents(
     const callId = tc.id || generateToolCallId();
 
     // Validate arguments JSON
+    let argsJson: string;
+    try {
+      JSON.parse(tc.arguments || "{}");
+      argsJson = tc.arguments || "{}";
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsJson = "{}";
+    }
+
+    // tool-call-start
+    events.push({
+      type: "tool-call-start",
+      index: idx,
+      delta: {
+        message: {
+          tool_calls: {
+            id: callId,
+            type: "function",
+            function: {
+              name: tc.name,
+              arguments: "",
+            },
+          },
+        },
+      },
+    });
+
+    // tool-call-delta — chunked arguments
+    for (let i = 0; i < argsJson.length; i += chunkSize) {
+      const slice = argsJson.slice(i, i + chunkSize);
+      events.push({
+        type: "tool-call-delta",
+        index: idx,
+        delta: {
+          message: {
+            tool_calls: {
+              function: {
+                arguments: slice,
+              },
+            },
+          },
+        },
+      });
+    }
+
+    // tool-call-end
+    events.push({
+      type: "tool-call-end",
+      index: idx,
+    });
+  }
+
+  // message-end
+  events.push({
+    type: "message-end",
+    delta: {
+      finish_reason: "TOOL_CALL",
+      usage: ZERO_USAGE,
+    },
+  });
+
+  return events;
+}
+
+function buildCohereContentWithToolCallsStreamEvents(
+  content: string,
+  toolCalls: ToolCall[],
+  chunkSize: number,
+  logger: Logger,
+): CohereSSEEvent[] {
+  const msgId = generateMessageId();
+  const events: CohereSSEEvent[] = [];
+
+  // message-start
+  events.push({
+    id: msgId,
+    type: "message-start",
+    delta: {
+      message: {
+        role: "assistant",
+        content: [],
+        tool_plan: "",
+        tool_calls: [],
+        citations: [],
+      },
+    },
+  });
+
+  // content-start (type: "text" only, no text field)
+  events.push({
+    type: "content-start",
+    index: 0,
+    delta: {
+      message: {
+        content: { type: "text" },
+      },
+    },
+  });
+
+  // content-delta — text chunks
+  for (let i = 0; i < content.length; i += chunkSize) {
+    const slice = content.slice(i, i + chunkSize);
+    events.push({
+      type: "content-delta",
+      index: 0,
+      delta: {
+        message: {
+          content: { type: "text", text: slice },
+        },
+      },
+    });
+  }
+
+  // content-end
+  events.push({
+    type: "content-end",
+    index: 0,
+  });
+
+  // tool-plan-delta
+  events.push({
+    type: "tool-plan-delta",
+    delta: {
+      message: {
+        tool_plan: "I will use the requested tool.",
+      },
+    },
+  });
+
+  // Tool call events
+  for (let idx = 0; idx < toolCalls.length; idx++) {
+    const tc = toolCalls[idx];
+    const callId = tc.id || generateToolCallId();
+
     let argsJson: string;
     try {
       JSON.parse(tc.arguments || "{}");
@@ -516,7 +691,7 @@ export async function handleCohere(
           path: req.url ?? "/v2/chat",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
@@ -565,6 +740,47 @@ export async function handleCohere(
       response: { status, fixture },
     });
     writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Content + tool calls response (must be checked before text/tool-only branches)
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/chat",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    if (cohereReq.stream !== true) {
+      const body = buildCohereContentWithToolCallsResponse(
+        response.content,
+        response.toolCalls,
+        logger,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    } else {
+      const events = buildCohereContentWithToolCallsStreamEvents(
+        response.content,
+        response.toolCalls,
+        chunkSize,
+        logger,
+      );
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeCohereSSEStream(res, events, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
     return;
   }
 
