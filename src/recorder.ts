@@ -354,7 +354,7 @@ function makeUpstreamRequest(
           // Stop relaying if the client disconnects mid-stream
           clientRes.on("close", () => {
             clientDisconnected = true;
-            req.destroy();
+            req.destroy(new Error("Client disconnected"));
           });
         }
         const chunks: Buffer[] = [];
@@ -581,10 +581,11 @@ function buildFixtureResponse(
   if (Array.isArray(obj.content) && obj.content.length > 0) {
     const blocks = obj.content as Array<Record<string, unknown>>;
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
-    const textBlock = blocks.find((b) => b.type === "text");
+    const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
     const hasToolCalls = toolUseBlocks.length > 0;
-    const hasContent = textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+    const joinedText = textBlocks.map((b) => String(b.text ?? "")).join("");
+    const hasContent = joinedText.length > 0;
     const anthropicReasoning =
       thinkingBlocks.length > 0
         ? thinkingBlocks.map((b) => String(b.thinking ?? "")).join("")
@@ -598,7 +599,7 @@ function buildFixtureResponse(
       }));
       if (hasContent) {
         return {
-          content: textBlock.text as string,
+          content: joinedText,
           toolCalls,
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         };
@@ -607,9 +608,13 @@ function buildFixtureResponse(
     }
     if (hasContent) {
       return {
-        content: textBlock.text as string,
+        content: joinedText,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
       };
+    }
+    // Thinking-only response (no text, no tool calls)
+    if (anthropicReasoning) {
+      return { content: "", reasoning: anthropicReasoning };
     }
   }
 
@@ -620,10 +625,11 @@ function buildFixtureResponse(
     if (content && Array.isArray(content.parts)) {
       const parts = content.parts as Array<Record<string, unknown>>;
       const fnCallParts = parts.filter((p) => p.functionCall);
-      const textPart = parts.find((p) => typeof p.text === "string" && !p.thought);
+      const textParts = parts.filter((p) => typeof p.text === "string" && !p.thought);
       const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
       const hasToolCalls = fnCallParts.length > 0;
-      const hasContent = textPart && typeof textPart.text === "string" && textPart.text.length > 0;
+      const joinedText = textParts.map((p) => String(p.text ?? "")).join("");
+      const hasContent = joinedText.length > 0;
       const geminiReasoning =
         thoughtParts.length > 0
           ? thoughtParts.map((p) => String(p.text ?? "")).join("")
@@ -639,7 +645,7 @@ function buildFixtureResponse(
         });
         if (hasContent) {
           return {
-            content: textPart.text as string,
+            content: joinedText,
             toolCalls,
             ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
           };
@@ -648,7 +654,7 @@ function buildFixtureResponse(
       }
       if (hasContent) {
         return {
-          content: textPart.text as string,
+          content: joinedText,
           ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
         };
       }
@@ -662,11 +668,11 @@ function buildFixtureResponse(
     if (msg && Array.isArray(msg.content)) {
       const blocks = msg.content as Array<Record<string, unknown>>;
       const toolUseBlocks = blocks.filter((b) => b.toolUse);
-      const textBlock = blocks.find((b) => typeof b.text === "string");
+      const textBlocks = blocks.filter((b) => typeof b.text === "string");
       const reasoningBlocks = blocks.filter((b) => b.reasoningContent);
       const hasToolCalls = toolUseBlocks.length > 0;
-      const hasContent =
-        textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+      const joinedText = textBlocks.map((b) => String(b.text ?? "")).join("");
+      const hasContent = joinedText.length > 0;
       const bedrockReasoning =
         reasoningBlocks.length > 0
           ? reasoningBlocks
@@ -689,7 +695,7 @@ function buildFixtureResponse(
         });
         if (hasContent) {
           return {
-            content: textBlock.text as string,
+            content: joinedText,
             toolCalls,
             ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
           };
@@ -698,7 +704,7 @@ function buildFixtureResponse(
       }
       if (hasContent) {
         return {
-          content: textBlock.text as string,
+          content: joinedText,
           ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
         };
       }
