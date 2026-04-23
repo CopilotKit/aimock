@@ -132,15 +132,16 @@ export function geminiToCompletionRequest(
         const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
 
         if (funcCalls.length > 0) {
+          const text = textParts.map((p) => p.text!).join("");
           messages.push({
             role: "assistant",
-            content: null,
-            tool_calls: funcCalls.map((p, i) => ({
-              id: `call_gemini_${p.functionCall!.name}_${i}`,
+            content: text || null,
+            tool_calls: funcCalls.map((fc, i) => ({
+              id: `call_gemini_${fc.functionCall!.name}_${i}`,
               type: "function" as const,
               function: {
-                name: p.functionCall!.name,
-                arguments: JSON.stringify(p.functionCall!.args),
+                name: fc.functionCall!.name,
+                arguments: JSON.stringify(fc.functionCall!.args ?? {}),
               },
             })),
           });
