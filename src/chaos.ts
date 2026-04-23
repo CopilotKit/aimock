@@ -137,6 +137,10 @@ interface ChaosJournalContext {
 /**
  * Apply chaos to a request. Returns true if chaos was applied (caller should
  * return early), false if the request should proceed normally.
+ *
+ * `source` is required so the invariant "this handler only applies chaos in
+ * the <X> phase" is enforced at the type level. A future handler that grows
+ * a proxy path MUST pass `"proxy"` explicitly; the default can't drift silently.
  */
 export function applyChaos(
   res: http.ServerResponse,
@@ -145,14 +149,13 @@ export function applyChaos(
   rawHeaders: http.IncomingHttpHeaders,
   journal: Journal,
   context: ChaosJournalContext,
+  source: "fixture" | "proxy",
   registry?: MetricsRegistry,
   logger?: Logger,
 ): boolean {
   const action = evaluateChaos(fixture, serverDefaults, rawHeaders, logger);
   if (!action) return false;
-  // Existing callers (non-chat handlers) only apply chaos in fixture-serving
-  // contexts; "fixture" is the correct default source for them.
-  applyChaosAction(action, res, fixture, journal, context, "fixture", registry);
+  applyChaosAction(action, res, fixture, journal, context, source, registry);
   return true;
 }
 

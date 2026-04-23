@@ -49,12 +49,29 @@ export interface ProxyCapturedResponse {
 export interface ProxyOptions {
   /**
    * Called after the upstream response has been captured and recorded, but
-   * before the relay to the client. If the hook writes its own response and
-   * returns `true`, the default relay is skipped. Returning `false` (or
-   * omitting the hook) lets proxyAndRecord relay the upstream response
-   * normally. Rejected promises propagate and leave the response unwritten.
+   * before the relay to the client. Contract when the hook returns `true`:
+   *   1. It wrote its own response body on `res`.
+   *   2. It journaled the outcome (proxyAndRecord will NOT journal it).
+   *   3. proxyAndRecord skips its default relay and returns `"handled_by_hook"`.
+   *
+   * Returning `false` (or omitting the hook) lets proxyAndRecord relay the
+   * upstream response normally and leaves journaling to the caller via the
+   * `"relayed"` outcome. Rejected promises propagate and leave the response
+   * unwritten.
+   *
+   * NOT invoked when the upstream response was streamed progressively to the
+   * client (SSE) — the bytes are already on the wire and can't be mutated.
+   * Callers that need to observe the bypass should pass `onHookBypassed`.
    */
   beforeWriteResponse?: (response: ProxyCapturedResponse) => boolean | Promise<boolean>;
+  /**
+   * Called when `beforeWriteResponse` was provided but could not be invoked
+   * because the upstream response was streamed to the client progressively.
+   * The hook was rolled + wired but the bytes left before it could fire.
+   * Intended for observability (log/metric/journal annotation) — proxyAndRecord
+   * still returns `"relayed"`.
+   */
+  onHookBypassed?: (reason: "sse_streamed") => void;
 }
 
 /**
@@ -297,7 +314,14 @@ export async function proxyAndRecord(
   // Relay upstream response to client (skip when SSE was already streamed
   // progressively by makeUpstreamRequest — headers and body are already on
   // the wire).
-  if (!streamedToClient) {
+  if (streamedToClient) {
+    // SSE: the hook can't run because the body is already on the wire. Surface
+    // the bypass so the caller (typically the chaos layer) can record it —
+    // otherwise a configured chaos action silently no-ops on SSE traffic.
+    if (options?.beforeWriteResponse && options.onHookBypassed) {
+      options.onHookBypassed("sse_streamed");
+    }
+  } else {
     // Give the caller a chance to mutate or replace the response before relay.
     // Used by the chaos layer to turn a successful proxy into a malformed body.
     // `body` is the raw upstream bytes so binary payloads survive round-tripping.

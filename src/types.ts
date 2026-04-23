@@ -196,6 +196,15 @@ export interface StreamingProfile {
   jitter?: number; // Random variance factor (0-1), default 0
 }
 
+/**
+ * Probabilistic chaos injection rates.
+ *
+ * Rates are evaluated sequentially per request — drop → malformed → disconnect
+ * — and the first hit wins. Consequently malformedRate is conditional on drop
+ * not firing, and disconnectRate is conditional on neither drop nor malformed
+ * firing. A config of `{ dropRate: 0.5, malformedRate: 0.5 }` yields a ~25 %
+ * effective malformed rate, not 50 %.
+ */
 export interface ChaosConfig {
   dropRate?: number;
   malformedRate?: number;

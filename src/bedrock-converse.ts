@@ -298,6 +298,7 @@ export async function handleConverse(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      "fixture",
       defaults.registry,
       defaults.logger,
     )
@@ -508,6 +509,7 @@ export async function handleConverseStream(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      "fixture",
       defaults.registry,
       defaults.logger,
     )

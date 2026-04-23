@@ -549,7 +549,7 @@ describe("integration: /metrics endpoint", () => {
     expect(infMatch![1]).toBe(countMatch![1]);
   });
 
-  it("increments chaos counter when chaos triggers", async () => {
+  it("increments chaos counter when chaos triggers (fixture source)", async () => {
     const fixtures: Fixture[] = [
       {
         match: { userMessage: "hello" },
@@ -565,7 +565,43 @@ describe("integration: /metrics endpoint", () => {
 
     const res = await httpGet(`${instance.url}/metrics`);
     expect(res.body).toContain("aimock_chaos_triggered_total");
-    expect(res.body).toMatch(/aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
+    // Require both labels: action AND source. The source label is part of the
+    // public metric contract (added when chaos was extended to proxy mode) and
+    // an unasserted label is a regression hazard — future callers that forget
+    // to pass source would serialize `source=""` and pass a bare action match.
+    expect(res.body).toMatch(
+      /aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*source="fixture"[^}]*\} 1/,
+    );
+  });
+
+  it('chaos counter carries source="proxy" on proxy path', async () => {
+    // Counterpart to the fixture-source test: proves the source label flips
+    // correctly when the chaos roll belongs to the proxy dispatch branch.
+    // Together these two tests pin both label values of the source dimension.
+    const upstream = await createServer(
+      [{ match: { userMessage: "hi" }, response: { content: "upstream" } }],
+      { port: 0 },
+    );
+    try {
+      instance = await createServer([], {
+        metrics: true,
+        chaos: { dropRate: 1.0 },
+        record: {
+          providers: { openai: upstream.url },
+          fixturePath: "/tmp/aimock-metrics-proxy-source",
+          proxyOnly: true,
+        },
+      });
+
+      await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hi"));
+
+      const res = await httpGet(`${instance.url}/metrics`);
+      expect(res.body).toMatch(
+        /aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*source="proxy"[^}]*\} 1/,
+      );
+    } finally {
+      await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
+    }
   });
 
   it("increments chaos counter on Anthropic /v1/messages endpoint", async () => {
@@ -588,7 +624,9 @@ describe("integration: /metrics endpoint", () => {
 
     const res = await httpGet(`${instance.url}/metrics`);
     expect(res.body).toContain("aimock_chaos_triggered_total");
-    expect(res.body).toMatch(/aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*\} 1/);
+    expect(res.body).toMatch(
+      /aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*source="fixture"[^}]*\} 1/,
+    );
   });
 
   it("tracks fixtures loaded gauge", async () => {

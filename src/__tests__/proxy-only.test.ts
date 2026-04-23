@@ -376,6 +376,76 @@ describe("proxy-only mode", () => {
     expect(entry?.response.chaosAction).toBeUndefined();
   });
 
+  it("SSE upstream bypasses malformed chaos: body intact, bypass counted, journal clean", async () => {
+    // Pins the one place chaos silently no-ops: when upstream streams SSE,
+    // the bytes are already on the wire before the chaos hook could fire.
+    // Without an explicit bypass signal, malformedRate: 1.0 on SSE traffic
+    // would silently mean 0% corruption with no log, metric, or journal
+    // trace. Lifting the gate out of recorder.ts in a future refactor
+    // (phase 3: streaming mutation) should trip this test.
+    const sseUpstream = await new Promise<{ server: http.Server; url: string }>((resolve) => {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        resolve({ server, url: `http://127.0.0.1:${port}` });
+      });
+    });
+
+    recorder = await createServer([], {
+      port: 0,
+      metrics: true,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: sseUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-sse-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Client receives a real SSE stream — content-type and frames intact, not
+    // the malformed-JSON sentinel.
+    expect(resp.status).toBe(200);
+    const ct = resp.headers["content-type"];
+    expect(typeof ct === "string" ? ct : "").toContain("text/event-stream");
+    expect(resp.body).toContain("data: ");
+    expect(resp.body).not.toContain("{malformed json");
+
+    // Journal records the relayed proxy call, NOT a chaos action — the
+    // chaos roll happened but couldn't be applied, so claiming it fired
+    // would be a lie to the observer.
+    expect(recorder.journal.size).toBe(1);
+    const last = recorder.journal.getLast();
+    expect(last?.response.chaosAction).toBeUndefined();
+    expect(last?.response.source).toBe("proxy");
+
+    // Bypass must be visible in metrics so operators can see that a
+    // configured chaos action didn't fire.
+    const metricsRes = await new Promise<{ body: string }>((resolve, reject) => {
+      const mReq = http.request(`${recorder!.url}/metrics`, { method: "GET" }, (mRes) => {
+        const chunks: Buffer[] = [];
+        mRes.on("data", (c: Buffer) => chunks.push(c));
+        mRes.on("end", () => resolve({ body: Buffer.concat(chunks).toString() }));
+      });
+      mReq.on("error", reject);
+      mReq.end();
+    });
+    expect(metricsRes.body).toMatch(
+      /aimock_chaos_bypassed_total\{[^}]*action="malformed"[^}]*source="proxy"[^}]*\} 1/,
+    );
+    // Paired negative: the normal chaos_triggered counter must NOT increment
+    // for a bypass — the action didn't actually fire.
+    expect(metricsRes.body).not.toMatch(/aimock_chaos_triggered_total\{[^}]*action="malformed"/);
+
+    await new Promise<void>((resolve) => sseUpstream.server.close(() => resolve()));
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");
