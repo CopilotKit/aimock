@@ -554,6 +554,15 @@ export function readBody(req: http.IncomingMessage): Promise<string> {
 
 // ─── Pattern matching ─────────────────────────────────────────────────────
 
+/**
+ * Case-insensitive substring/regex match used for search, rerank, and
+ * moderation endpoints where exact casing rarely matters. String patterns
+ * are lowercased on both sides before comparison.
+ *
+ * Note: This intentionally differs from the case-sensitive matching in
+ * {@link matchFixture} (router.ts), where fixture authors expect exact
+ * string matching against chat completion user messages.
+ */
 export function matchesPattern(text: string, pattern: string | RegExp): boolean {
   if (typeof pattern === "string") {
     return text.toLowerCase().includes(pattern.toLowerCase());
