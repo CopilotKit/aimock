@@ -1505,7 +1505,7 @@ describe("Cohere webSearches warning", () => {
 
     const fixture: Fixture = {
       match: { userMessage: "web" },
-      response: { content: "Result.", webSearches: [{ query: "test" }] },
+      response: { content: "Result.", webSearches: ["test"] },
     };
     const journal = new Journal();
     const req = createMockReq();
@@ -1536,7 +1536,7 @@ describe("Cohere webSearches warning", () => {
       response: {
         content: "Here.",
         toolCalls: [{ name: "fn", arguments: "{}" }],
-        webSearches: [{ query: "test" }],
+        webSearches: ["test"],
       },
     };
     const journal = new Journal();

@@ -1445,7 +1445,6 @@ describe("POST /model/{modelId}/invoke (error fixture no error type)", () => {
 // ---------------------------------------------------------------------------
 
 import { buildBedrockStreamTextEvents, buildBedrockStreamToolCallEvents } from "../bedrock.js";
-import { Logger } from "../logger.js";
 
 describe("buildBedrockStreamTextEvents", () => {
   it("creates correct event sequence for empty content", () => {
@@ -1680,7 +1679,7 @@ describe("Bedrock webSearches warning", () => {
 
     const fixture: Fixture = {
       match: { userMessage: "web" },
-      response: { content: "Result.", webSearches: [{ query: "test" }] },
+      response: { content: "Result.", webSearches: ["test"] },
     };
     const journal = new Journal();
     const req = {
@@ -1834,7 +1833,7 @@ describe("Bedrock Converse webSearches warning", () => {
     const fixtures: Fixture[] = [
       {
         match: { userMessage: "conv-web" },
-        response: { content: "Result.", webSearches: [{ query: "test" }] },
+        response: { content: "Result.", webSearches: ["test"] },
       },
     ];
     instance = await createServer(fixtures);

@@ -565,6 +565,7 @@ export function buildBedrockStreamTextEvents(
   content: string,
   chunkSize: number,
   reasoning?: string,
+  overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [];
 
@@ -624,7 +625,7 @@ export function buildBedrockStreamTextEvents(
 
   events.push({
     eventType: "messageStop",
-    payload: { stopReason: "end_turn" },
+    payload: { stopReason: bedrockStopReason(overrides?.finishReason, "end_turn") },
   });
 
   return events;
@@ -636,6 +637,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   chunkSize: number,
   logger: Logger,
   reasoning?: string,
+  overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [];
 
@@ -734,7 +736,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
 
   events.push({
     eventType: "messageStop",
-    payload: { stopReason: "tool_use" },
+    payload: { stopReason: bedrockStopReason(overrides?.finishReason, "tool_use") },
   });
 
   return events;
@@ -744,6 +746,7 @@ export function buildBedrockStreamToolCallEvents(
   toolCalls: ToolCall[],
   chunkSize: number,
   logger: Logger,
+  overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [];
 
@@ -796,7 +799,7 @@ export function buildBedrockStreamToolCallEvents(
 
   events.push({
     eventType: "messageStop",
-    payload: { stopReason: "tool_use" },
+    payload: { stopReason: bedrockStopReason(overrides?.finishReason, "tool_use") },
   });
 
   return events;
@@ -979,6 +982,7 @@ export async function handleBedrockStream(
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -992,6 +996,7 @@ export async function handleBedrockStream(
       chunkSize,
       logger,
       response.reasoning,
+      overrides,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
@@ -1014,6 +1019,7 @@ export async function handleBedrockStream(
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1021,7 +1027,12 @@ export async function handleBedrockStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildBedrockStreamTextEvents(response.content, chunkSize, response.reasoning);
+    const events = buildBedrockStreamTextEvents(
+      response.content,
+      chunkSize,
+      response.reasoning,
+      overrides,
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
       latency,
@@ -1040,6 +1051,7 @@ export async function handleBedrockStream(
 
   // Tool call response — stream as Event Stream
   if (isToolCallResponse(response)) {
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1047,7 +1059,12 @@ export async function handleBedrockStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildBedrockStreamToolCallEvents(response.toolCalls, chunkSize, logger);
+    const events = buildBedrockStreamToolCallEvents(
+      response.toolCalls,
+      chunkSize,
+      logger,
+      overrides,
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
       latency,

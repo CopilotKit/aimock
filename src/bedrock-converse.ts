@@ -707,6 +707,7 @@ export async function handleConverseStream(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
       );
     }
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -720,6 +721,7 @@ export async function handleConverseStream(
       chunkSize,
       logger,
       response.reasoning,
+      overrides,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
@@ -744,6 +746,7 @@ export async function handleConverseStream(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
       );
     }
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -751,7 +754,12 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildBedrockStreamTextEvents(response.content, chunkSize, response.reasoning);
+    const events = buildBedrockStreamTextEvents(
+      response.content,
+      chunkSize,
+      response.reasoning,
+      overrides,
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
       latency,
@@ -770,6 +778,7 @@ export async function handleConverseStream(
 
   // Tool call response — stream as Event Stream
   if (isToolCallResponse(response)) {
+    const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -777,7 +786,12 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildBedrockStreamToolCallEvents(response.toolCalls, chunkSize, logger);
+    const events = buildBedrockStreamToolCallEvents(
+      response.toolCalls,
+      chunkSize,
+      logger,
+      overrides,
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {
       latency,

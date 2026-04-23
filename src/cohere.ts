@@ -299,8 +299,9 @@ function buildCohereTextStreamEvents(
   content: string,
   chunkSize: number,
   reasoning?: string,
+  overrides?: ResponseOverrides,
 ): CohereSSEEvent[] {
-  const msgId = generateMessageId();
+  const msgId = overrides?.id ?? generateMessageId();
   const events: CohereSSEEvent[] = [];
 
   // message-start
@@ -374,8 +375,8 @@ function buildCohereTextStreamEvents(
   events.push({
     type: "message-end",
     delta: {
-      finish_reason: "COMPLETE",
-      usage: ZERO_USAGE,
+      finish_reason: cohereFinishReason(overrides?.finishReason, "COMPLETE"),
+      usage: cohereUsage(overrides),
     },
   });
 
@@ -386,8 +387,9 @@ function buildCohereToolCallStreamEvents(
   toolCalls: ToolCall[],
   chunkSize: number,
   logger: Logger,
+  overrides?: ResponseOverrides,
 ): CohereSSEEvent[] {
-  const msgId = generateMessageId();
+  const msgId = overrides?.id ?? generateMessageId();
   const events: CohereSSEEvent[] = [];
 
   // message-start
@@ -478,8 +480,8 @@ function buildCohereToolCallStreamEvents(
   events.push({
     type: "message-end",
     delta: {
-      finish_reason: "TOOL_CALL",
-      usage: ZERO_USAGE,
+      finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
+      usage: cohereUsage(overrides),
     },
   });
 
@@ -492,8 +494,9 @@ function buildCohereContentWithToolCallsStreamEvents(
   chunkSize: number,
   logger: Logger,
   reasoning?: string,
+  overrides?: ResponseOverrides,
 ): CohereSSEEvent[] {
-  const msgId = generateMessageId();
+  const msgId = overrides?.id ?? generateMessageId();
   const events: CohereSSEEvent[] = [];
 
   // message-start
@@ -636,8 +639,8 @@ function buildCohereContentWithToolCallsStreamEvents(
   events.push({
     type: "message-end",
     delta: {
-      finish_reason: "TOOL_CALL",
-      usage: ZERO_USAGE,
+      finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
+      usage: cohereUsage(overrides),
     },
   });
 
@@ -906,6 +909,7 @@ export async function handleCohere(
         chunkSize,
         logger,
         response.reasoning,
+        overrides,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
@@ -944,7 +948,12 @@ export async function handleCohere(
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildCohereTextStreamEvents(response.content, chunkSize, response.reasoning);
+      const events = buildCohereTextStreamEvents(
+        response.content,
+        chunkSize,
+        response.reasoning,
+        overrides,
+      );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
         latency,
@@ -977,7 +986,12 @@ export async function handleCohere(
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildCohereToolCallStreamEvents(response.toolCalls, chunkSize, logger);
+      const events = buildCohereToolCallStreamEvents(
+        response.toolCalls,
+        chunkSize,
+        logger,
+        overrides,
+      );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
         latency,
