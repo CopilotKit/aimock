@@ -485,7 +485,7 @@ async function handleCompletions(
           path: req.url ?? COMPLETIONS_PATH,
           headers: flattenHeaders(req.headers),
           body,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
