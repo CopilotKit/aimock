@@ -2297,6 +2297,151 @@ describe("buildFixtureResponse format detection", () => {
     expect(fixtureContent.fixtures[0].response.content).toBeUndefined();
   });
 
+  it("detects Cohere v2 message-level tool_calls with text content", async () => {
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      finish_reason: "TOOL_CALL",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Let me look that up." }],
+        tool_calls: [
+          {
+            name: "get_weather",
+            parameters: { city: "SF" },
+          },
+        ],
+      },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { cohere: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "cohere v2 msg tool_calls with text" }],
+      stream: false,
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: {
+          content?: string;
+          toolCalls?: Array<{ name: string; arguments: string }>;
+        };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.content).toBe("Let me look that up.");
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls).toHaveLength(1);
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].name).toBe("get_weather");
+    expect(JSON.parse(fixtureContent.fixtures[0].response.toolCalls![0].arguments)).toEqual({
+      city: "SF",
+    });
+  });
+
+  it("detects Cohere v2 message-level tool_calls without text content", async () => {
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      finish_reason: "TOOL_CALL",
+      message: {
+        role: "assistant",
+        content: [],
+        tool_calls: [
+          {
+            name: "search_docs",
+            parameters: { query: "aimock" },
+          },
+        ],
+      },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { cohere: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "cohere v2 msg tool_calls only" }],
+      stream: false,
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: {
+          content?: string;
+          toolCalls?: Array<{ name: string; arguments: string }>;
+        };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.content).toBeUndefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
+    expect(fixtureContent.fixtures[0].response.toolCalls).toHaveLength(1);
+    expect(fixtureContent.fixtures[0].response.toolCalls![0].name).toBe("search_docs");
+    expect(JSON.parse(fixtureContent.fixtures[0].response.toolCalls![0].arguments)).toEqual({
+      query: "aimock",
+    });
+  });
+
+  it("detects Cohere v2 text-only response (no message-level tool_calls)", async () => {
+    const { url: upstreamUrl } = await createRawUpstreamWithStatus({
+      finish_reason: "COMPLETE",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello from Cohere" }],
+      },
+    });
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { cohere: upstreamUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "cohere v2 text only" }],
+      stream: false,
+    });
+
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    const fixtureFiles = files.filter((f) => f.endsWith(".json"));
+    expect(fixtureFiles).toHaveLength(1);
+
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, fixtureFiles[0]), "utf-8"),
+    ) as {
+      fixtures: Array<{
+        response: {
+          content?: string;
+          toolCalls?: Array<{ name: string; arguments: string }>;
+        };
+      }>;
+    };
+    expect(fixtureContent.fixtures[0].response.content).toBe("Hello from Cohere");
+    expect(fixtureContent.fixtures[0].response.toolCalls).toBeUndefined();
+  });
+
   it("unknown format falls back to error response", async () => {
     const { url: upstreamUrl } = await createRawUpstreamWithStatus({
       custom: "data",

@@ -655,7 +655,13 @@ function buildFixtureResponse(
     const msg = obj.message as Record<string, unknown>;
     const contentBlocks = msg.content as Array<Record<string, unknown>>;
     const textBlock = contentBlocks.find((b) => b.type === "text" && typeof b.text === "string");
+    const hasContent = textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
     const toolCallBlocks = contentBlocks.filter((b) => b.type === "tool_call");
+
+    // Also check message-level tool_calls (Cohere v2 puts tool calls here, not in content blocks)
+    const msgToolCalls = Array.isArray(msg.tool_calls)
+      ? (msg.tool_calls as Array<Record<string, unknown>>)
+      : [];
 
     if (toolCallBlocks.length > 0) {
       const toolCalls: ToolCall[] = toolCallBlocks.map((b) => ({
@@ -669,12 +675,32 @@ function buildFixtureResponse(
                 ? String((b.function as Record<string, unknown>).arguments)
                 : JSON.stringify((b.function as Record<string, unknown>)?.arguments),
       }));
-      if (textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0) {
+      if (hasContent) {
         return { content: textBlock.text as string, toolCalls };
       }
       return { toolCalls };
     }
-    if (textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0) {
+    if (msgToolCalls.length > 0) {
+      const toolCalls: ToolCall[] = msgToolCalls.map((tc) => {
+        const fn = tc.function as Record<string, unknown> | undefined;
+        return {
+          name: String(tc.name ?? fn?.name ?? ""),
+          arguments:
+            typeof tc.parameters === "string"
+              ? tc.parameters
+              : typeof tc.parameters === "object"
+                ? JSON.stringify(tc.parameters)
+                : typeof fn?.arguments === "string"
+                  ? String(fn.arguments)
+                  : JSON.stringify(fn?.arguments),
+        };
+      });
+      if (hasContent) {
+        return { content: textBlock.text as string, toolCalls };
+      }
+      return { toolCalls };
+    }
+    if (hasContent) {
       return { content: textBlock.text as string };
     }
   }
