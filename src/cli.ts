@@ -7,7 +7,8 @@ import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "./fixtur
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
 import { AGUIMock } from "./agui-mock.js";
-import type { ChaosConfig, RecordConfig } from "./types.js";
+import { resolveFixturesValue } from "./fixtures-remote.js";
+import type { Fixture, ChaosConfig, RecordConfig } from "./types.js";
 
 const HELP = `
 Usage: aimock [options]
@@ -15,7 +16,9 @@ Usage: aimock [options]
 Options:
   -p, --port <number>       Port to listen on (default: 4010)
   -h, --host <string>       Host to bind to (default: 127.0.0.1)
-  -f, --fixtures <path>     Path to fixtures directory or file (default: ./fixtures)
+  -f, --fixtures <value>    Fixture source (repeatable). Accepts:
+                              - filesystem path to a directory or .json file (default: ./fixtures)
+                              - https:// or http:// URL to a .json fixture file
   -l, --latency <ms>        Latency in ms between SSE chunks (default: 0)
   -c, --chunk-size <chars>  Chunk size in characters (default: 20)
   -w, --watch               Watch fixture path for changes and reload
@@ -48,7 +51,7 @@ const { values } = parseArgs({
   options: {
     port: { type: "string", short: "p", default: "4010" },
     host: { type: "string", short: "h", default: "127.0.0.1" },
-    fixtures: { type: "string", short: "f", default: "./fixtures" },
+    fixtures: { type: "string", short: "f", multiple: true },
     latency: { type: "string", short: "l", default: "0" },
     "chunk-size": { type: "string", short: "c", default: "20" },
     watch: { type: "boolean", short: "w", default: false },
@@ -88,7 +91,8 @@ const port = Number(values.port);
 const host = values.host!;
 const latency = Number(values.latency);
 const chunkSize = Number(values["chunk-size"]);
-const fixturePath = resolve(values.fixtures!);
+const fixtureValues: string[] =
+  values.fixtures && values.fixtures.length > 0 ? values.fixtures : ["./fixtures"];
 const watchMode = values.watch!;
 const validateOnLoad = values["validate-on-load"]!;
 const logLevelStr = values["log-level"]!;
@@ -189,9 +193,18 @@ if (values.record || values["proxy-only"]) {
     process.exit(1);
   }
 
+  // For record mode, use the first --fixtures value as the base path.
+  // Remote URL sources are not supported as record destinations — bail out with a clear error.
+  const recordBase = fixtureValues[0];
+  if (/^https?:\/\//i.test(recordBase)) {
+    console.error(
+      `Error: --record/--proxy-only requires a local --fixtures path for the recording destination; got URL ${recordBase}`,
+    );
+    process.exit(1);
+  }
   record = {
     providers,
-    fixturePath: resolve(fixturePath, "recorded"),
+    fixturePath: resolve(recordBase, "recorded"),
     proxyOnly: values["proxy-only"],
   };
 }
@@ -203,35 +216,74 @@ if (values["agui-record"] || values["agui-proxy-only"]) {
     console.error("Error: --agui-record/--agui-proxy-only requires --agui-upstream");
     process.exit(1);
   }
+  const aguiBase = fixtureValues[0];
+  if (/^https?:\/\//i.test(aguiBase)) {
+    console.error(
+      `Error: --agui-record/--agui-proxy-only requires a local --fixtures path for the recording destination; got URL ${aguiBase}`,
+    );
+    process.exit(1);
+  }
   const agui = new AGUIMock();
   agui.enableRecording({
     upstream: values["agui-upstream"],
-    fixturePath: resolve(fixturePath, "agui-recorded"),
+    fixturePath: resolve(aguiBase, "agui-recorded"),
     proxyOnly: values["agui-proxy-only"],
   });
   aguiMount = { path: "/agui", handler: agui };
 }
 
-async function main() {
-  // Load fixtures from path (detect file vs directory)
-  let isDir: boolean;
-  let fixtures;
-  try {
-    const stat = statSync(fixturePath);
-    isDir = stat.isDirectory();
-    if (isDir) {
-      fixtures = loadFixturesFromDir(fixturePath, logger);
-    } else {
-      fixtures = loadFixtureFile(fixturePath, logger);
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`Fixtures path not found: ${fixturePath}`);
-    } else {
+interface ResolvedFixtureSource {
+  source: string;
+  path: string;
+  isDir: boolean;
+}
+
+async function resolveAllFixtureSources(): Promise<ResolvedFixtureSource[]> {
+  const resolved: ResolvedFixtureSource[] = [];
+  for (const value of fixtureValues) {
+    let local;
+    try {
+      local = await resolveFixturesValue(value, {
+        validateOnLoad,
+        logger,
+      });
+    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Failed to load fixtures from ${fixturePath}: ${msg}`);
+      console.error(`Failed to resolve --fixtures value "${value}": ${msg}`);
+      process.exit(1);
     }
-    process.exit(1);
+    if (!local.path) {
+      // Remote fetch failed without validate-on-load and no cache — already warned; skip.
+      continue;
+    }
+    try {
+      const stat = statSync(local.path);
+      resolved.push({ source: local.source, path: local.path, isDir: stat.isDirectory() });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        console.error(`Fixtures path not found: ${local.path}`);
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`Failed to load fixtures from ${local.path}: ${msg}`);
+      }
+      process.exit(1);
+    }
+  }
+  return resolved;
+}
+
+function loadSource(source: ResolvedFixtureSource): Fixture[] {
+  return source.isDir
+    ? loadFixturesFromDir(source.path, logger)
+    : loadFixtureFile(source.path, logger);
+}
+
+async function main() {
+  const sources = await resolveAllFixtureSources();
+
+  const fixtures: Fixture[] = [];
+  for (const src of sources) {
+    fixtures.push(...loadSource(src));
   }
 
   if (fixtures.length === 0) {
@@ -242,7 +294,8 @@ async function main() {
     console.warn("Warning: No fixtures loaded. The server will return 404 for all requests.");
   }
 
-  logger.info(`Loaded ${fixtures.length} fixture(s) from ${fixturePath}`);
+  const sourceLabel = sources.map((s) => s.source).join(", ") || "<none>";
+  logger.info(`Loaded ${fixtures.length} fixture(s) from ${sourceLabel}`);
 
   // Validate fixtures if requested
   if (validateOnLoad) {
@@ -285,19 +338,22 @@ async function main() {
 
   logger.info(`aimock server listening on ${instance.url}`);
 
-  // Start file watcher if requested
+  // Start file watcher if requested. Only the first local source is watched —
+  // remote URL sources are fetched once at boot and are not monitored.
   let watcher: { close: () => void } | null = null;
   if (watchMode) {
-    const loadFn = isDir!
-      ? () => loadFixturesFromDir(fixturePath, logger)
-      : () => loadFixtureFile(fixturePath, logger);
-
-    watcher = watchFixtures(fixturePath, fixtures, loadFn, {
-      logger,
-      validate: validateOnLoad,
-      validateFn: validateFixtures,
-    });
-    logger.info(`Watching ${fixturePath} for changes`);
+    const primary = sources[0];
+    if (!primary) {
+      logger.warn("--watch requested but no resolvable fixture sources; skipping watcher");
+    } else {
+      const loadFn = (): Fixture[] => loadSource(primary);
+      watcher = watchFixtures(primary.path, fixtures, loadFn, {
+        logger,
+        validate: validateOnLoad,
+        validateFn: validateFixtures,
+      });
+      logger.info(`Watching ${primary.path} for changes`);
+    }
   }
 
   function shutdown() {
