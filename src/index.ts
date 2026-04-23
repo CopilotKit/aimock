@@ -24,7 +24,12 @@ export { Journal, DEFAULT_TEST_ID } from "./journal.js";
 export { matchFixture, getTextContent } from "./router.js";
 
 // Provider handlers
-export { handleResponses, buildTextStreamEvents, buildToolCallStreamEvents } from "./responses.js";
+export {
+  handleResponses,
+  buildTextStreamEvents,
+  buildToolCallStreamEvents,
+  buildContentWithToolCallsStreamEvents,
+} from "./responses.js";
 export type { ResponsesSSEEvent } from "./responses.js";
 export { handleMessages } from "./messages.js";
 export { handleGemini } from "./gemini.js";

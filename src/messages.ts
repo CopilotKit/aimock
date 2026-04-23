@@ -892,7 +892,7 @@ export async function handleMessages(
   // Text response
   if (isTextResponse(response)) {
     if (response.webSearches?.length) {
-      defaults.logger.warn(
+      logger.warn(
         "webSearches in fixture response are not supported for Claude Messages API — ignoring",
       );
     }

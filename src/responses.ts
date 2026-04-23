@@ -1,5 +1,5 @@
 /**
- * OpenAI Responses API support for LLMock.
+ * OpenAI Responses API support for aimock.
  *
  * Translates incoming /v1/responses requests into the ChatCompletionRequest
  * format used by the fixture router, and converts fixture responses back into

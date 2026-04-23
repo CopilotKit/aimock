@@ -256,9 +256,6 @@ describe("/__aimock control API", () => {
       );
       expect(errRes.status).toBe(429);
 
-      // Wait for queueMicrotask to clean up the one-shot fixture
-      await new Promise((r) => setTimeout(r, 50));
-
       // Second request should succeed normally
       const okRes = await httpRequest(
         `${instance.url}/v1/chat/completions`,

@@ -1,5 +1,5 @@
 /**
- * OpenAI Embeddings API support for LLMock.
+ * OpenAI Embeddings API support for aimock.
  *
  * Handles POST /v1/embeddings requests. Matches fixtures using the `inputText`
  * field, and falls back to generating a deterministic embedding from the input
