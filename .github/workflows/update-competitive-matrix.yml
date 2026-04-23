@@ -58,6 +58,7 @@ jobs:
       - name: Notify Slack
         if: always()
         run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
           if [ "${{ steps.changes.outputs.changed }}" = "true" ]; then
             EMOJI="📊"
             MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
@@ -68,6 +69,8 @@ jobs:
             EMOJI="❌"
             MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
           fi
-          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "{\"text\": \"${EMOJI} ${MSG}\"}"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

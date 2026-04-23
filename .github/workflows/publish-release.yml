@@ -96,7 +96,10 @@ jobs:
       - name: Notify Slack
         if: steps.check.outputs.published == 'false'
         run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
           VERSION="v${{ steps.check.outputs.version }}"
-          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "{\"text\":\"📦 *@copilotkit/aimock ${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${{ steps.check.outputs.version }}\nRelease: https://github.com/${{ github.repository }}/releases/tag/${VERSION}\"}"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

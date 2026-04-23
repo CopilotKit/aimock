@@ -119,7 +119,8 @@ jobs:
         if: success() && steps.check.outputs.skip != 'true'
         run: |
           npx tsx scripts/fix-drift.ts --create-pr 2>&1 | tee /tmp/pr-output.txt
-          PR_URL=$(grep -oP 'https://github.com/[^ ]+/pull/\d+' /tmp/pr-output.txt | head -1)
+          PR_URL=$(grep -oE 'https://github.com/[^ ]+/pull/[0-9]+' /tmp/pr-output.txt | head -1)
+          if [ -z "$PR_URL" ]; then echo "No PR URL found"; exit 1; fi
           echo "url=$PR_URL" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -129,7 +130,7 @@ jobs:
         if: success() && steps.pr.outputs.url != ''
         run: |
           PR_URL="${{ steps.pr.outputs.url }}"
-          gh pr merge "$PR_URL" --merge --admin
+          gh pr merge "$PR_URL" --merge --auto
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,15 +145,19 @@ jobs:
       - name: Notify Slack on fix success
         if: success() && steps.pr.outputs.url != ''
         run: |
-          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
+          curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "{\"text\":\"✅ *Drift auto-fixed and merged*\nPR: ${{ steps.pr.outputs.url }}\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
       # Step 8: Slack notification on fix failure
       - name: Notify Slack on fix failure
         if: failure() && steps.check.outputs.skip != 'true'
         run: |
-          curl -s -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
+          curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "{\"text\":\"❌ *Drift auto-fix failed* — issue created\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
         env:
