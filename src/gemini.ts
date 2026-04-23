@@ -93,6 +93,7 @@ export function geminiToCompletionRequest(
   }
 
   if (req.contents) {
+    let callCounter = 0;
     for (const content of req.contents) {
       const role = content.role ?? "user";
 
@@ -103,15 +104,14 @@ export function geminiToCompletionRequest(
 
         if (funcResponses.length > 0) {
           // functionResponse → tool message
-          for (let i = 0; i < funcResponses.length; i++) {
-            const part = funcResponses[i];
+          for (const part of funcResponses) {
             messages.push({
               role: "tool",
               content:
                 typeof part.functionResponse!.response === "string"
                   ? part.functionResponse!.response
                   : JSON.stringify(part.functionResponse!.response),
-              tool_call_id: `call_gemini_${part.functionResponse!.name}_${i}`,
+              tool_call_id: `call_gemini_${part.functionResponse!.name}_${callCounter++}`,
             });
           }
           // Any text parts alongside → user message
@@ -136,8 +136,8 @@ export function geminiToCompletionRequest(
           messages.push({
             role: "assistant",
             content: text || null,
-            tool_calls: funcCalls.map((fc, i) => ({
-              id: `call_gemini_${fc.functionCall!.name}_${i}`,
+            tool_calls: funcCalls.map((fc) => ({
+              id: `call_gemini_${fc.functionCall!.name}_${callCounter++}`,
               type: "function" as const,
               function: {
                 name: fc.functionCall!.name,
@@ -150,6 +150,9 @@ export function geminiToCompletionRequest(
           messages.push({ role: "assistant", content: text });
         }
       }
+      // Unrecognized roles (not "user" or "model") are silently dropped.
+      // Gemini only defines "user" and "model"; any other value indicates
+      // a malformed request or an unsupported future role.
     }
   }
 
