@@ -787,7 +787,7 @@ describe("buildBedrockStreamTextEvents (reasoning)", () => {
         contentBlockIndex: 1,
         contentBlockDelta: {
           contentBlockIndex: 1,
-          delta: { text: "The answer." },
+          delta: { type: "text_delta", text: "The answer." },
         },
       },
     });

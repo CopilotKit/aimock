@@ -52,6 +52,8 @@ export interface AimockHandle {
  */
 export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
   let handle: AimockHandle | null = null;
+  let origOpenaiUrl: string | undefined;
+  let origAnthropicUrl: string | undefined;
 
   beforeAll(async () => {
     const { fixtures: fixturePath, patchEnv, ...serverOpts } = options;
@@ -68,6 +70,8 @@ export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
     const url = await llm.start();
 
     if (patchEnv !== false) {
+      origOpenaiUrl = process.env.OPENAI_BASE_URL;
+      origAnthropicUrl = process.env.ANTHROPIC_BASE_URL;
       process.env.OPENAI_BASE_URL = `${url}/v1`;
       process.env.ANTHROPIC_BASE_URL = `${url}/v1`;
     }
@@ -84,8 +88,10 @@ export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
   afterAll(async () => {
     if (handle) {
       if (options.patchEnv !== false) {
-        delete process.env.OPENAI_BASE_URL;
-        delete process.env.ANTHROPIC_BASE_URL;
+        if (origOpenaiUrl !== undefined) process.env.OPENAI_BASE_URL = origOpenaiUrl;
+        else delete process.env.OPENAI_BASE_URL;
+        if (origAnthropicUrl !== undefined) process.env.ANTHROPIC_BASE_URL = origAnthropicUrl;
+        else delete process.env.ANTHROPIC_BASE_URL;
       }
       await handle.llm.stop();
       handle = null;

@@ -537,6 +537,11 @@ function buildFixtureResponse(
       const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
       const hasContent = typeof message.content === "string" && message.content.length > 0;
 
+      const openaiReasoning =
+        typeof message.reasoning_content === "string" && message.reasoning_content.length > 0
+          ? message.reasoning_content
+          : undefined;
+
       if (hasToolCalls) {
         const toolCalls: ToolCall[] = (message.tool_calls as Array<Record<string, unknown>>).map(
           (tc) => {
@@ -544,17 +549,25 @@ function buildFixtureResponse(
             return {
               name: String(fn.name),
               arguments: String(fn.arguments),
+              ...(tc.id ? { id: String(tc.id) } : {}),
             };
           },
         );
         if (hasContent) {
-          return { content: message.content as string, toolCalls };
+          return {
+            content: message.content as string,
+            toolCalls,
+            ...(openaiReasoning ? { reasoning: openaiReasoning } : {}),
+          };
         }
         return { toolCalls };
       }
       // Text content only
       if (hasContent) {
-        return { content: message.content as string };
+        return {
+          content: message.content as string,
+          ...(openaiReasoning ? { reasoning: openaiReasoning } : {}),
+        };
       }
     }
   }
@@ -564,21 +577,34 @@ function buildFixtureResponse(
     const blocks = obj.content as Array<Record<string, unknown>>;
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlock = blocks.find((b) => b.type === "text");
+    const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
     const hasToolCalls = toolUseBlocks.length > 0;
     const hasContent = textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+    const anthropicReasoning =
+      thinkingBlocks.length > 0
+        ? thinkingBlocks.map((b) => String(b.thinking ?? "")).join("")
+        : undefined;
 
     if (hasToolCalls) {
       const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
         name: String(b.name),
         arguments: typeof b.input === "string" ? b.input : JSON.stringify(b.input),
+        ...(b.id ? { id: String(b.id) } : {}),
       }));
       if (hasContent) {
-        return { content: textBlock.text as string, toolCalls };
+        return {
+          content: textBlock.text as string,
+          toolCalls,
+          ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+        };
       }
       return { toolCalls };
     }
     if (hasContent) {
-      return { content: textBlock.text as string };
+      return {
+        content: textBlock.text as string,
+        ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+      };
     }
   }
 
@@ -589,9 +615,14 @@ function buildFixtureResponse(
     if (content && Array.isArray(content.parts)) {
       const parts = content.parts as Array<Record<string, unknown>>;
       const fnCallParts = parts.filter((p) => p.functionCall);
-      const textPart = parts.find((p) => typeof p.text === "string");
+      const textPart = parts.find((p) => typeof p.text === "string" && !p.thought);
+      const thoughtParts = parts.filter((p) => p.thought === true && typeof p.text === "string");
       const hasToolCalls = fnCallParts.length > 0;
       const hasContent = textPart && typeof textPart.text === "string" && textPart.text.length > 0;
+      const geminiReasoning =
+        thoughtParts.length > 0
+          ? thoughtParts.map((p) => String(p.text ?? "")).join("")
+          : undefined;
 
       if (hasToolCalls) {
         const toolCalls: ToolCall[] = fnCallParts.map((p) => {
@@ -602,12 +633,19 @@ function buildFixtureResponse(
           };
         });
         if (hasContent) {
-          return { content: textPart.text as string, toolCalls };
+          return {
+            content: textPart.text as string,
+            toolCalls,
+            ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+          };
         }
         return { toolCalls };
       }
       if (hasContent) {
-        return { content: textPart.text as string };
+        return {
+          content: textPart.text as string,
+          ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+        };
       }
     }
   }
@@ -620,9 +658,20 @@ function buildFixtureResponse(
       const blocks = msg.content as Array<Record<string, unknown>>;
       const toolUseBlocks = blocks.filter((b) => b.toolUse);
       const textBlock = blocks.find((b) => typeof b.text === "string");
+      const reasoningBlocks = blocks.filter((b) => b.reasoningContent);
       const hasToolCalls = toolUseBlocks.length > 0;
       const hasContent =
         textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+      const bedrockReasoning =
+        reasoningBlocks.length > 0
+          ? reasoningBlocks
+              .map((b) => {
+                const rc = b.reasoningContent as Record<string, unknown>;
+                const rt = rc?.reasoningText as Record<string, unknown> | undefined;
+                return String(rt?.text ?? "");
+              })
+              .join("")
+          : undefined;
 
       if (hasToolCalls) {
         const toolCalls: ToolCall[] = toolUseBlocks.map((b) => {
@@ -630,15 +679,23 @@ function buildFixtureResponse(
           return {
             name: String(tu.name ?? ""),
             arguments: typeof tu.input === "string" ? tu.input : JSON.stringify(tu.input),
+            ...(tu.toolUseId ? { id: String(tu.toolUseId) } : {}),
           };
         });
         if (hasContent) {
-          return { content: textBlock.text as string, toolCalls };
+          return {
+            content: textBlock.text as string,
+            toolCalls,
+            ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+          };
         }
         return { toolCalls };
       }
       if (hasContent) {
-        return { content: textBlock.text as string };
+        return {
+          content: textBlock.text as string,
+          ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+        };
       }
     }
   }
@@ -674,6 +731,7 @@ function buildFixtureResponse(
               : typeof (b.function as Record<string, unknown>)?.arguments === "string"
                 ? String((b.function as Record<string, unknown>).arguments)
                 : JSON.stringify((b.function as Record<string, unknown>)?.arguments),
+        ...(b.id ? { id: String(b.id) } : {}),
       }));
       if (hasContent) {
         return { content: textBlock.text as string, toolCalls };
@@ -693,6 +751,7 @@ function buildFixtureResponse(
                 : typeof fn?.arguments === "string"
                   ? String(fn.arguments)
                   : JSON.stringify(fn?.arguments),
+          ...(tc.id ? { id: String(tc.id) } : {}),
         };
       });
       if (hasContent) {

@@ -630,7 +630,7 @@ export function buildBedrockStreamTextEvents(
         contentBlockIndex: textBlockIndex,
         contentBlockDelta: {
           contentBlockIndex: textBlockIndex,
-          delta: { text: slice },
+          delta: { type: "text_delta", text: slice },
         },
       },
     });
@@ -717,7 +717,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
         contentBlockIndex: blockIndex,
         contentBlockDelta: {
           contentBlockIndex: blockIndex,
-          delta: { text: slice },
+          delta: { type: "text_delta", text: slice },
         },
       },
     });
