@@ -102,7 +102,7 @@ const COMPAT_SUFFIXES = [
 function normalizeCompatPath(pathname: string, logger?: Logger): string {
   // Strip /openai/ prefix (Groq/OpenAI-compat alias)
   if (pathname.startsWith("/openai/")) {
-    pathname = pathname.slice(7);
+    pathname = pathname.slice("/openai".length);
   }
 
   // Normalize arbitrary prefixes to /v1/
@@ -157,9 +157,23 @@ function setCorsHeaders(res: http.ServerResponse): void {
   }
 }
 
-async function readBody(req: http.IncomingMessage): Promise<string> {
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+async function readBody(
+  req: http.IncomingMessage,
+  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
+): Promise<string> {
   const buffers: Buffer[] = [];
-  for await (const chunk of req) buffers.push(chunk as Buffer);
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    totalBytes += buf.length;
+    if (totalBytes > maxBytes) {
+      req.destroy();
+      throw new Error(`Request body exceeded size limit of ${maxBytes} bytes`);
+    }
+    buffers.push(buf);
+  }
   return Buffer.concat(buffers).toString();
 }
 
@@ -193,6 +207,7 @@ async function handleControlAPI(
   fixtures: Fixture[],
   journal: Journal,
   videoStates: VideoStateMap,
+  defaults: HandlerDefaults,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
 
@@ -218,18 +233,22 @@ async function handleControlAPI(
     let raw: string;
     try {
       raw = await readBody(req);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/fixtures: failed to read body: ${msg}`);
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      res.end(JSON.stringify({ error: `Failed to read request body: ${msg}` }));
       return true;
     }
 
     let parsed: { fixtures?: FixtureFileEntry[] };
     try {
       parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[] };
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/fixtures: invalid JSON: ${msg}`);
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      res.end(JSON.stringify({ error: `Invalid JSON: ${msg}` }));
       return true;
     }
 
@@ -249,6 +268,9 @@ async function handleControlAPI(
     }
 
     fixtures.push(...converted);
+    if (defaults.registry) {
+      defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ added: converted.length }));
     return true;
@@ -257,6 +279,9 @@ async function handleControlAPI(
   // DELETE /__aimock/fixtures — clear all fixtures
   if (subPath === "/fixtures" && req.method === "DELETE") {
     fixtures.length = 0;
+    if (defaults.registry) {
+      defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ cleared: true }));
     return true;
@@ -267,6 +292,9 @@ async function handleControlAPI(
     fixtures.length = 0;
     journal.clear();
     videoStates.clear();
+    if (defaults.registry) {
+      defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -277,18 +305,22 @@ async function handleControlAPI(
     let raw: string;
     try {
       raw = await readBody(req);
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/error: failed to read body: ${msg}`);
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to read request body" }));
+      res.end(JSON.stringify({ error: `Failed to read request body: ${msg}` }));
       return true;
     }
 
     let parsed: { status?: number; body?: { message?: string; type?: string; code?: string } };
     try {
       parsed = JSON.parse(raw) as typeof parsed;
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      defaults.logger.error(`POST /__aimock/error: invalid JSON: ${msg}`);
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      res.end(JSON.stringify({ error: `Invalid JSON: ${msg}` }));
       return true;
     }
 
@@ -307,15 +339,14 @@ async function handleControlAPI(
     };
     // Insert at front so it matches before everything else
     fixtures.unshift(errorFixture);
-    // Remove after first match
+    // Remove synchronously on first match to prevent race conditions where
+    // two concurrent requests both match before the removal fires.
     const original = errorFixture.match.predicate!;
     errorFixture.match.predicate = (req) => {
       const result = original(req);
       if (result) {
-        queueMicrotask(() => {
-          const idx = fixtures.indexOf(errorFixture);
-          if (idx !== -1) fixtures.splice(idx, 1);
-        });
+        const idx = fixtures.indexOf(errorFixture);
+        if (idx !== -1) fixtures.splice(idx, 1);
       }
       return result;
     };
@@ -794,7 +825,7 @@ export async function createServer(
 
     // Control API — must be checked before mounts and path rewrites
     if (pathname.startsWith(CONTROL_PREFIX)) {
-      await handleControlAPI(req, res, pathname, fixtures, journal, videoStates);
+      await handleControlAPI(req, res, pathname, fixtures, journal, videoStates, defaults);
       return;
     }
 
@@ -926,204 +957,208 @@ export async function createServer(
 
     // POST /v1/responses — OpenAI Responses API
     if (pathname === RESPONSES_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleResponses(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            try {
-              res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch (writeErr) {
-              logger.debug("Failed to write error recovery response:", writeErr);
-            }
-            res.end();
+      try {
+        const raw = await readBody(req);
+        await handleResponses(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          try {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+          } catch (writeErr) {
+            logger.debug("Failed to write error recovery response:", writeErr);
           }
-        });
+          res.end();
+        }
+      }
       return;
     }
 
     // POST /v1/messages — Anthropic Claude Messages API
     if (pathname === MESSAGES_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleMessages(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            try {
-              res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch (writeErr) {
-              logger.debug("Failed to write error recovery response:", writeErr);
-            }
-            res.end();
+      try {
+        const raw = await readBody(req);
+        await handleMessages(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          try {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+          } catch (writeErr) {
+            logger.debug("Failed to write error recovery response:", writeErr);
           }
-        });
+          res.end();
+        }
+      }
       return;
     }
 
     // POST /v2/chat — Cohere v2 Chat API
     if (pathname === COHERE_CHAT_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleCohere(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            try {
-              res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch (writeErr) {
-              logger.debug("Failed to write error recovery response:", writeErr);
-            }
-            res.end();
+      try {
+        const raw = await readBody(req);
+        await handleCohere(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          try {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+          } catch (writeErr) {
+            logger.debug("Failed to write error recovery response:", writeErr);
           }
-        });
+          res.end();
+        }
+      }
       return;
     }
 
     // POST /v1/embeddings — OpenAI Embeddings API
     if (pathname === EMBEDDINGS_PATH && req.method === "POST") {
-      const deploymentId = azureDeploymentId;
-      readBody(req)
-        .then((raw) => {
-          // Azure deployments may omit model from body — use deployment ID as fallback
-          if (deploymentId) {
-            try {
-              const parsed = JSON.parse(raw) as Record<string, unknown>;
-              if (!parsed.model) {
-                parsed.model = deploymentId;
-                return handleEmbeddings(
-                  req,
-                  res,
-                  JSON.stringify(parsed),
-                  fixtures,
-                  journal,
-                  defaults,
-                  setCorsHeaders,
-                );
-              }
-            } catch {
-              // Fall through — let handleEmbeddings report the parse error
+      try {
+        const deploymentId = azureDeploymentId;
+        const embeddingsProvider: RecordProviderKey = azureDeploymentId ? "azure" : "openai";
+        let raw = await readBody(req);
+        // Azure deployments may omit model from body — use deployment ID as fallback
+        if (deploymentId) {
+          try {
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            if (!parsed.model) {
+              parsed.model = deploymentId;
+              raw = JSON.stringify(parsed);
             }
+          } catch {
+            // Fall through — let handleEmbeddings report the parse error
           }
-          return handleEmbeddings(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+        }
+        await handleEmbeddings(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          embeddingsProvider,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v1/images/generations — OpenAI Image Generation API
     if (pathname === IMAGES_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleImages(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleImages(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v1/audio/speech — OpenAI TTS API
     if (pathname === SPEECH_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleSpeech(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleSpeech(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v1/audio/transcriptions — OpenAI Transcription API
     if (pathname === TRANSCRIPTIONS_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleTranscription(req, res, raw, fixtures, journal, defaults, setCorsHeaders),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleTranscription(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v1/videos — Video Generation API
     if (pathname === VIDEOS_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleVideoCreate(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleVideoCreate(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          videoStates,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-            videoStates,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1139,32 +1174,31 @@ export async function createServer(
     const geminiPredictMatch = pathname.match(GEMINI_PREDICT_RE);
     if (geminiPredictMatch && req.method === "POST") {
       const predictModel = geminiPredictMatch[1];
-      readBody(req)
-        .then((raw) =>
-          handleImages(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleImages(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          "gemini",
+          predictModel,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-            "gemini",
-            predictModel,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1173,37 +1207,36 @@ export async function createServer(
     if (geminiMatch && req.method === "POST") {
       const geminiModel = geminiMatch[1];
       const streaming = geminiMatch[2] === "streamGenerateContent";
-      readBody(req)
-        .then((raw) =>
-          handleGemini(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleGemini(
+          req,
+          res,
+          raw,
+          geminiModel,
+          streaming,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            geminiModel,
-            streaming,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            try {
-              res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch (writeErr) {
-              logger.debug("Failed to write error recovery response:", writeErr);
-            }
-            res.end();
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          try {
+            res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+          } catch (writeErr) {
+            logger.debug("Failed to write error recovery response:", writeErr);
           }
-        });
+          res.end();
+        }
+      }
       return;
     }
 
@@ -1212,38 +1245,37 @@ export async function createServer(
     if (vertexMatch && req.method === "POST") {
       const vertexModel = vertexMatch[1];
       const streaming = vertexMatch[2] === "streamGenerateContent";
-      readBody(req)
-        .then((raw) =>
-          handleGemini(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleGemini(
+          req,
+          res,
+          raw,
+          vertexModel,
+          streaming,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          "vertexai",
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            vertexModel,
-            streaming,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-            "vertexai",
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            try {
-              res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
-            } catch (writeErr) {
-              logger.debug("Failed to write error recovery response:", writeErr);
-            }
-            res.end();
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          try {
+            res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+          } catch (writeErr) {
+            logger.debug("Failed to write error recovery response:", writeErr);
           }
-        });
+          res.end();
+        }
+      }
       return;
     }
 
@@ -1251,22 +1283,30 @@ export async function createServer(
     const bedrockMatch = pathname.match(BEDROCK_INVOKE_RE);
     if (bedrockMatch && req.method === "POST") {
       const bedrockModelId = bedrockMatch[1];
-      readBody(req)
-        .then((raw) =>
-          handleBedrock(req, res, raw, bedrockModelId, fixtures, journal, defaults, setCorsHeaders),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleBedrock(
+          req,
+          res,
+          raw,
+          bedrockModelId,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1274,31 +1314,30 @@ export async function createServer(
     const bedrockStreamMatch = pathname.match(BEDROCK_STREAM_RE);
     if (bedrockStreamMatch && req.method === "POST") {
       const bedrockModelId = bedrockStreamMatch[1];
-      readBody(req)
-        .then((raw) =>
-          handleBedrockStream(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleBedrockStream(
+          req,
+          res,
+          raw,
+          bedrockModelId,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            bedrockModelId,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1306,31 +1345,30 @@ export async function createServer(
     const converseMatch = pathname.match(BEDROCK_CONVERSE_RE);
     if (converseMatch && req.method === "POST") {
       const converseModelId = converseMatch[1];
-      readBody(req)
-        .then((raw) =>
-          handleConverse(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleConverse(
+          req,
+          res,
+          raw,
+          converseModelId,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            converseModelId,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1338,71 +1376,70 @@ export async function createServer(
     const converseStreamMatch = pathname.match(BEDROCK_CONVERSE_STREAM_RE);
     if (converseStreamMatch && req.method === "POST") {
       const converseStreamModelId = converseStreamMatch[1];
-      readBody(req)
-        .then((raw) =>
-          handleConverseStream(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleConverseStream(
+          req,
+          res,
+          raw,
+          converseStreamModelId,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            converseStreamModelId,
-            fixtures,
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /api/chat — Ollama Chat API
     if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) => handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders))
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /api/generate — Ollama Generate API
     if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+      try {
+        const raw = await readBody(req);
+        await handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1431,88 +1468,85 @@ export async function createServer(
 
     // POST /search — Web Search API (Tavily-compatible)
     if (pathname === SEARCH_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleSearch(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleSearch(
+          req,
+          res,
+          raw,
+          serviceFixtures?.search ?? [],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            serviceFixtures?.search ?? [],
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v2/rerank — Reranking API (Cohere rerank-compatible)
     if (pathname === RERANK_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleRerank(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleRerank(
+          req,
+          res,
+          raw,
+          serviceFixtures?.rerank ?? [],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            serviceFixtures?.rerank ?? [],
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
     // POST /v1/moderations — Moderation API (OpenAI-compatible)
     if (pathname === MODERATIONS_PATH && req.method === "POST") {
-      readBody(req)
-        .then((raw) =>
-          handleModeration(
-            req,
+      try {
+        const raw = await readBody(req);
+        await handleModeration(
+          req,
+          res,
+          raw,
+          serviceFixtures?.moderation ?? [],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
             res,
-            raw,
-            serviceFixtures?.moderation ?? [],
-            journal,
-            defaults,
-            setCorsHeaders,
-          ),
-        )
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          if (!res.headersSent) {
-            writeErrorResponse(
-              res,
-              500,
-              JSON.stringify({ error: { message: msg, type: "server_error" } }),
-            );
-          } else if (!res.writableEnded) {
-            res.destroy();
-          }
-        });
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -1527,15 +1561,17 @@ export async function createServer(
     }
 
     const completionsProvider: RecordProviderKey = azureDeploymentId ? "azure" : "openai";
-    handleCompletions(
-      req,
-      res,
-      fixtures,
-      journal,
-      defaults,
-      azureDeploymentId,
-      completionsProvider,
-    ).catch((err: unknown) => {
+    try {
+      await handleCompletions(
+        req,
+        res,
+        fixtures,
+        journal,
+        defaults,
+        azureDeploymentId,
+        completionsProvider,
+      );
+    } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Internal error";
       if (!res.headersSent) {
         writeErrorResponse(
@@ -1559,7 +1595,7 @@ export async function createServer(
         }
         res.end();
       }
-    });
+    }
   }
 
   // ─── WebSocket upgrade handling ──────────────────────────────────────────
