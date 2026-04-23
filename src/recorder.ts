@@ -116,12 +116,17 @@ export async function proxyAndRecord(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
-    res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
-      }),
-    );
+    if (!res.headersSent) {
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
+        }),
+      );
+    } else {
+      // SSE headers already sent — gracefully close the connection
+      res.end();
+    }
     return true;
   }
 
@@ -166,11 +171,11 @@ export async function proxyAndRecord(
     }
     if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
       if (collapsed.content) {
-        defaults.logger.warn(
-          "Collapsed response has both content and toolCalls — preferring toolCalls",
-        );
+        // Both content and toolCalls present — save as ContentWithToolCallsResponse
+        fixtureResponse = { content: collapsed.content, toolCalls: collapsed.toolCalls };
+      } else {
+        fixtureResponse = { toolCalls: collapsed.toolCalls };
       }
-      fixtureResponse = { toolCalls: collapsed.toolCalls };
     } else {
       fixtureResponse = { content: collapsed.content ?? "" };
     }
@@ -186,10 +191,17 @@ export async function proxyAndRecord(
     let encodingFormat: string | undefined;
     try {
       encodingFormat = rawBody ? JSON.parse(rawBody).encoding_format : undefined;
-    } catch {
-      /* not JSON */
+    } catch (err) {
+      defaults.logger.debug(
+        `Could not parse encoding_format from raw body: ${err instanceof Error ? err.message : "unknown error"}`,
+      );
     }
-    fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
+    fixtureResponse = buildFixtureResponse(
+      parsedResponse,
+      upstreamStatus,
+      encodingFormat,
+      defaults.logger,
+    );
   }
 
   // Build the match criteria from the (optionally transformed) request
@@ -238,7 +250,11 @@ export async function proxyAndRecord(
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown filesystem error";
       defaults.logger.error(`Failed to save fixture to disk: ${msg}`);
-      res.setHeader("X-LLMock-Record-Error", msg);
+      if (!res.headersSent) {
+        res.setHeader("X-LLMock-Record-Error", msg);
+      } else {
+        defaults.logger.warn(`Cannot set X-LLMock-Record-Error header — headers already sent`);
+      }
     }
 
     if (writtenToDisk) {
@@ -263,7 +279,8 @@ export async function proxyAndRecord(
       relayHeaders["Content-Type"] = ctString;
     }
     res.writeHead(upstreamStatus, relayHeaders);
-    res.end(isBinaryStream ? rawBuffer : upstreamBody);
+    const isAudioRelay = ctString.toLowerCase().startsWith("audio/");
+    res.end(isBinaryStream || isAudioRelay ? rawBuffer : upstreamBody);
   }
 
   return true;
@@ -312,6 +329,7 @@ function makeUpstreamRequest(
         const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
         const isSSE = ctStr.toLowerCase().includes("text/event-stream");
         let streamedToClient = false;
+        let clientDisconnected = false;
         if (isSSE && clientRes && !clientRes.headersSent) {
           const relayHeaders: Record<string, string> = {};
           if (ctStr) relayHeaders["Content-Type"] = ctStr;
@@ -320,16 +338,37 @@ function makeUpstreamRequest(
           // before the first data chunk arrives.
           if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
           streamedToClient = true;
+          // Stop relaying if the client disconnects mid-stream
+          clientRes.on("close", () => {
+            clientDisconnected = true;
+            req.destroy();
+          });
         }
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
           chunks.push(chunk);
-          if (streamedToClient) clientRes!.write(chunk);
+          if (
+            streamedToClient &&
+            clientRes &&
+            !clientDisconnected &&
+            !clientRes.destroyed &&
+            !clientRes.writableEnded
+          ) {
+            clientRes.write(chunk);
+          }
         });
         res.on("error", reject);
         res.on("end", () => {
           const rawBuffer = Buffer.concat(chunks);
-          if (streamedToClient) clientRes!.end();
+          if (
+            streamedToClient &&
+            clientRes &&
+            !clientDisconnected &&
+            !clientRes.destroyed &&
+            !clientRes.writableEnded
+          ) {
+            clientRes.end();
+          }
           resolve({
             status: res.statusCode ?? 500,
             headers: res.headers,
@@ -361,6 +400,7 @@ function buildFixtureResponse(
   parsed: unknown,
   status: number,
   encodingFormat?: string,
+  logger?: Logger,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -396,8 +436,12 @@ function buildFixtureResponse(
         const buf = Buffer.from(first.embedding, "base64");
         const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
         return { embedding: Array.from(floats) };
-      } catch {
-        // Corrupted base64 or non-float32 data — fall through to error
+      } catch (err) {
+        // Corrupted base64 or non-float32 data — may be caused by
+        // Buffer pool byte-offset misalignment with Float32Array.
+        logger?.warn(
+          `Failed to decode base64 embedding (possible byte-alignment issue): ${err instanceof Error ? err.message : "unknown error"}`,
+        );
       }
     }
     // OpenAI image generation: { created, data: [{ url, b64_json, revised_prompt }] }
@@ -475,8 +519,10 @@ function buildFixtureResponse(
     const choice = obj.choices[0] as Record<string, unknown>;
     const message = choice.message as Record<string, unknown> | undefined;
     if (message) {
-      // Tool calls
-      if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+      const hasContent = typeof message.content === "string" && message.content.length > 0;
+
+      if (hasToolCalls) {
         const toolCalls: ToolCall[] = (message.tool_calls as Array<Record<string, unknown>>).map(
           (tc) => {
             const fn = tc.function as Record<string, unknown>;
@@ -486,11 +532,14 @@ function buildFixtureResponse(
             };
           },
         );
+        if (hasContent) {
+          return { content: message.content as string, toolCalls };
+        }
         return { toolCalls };
       }
-      // Text content
-      if (typeof message.content === "string") {
-        return { content: message.content };
+      // Text content only
+      if (hasContent) {
+        return { content: message.content as string };
       }
     }
   }
@@ -498,19 +547,23 @@ function buildFixtureResponse(
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
   if (Array.isArray(obj.content) && obj.content.length > 0) {
     const blocks = obj.content as Array<Record<string, unknown>>;
-    // Check for tool_use blocks first
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
-    if (toolUseBlocks.length > 0) {
+    const textBlock = blocks.find((b) => b.type === "text");
+    const hasToolCalls = toolUseBlocks.length > 0;
+    const hasContent = textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+
+    if (hasToolCalls) {
       const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
         name: String(b.name),
         arguments: typeof b.input === "string" ? b.input : JSON.stringify(b.input),
       }));
+      if (hasContent) {
+        return { content: textBlock.text as string, toolCalls };
+      }
       return { toolCalls };
     }
-    // Text blocks
-    const textBlock = blocks.find((b) => b.type === "text");
-    if (textBlock && typeof textBlock.text === "string") {
-      return { content: textBlock.text };
+    if (hasContent) {
+      return { content: textBlock.text as string };
     }
   }
 
@@ -520,9 +573,12 @@ function buildFixtureResponse(
     const content = candidate.content as Record<string, unknown> | undefined;
     if (content && Array.isArray(content.parts)) {
       const parts = content.parts as Array<Record<string, unknown>>;
-      // Tool calls (functionCall)
       const fnCallParts = parts.filter((p) => p.functionCall);
-      if (fnCallParts.length > 0) {
+      const textPart = parts.find((p) => typeof p.text === "string");
+      const hasToolCalls = fnCallParts.length > 0;
+      const hasContent = textPart && typeof textPart.text === "string" && textPart.text.length > 0;
+
+      if (hasToolCalls) {
         const toolCalls: ToolCall[] = fnCallParts.map((p) => {
           const fc = p.functionCall as Record<string, unknown>;
           return {
@@ -530,12 +586,13 @@ function buildFixtureResponse(
             arguments: typeof fc.args === "string" ? fc.args : JSON.stringify(fc.args),
           };
         });
+        if (hasContent) {
+          return { content: textPart.text as string, toolCalls };
+        }
         return { toolCalls };
       }
-      // Text
-      const textPart = parts.find((p) => typeof p.text === "string");
-      if (textPart && typeof textPart.text === "string") {
-        return { content: textPart.text };
+      if (hasContent) {
+        return { content: textPart.text as string };
       }
     }
   }
@@ -547,7 +604,12 @@ function buildFixtureResponse(
     if (msg && Array.isArray(msg.content)) {
       const blocks = msg.content as Array<Record<string, unknown>>;
       const toolUseBlocks = blocks.filter((b) => b.toolUse);
-      if (toolUseBlocks.length > 0) {
+      const textBlock = blocks.find((b) => typeof b.text === "string");
+      const hasToolCalls = toolUseBlocks.length > 0;
+      const hasContent =
+        textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0;
+
+      if (hasToolCalls) {
         const toolCalls: ToolCall[] = toolUseBlocks.map((b) => {
           const tu = b.toolUse as Record<string, unknown>;
           return {
@@ -555,11 +617,13 @@ function buildFixtureResponse(
             arguments: typeof tu.input === "string" ? tu.input : JSON.stringify(tu.input),
           };
         });
+        if (hasContent) {
+          return { content: textBlock.text as string, toolCalls };
+        }
         return { toolCalls };
       }
-      const textBlock = blocks.find((b) => typeof b.text === "string");
-      if (textBlock && typeof textBlock.text === "string") {
-        return { content: textBlock.text };
+      if (hasContent) {
+        return { content: textBlock.text as string };
       }
     }
   }
@@ -567,8 +631,10 @@ function buildFixtureResponse(
   // Ollama: { message: { content: "...", tool_calls: [...] } }
   if (obj.message && typeof obj.message === "object") {
     const msg = obj.message as Record<string, unknown>;
-    // Tool calls (check before content — Ollama sends content: "" alongside tool_calls)
-    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+    const hasOllamaToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+    const hasOllamaContent = typeof msg.content === "string" && msg.content.length > 0;
+
+    if (hasOllamaToolCalls) {
       const toolCalls: ToolCall[] = (msg.tool_calls as Array<Record<string, unknown>>)
         .filter((tc) => tc.function != null)
         .map((tc) => {
@@ -579,10 +645,13 @@ function buildFixtureResponse(
               typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments),
           };
         });
+      if (hasOllamaContent) {
+        return { content: msg.content as string, toolCalls };
+      }
       return { toolCalls };
     }
-    if (typeof msg.content === "string" && msg.content.length > 0) {
-      return { content: msg.content };
+    if (hasOllamaContent) {
+      return { content: msg.content as string };
     }
     // Ollama message with content array (like Cohere)
     if (Array.isArray(msg.content) && msg.content.length > 0) {
