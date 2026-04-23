@@ -483,6 +483,20 @@ async function handleCompletions(
                 );
                 return true;
               },
+              // SSE can't be mutated post-facto (bytes already on the wire).
+              // Record the bypass so the rolled action isn't invisible in
+              // logs / Prometheus — otherwise malformedRate: 1.0 on SSE
+              // traffic silently means 0%.
+              onHookBypassed: (reason: "sse_streamed") => {
+                defaults.logger.warn(
+                  `[chaos] malformed bypassed on proxy: upstream returned SSE (${reason})`,
+                );
+                defaults.registry?.incrementCounter("aimock_chaos_bypassed_total", {
+                  action: "malformed",
+                  source: "proxy",
+                  reason,
+                });
+              },
             }
           : undefined;
 
