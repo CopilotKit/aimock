@@ -306,6 +306,7 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;
+    source?: string;
   };
 }
 

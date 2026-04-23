@@ -20,6 +20,7 @@ import {
   generateToolUseId,
   isTextResponse,
   isToolCallResponse,
+  isContentWithToolCallsResponse,
   isErrorResponse,
   flattenHeaders,
   getTestId,
@@ -32,7 +33,11 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
-import { buildBedrockStreamTextEvents, buildBedrockStreamToolCallEvents } from "./bedrock.js";
+import {
+  buildBedrockStreamTextEvents,
+  buildBedrockStreamToolCallEvents,
+  buildBedrockStreamContentWithToolCallsEvents,
+} from "./bedrock.js";
 
 // ─── Converse request types ─────────────────────────────────────────────────
 
@@ -208,6 +213,50 @@ function buildConverseToolCallResponse(toolCalls: ToolCall[], logger: Logger): o
   };
 }
 
+function buildConverseContentWithToolCallsResponse(
+  content: string,
+  toolCalls: ToolCall[],
+  logger: Logger,
+  reasoning?: string,
+): object {
+  const contentBlocks: object[] = [];
+  if (reasoning) {
+    contentBlocks.push({
+      reasoningContent: { reasoningText: { text: reasoning } },
+    });
+  }
+  contentBlocks.push({ text: content });
+  for (const tc of toolCalls) {
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    contentBlocks.push({
+      toolUse: {
+        toolUseId: tc.id || generateToolUseId(),
+        name: tc.name,
+        input: argsObj,
+      },
+    });
+  }
+
+  return {
+    output: {
+      message: {
+        role: "assistant",
+        content: contentBlocks,
+      },
+    },
+    stopReason: "tool_use",
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
+
 // ─── Request handlers ───────────────────────────────────────────────────────
 
 export async function handleConverse(
@@ -322,7 +371,7 @@ export async function handleConverse(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
@@ -367,6 +416,26 @@ export async function handleConverse(
       response: { status, fixture },
     });
     writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Content + tool calls response
+  if (isContentWithToolCallsResponse(response)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const body = buildConverseContentWithToolCallsResponse(
+      response.content,
+      response.toolCalls,
+      logger,
+      response.reasoning,
+    );
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
     return;
   }
 
@@ -532,7 +601,7 @@ export async function handleConverseStream(
           path: urlPath,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
@@ -579,6 +648,38 @@ export async function handleConverseStream(
       response: { status, fixture },
     });
     writeErrorResponse(res, status, JSON.stringify(response));
+    return;
+  }
+
+  // Content + tool calls response — stream as Event Stream
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const events = buildBedrockStreamContentWithToolCallsEvents(
+      response.content,
+      response.toolCalls,
+      chunkSize,
+      logger,
+      response.reasoning,
+    );
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await writeEventStream(res, events, {
+      latency,
+      streamingProfile: fixture.streamingProfile,
+      signal: interruption?.signal,
+      onChunkSent: interruption?.tick,
+    });
+    if (!completed) {
+      if (!res.writableEnded) res.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
     return;
   }
 
