@@ -131,7 +131,7 @@ interface ChaosJournalContext {
   method: string;
   path: string;
   headers: Record<string, string>;
-  body: ChatCompletionRequest;
+  body: ChatCompletionRequest | null;
 }
 
 /**

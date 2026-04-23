@@ -1196,7 +1196,7 @@ export async function createServer(
     const videoStatusMatch = pathname.match(VIDEOS_STATUS_RE);
     if (videoStatusMatch && req.method === "GET") {
       const videoId = videoStatusMatch[1];
-      handleVideoStatus(req, res, videoId, journal, setCorsHeaders, videoStates);
+      handleVideoStatus(req, res, videoId, journal, defaults, setCorsHeaders, videoStates);
       return;
     }
 

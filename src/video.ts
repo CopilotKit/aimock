@@ -191,12 +191,28 @@ export function handleVideoStatus(
   res: http.ServerResponse,
   videoId: string,
   journal: Journal,
+  defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
   videoStates: VideoStateMap,
 ): void {
   setCorsHeaders(res);
   const path = req.url ?? `/v1/videos/${videoId}`;
   const method = req.method ?? "GET";
+
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: null },
+      "fixture",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   const testId = getTestId(req);
   const stateKey = `${testId}:${videoId}`;
