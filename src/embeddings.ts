@@ -77,6 +77,28 @@ export async function handleEmbeddings(
     return;
   }
 
+  // Validate required input parameter
+  if (embeddingReq.input === undefined || embeddingReq.input === null) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/embeddings",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Missing required parameter: 'input'",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
   // Normalize input to array of strings
   const inputs: string[] = Array.isArray(embeddingReq.input)
     ? embeddingReq.input

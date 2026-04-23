@@ -303,11 +303,13 @@ describe("OpenAI-compatible path prefix normalization", () => {
       stream: false,
     });
 
-    // Normalization works: we get "No fixture matched" from the Responses handler
-    // (not "Not found" which would mean the path wasn't routed at all)
+    // Normalization works: the Responses handler receives the request,
+    // correctly parses the string input, matches the fixture, and returns
+    // a valid Responses API envelope.
     const parsed = JSON.parse(body);
-    expect(parsed.error.type).toBe("invalid_request_error");
-    expect(parsed.error.code).toBe("no_fixture_match");
+    expect(parsed.object).toBe("response");
+    expect(parsed.output).toBeDefined();
+    expect(parsed.output.length).toBeGreaterThan(0);
   });
 
   it("normalizes /custom/audio/speech to /v1/audio/speech", async () => {

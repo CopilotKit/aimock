@@ -55,7 +55,7 @@ interface ResponsesContentPart {
 
 interface ResponsesRequest {
   model: string;
-  input: ResponsesInputItem[];
+  input: string | ResponsesInputItem[];
   instructions?: string;
   tools?: ResponsesToolDef[];
   tool_choice?: string | object;
@@ -92,6 +92,13 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
     messages.push({ role: "system", content: req.instructions });
   }
 
+  // The OpenAI Responses API accepts either a plain string or an array of input items.
+  // When a string is passed, treat it as a single user message.
+  if (typeof req.input === "string") {
+    messages.push({ role: "user", content: req.input });
+    return messages;
+  }
+
   for (const item of req.input) {
     if (item.role === "system" || item.role === "developer") {
       messages.push({ role: "system", content: extractTextContent(item.content) });
@@ -118,8 +125,11 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
         content: item.output ?? "",
         tool_call_id: item.call_id,
       });
+    } else {
+      // Skip item_reference, local_shell_call, mcp_list_tools, etc. — not needed
+      // for fixture matching. Logging is not threaded into this pure conversion
+      // function; callers can inspect the returned messages if needed.
     }
-    // Skip item_reference, local_shell_call, etc. — not needed for fixture matching
   }
 
   return messages;
