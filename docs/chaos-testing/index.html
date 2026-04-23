@@ -69,7 +69,10 @@
               <td>HTTP 500</td>
               <td>
                 Returns a 500 error with
-                <code>{"error":{"message":"Chaos: request dropped","code":"chaos_drop"}}</code>
+                <code
+                  >{"error":{"message":"Chaos: request
+                  dropped","type":"server_error","code":"chaos_drop"}}</code
+                >
               </td>
             </tr>
             <tr>
@@ -204,7 +207,7 @@
     <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
     <span class="str">"x-aimock-chaos-disconnect"</span>: <span class="str">"1.0"</span>,
   },
-  <span class="prop">body</span>: <span class="fn">JSON.stringify</span>({ <span class="prop">model</span>: <span class="str">"gpt-4"</span>, <span class="prop">messages</span>: [...] }),
+  <span class="prop">body</span>: <span class="fn">JSON.stringify</span>({ <span class="prop">model</span>: <span class="str">"gpt-4"</span>, <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"hello"</span> }] }),
 });</code></pre>
         </div>
 
@@ -217,7 +220,7 @@
               <div class="code-block-header">
                 CLI chaos flags <span class="lang-tag">shell</span>
               </div>
-              <pre><code>$ npx -p @copilotkit/aimock llmock --fixtures ./fixtures \
+              <pre><code>$ npx -p @copilotkit/aimock aimock --fixtures ./fixtures \
   --chaos-drop 0.1 \
   --chaos-malformed 0.05 \
   --chaos-disconnect 0.02</code></pre>
@@ -239,6 +242,55 @@
           </div>
         </div>
 
+        <h2>Proxy Mode</h2>
+        <p>
+          When aimock is configured as a record/replay proxy (<code>--record</code>), chaos applies
+          to proxied requests too &mdash; so a staging environment pointed at real upstream APIs
+          still sees the failure modes your tests expect. Chaos is rolled <em>once per request</em>,
+          after fixture matching, with the same headers&nbsp;&gt;&nbsp;fixture&nbsp;&gt;&nbsp;server
+          precedence.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th>When upstream is contacted</th>
+              <th>What the client sees</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>drop</code></td>
+              <td>Never &mdash; upstream not contacted</td>
+              <td>HTTP 500 chaos body; upstream is not called</td>
+            </tr>
+            <tr>
+              <td><code>disconnect</code></td>
+              <td>Never &mdash; upstream not contacted</td>
+              <td>Connection destroyed; upstream is not called</td>
+            </tr>
+            <tr>
+              <td><code>malformed</code></td>
+              <td>Called &mdash; post-response</td>
+              <td>
+                Request proxies normally; the upstream response is captured, then the body is
+                replaced with invalid JSON before relay. The recorded fixture (if recording) keeps
+                the real upstream response &mdash; chaos is a live-traffic decoration, not a fixture
+                mutation.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <strong>SSE bypass.</strong> If upstream returns
+          <code>Content-Type: text/event-stream</code>, aimock streams chunks to the client
+          progressively. By the time <code>malformed</code> would fire, the bytes are already on the
+          wire &mdash; the chaos action cannot be applied. This bypass is observable via the
+          <code>aimock_chaos_bypassed_total</code> counter (see Prometheus Metrics below) and a
+          warning in the server log, so a configured chaos rate doesn't silently drop to 0% on SSE
+          traffic. Streaming mutation is planned for a future phase.
+        </p>
+
         <h2>Journal Tracking</h2>
         <p>
           When chaos triggers, the journal entry includes a <code>chaosAction</code> field recording
@@ -254,6 +306,7 @@
   "path": "/v1/chat/completions",
   "response": {
     "status": 500,
+    "source": "fixture",
     "fixture": { "...": "elided for brevity" },
     "chaosAction": "drop"
   }
@@ -268,15 +321,31 @@
         <h2>Prometheus Metrics</h2>
         <p>
           When metrics are enabled (<code>--metrics</code>), each chaos trigger increments the
-          <code>aimock_chaos_triggered_total</code> counter with an <code>action</code> label:
+          <code>aimock_chaos_triggered_total</code> counter, tagged with <code>action</code> and
+          <code>source</code>. <code>source="fixture"</code> means a fixture matched (or would have,
+          before chaos intervened); <code>source="proxy"</code> means the request was on the proxy
+          dispatch path.
         </p>
 
         <div class="code-block">
           <div class="code-block-header">Metrics output <span class="lang-tag">text</span></div>
           <pre><code># TYPE aimock_chaos_triggered_total counter
-aimock_chaos_triggered_total{action="drop"} 3
-aimock_chaos_triggered_total{action="malformed"} 1
-aimock_chaos_triggered_total{action="disconnect"} 2</code></pre>
+aimock_chaos_triggered_total{action="drop",source="fixture"} 3
+aimock_chaos_triggered_total{action="malformed",source="fixture"} 1
+aimock_chaos_triggered_total{action="disconnect",source="proxy"} 2</code></pre>
+        </div>
+
+        <p>
+          When a chaos action is rolled but can't be applied &mdash; today, only
+          <code>malformed</code> on an SSE proxy response &mdash; the bypass is recorded in a
+          separate counter so operators can distinguish "chaos didn't roll" from "chaos rolled but
+          was bypassed":
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">Bypass counter <span class="lang-tag">text</span></div>
+          <pre><code># TYPE aimock_chaos_bypassed_total counter
+aimock_chaos_bypassed_total{action="malformed",source="proxy",reason="sse_streamed"} 4</code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
