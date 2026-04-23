@@ -1557,3 +1557,294 @@ describe("POST /model/{modelId}/invoke (strict mode)", () => {
     expect(body.content[0].text).toBe("Hi there!");
   });
 });
+
+// ─── Bedrock ResponseOverrides ─────────────────────────────────────────────
+
+describe("Bedrock ResponseOverrides", () => {
+  it("applies id/model/finishReason overrides on invoke text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov" },
+        response: {
+          content: "Overridden.",
+          id: "msg-custom-123",
+          model: "custom-model",
+          finishReason: "length",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "ov" }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.id).toBe("msg-custom-123");
+    expect(body.model).toBe("custom-model");
+    expect(body.stop_reason).toBe("max_tokens");
+  });
+
+  it("applies usage overrides on invoke text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-usage" },
+        response: {
+          content: "Usage test.",
+          usage: { input_tokens: 15, output_tokens: 25 },
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "ov-usage" }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.usage.input_tokens).toBe(15);
+    expect(body.usage.output_tokens).toBe(25);
+  });
+
+  it("applies overrides on invoke tool call response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-tool" },
+        response: {
+          toolCalls: [{ name: "fn", arguments: '{"x":1}' }],
+          id: "tc-ov-id",
+          finishReason: "stop",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "ov-tool" }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.id).toBe("tc-ov-id");
+    expect(body.stop_reason).toBe("end_turn");
+  });
+
+  it("applies overrides on invoke content+toolCalls response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-cwtc" },
+        response: {
+          content: "Here is the result.",
+          toolCalls: [{ name: "fn", arguments: '{"a":1}' }],
+          id: "cwtc-ov-id",
+          finishReason: "tool_calls",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "ov-cwtc" }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.id).toBe("cwtc-ov-id");
+    expect(body.stop_reason).toBe("tool_use");
+  });
+});
+
+// ─── Bedrock webSearches warning ───────────────────────────────────────────
+
+describe("Bedrock webSearches warning", () => {
+  it("logs warning for text response with webSearches on invoke", async () => {
+    const warnings: string[] = [];
+    const logger = new Logger("silent");
+    logger.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+
+    const fixture: Fixture = {
+      match: { userMessage: "web" },
+      response: { content: "Result.", webSearches: [{ query: "test" }] },
+    };
+    const journal = new Journal();
+    const req = {
+      method: undefined,
+      url: undefined,
+      headers: {},
+    } as unknown as http.IncomingMessage;
+    const res = {
+      _written: "",
+      writableEnded: false,
+      statusCode: 0,
+      writeHead(s: number) {
+        this.statusCode = s;
+      },
+      setHeader() {},
+      write(d: string) {
+        this._written += d;
+        return true;
+      },
+      end(d?: string) {
+        if (d) this._written += d;
+        this.writableEnded = true;
+      },
+      destroy() {
+        this.writableEnded = true;
+      },
+    } as unknown as http.ServerResponse;
+
+    await handleBedrock(
+      req,
+      res,
+      JSON.stringify({
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 512,
+        messages: [{ role: "user", content: "web" }],
+      }),
+      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      [fixture],
+      journal,
+      {
+        latency: 0,
+        chunkSize: 100,
+        logger,
+      } as HandlerDefaults,
+      () => {},
+    );
+
+    expect(warnings.some((w) => w.includes("webSearches") && w.includes("Bedrock"))).toBe(true);
+  });
+});
+
+// ─── Bedrock Converse ResponseOverrides ────────────────────────────────────
+
+describe("Bedrock Converse ResponseOverrides", () => {
+  it("applies finishReason override on converse text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "conv-ov" },
+        response: {
+          content: "Overridden.",
+          finishReason: "length",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "conv-ov" }] }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.stopReason).toBe("max_tokens");
+  });
+
+  it("applies usage override on converse text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "conv-usage" },
+        response: {
+          content: "Usage test.",
+          usage: { input_tokens: 5, output_tokens: 10 },
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "conv-usage" }] }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.usage.inputTokens).toBe(5);
+    expect(body.usage.outputTokens).toBe(10);
+    expect(body.usage.totalTokens).toBe(15);
+  });
+
+  it("applies overrides on converse tool call response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "conv-tool" },
+        response: {
+          toolCalls: [{ name: "fn", arguments: '{"a":1}' }],
+          finishReason: "stop",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "conv-tool" }] }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.stopReason).toBe("end_turn");
+  });
+
+  it("applies overrides on converse content+toolCalls response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "conv-cwtc" },
+        response: {
+          content: "Some text.",
+          toolCalls: [{ name: "fn", arguments: '{"a":1}' }],
+          finishReason: "tool_calls",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "conv-cwtc" }] }],
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.stopReason).toBe("tool_use");
+  });
+});
+
+// ─── Bedrock Converse webSearches warning ──────────────────────────────────
+
+describe("Bedrock Converse webSearches warning", () => {
+  it("logs warning for text response with webSearches on converse", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "conv-web" },
+        response: { content: "Result.", webSearches: [{ query: "test" }] },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "conv-web" }] }],
+      },
+    );
+    // Should still succeed — webSearches is just ignored with a warning
+    expect(res.status).toBe(200);
+  });
+});

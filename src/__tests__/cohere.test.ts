@@ -1416,3 +1416,321 @@ describe("handleCohere (direct handler call, method/url fallbacks)", () => {
     expect(entry!.response.status).toBe(500);
   });
 });
+
+// ─── Cohere reasoning support ──────────────────────────────────────────────
+
+describe("Cohere reasoning support", () => {
+  it("includes reasoning as text block in non-streaming text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "think" },
+        response: { content: "The answer is 42.", reasoning: "Let me reason step by step..." },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "think" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.message.content).toHaveLength(2);
+    expect(json.message.content[0].text).toBe("Let me reason step by step...");
+    expect(json.message.content[1].text).toBe("The answer is 42.");
+    expect(json.finish_reason).toBe("COMPLETE");
+  });
+
+  it("includes reasoning blocks in streaming text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "think-stream" },
+        response: { content: "Result.", reasoning: "Thinking..." },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "think-stream" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const events = parseSSEEvents(res.body);
+
+    // Should have content-start/delta/end for reasoning (index 0) then content (index 1)
+    const contentDeltas = events.filter((e) => e.event === "content-delta");
+    expect(contentDeltas.length).toBeGreaterThanOrEqual(2);
+    // First content delta should be the reasoning text
+    const firstDelta = contentDeltas[0].data as {
+      delta: { message: { content: { text: string } } };
+    };
+    expect(firstDelta.delta.message.content.text).toBe("Thinking...");
+  });
+
+  it("includes reasoning in content+toolCalls non-streaming response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "think-tool" },
+        response: {
+          content: "Let me check.",
+          toolCalls: [{ name: "lookup", arguments: '{"q":"test"}' }],
+          reasoning: "Need to look this up.",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "think-tool" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    // reasoning block + text block
+    expect(json.message.content.length).toBeGreaterThanOrEqual(2);
+    expect(json.message.content[0].text).toBe("Need to look this up.");
+    expect(json.message.content[1].text).toBe("Let me check.");
+    expect(json.message.tool_calls.length).toBe(1);
+    expect(json.finish_reason).toBe("TOOL_CALL");
+  });
+});
+
+// ─── Cohere webSearches warning ────────────────────────────────────────────
+
+describe("Cohere webSearches warning", () => {
+  it("logs warning when text response has webSearches", async () => {
+    const warnings: string[] = [];
+    const logger = new Logger("silent");
+    logger.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+
+    const fixture: Fixture = {
+      match: { userMessage: "web" },
+      response: { content: "Result.", webSearches: [{ query: "test" }] },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "web" }] }),
+      [fixture],
+      journal,
+      createDefaults({ logger }),
+      () => {},
+    );
+
+    expect(warnings.some((w) => w.includes("webSearches") && w.includes("Cohere"))).toBe(true);
+  });
+
+  it("logs warning when content+toolCalls response has webSearches", async () => {
+    const warnings: string[] = [];
+    const logger = new Logger("silent");
+    logger.warn = (msg: string) => {
+      warnings.push(msg);
+    };
+
+    const fixture: Fixture = {
+      match: { userMessage: "web-tool" },
+      response: {
+        content: "Here.",
+        toolCalls: [{ name: "fn", arguments: "{}" }],
+        webSearches: [{ query: "test" }],
+      },
+    };
+    const journal = new Journal();
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handleCohere(
+      req,
+      res,
+      JSON.stringify({ model: "cmd-r", messages: [{ role: "user", content: "web-tool" }] }),
+      [fixture],
+      journal,
+      createDefaults({ logger }),
+      () => {},
+    );
+
+    expect(warnings.some((w) => w.includes("webSearches") && w.includes("Cohere"))).toBe(true);
+  });
+});
+
+// ─── Cohere response_format forwarding ─────────────────────────────────────
+
+describe("Cohere response_format forwarding", () => {
+  it("forwards response_format to ChatCompletionRequest", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+      response_format: { type: "json_object" },
+    } as Parameters<typeof cohereToCompletionRequest>[0]);
+    expect(result.response_format).toEqual({ type: "json_object" });
+  });
+
+  it("omits response_format when not provided", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "hello" }],
+    } as Parameters<typeof cohereToCompletionRequest>[0]);
+    expect(result.response_format).toBeUndefined();
+  });
+});
+
+// ─── Cohere assistant tool_calls mapping ───────────────────────────────────
+
+describe("Cohere assistant tool_calls mapping", () => {
+  it("maps assistant tool_calls to ChatCompletionRequest format", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "Using tool",
+          tool_calls: [
+            {
+              id: "tc-1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"SF"}' },
+            },
+          ],
+        },
+        { role: "tool", content: "72F", tool_call_id: "tc-1" },
+        { role: "user", content: "thanks" },
+      ],
+    } as Parameters<typeof cohereToCompletionRequest>[0]);
+
+    const assistantMsg = result.messages.find(
+      (m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0,
+    );
+    expect(assistantMsg).toBeDefined();
+    expect(assistantMsg!.tool_calls).toHaveLength(1);
+    expect(assistantMsg!.tool_calls![0].function.name).toBe("get_weather");
+    expect(assistantMsg!.tool_calls![0].function.arguments).toBe('{"city":"SF"}');
+    expect(assistantMsg!.tool_calls![0].id).toBe("tc-1");
+    expect(assistantMsg!.content).toBe("Using tool");
+  });
+
+  it("generates tool_call id when not provided", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              type: "function",
+              function: { name: "fn", arguments: "{}" },
+            },
+          ],
+        },
+      ],
+    } as Parameters<typeof cohereToCompletionRequest>[0]);
+
+    const assistantMsg = result.messages.find(
+      (m) => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0,
+    );
+    expect(assistantMsg!.tool_calls![0].id).toBeTruthy();
+  });
+
+  it("falls back to plain assistant message when no tool_calls present", () => {
+    const result = cohereToCompletionRequest({
+      model: "command-r-plus",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "just text" },
+      ],
+    } as Parameters<typeof cohereToCompletionRequest>[0]);
+
+    const assistantMsg = result.messages.find((m) => m.role === "assistant");
+    expect(assistantMsg!.content).toBe("just text");
+    expect(assistantMsg!.tool_calls).toBeUndefined();
+  });
+});
+
+// ─── Cohere ResponseOverrides ──────────────────────────────────────────────
+
+describe("Cohere ResponseOverrides", () => {
+  it("applies id override on non-streaming text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-id" },
+        response: { content: "Hi!", id: "custom-id-123" },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "ov-id" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.id).toBe("custom-id-123");
+  });
+
+  it("applies finishReason override on non-streaming text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-fr" },
+        response: { content: "Done.", finishReason: "length" },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "ov-fr" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.finish_reason).toBe("MAX_TOKENS");
+  });
+
+  it("applies usage override on non-streaming text response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-usage" },
+        response: {
+          content: "Done.",
+          usage: { prompt_tokens: 10, completion_tokens: 20 },
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "ov-usage" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.usage.tokens.input_tokens).toBe(10);
+    expect(json.usage.tokens.output_tokens).toBe(20);
+    expect(json.usage.billed_units.input_tokens).toBe(10);
+    expect(json.usage.billed_units.output_tokens).toBe(20);
+  });
+
+  it("applies overrides on non-streaming tool call response", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "ov-tc" },
+        response: {
+          toolCalls: [{ name: "fn", arguments: '{"a":1}' }],
+          id: "tc-override-id",
+          finishReason: "stop",
+        },
+      },
+    ];
+    instance = await createServer(fixtures);
+    const res = await post(`${instance.url}/v2/chat`, {
+      model: "command-r-plus",
+      messages: [{ role: "user", content: "ov-tc" }],
+    });
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.id).toBe("tc-override-id");
+    expect(json.finish_reason).toBe("COMPLETE");
+  });
+});

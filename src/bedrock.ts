@@ -23,12 +23,14 @@ import type {
   ChatMessage,
   Fixture,
   HandlerDefaults,
+  ResponseOverrides,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
 import {
   generateMessageId,
   generateToolUseId,
+  extractOverrides,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -78,6 +80,30 @@ interface BedrockRequest {
   max_tokens: number;
   temperature?: number;
   [key: string]: unknown;
+}
+
+// ─── Bedrock stop_reason mapping ───────────────────────────────────────────
+
+function bedrockStopReason(
+  overrideFinishReason: string | undefined,
+  defaultReason: string,
+): string {
+  if (!overrideFinishReason) return defaultReason;
+  if (overrideFinishReason === "stop") return "end_turn";
+  if (overrideFinishReason === "tool_calls") return "tool_use";
+  if (overrideFinishReason === "length") return "max_tokens";
+  return overrideFinishReason;
+}
+
+function bedrockUsage(overrides?: ResponseOverrides): {
+  input_tokens: number;
+  output_tokens: number;
+} {
+  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
+  return {
+    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
+    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
+  };
 }
 
 // ─── Input conversion: Bedrock → ChatCompletionRequest ──────────────────────
@@ -200,7 +226,12 @@ export function bedrockToCompletionRequest(
 
 // ─── Response builders ──────────────────────────────────────────────────────
 
-function buildBedrockTextResponse(content: string, model: string, reasoning?: string): object {
+function buildBedrockTextResponse(
+  content: string,
+  model: string,
+  reasoning?: string,
+  overrides?: ResponseOverrides,
+): object {
   const contentBlocks: object[] = [];
   if (reasoning) {
     contentBlocks.push({ type: "thinking", thinking: reasoning });
@@ -208,14 +239,14 @@ function buildBedrockTextResponse(content: string, model: string, reasoning?: st
   contentBlocks.push({ type: "text", text: content });
 
   return {
-    id: generateMessageId(),
+    id: overrides?.id ?? generateMessageId(),
     type: "message",
     role: "assistant",
     content: contentBlocks,
-    model,
-    stop_reason: "end_turn",
+    model: overrides?.model ?? model,
+    stop_reason: bedrockStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
+    usage: bedrockUsage(overrides),
   };
 }
 
@@ -223,9 +254,10 @@ function buildBedrockToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
+  overrides?: ResponseOverrides,
 ): object {
   return {
-    id: generateMessageId(),
+    id: overrides?.id ?? generateMessageId(),
     type: "message",
     role: "assistant",
     content: toolCalls.map((tc) => {
@@ -245,10 +277,10 @@ function buildBedrockToolCallResponse(
         input: argsObj,
       };
     }),
-    model,
-    stop_reason: "tool_use",
+    model: overrides?.model ?? model,
+    stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
+    usage: bedrockUsage(overrides),
   };
 }
 
@@ -425,6 +457,10 @@ export async function handleBedrock(
 
   // Content + tool calls response
   if (isContentWithToolCallsResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
+    }
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -432,13 +468,18 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    // Build a combined response with both text and tool_use content blocks
     const textBody = buildBedrockTextResponse(
       response.content,
       completionReq.model,
       response.reasoning,
+      overrides,
     );
-    const toolBody = buildBedrockToolCallResponse(response.toolCalls, completionReq.model, logger);
+    const toolBody = buildBedrockToolCallResponse(
+      response.toolCalls,
+      completionReq.model,
+      logger,
+      overrides,
+    );
     // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
     const merged = {
       ...(textBody as Record<string, unknown>),
@@ -446,7 +487,7 @@ export async function handleBedrock(
         ...((textBody as Record<string, unknown>).content as object[]),
         ...((toolBody as Record<string, unknown>).content as object[]),
       ],
-      stop_reason: "tool_use",
+      stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     };
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(merged));
@@ -455,6 +496,10 @@ export async function handleBedrock(
 
   // Text response
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
+    }
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -466,6 +511,7 @@ export async function handleBedrock(
       response.content,
       completionReq.model,
       response.reasoning,
+      overrides,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
@@ -474,6 +520,7 @@ export async function handleBedrock(
 
   // Tool call response
   if (isToolCallResponse(response)) {
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -481,7 +528,12 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildBedrockToolCallResponse(response.toolCalls, completionReq.model, logger);
+    const body = buildBedrockToolCallResponse(
+      response.toolCalls,
+      completionReq.model,
+      logger,
+      overrides,
+    );
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -578,6 +630,116 @@ export function buildBedrockStreamTextEvents(
   return events;
 }
 
+export function buildBedrockStreamContentWithToolCallsEvents(
+  content: string,
+  toolCalls: ToolCall[],
+  chunkSize: number,
+  logger: Logger,
+  reasoning?: string,
+): Array<{ eventType: string; payload: object }> {
+  const events: Array<{ eventType: string; payload: object }> = [];
+
+  events.push({
+    eventType: "messageStart",
+    payload: { role: "assistant" },
+  });
+
+  let blockIndex = 0;
+
+  // Thinking block (emitted before text when reasoning is present)
+  if (reasoning) {
+    events.push({
+      eventType: "contentBlockStart",
+      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
+    });
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: blockIndex,
+          delta: { type: "thinking_delta", thinking: slice },
+        },
+      });
+    }
+    events.push({
+      eventType: "contentBlockStop",
+      payload: { contentBlockIndex: blockIndex },
+    });
+    blockIndex++;
+  }
+
+  // Text block
+  events.push({
+    eventType: "contentBlockStart",
+    payload: { contentBlockIndex: blockIndex, start: {} },
+  });
+  for (let i = 0; i < content.length; i += chunkSize) {
+    const slice = content.slice(i, i + chunkSize);
+    events.push({
+      eventType: "contentBlockDelta",
+      payload: {
+        contentBlockIndex: blockIndex,
+        delta: { type: "text_delta", text: slice },
+      },
+    });
+  }
+  events.push({
+    eventType: "contentBlockStop",
+    payload: { contentBlockIndex: blockIndex },
+  });
+  blockIndex++;
+
+  // Tool call blocks
+  for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+    const tc = toolCalls[tcIdx];
+    const toolUseId = tc.id || generateToolUseId();
+    const currentBlock = blockIndex + tcIdx;
+
+    events.push({
+      eventType: "contentBlockStart",
+      payload: {
+        contentBlockIndex: currentBlock,
+        start: { toolUse: { toolUseId, name: tc.name } },
+      },
+    });
+
+    let argsStr: string;
+    try {
+      const parsed = JSON.parse(tc.arguments || "{}");
+      argsStr = JSON.stringify(parsed);
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsStr = "{}";
+    }
+
+    for (let i = 0; i < argsStr.length; i += chunkSize) {
+      const slice = argsStr.slice(i, i + chunkSize);
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: currentBlock,
+          delta: { type: "input_json_delta", inputJSON: slice },
+        },
+      });
+    }
+
+    events.push({
+      eventType: "contentBlockStop",
+      payload: { contentBlockIndex: currentBlock },
+    });
+  }
+
+  events.push({
+    eventType: "messageStop",
+    payload: { stopReason: "tool_use" },
+  });
+
+  return events;
+}
+
 export function buildBedrockStreamToolCallEvents(
   toolCalls: ToolCall[],
   chunkSize: number,
@@ -629,124 +791,6 @@ export function buildBedrockStreamToolCallEvents(
     events.push({
       eventType: "contentBlockStop",
       payload: { contentBlockIndex: tcIdx },
-    });
-  }
-
-  events.push({
-    eventType: "messageStop",
-    payload: { stopReason: "tool_use" },
-  });
-
-  return events;
-}
-
-export function buildBedrockStreamContentWithToolCallsEvents(
-  content: string,
-  toolCalls: ToolCall[],
-  chunkSize: number,
-  logger: Logger,
-  reasoning?: string,
-): Array<{ eventType: string; payload: object }> {
-  const events: Array<{ eventType: string; payload: object }> = [];
-
-  events.push({
-    eventType: "messageStart",
-    payload: { role: "assistant" },
-  });
-
-  let blockIndex = 0;
-
-  // Thinking block (emitted before text when reasoning is present)
-  if (reasoning) {
-    events.push({
-      eventType: "contentBlockStart",
-      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
-    });
-
-    for (let i = 0; i < reasoning.length; i += chunkSize) {
-      const slice = reasoning.slice(i, i + chunkSize);
-      events.push({
-        eventType: "contentBlockDelta",
-        payload: {
-          contentBlockIndex: blockIndex,
-          delta: { type: "thinking_delta", thinking: slice },
-        },
-      });
-    }
-
-    events.push({
-      eventType: "contentBlockStop",
-      payload: { contentBlockIndex: blockIndex },
-    });
-
-    blockIndex++;
-  }
-
-  // Text block
-  events.push({
-    eventType: "contentBlockStart",
-    payload: { contentBlockIndex: blockIndex, start: {} },
-  });
-
-  for (let i = 0; i < content.length; i += chunkSize) {
-    const slice = content.slice(i, i + chunkSize);
-    events.push({
-      eventType: "contentBlockDelta",
-      payload: {
-        contentBlockIndex: blockIndex,
-        delta: { type: "text_delta", text: slice },
-      },
-    });
-  }
-
-  events.push({
-    eventType: "contentBlockStop",
-    payload: { contentBlockIndex: blockIndex },
-  });
-
-  blockIndex++;
-
-  // Tool call blocks
-  for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
-    const tc = toolCalls[tcIdx];
-    const toolUseId = tc.id || generateToolUseId();
-    const currentBlock = blockIndex + tcIdx;
-
-    events.push({
-      eventType: "contentBlockStart",
-      payload: {
-        contentBlockIndex: currentBlock,
-        start: {
-          toolUse: { toolUseId, name: tc.name },
-        },
-      },
-    });
-
-    let argsStr: string;
-    try {
-      const parsed = JSON.parse(tc.arguments || "{}");
-      argsStr = JSON.stringify(parsed);
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsStr = "{}";
-    }
-
-    for (let i = 0; i < argsStr.length; i += chunkSize) {
-      const slice = argsStr.slice(i, i + chunkSize);
-      events.push({
-        eventType: "contentBlockDelta",
-        payload: {
-          contentBlockIndex: currentBlock,
-          delta: { type: "input_json_delta", inputJSON: slice },
-        },
-      });
-    }
-
-    events.push({
-      eventType: "contentBlockStop",
-      payload: { contentBlockIndex: currentBlock },
     });
   }
 
@@ -932,6 +976,9 @@ export async function handleBedrockStream(
 
   // Content + tool calls response — stream as Event Stream
   if (isContentWithToolCallsResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -964,6 +1011,9 @@ export async function handleBedrockStream(
 
   // Text response — stream as Event Stream
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,

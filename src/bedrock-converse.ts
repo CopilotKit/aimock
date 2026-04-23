@@ -13,11 +13,13 @@ import type {
   ChatMessage,
   Fixture,
   HandlerDefaults,
+  ResponseOverrides,
   ToolCall,
   ToolDefinition,
 } from "./types.js";
 import {
   generateToolUseId,
+  extractOverrides,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -63,6 +65,30 @@ interface ConverseRequest {
   system?: { text: string }[];
   inferenceConfig?: { maxTokens?: number; temperature?: number };
   toolConfig?: { tools: { toolSpec: ConverseToolSpec }[] };
+}
+
+// ─── Converse stop_reason mapping ──────────────────────────────────────────
+
+function converseStopReason(
+  overrideFinishReason: string | undefined,
+  defaultReason: string,
+): string {
+  if (!overrideFinishReason) return defaultReason;
+  if (overrideFinishReason === "stop") return "end_turn";
+  if (overrideFinishReason === "tool_calls") return "tool_use";
+  if (overrideFinishReason === "length") return "max_tokens";
+  return overrideFinishReason;
+}
+
+function converseUsage(overrides?: ResponseOverrides): {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+} {
+  if (!overrides?.usage) return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const inputTokens = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
+  const outputTokens = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
 }
 
 // ─── Input conversion: Converse → ChatCompletionRequest ─────────────────────
@@ -162,7 +188,11 @@ export function converseToCompletionRequest(
 
 // ─── Response builders ──────────────────────────────────────────────────────
 
-function buildConverseTextResponse(content: string, reasoning?: string): object {
+function buildConverseTextResponse(
+  content: string,
+  reasoning?: string,
+  overrides?: ResponseOverrides,
+): object {
   const contentBlocks: object[] = [];
   if (reasoning) {
     contentBlocks.push({
@@ -178,12 +208,16 @@ function buildConverseTextResponse(content: string, reasoning?: string): object 
         content: contentBlocks,
       },
     },
-    stopReason: "end_turn",
-    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    stopReason: converseStopReason(overrides?.finishReason, "end_turn"),
+    usage: converseUsage(overrides),
   };
 }
 
-function buildConverseToolCallResponse(toolCalls: ToolCall[], logger: Logger): object {
+function buildConverseToolCallResponse(
+  toolCalls: ToolCall[],
+  logger: Logger,
+  overrides?: ResponseOverrides,
+): object {
   return {
     output: {
       message: {
@@ -208,8 +242,8 @@ function buildConverseToolCallResponse(toolCalls: ToolCall[], logger: Logger): o
         }),
       },
     },
-    stopReason: "tool_use",
-    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    stopReason: converseStopReason(overrides?.finishReason, "tool_use"),
+    usage: converseUsage(overrides),
   };
 }
 
@@ -218,6 +252,7 @@ function buildConverseContentWithToolCallsResponse(
   toolCalls: ToolCall[],
   logger: Logger,
   reasoning?: string,
+  overrides?: ResponseOverrides,
 ): object {
   const contentBlocks: object[] = [];
   if (reasoning) {
@@ -252,8 +287,8 @@ function buildConverseContentWithToolCallsResponse(
         content: contentBlocks,
       },
     },
-    stopReason: "tool_use",
-    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    stopReason: converseStopReason(overrides?.finishReason, "tool_use"),
+    usage: converseUsage(overrides),
   };
 }
 
@@ -421,6 +456,12 @@ export async function handleConverse(
 
   // Content + tool calls response
   if (isContentWithToolCallsResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn(
+        "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
+      );
+    }
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -433,6 +474,7 @@ export async function handleConverse(
       response.toolCalls,
       logger,
       response.reasoning,
+      overrides,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
@@ -441,6 +483,12 @@ export async function handleConverse(
 
   // Text response
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn(
+        "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
+      );
+    }
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -448,7 +496,7 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseTextResponse(response.content, response.reasoning);
+    const body = buildConverseTextResponse(response.content, response.reasoning, overrides);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -456,6 +504,7 @@ export async function handleConverse(
 
   // Tool call response
   if (isToolCallResponse(response)) {
+    const overrides = extractOverrides(response);
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -463,7 +512,7 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseToolCallResponse(response.toolCalls, logger);
+    const body = buildConverseToolCallResponse(response.toolCalls, logger, overrides);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -653,6 +702,11 @@ export async function handleConverseStream(
 
   // Content + tool calls response — stream as Event Stream
   if (isContentWithToolCallsResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn(
+        "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
+      );
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -685,6 +739,11 @@ export async function handleConverseStream(
 
   // Text response — stream as Event Stream
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn(
+        "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
+      );
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
