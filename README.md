@@ -83,6 +83,11 @@ See the [GitHub Action docs](https://aimock.copilotkit.dev/github-action) for al
 # LLM mocking only
 npx -p @copilotkit/aimock llmock -p 4010 -f ./fixtures
 
+# Remote fixtures — load JSON from an HTTPS URL (repeatable)
+npx -p @copilotkit/aimock llmock -p 4010 \
+  -f https://raw.githubusercontent.com/acme/mocks/main/openai.json \
+  -f ./fixtures/local-overrides.json
+
 # Full suite from config
 npx @copilotkit/aimock --config aimock.json
 
@@ -98,6 +103,12 @@ docker run -d -p 4010:4010 -v "$(pwd)/fixtures:/fixtures" ghcr.io/copilotkit/aim
 ```
 
 > **Note on `llmock` vs `aimock` CLIs.** The `llmock` bin is retained as a compat alias for users of the pre-1.7.0 `@copilotkit/llmock` package. It runs a narrower flag-driven CLI without `--config` or the `convert` subcommand. New projects should use `aimock` (or `npx @copilotkit/aimock`) for full feature support.
+
+### Remote fixture URLs
+
+`--fixtures` accepts `https://` and `http://` URLs pointing at JSON fixture files in addition to filesystem paths, and the flag is repeatable so you can layer remote and local sources in argv order. Fetched fixtures are cached on disk at `~/.cache/aimock/fixtures/<sha256-of-url>/` (honors `$XDG_CACHE_HOME`); when paired with `--validate-on-load`, a fetch failure with a valid cached copy logs a warning and continues — without a cache, the process exits non-zero. HTTP fetches have a 10s timeout and a 50 MB body cap; redirects are rejected fail-loud, so configure your upstream to serve the final URL directly (GitHub raw content URLs already do).
+
+Private and link-local addresses (loopback, RFC1918, CGNAT, cloud metadata, ULA, multicast) are rejected by default to prevent SSRF. For local development or tests that need to hit `127.0.0.1`, opt out with `AIMOCK_ALLOW_PRIVATE_URLS=1`. Tarball and zip URL support is intentionally deferred.
 
 ## Framework Guides
 

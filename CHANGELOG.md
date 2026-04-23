@@ -1,5 +1,13 @@
 # @copilotkit/aimock
 
+## 1.14.7
+
+### Added
+
+- `--fixtures` now accepts `https://` and `http://` URLs to JSON fixture files in addition to filesystem paths. Fetches at boot, parses, and registers the remote fixture as if loaded from disk. On-disk cache at `~/.cache/aimock/fixtures/<sha256-of-url>/` (honoring `$XDG_CACHE_HOME`) provides resilience against transient upstream failures: with `--validate-on-load`, a fetch failure with a valid cached copy logs a warning and continues; without a cache, the process exits non-zero. HTTP fetch has a hard-coded 10s timeout and a 50 MB body size cap (enforced incrementally so a lying `Content-Length` cannot bypass it). Only `https://` and `http://` schemes are accepted — `file://`, `ftp://`, etc. are rejected with a clear error. The flag is now repeatable; multiple sources are loaded and concatenated. Tarball (`.tar.gz`) and zip URL support intentionally deferred to a future release.
+- Private-address denylist for remote `--fixtures` URLs: fetches to loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`), cloud-metadata (`169.254.169.254`), ULA (`fc00::/7`), multicast, and other reserved ranges are rejected with a clear fail-loud error. Hostnames are resolved and every returned address is checked. Set `AIMOCK_ALLOW_PRIVATE_URLS=1` to opt out (required for local dev / tests that target `127.0.0.1`).
+- HTTP redirects are rejected (fail-loud) for remote `--fixtures` URLs to prevent scheme-bypass (a 3xx `Location:` pointing at `file://` or `javascript:` would otherwise sidestep the scheme gate and SSRF denylist). Configure the upstream to serve the final URL directly — GitHub raw content URLs already do this.
+
 ## 1.14.6
 
 ### Changed
