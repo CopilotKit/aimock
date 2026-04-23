@@ -106,6 +106,7 @@ export async function proxyAndRecord(
   // Track whether we streamed SSE progressively to the client; if so,
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
   let streamedToClient = false;
+  let clientDisconnected = false;
   try {
     const result = await makeUpstreamRequest(target, forwardHeaders, requestBody, res);
     upstreamStatus = result.status;
@@ -113,6 +114,7 @@ export async function proxyAndRecord(
     upstreamBody = result.body;
     rawBuffer = result.rawBuffer;
     streamedToClient = result.streamedToClient;
+    clientDisconnected = result.clientDisconnected;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -196,12 +198,17 @@ export async function proxyAndRecord(
         `Could not parse encoding_format from raw body: ${err instanceof Error ? err.message : "unknown error"}`,
       );
     }
-    fixtureResponse = buildFixtureResponse(
-      parsedResponse,
-      upstreamStatus,
-      encodingFormat,
-      defaults.logger,
+    fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
+  }
+
+  // If the client disconnected mid-stream, the collected data is likely
+  // truncated.  Saving a partial fixture is worse than saving none — skip
+  // fixture persistence entirely.
+  if (clientDisconnected) {
+    defaults.logger.warn(
+      "Client disconnected mid-stream — skipping fixture save to avoid truncated data",
     );
+    return true;
   }
 
   // Build the match criteria from the (optionally transformed) request
@@ -301,6 +308,7 @@ function makeUpstreamRequest(
   body: string;
   rawBuffer: Buffer;
   streamedToClient: boolean;
+  clientDisconnected: boolean;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -375,6 +383,7 @@ function makeUpstreamRequest(
             body: rawBuffer.toString(),
             rawBuffer,
             streamedToClient,
+            clientDisconnected,
           });
         });
       },
@@ -400,7 +409,6 @@ function buildFixtureResponse(
   parsed: unknown,
   status: number,
   encodingFormat?: string,
-  logger?: Logger,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -432,17 +440,10 @@ function buildFixtureResponse(
       return { embedding: first.embedding as number[] };
     }
     if (typeof first.embedding === "string" && encodingFormat === "base64") {
-      try {
-        const buf = Buffer.from(first.embedding, "base64");
-        const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-        return { embedding: Array.from(floats) };
-      } catch (err) {
-        // Corrupted base64 or non-float32 data — may be caused by
-        // Buffer pool byte-offset misalignment with Float32Array.
-        logger?.warn(
-          `Failed to decode base64 embedding (possible byte-alignment issue): ${err instanceof Error ? err.message : "unknown error"}`,
-        );
-      }
+      const buf = Buffer.from(first.embedding, "base64");
+      const aligned = new Uint8Array(buf).buffer; // Always offset 0
+      const floats = new Float32Array(aligned, 0, buf.byteLength / 4);
+      return { embedding: Array.from(floats) };
     }
     // OpenAI image generation: { created, data: [{ url, b64_json, revised_prompt }] }
     if (first.url || first.b64_json) {
