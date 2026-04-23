@@ -302,6 +302,7 @@ export interface JournalEntry {
   response: {
     status: number;
     fixture: Fixture | null;
+    source?: "proxy";
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;

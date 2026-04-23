@@ -776,7 +776,7 @@ export async function handleMessages(
           path: req.url ?? "/v1/messages",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
