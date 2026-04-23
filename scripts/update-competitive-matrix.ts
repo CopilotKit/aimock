@@ -71,23 +71,29 @@ const FEATURE_RULES: FeatureRule[] = [
   },
   {
     rowLabel: "Embeddings API",
-    keywords: ["embedding", "/v1/embeddings", "embed"],
+    keywords: ["/v1/embeddings", "embeddings api", "embedding endpoint", "embedding model"],
   },
   {
     rowLabel: "Image generation",
-    keywords: ["image", "dall-e", "dalle", "/v1/images", "image generation", "imagen"],
+    keywords: ["dall-e", "dalle", "/v1/images", "image generation", "imagen", "generate.*image"],
   },
   {
     rowLabel: "Text-to-Speech",
-    keywords: ["tts", "text-to-speech", "speech", "/v1/audio/speech", "audio generation"],
+    keywords: ["text-to-speech", "/v1/audio/speech", "audio generation", "tts endpoint", "tts api"],
   },
   {
     rowLabel: "Audio transcription",
-    keywords: ["transcription", "whisper", "/v1/audio/transcriptions", "speech-to-text", "stt"],
+    keywords: [
+      "/v1/audio/transcriptions",
+      "whisper",
+      "speech-to-text",
+      "audio transcription",
+      "transcription api",
+    ],
   },
   {
     rowLabel: "Video generation",
-    keywords: ["video", "sora", "/v1/videos", "video generation"],
+    keywords: ["sora", "/v1/videos", "video generation", "generate.*video"],
   },
   {
     rowLabel: "Structured output / JSON mode",
@@ -107,11 +113,11 @@ const FEATURE_RULES: FeatureRule[] = [
   },
   {
     rowLabel: "Docker image",
-    keywords: ["docker", "dockerfile", "container", "docker-compose"],
+    keywords: ["dockerfile", "docker image", "docker-compose", "docker compose", "docker run"],
   },
   {
     rowLabel: "Helm chart",
-    keywords: ["helm", "chart", "kubernetes", "k8s"],
+    keywords: ["helm chart", "helm install", "kubernetes.*deploy", "k8s.*deploy"],
   },
   {
     rowLabel: "Fixture files (JSON)",
@@ -342,10 +348,12 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
 
 /**
  * Scans the HTML for numeric provider claims and updates them if the detected
- * count is higher. Handles patterns like:
- * - "N providers" / "N+ providers" (in prose and table cells)
- * - "supports N LLM" / "N LLM providers"
- * - "N more providers"
+ * count is higher. Only replaces within content scoped to the specific competitor
+ * to avoid corrupting aimock's own claims or other competitors' counts.
+ *
+ * Scoping strategy: only replace inside elements/paragraphs that mention the
+ * competitor by name, or within the competitor's column in a table row whose
+ * label matches "provider" (case-insensitive).
  */
 function updateProviderCounts(
   html: string,
@@ -354,30 +362,85 @@ function updateProviderCounts(
   changes: string[],
 ): string {
   let result = html;
+  const escapedName = escapeRegex(competitorName);
 
-  // Pattern: N+ providers or N providers (in table cells and prose)
-  const providerCountRegex = /(\d+)\+?\s*providers/g;
-  result = result.replace(providerCountRegex, (match, numStr) => {
-    const currentCount = parseInt(numStr, 10);
-    if (detectedCount > currentCount) {
-      changes.push(`${competitorName}: provider count ${currentCount} -> ${detectedCount}`);
-      return `${detectedCount} providers`;
+  // Strategy 1: Replace provider counts in table rows about providers,
+  // scoped to the competitor's column. Find rows with "provider" in the label,
+  // then find the competitor's column cell by index.
+  const tableMatch = result.match(
+    /<table class="(?:comparison-table|endpoint-table)">([\s\S]*?)<\/table>/,
+  );
+  if (tableMatch) {
+    const fullTable = tableMatch[0];
+
+    // Find the competitor's column index from headers
+    const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/g;
+    const thTexts: string[] = [];
+    let thM: RegExpExecArray | null;
+    while ((thM = thRegex.exec(fullTable)) !== null) {
+      thTexts.push(thM[1].trim());
     }
-    return match;
-  });
+    const compColIdx = thTexts.findIndex((t) => t.includes(competitorName) || t === competitorName);
 
-  // Pattern: "supports N LLM" or "N LLM providers"
-  const llmProviderRegex = /(\d+)\+?\s*LLM\s*providers?/g;
-  result = result.replace(llmProviderRegex, (match, numStr) => {
+    if (compColIdx >= 0) {
+      // Find provider-related rows and update only the competitor's cell
+      const updatedTable = fullTable.replace(
+        /<tr>([\s\S]*?)<\/tr>/g,
+        (trMatch, trContent: string) => {
+          // Check if this row is about providers
+          const firstTd = trContent.match(/<td[^>]*>([\s\S]*?)<\/td>/);
+          if (!firstTd || !/provider/i.test(firstTd[1])) return trMatch;
+
+          // Replace provider count only in the competitor's column cell
+          let cellIdx = 0;
+          return trMatch.replace(/<td[^>]*>([\s\S]*?)<\/td>/g, (tdMatch, tdContent: string) => {
+            const currentIdx = cellIdx++;
+            if (currentIdx !== compColIdx) return tdMatch;
+
+            const updated = replaceProviderCount(tdContent, detectedCount);
+            if (updated !== tdContent) {
+              const oldCount = tdContent.match(/(\d+)/)?.[1] ?? "?";
+              changes.push(
+                `${competitorName}: provider count ${oldCount} -> ${detectedCount} (table)`,
+              );
+              return tdMatch.replace(tdContent, updated);
+            }
+            return tdMatch;
+          });
+        },
+      );
+
+      result = result.replace(fullTable, updatedTable);
+    }
+  }
+
+  // Strategy 2: Replace provider counts in prose paragraphs/sentences that
+  // explicitly mention the competitor by name.
+  const prosePattern = new RegExp(
+    `(<[^>]*>[^<]*${escapedName}[^<]*)(\\d+)\\+?\\s*(?:LLM\\s*)?providers?`,
+    "gi",
+  );
+  result = result.replace(prosePattern, (match, prefix, numStr) => {
     const currentCount = parseInt(numStr, 10);
     if (detectedCount > currentCount) {
-      changes.push(`${competitorName}: LLM provider count ${currentCount} -> ${detectedCount}`);
-      return `${detectedCount} LLM providers`;
+      changes.push(`${competitorName}: provider count ${currentCount} -> ${detectedCount} (prose)`);
+      return match.replace(/(\d+)\+?\s*(?:LLM\s*)?providers?/, `${detectedCount} providers`);
     }
     return match;
   });
 
   return result;
+}
+
+/** Replaces "N providers" or "N+ providers" in a string if detected > current */
+function replaceProviderCount(text: string, detectedCount: number): string {
+  return text.replace(/(\d+)\+?\s*(?:LLM\s*)?providers?/gi, (match, numStr) => {
+    const currentCount = parseInt(numStr, 10);
+    if (detectedCount > currentCount) {
+      return `${detectedCount} providers`;
+    }
+    return match;
+  });
 }
 
 // ── HTML Matrix Parsing & Updating ───────────────────────────────────────────
@@ -457,8 +520,14 @@ function computeChanges(
       const currentCell = row.get(compName);
       if (!currentCell) continue;
 
-      // Only upgrade "No" cells — leave "Yes", "Partial", "Manual", etc. alone
-      if (currentCell === "No") {
+      // Only upgrade "No" cells — leave "Yes", "Partial", "Manual", etc. alone.
+      // Cells contain inner HTML like '<span class="no">&#10007;</span>',
+      // not bare "No" text, so check for the no-class span or cross-mark entity.
+      if (
+        currentCell.includes('class="no"') ||
+        currentCell.includes("\u2717") ||
+        currentCell.includes("&#10007;")
+      ) {
         changes.push({
           competitor: compName,
           capability: rowLabel,
@@ -522,19 +591,23 @@ function applyChanges(html: string, changes: DetectedChange[]): string {
     const cellsHtml = rowMatch[2];
     const suffix = rowMatch[3];
 
-    // Find the Nth <td> in cellsHtml (colIdx - 1 because the first <td> is already in prefix)
+    // Find the Nth <td> in cellsHtml (colIdx - 1 because the first <td> is already in prefix).
+    // Actual cells use <td><span class="no">&#10007;</span></td> (class is on span, not td),
+    // so we match all <td>...</td> and check inner content for no-class spans.
     const targetTdIdx = colIdx - 1; // 0-based within the remaining cells
     let tdCount = 0;
-    const tdReplace = cellsHtml.replace(
-      /<td class="(no|yes|manual)">([\s\S]*?)<\/td>/g,
-      (fullMatch, cls, content) => {
-        const currentIdx = tdCount++;
-        if (currentIdx === targetTdIdx && content.trim() === "No") {
-          return `<td class="yes">Yes</td>`;
-        }
-        return fullMatch;
-      },
-    );
+    const tdReplace = cellsHtml.replace(/<td[^>]*>([\s\S]*?)<\/td>/g, (fullMatch, content) => {
+      const currentIdx = tdCount++;
+      if (
+        currentIdx === targetTdIdx &&
+        (content.includes('class="no"') ||
+          content.includes("\u2717") ||
+          content.includes("&#10007;"))
+      ) {
+        return `<td><span class="yes">&#10003;</span></td>`;
+      }
+      return fullMatch;
+    });
 
     result = result.replace(rowPattern, prefix + tdReplace + suffix);
   }
