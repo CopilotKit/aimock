@@ -98,7 +98,10 @@ function loadFixtures(fixturePath: string): Fixture[] {
       return loadFixturesFromDir(fixturePath);
     }
     return loadFixtureFile(fixturePath);
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[aimock] Failed to load fixtures from ${fixturePath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }

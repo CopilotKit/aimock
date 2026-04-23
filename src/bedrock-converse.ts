@@ -450,7 +450,14 @@ export async function handleConverse(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    const errBody = {
+      type: "error",
+      error: {
+        type: response.error.type || "invalid_request_error",
+        message: response.error.message,
+      },
+    };
+    writeErrorResponse(res, status, JSON.stringify(errBody));
     return;
   }
 
@@ -696,7 +703,14 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    const errBody = {
+      type: "error",
+      error: {
+        type: response.error.type || "invalid_request_error",
+        message: response.error.message,
+      },
+    };
+    writeErrorResponse(res, status, JSON.stringify(errBody));
     return;
   }
 

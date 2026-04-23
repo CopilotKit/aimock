@@ -263,17 +263,24 @@ describe("POST /model/{modelId}/invoke-with-response-stream", () => {
 
     // messageStart
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ role: "assistant" });
+    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
 
     // contentBlockStart
     expect(frames[1].eventType).toBe("contentBlockStart");
-    expect(frames[1].payload).toEqual({ contentBlockIndex: 0, start: {} });
+    expect(frames[1].payload).toEqual({
+      contentBlockIndex: 0,
+      contentBlockStart: { contentBlockIndex: 0, start: { type: "text" } },
+    });
 
     // Content delta(s) — collect text
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     expect(deltas.length).toBeGreaterThanOrEqual(1);
     const fullText = deltas
-      .map((f) => (f.payload as { delta: { text: string } }).delta.text)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { text: string } } }).contentBlockDelta.delta
+            .text,
+      )
       .join("");
     expect(fullText).toBe("Hi there!");
 
@@ -301,23 +308,30 @@ describe("POST /model/{modelId}/invoke-with-response-stream", () => {
 
     // messageStart
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ role: "assistant" });
+    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
 
     // contentBlockStart with toolUse
     expect(frames[1].eventType).toBe("contentBlockStart");
     const startPayload = frames[1].payload as {
       contentBlockIndex: number;
-      start: { toolUse: { toolUseId: string; name: string } };
+      contentBlockStart: {
+        contentBlockIndex: number;
+        start: { toolUse: { toolUseId: string; name: string } };
+      };
     };
     expect(startPayload.contentBlockIndex).toBe(0);
-    expect(startPayload.start.toolUse.name).toBe("get_weather");
-    expect(startPayload.start.toolUse.toolUseId).toBeDefined();
+    expect(startPayload.contentBlockStart.start.toolUse.name).toBe("get_weather");
+    expect(startPayload.contentBlockStart.start.toolUse.toolUseId).toBeDefined();
 
-    // contentBlockDelta(s) with input_json_delta
+    // contentBlockDelta(s) with toolUse input
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     expect(deltas.length).toBeGreaterThanOrEqual(1);
     const fullJson = deltas
-      .map((f) => (f.payload as { delta: { inputJSON: string } }).delta.inputJSON)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { toolUse: { input: string } } } })
+            .contentBlockDelta.delta.toolUse.input,
+      )
       .join("");
     expect(JSON.parse(fullJson)).toEqual({ city: "SF" });
 
@@ -460,18 +474,24 @@ describe("POST /model/{modelId}/invoke-with-response-stream (multiple tool calls
     // First tool at contentBlockIndex 0
     const start0 = blockStarts[0].payload as {
       contentBlockIndex: number;
-      start: { toolUse: { name: string } };
+      contentBlockStart: {
+        contentBlockIndex: number;
+        start: { toolUse: { name: string } };
+      };
     };
     expect(start0.contentBlockIndex).toBe(0);
-    expect(start0.start.toolUse.name).toBe("get_weather");
+    expect(start0.contentBlockStart.start.toolUse.name).toBe("get_weather");
 
     // Second tool at contentBlockIndex 1
     const start1 = blockStarts[1].payload as {
       contentBlockIndex: number;
-      start: { toolUse: { name: string } };
+      contentBlockStart: {
+        contentBlockIndex: number;
+        start: { toolUse: { name: string } };
+      };
     };
     expect(start1.contentBlockIndex).toBe(1);
-    expect(start1.start.toolUse.name).toBe("get_time");
+    expect(start1.contentBlockStart.start.toolUse.name).toBe("get_time");
 
     // contentBlockStop should also have correct indices
     const blockStops = frames.filter((f) => f.eventType === "contentBlockStop");
@@ -623,13 +643,17 @@ describe("POST /model/{modelId}/converse-stream", () => {
 
     // Verify event sequence
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ role: "assistant" });
+    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
 
     expect(frames[1].eventType).toBe("contentBlockStart");
 
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     const fullText = deltas
-      .map((f) => (f.payload as { delta: { text: string } }).delta.text)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { text: string } } }).contentBlockDelta.delta
+            .text,
+      )
       .join("");
     expect(fullText).toBe("Hi there!");
 
@@ -651,13 +675,20 @@ describe("POST /model/{modelId}/converse-stream", () => {
     const startFrame = frames.find((f) => f.eventType === "contentBlockStart");
     const startPayload = startFrame!.payload as {
       contentBlockIndex: number;
-      start: { toolUse: { toolUseId: string; name: string } };
+      contentBlockStart: {
+        contentBlockIndex: number;
+        start: { toolUse: { toolUseId: string; name: string } };
+      };
     };
-    expect(startPayload.start.toolUse.name).toBe("get_weather");
+    expect(startPayload.contentBlockStart.start.toolUse.name).toBe("get_weather");
 
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     const fullJson = deltas
-      .map((f) => (f.payload as { delta: { inputJSON: string } }).delta.inputJSON)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { toolUse: { input: string } } } })
+            .contentBlockDelta.delta.toolUse.input,
+      )
       .join("");
     expect(JSON.parse(fullJson)).toEqual({ city: "SF" });
 
@@ -994,12 +1025,14 @@ describe("POST /model/{modelId}/invoke-with-response-stream (malformed tool args
     expect(res.status).toBe(200);
     const frames = parseFrames(res.body);
 
-    // Find contentBlockDelta frames with inputJSON
+    // Find contentBlockDelta frames with toolUse input
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     const fullJson = deltas
       .map((f) => {
-        const payload = f.payload as { delta: { inputJSON?: string } };
-        return payload.delta.inputJSON ?? "";
+        const payload = f.payload as {
+          contentBlockDelta: { delta: { toolUse?: { input: string } } };
+        };
+        return payload.contentBlockDelta.delta.toolUse?.input ?? "";
       })
       .join("");
     // Malformed arguments should fall back to "{}"

@@ -739,6 +739,11 @@ function buildFixtureResponse(
     }
   }
 
+  // Ollama /api/generate: { response: "...", done: true/false }
+  if (typeof obj.response === "string" && "done" in obj) {
+    return { content: obj.response };
+  }
+
   // Fallback: unknown format — save as error
   return {
     error: {

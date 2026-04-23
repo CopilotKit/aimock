@@ -83,6 +83,7 @@ export function matchFixture(
           if (!text.includes(match.userMessage)) continue;
         }
       } else {
+        match.userMessage.lastIndex = 0;
         if (!match.userMessage.test(text)) continue;
       }
     }
@@ -112,6 +113,7 @@ export function matchFixture(
           if (!embeddingInput.includes(match.inputText)) continue;
         }
       } else {
+        match.inputText.lastIndex = 0;
         if (!match.inputText.test(embeddingInput)) continue;
       }
     }
@@ -127,6 +129,7 @@ export function matchFixture(
       if (typeof match.model === "string") {
         if (effective.model !== match.model) continue;
       } else {
+        match.model.lastIndex = 0;
         if (!match.model.test(effective.model)) continue;
       }
     }

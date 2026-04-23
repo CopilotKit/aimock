@@ -571,7 +571,7 @@ export function buildBedrockStreamTextEvents(
 
   events.push({
     eventType: "messageStart",
-    payload: { role: "assistant" },
+    payload: { messageStart: { role: "assistant" } },
   });
 
   // Thinking block (emitted before text when reasoning is present)
@@ -579,7 +579,13 @@ export function buildBedrockStreamTextEvents(
     const blockIndex = 0;
     events.push({
       eventType: "contentBlockStart",
-      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
+      payload: {
+        contentBlockIndex: blockIndex,
+        contentBlockStart: {
+          contentBlockIndex: blockIndex,
+          start: { type: "thinking" },
+        },
+      },
     });
 
     for (let i = 0; i < reasoning.length; i += chunkSize) {
@@ -588,7 +594,10 @@ export function buildBedrockStreamTextEvents(
         eventType: "contentBlockDelta",
         payload: {
           contentBlockIndex: blockIndex,
-          delta: { type: "thinking_delta", thinking: slice },
+          contentBlockDelta: {
+            contentBlockIndex: blockIndex,
+            delta: { type: "thinking_delta", thinking: slice },
+          },
         },
       });
     }
@@ -604,7 +613,13 @@ export function buildBedrockStreamTextEvents(
 
   events.push({
     eventType: "contentBlockStart",
-    payload: { contentBlockIndex: textBlockIndex, start: {} },
+    payload: {
+      contentBlockIndex: textBlockIndex,
+      contentBlockStart: {
+        contentBlockIndex: textBlockIndex,
+        start: { type: "text" },
+      },
+    },
   });
 
   for (let i = 0; i < content.length; i += chunkSize) {
@@ -613,7 +628,10 @@ export function buildBedrockStreamTextEvents(
       eventType: "contentBlockDelta",
       payload: {
         contentBlockIndex: textBlockIndex,
-        delta: { type: "text_delta", text: slice },
+        contentBlockDelta: {
+          contentBlockIndex: textBlockIndex,
+          delta: { text: slice },
+        },
       },
     });
   }
@@ -643,7 +661,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
 
   events.push({
     eventType: "messageStart",
-    payload: { role: "assistant" },
+    payload: { messageStart: { role: "assistant" } },
   });
 
   let blockIndex = 0;
@@ -652,7 +670,13 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   if (reasoning) {
     events.push({
       eventType: "contentBlockStart",
-      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
+      payload: {
+        contentBlockIndex: blockIndex,
+        contentBlockStart: {
+          contentBlockIndex: blockIndex,
+          start: { type: "thinking" },
+        },
+      },
     });
     for (let i = 0; i < reasoning.length; i += chunkSize) {
       const slice = reasoning.slice(i, i + chunkSize);
@@ -660,7 +684,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
         eventType: "contentBlockDelta",
         payload: {
           contentBlockIndex: blockIndex,
-          delta: { type: "thinking_delta", thinking: slice },
+          contentBlockDelta: {
+            contentBlockIndex: blockIndex,
+            delta: { type: "thinking_delta", thinking: slice },
+          },
         },
       });
     }
@@ -674,7 +701,13 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   // Text block
   events.push({
     eventType: "contentBlockStart",
-    payload: { contentBlockIndex: blockIndex, start: {} },
+    payload: {
+      contentBlockIndex: blockIndex,
+      contentBlockStart: {
+        contentBlockIndex: blockIndex,
+        start: { type: "text" },
+      },
+    },
   });
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);
@@ -682,7 +715,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
       eventType: "contentBlockDelta",
       payload: {
         contentBlockIndex: blockIndex,
-        delta: { type: "text_delta", text: slice },
+        contentBlockDelta: {
+          contentBlockIndex: blockIndex,
+          delta: { text: slice },
+        },
       },
     });
   }
@@ -702,7 +738,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
       eventType: "contentBlockStart",
       payload: {
         contentBlockIndex: currentBlock,
-        start: { toolUse: { toolUseId, name: tc.name } },
+        contentBlockStart: {
+          contentBlockIndex: currentBlock,
+          start: { toolUse: { toolUseId, name: tc.name } },
+        },
       },
     });
 
@@ -723,7 +762,10 @@ export function buildBedrockStreamContentWithToolCallsEvents(
         eventType: "contentBlockDelta",
         payload: {
           contentBlockIndex: currentBlock,
-          delta: { type: "input_json_delta", inputJSON: slice },
+          contentBlockDelta: {
+            contentBlockIndex: currentBlock,
+            delta: { toolUse: { input: slice } },
+          },
         },
       });
     }
@@ -752,7 +794,7 @@ export function buildBedrockStreamToolCallEvents(
 
   events.push({
     eventType: "messageStart",
-    payload: { role: "assistant" },
+    payload: { messageStart: { role: "assistant" } },
   });
 
   for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
@@ -763,8 +805,11 @@ export function buildBedrockStreamToolCallEvents(
       eventType: "contentBlockStart",
       payload: {
         contentBlockIndex: tcIdx,
-        start: {
-          toolUse: { toolUseId, name: tc.name },
+        contentBlockStart: {
+          contentBlockIndex: tcIdx,
+          start: {
+            toolUse: { toolUseId, name: tc.name },
+          },
         },
       },
     });
@@ -786,7 +831,10 @@ export function buildBedrockStreamToolCallEvents(
         eventType: "contentBlockDelta",
         payload: {
           contentBlockIndex: tcIdx,
-          delta: { type: "input_json_delta", inputJSON: slice },
+          contentBlockDelta: {
+            contentBlockIndex: tcIdx,
+            delta: { toolUse: { input: slice } },
+          },
         },
       });
     }

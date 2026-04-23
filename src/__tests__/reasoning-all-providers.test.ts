@@ -442,12 +442,14 @@ describe("POST /model/{id}/invoke-with-response-stream (reasoning streaming)", (
     const thinkingStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "thinking",
+        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
+          ?.start?.type === "thinking",
     );
     const textStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === undefined,
+        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
+          ?.start?.type === "text",
     );
 
     expect(thinkingStartIdx).toBeGreaterThan(0);
@@ -457,10 +459,15 @@ describe("POST /model/{id}/invoke-with-response-stream (reasoning streaming)", (
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
+          ?.delta?.type === "thinking_delta",
     );
     const fullThinking = thinkingDeltas
-      .map((f) => (f.payload as { delta: { thinking: string } }).delta.thinking)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { thinking: string } } }).contentBlockDelta
+            .delta.thinking,
+      )
       .join("");
     expect(fullThinking).toBe("Let me think step by step about this problem.");
 
@@ -468,10 +475,15 @@ describe("POST /model/{id}/invoke-with-response-stream (reasoning streaming)", (
     const textDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "text_delta",
+        typeof (f.payload as { contentBlockDelta?: { delta?: { text?: string } } })
+          .contentBlockDelta?.delta?.text === "string",
     );
     const fullText = textDeltas
-      .map((f) => (f.payload as { delta: { text: string } }).delta.text)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { text: string } } }).contentBlockDelta.delta
+            .text,
+      )
       .join("");
     expect(fullText).toBe("The answer is 42.");
 
@@ -495,7 +507,8 @@ describe("POST /model/{id}/invoke-with-response-stream (reasoning streaming)", (
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
+          ?.delta?.type === "thinking_delta",
     );
     expect(thinkingDeltas).toHaveLength(0);
   });
@@ -519,12 +532,14 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
     const thinkingStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "thinking",
+        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
+          ?.start?.type === "thinking",
     );
     const textStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === undefined,
+        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
+          ?.start?.type === "text",
     );
 
     expect(thinkingStartIdx).toBeGreaterThan(0);
@@ -534,10 +549,15 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
+          ?.delta?.type === "thinking_delta",
     );
     const fullThinking = thinkingDeltas
-      .map((f) => (f.payload as { delta: { thinking: string } }).delta.thinking)
+      .map(
+        (f) =>
+          (f.payload as { contentBlockDelta: { delta: { thinking: string } } }).contentBlockDelta
+            .delta.thinking,
+      )
       .join("");
     expect(fullThinking).toBe("Let me think step by step about this problem.");
 
@@ -555,7 +575,8 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
+          ?.delta?.type === "thinking_delta",
     );
     expect(thinkingDeltas).toHaveLength(0);
   });
@@ -732,13 +753,19 @@ describe("buildBedrockStreamTextEvents (reasoning)", () => {
     // Thinking block at index 0
     expect(events[1]).toEqual({
       eventType: "contentBlockStart",
-      payload: { contentBlockIndex: 0, start: { type: "thinking" } },
+      payload: {
+        contentBlockIndex: 0,
+        contentBlockStart: { contentBlockIndex: 0, start: { type: "thinking" } },
+      },
     });
     expect(events[2]).toEqual({
       eventType: "contentBlockDelta",
       payload: {
         contentBlockIndex: 0,
-        delta: { type: "thinking_delta", thinking: "Step by step." },
+        contentBlockDelta: {
+          contentBlockIndex: 0,
+          delta: { type: "thinking_delta", thinking: "Step by step." },
+        },
       },
     });
     expect(events[3]).toEqual({
@@ -749,13 +776,19 @@ describe("buildBedrockStreamTextEvents (reasoning)", () => {
     // Text block at index 1
     expect(events[4]).toEqual({
       eventType: "contentBlockStart",
-      payload: { contentBlockIndex: 1, start: {} },
+      payload: {
+        contentBlockIndex: 1,
+        contentBlockStart: { contentBlockIndex: 1, start: { type: "text" } },
+      },
     });
     expect(events[5]).toEqual({
       eventType: "contentBlockDelta",
       payload: {
         contentBlockIndex: 1,
-        delta: { type: "text_delta", text: "The answer." },
+        contentBlockDelta: {
+          contentBlockIndex: 1,
+          delta: { text: "The answer." },
+        },
       },
     });
     expect(events[6]).toEqual({
