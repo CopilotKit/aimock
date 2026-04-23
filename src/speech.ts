@@ -109,7 +109,7 @@ export async function handleSpeech(
           path,
           headers: flattenHeaders(req.headers),
           body: syntheticReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }

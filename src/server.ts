@@ -37,7 +37,7 @@ import { handleEmbeddings } from "./embeddings.js";
 import { handleImages } from "./images.js";
 import { handleSpeech } from "./speech.js";
 import { handleTranscription } from "./transcription.js";
-import { handleVideoCreate, handleVideoStatus, type VideoStateMap } from "./video.js";
+import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
 import { handleOllama, handleOllamaGenerate } from "./ollama.js";
 import { handleCohere } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
@@ -722,7 +722,7 @@ export async function createServer(
     maxEntries: options?.journalMaxEntries ?? 1000,
     fixtureCountsMaxTestIds: options?.fixtureCountsMaxTestIds ?? 500,
   });
-  const videoStates: VideoStateMap = new Map();
+  const videoStates = new VideoStateMap();
 
   // Share journal and metrics registry with mounted services
   if (mounts) {
