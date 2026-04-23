@@ -938,7 +938,7 @@ describe("POST /api/chat (malformed tool call arguments)", () => {
 // ─── Integration tests: tool call on /api/generate → 500 ───────────────────
 
 describe("POST /api/generate (tool call fixture)", () => {
-  it("returns 500 'unknown type' for tool call fixtures on /api/generate", async () => {
+  it("returns 400 for tool call fixtures on /api/generate with clear error", async () => {
     const tcFixture: Fixture = {
       match: { userMessage: "tool-gen" },
       response: {
@@ -952,9 +952,9 @@ describe("POST /api/generate (tool call fixture)", () => {
       stream: false,
     });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toContain("did not match any known type");
+    expect(body.error.message).toContain("Tool call fixtures are not supported on /api/generate");
   });
 });
 
@@ -1100,7 +1100,7 @@ describe("POST /api/generate (malformed JSON)", () => {
 // ─── Integration tests: POST /api/generate (unknown response type streaming) ─
 
 describe("POST /api/generate (unknown response type streaming)", () => {
-  it("returns 500 for tool call fixture on /api/generate (streaming default)", async () => {
+  it("returns 400 for tool call fixture on /api/generate (streaming default)", async () => {
     const tcFixture: Fixture = {
       match: { userMessage: "tool-gen-stream" },
       response: {
@@ -1114,9 +1114,9 @@ describe("POST /api/generate (unknown response type streaming)", () => {
       // stream omitted → defaults to true
     });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toContain("did not match any known type");
+    expect(body.error.message).toContain("Tool call fixtures are not supported on /api/generate");
   });
 });
 
