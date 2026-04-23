@@ -354,7 +354,7 @@ function makeUpstreamRequest(
           // Stop relaying if the client disconnects mid-stream
           clientRes.on("close", () => {
             clientDisconnected = true;
-            req.destroy(new Error("Client disconnected"));
+            req.destroy();
           });
         }
         const chunks: Buffer[] = [];
@@ -574,6 +574,8 @@ function buildFixtureResponse(
           ...(openaiReasoning ? { reasoning: openaiReasoning } : {}),
         };
       }
+      // Recognized OpenAI shape but empty content (e.g. content filtering, zero max_tokens)
+      return { content: "", ...(openaiReasoning ? { reasoning: openaiReasoning } : {}) };
     }
   }
 
@@ -658,6 +660,8 @@ function buildFixtureResponse(
           ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
         };
       }
+      // Recognized Gemini shape but empty content
+      return { content: "", ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
     }
   }
 
@@ -708,6 +712,8 @@ function buildFixtureResponse(
           ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
         };
       }
+      // Recognized Bedrock Converse shape but empty content
+      return { content: "", ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
     }
   }
 
