@@ -428,6 +428,28 @@ async function handleCompletions(
     return;
   }
 
+  // Validate messages array
+  if (!Array.isArray(body.messages)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Missing required parameter: 'messages'",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
   // Match fixture
   body._endpointType = "chat";
   const testId = getTestId(req);

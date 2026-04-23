@@ -918,7 +918,15 @@ export async function handleBedrockStream(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    // Anthropic-style error format (Bedrock uses Claude): { type: "error", error: { type, message } }
+    const anthropicError = {
+      type: "error",
+      error: {
+        type: response.error.type ?? "api_error",
+        message: response.error.message,
+      },
+    };
+    writeErrorResponse(res, status, JSON.stringify(anthropicError));
     return;
   }
 
