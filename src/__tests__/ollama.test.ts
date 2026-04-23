@@ -1262,12 +1262,12 @@ describe("ollamaToCompletionRequest (edge cases)", () => {
     expect(result.max_tokens).toBeUndefined();
   });
 
-  it("handles stream undefined (passes through as undefined)", () => {
+  it("defaults stream to true when absent (matches Ollama default)", () => {
     const result = ollamaToCompletionRequest({
       model: "llama3",
       messages: [{ role: "user", content: "hi" }],
     });
-    expect(result.stream).toBeUndefined();
+    expect(result.stream).toBe(true);
   });
 
   it("handles empty tools array (returns undefined)", () => {

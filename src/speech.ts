@@ -59,6 +59,24 @@ export async function handleSpeech(
     return;
   }
 
+  if (!speechReq.input) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: { message: "Missing required parameter: 'input'", type: "invalid_request_error" },
+      }),
+    );
+    return;
+  }
+
   const syntheticReq: ChatCompletionRequest = {
     model: speechReq.model ?? "tts-1",
     messages: [{ role: "user", content: speechReq.input }],

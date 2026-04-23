@@ -109,7 +109,7 @@ export function ollamaToCompletionRequest(req: OllamaRequest): ChatCompletionReq
   return {
     model: req.model,
     messages,
-    stream: req.stream,
+    stream: req.stream ?? true,
     temperature: req.options?.temperature,
     max_tokens: req.options?.num_predict,
     tools,
@@ -120,7 +120,7 @@ function ollamaGenerateToCompletionRequest(req: OllamaGenerateRequest): ChatComp
   return {
     model: req.model,
     messages: [{ role: "user", content: req.prompt }],
-    stream: req.stream,
+    stream: req.stream ?? true,
     temperature: req.options?.temperature,
     max_tokens: req.options?.num_predict,
   };
