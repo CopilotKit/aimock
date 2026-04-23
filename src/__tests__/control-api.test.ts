@@ -142,7 +142,7 @@ describe("/__aimock control API", () => {
       const res = await httpRaw(`${instance.url}/__aimock/fixtures`, "POST", "not json{{{");
       expect(res.status).toBe(400);
       const body = JSON.parse(res.body);
-      expect(body.error).toMatch(/^Invalid JSON:/)
+      expect(body.error).toMatch(/^Invalid JSON:/);
     });
 
     it("returns 400 when fixtures array is missing", async () => {
