@@ -752,6 +752,7 @@ export async function handleMessages(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

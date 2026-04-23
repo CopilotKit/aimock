@@ -342,6 +342,7 @@ export async function handleBedrock(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -699,6 +700,7 @@ export async function handleBedrockStream(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

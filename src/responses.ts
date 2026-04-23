@@ -875,6 +875,7 @@ export async function handleResponses(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

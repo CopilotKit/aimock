@@ -415,6 +415,7 @@ export async function handleOllama(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
@@ -674,6 +675,7 @@ export async function handleOllamaGenerate(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

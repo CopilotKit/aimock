@@ -492,6 +492,7 @@ export async function handleCohere(
         headers: flattenHeaders(req.headers),
         body: completionReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

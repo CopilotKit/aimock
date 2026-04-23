@@ -85,6 +85,7 @@ export async function handleSpeech(
       req.headers,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )

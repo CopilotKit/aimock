@@ -113,6 +113,7 @@ export async function handleEmbeddings(
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
       },
+      fixture ? "fixture" : "proxy",
       defaults.registry,
       defaults.logger,
     )
