@@ -78,8 +78,7 @@ export { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 export { handleImages } from "./images.js";
 export { handleSpeech } from "./speech.js";
 export { handleTranscription } from "./transcription.js";
-export { handleVideoCreate, handleVideoStatus } from "./video.js";
-export type { VideoStateMap } from "./video.js";
+export { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
 
 // Helpers
 export {

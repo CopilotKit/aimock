@@ -8,9 +8,12 @@ import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
 /**
- * Extract a named field value from a multipart/form-data body.
- * Lightweight parser — scans for Content-Disposition headers
- * to find simple string field values.
+ * Extract a text field from multipart form data using regex.
+ * NOTE: This runs against the full body including binary audio data.
+ * It works because text metadata fields (model, response_format, etc.)
+ * appear before the binary audio part in standard multipart encoding.
+ * A proper multipart parser would be more robust but is overkill for
+ * the small set of fields we extract.
  */
 function extractFormField(raw: string, fieldName: string): string | undefined {
   const pattern = new RegExp(
@@ -87,7 +90,7 @@ export async function handleTranscription(
           path,
           headers: flattenHeaders(req.headers),
           body: syntheticReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }

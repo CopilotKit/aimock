@@ -7,7 +7,12 @@
  */
 
 import type * as http from "node:http";
-import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
+import type {
+  ChatCompletionRequest,
+  Fixture,
+  HandlerDefaults,
+  RecordProviderKey,
+} from "./types.js";
 import {
   isEmbeddingResponse,
   isErrorResponse,
@@ -42,6 +47,7 @@ export async function handleEmbeddings(
   journal: Journal,
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
+  providerKey: RecordProviderKey = "openai",
 ): Promise<void> {
   const { logger } = defaults;
   setCorsHeaders(res);
@@ -180,7 +186,7 @@ export async function handleEmbeddings(
       req,
       res,
       syntheticReq,
-      "openai",
+      providerKey,
       req.url ?? "/v1/embeddings",
       fixtures,
       defaults,
@@ -192,7 +198,7 @@ export async function handleEmbeddings(
         path: req.url ?? "/v1/embeddings",
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
-        response: { status: res.statusCode ?? 200, fixture: null },
+        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
       });
       return;
     }
