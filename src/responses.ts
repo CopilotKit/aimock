@@ -899,7 +899,7 @@ export async function handleResponses(
           path: req.url ?? "/v1/responses",
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }

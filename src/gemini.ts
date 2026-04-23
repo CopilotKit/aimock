@@ -99,7 +99,7 @@ export function geminiToCompletionRequest(
       if (role === "user") {
         // Check for functionResponse parts
         const funcResponses = content.parts.filter((p) => p.functionResponse);
-        const textParts = content.parts.filter((p) => p.text !== undefined);
+        const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
 
         if (funcResponses.length > 0) {
           // functionResponse → tool message
@@ -129,7 +129,7 @@ export function geminiToCompletionRequest(
       } else if (role === "model") {
         // Check for functionCall parts
         const funcCalls = content.parts.filter((p) => p.functionCall);
-        const textParts = content.parts.filter((p) => p.text !== undefined);
+        const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
 
         if (funcCalls.length > 0) {
           messages.push({
@@ -586,7 +586,7 @@ export async function handleGemini(
           path,
           headers: flattenHeaders(req.headers),
           body: completionReq,
-          response: { status: res.statusCode ?? 200, fixture: null },
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
         return;
       }
