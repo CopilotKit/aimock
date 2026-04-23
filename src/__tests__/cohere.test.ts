@@ -829,8 +829,8 @@ describe("POST /v2/chat (malformed tool call arguments)", () => {
     const body = JSON.parse(res.body);
     expect(body.message.tool_calls).toHaveLength(1);
     expect(body.message.tool_calls[0].function.name).toBe("fn");
-    // Cohere passes through the arguments string as-is (logs warning)
-    expect(body.message.tool_calls[0].function.arguments).toBe("NOT VALID JSON");
+    // Malformed JSON falls back to "{}" (logs warning)
+    expect(body.message.tool_calls[0].function.arguments).toBe("{}");
   });
 });
 

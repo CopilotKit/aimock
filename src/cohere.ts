@@ -140,19 +140,22 @@ function buildCohereTextResponse(content: string): object {
 function buildCohereToolCallResponse(toolCalls: ToolCall[], logger: Logger): object {
   const cohereCalls = toolCalls.map((tc) => {
     // Validate arguments JSON
+    let argsJson: string;
     try {
       JSON.parse(tc.arguments || "{}");
+      argsJson = tc.arguments || "{}";
     } catch {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
+      argsJson = "{}";
     }
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
       function: {
         name: tc.name,
-        arguments: tc.arguments || "{}",
+        arguments: argsJson,
       },
     };
   });
@@ -178,19 +181,22 @@ function buildCohereContentWithToolCallsResponse(
   logger: Logger,
 ): object {
   const cohereCalls = toolCalls.map((tc) => {
+    let argsJson: string;
     try {
       JSON.parse(tc.arguments || "{}");
+      argsJson = tc.arguments || "{}";
     } catch {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
+      argsJson = "{}";
     }
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
       function: {
         name: tc.name,
-        arguments: tc.arguments || "{}",
+        arguments: argsJson,
       },
     };
   });
