@@ -609,6 +609,17 @@ describe("CORS", () => {
     expect(res.headers["access-control-allow-methods"]).toContain("POST");
   });
 
+  it("OPTIONS preflight includes chaos control headers", async () => {
+    instance = await createServer(allFixtures);
+    const res = await options(`${instance.url}/v1/chat/completions`);
+
+    const allowHeaders = res.headers["access-control-allow-headers"] ?? "";
+    expect(allowHeaders).toContain("X-Aimock-Chaos-Drop");
+    expect(allowHeaders).toContain("X-Aimock-Chaos-Malformed");
+    expect(allowHeaders).toContain("X-Aimock-Chaos-Disconnect");
+    expect(allowHeaders).toContain("X-Test-Id");
+  });
+
   it("includes CORS headers on 404 responses", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/chat/completions`, {

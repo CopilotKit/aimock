@@ -225,6 +225,227 @@ describe("proxy-only mode", () => {
     await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
   });
 
+  it("applies chaos BEFORE proxying (drop)", async () => {
+    const countingUpstream = await createCountingUpstream("should not be hit");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { dropRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(500);
+    expect(countingUpstream.getCount()).toBe(0);
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("applies chaos BEFORE proxying (disconnect)", async () => {
+    const countingUpstream = await createCountingUpstream("should not be hit");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { disconnectRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "aimock-chaos-proxy-disconnect-"),
+        )),
+        proxyOnly: true,
+      },
+    });
+
+    await expect(post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST)).rejects.toThrow();
+
+    expect(countingUpstream.getCount()).toBe(0);
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("applies malformed chaos AFTER proxying (upstream called, body corrupted, journaled)", async () => {
+    const countingUpstream = await createCountingUpstream("valid content");
+
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "aimock-chaos-postresponse-"),
+        )),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Upstream IS called: malformed is a post-response mutation, not a pre-flight drop
+    expect(countingUpstream.getCount()).toBe(1);
+    // Client sees 200 with a body that does NOT parse as JSON
+    expect(resp.status).toBe(200);
+    expect(() => JSON.parse(resp.body)).toThrow();
+    // Journal records the chaos action exactly once (no double-entry from the
+    // chaos path + the default proxy-relay path)
+    expect(recorder.journal.size).toBe(1);
+    const last = recorder.journal.getLast();
+    expect(last?.response.chaosAction).toBe("malformed");
+    expect(last?.response.fixture).toBeNull();
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("preserves upstream content-type on replay when no chaos fires", async () => {
+    const countingUpstream = await createCountingUpstream("valid content");
+
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: countingUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-proxy-ct-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(200);
+    const ct = resp.headers["content-type"];
+    expect(typeof ct === "string" ? ct : "").toContain("application/json");
+    // Body is valid JSON and round-trips
+    expect(JSON.parse(resp.body).choices[0].message.content).toBe("valid content");
+
+    await new Promise<void>((resolve) => countingUpstream.server.close(() => resolve()));
+  });
+
+  it("proxy failure produces 502 end-to-end and journals the failure", async () => {
+    // Integration test: unit tests prove recorder.ts writes 502 on upstream
+    // failure; this pins that handleCompletions handles the "relayed" outcome
+    // correctly (journals, doesn't hang).
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: "http://127.0.0.1:1" }, // port 1 — unreachable
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-proxy-fail-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    expect(resp.status).toBe(502);
+    expect(recorder.journal.size).toBe(1);
+    const entry = recorder.journal.getLast();
+    expect(entry?.response.status).toBe(502);
+    expect(entry?.response.fixture).toBeNull();
+    expect(entry?.response.source).toBe("proxy");
+    expect(entry?.response.chaosAction).toBeUndefined();
+  });
+
+  it("chaos + proxy failure: malformed was rolled but upstream failed → 502, no chaosAction", async () => {
+    // Integration test: when chaos rolls malformed but the upstream request
+    // fails, proxyAndRecord synthesizes a 502 before the hook is invoked. The
+    // journal should reflect what actually happened (502, no chaos) rather
+    // than what was intended.
+    recorder = await createServer([], {
+      port: 0,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: "http://127.0.0.1:1" }, // unreachable
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-proxy-fail-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Client sees the proxy failure, NOT a malformed-JSON body
+    expect(resp.status).toBe(502);
+    expect(() => JSON.parse(resp.body)).not.toThrow();
+
+    expect(recorder.journal.size).toBe(1);
+    const entry = recorder.journal.getLast();
+    expect(entry?.response.status).toBe(502);
+    expect(entry?.response.source).toBe("proxy");
+    // Chaos was rolled but never applied — journal must not claim it fired
+    expect(entry?.response.chaosAction).toBeUndefined();
+  });
+
+  it("SSE upstream bypasses malformed chaos: body intact, bypass counted, journal clean", async () => {
+    // Pins the one place chaos silently no-ops: when upstream streams SSE,
+    // the bytes are already on the wire before the chaos hook could fire.
+    // Without an explicit bypass signal, malformedRate: 1.0 on SSE traffic
+    // would silently mean 0% corruption with no log, metric, or journal
+    // trace. Lifting the gate out of recorder.ts in a future refactor
+    // (phase 3: streaming mutation) should trip this test.
+    const sseUpstream = await new Promise<{ server: http.Server; url: string }>((resolve) => {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        resolve({ server, url: `http://127.0.0.1:${port}` });
+      });
+    });
+
+    recorder = await createServer([], {
+      port: 0,
+      metrics: true,
+      chaos: { malformedRate: 1.0 },
+      record: {
+        providers: { openai: sseUpstream.url },
+        fixturePath: (tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-chaos-sse-"))),
+        proxyOnly: true,
+      },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, CHAT_REQUEST);
+
+    // Client receives a real SSE stream — content-type and frames intact, not
+    // the malformed-JSON sentinel.
+    expect(resp.status).toBe(200);
+    const ct = resp.headers["content-type"];
+    expect(typeof ct === "string" ? ct : "").toContain("text/event-stream");
+    expect(resp.body).toContain("data: ");
+    expect(resp.body).not.toContain("{malformed json");
+
+    // Journal records the relayed proxy call, NOT a chaos action — the
+    // chaos roll happened but couldn't be applied, so claiming it fired
+    // would be a lie to the observer.
+    expect(recorder.journal.size).toBe(1);
+    const last = recorder.journal.getLast();
+    expect(last?.response.chaosAction).toBeUndefined();
+    expect(last?.response.source).toBe("proxy");
+
+    // Bypass must be visible in metrics so operators can see that a
+    // configured chaos action didn't fire.
+    const metricsRes = await new Promise<{ body: string }>((resolve, reject) => {
+      const mReq = http.request(`${recorder!.url}/metrics`, { method: "GET" }, (mRes) => {
+        const chunks: Buffer[] = [];
+        mRes.on("data", (c: Buffer) => chunks.push(c));
+        mRes.on("end", () => resolve({ body: Buffer.concat(chunks).toString() }));
+      });
+      mReq.on("error", reject);
+      mReq.end();
+    });
+    expect(metricsRes.body).toMatch(
+      /aimock_chaos_bypassed_total\{[^}]*action="malformed"[^}]*source="proxy"[^}]*\} 1/,
+    );
+    // Paired negative: the normal chaos_triggered counter must NOT increment
+    // for a bypass — the action didn't actually fire.
+    expect(metricsRes.body).not.toMatch(/aimock_chaos_triggered_total\{[^}]*action="malformed"/);
+
+    await new Promise<void>((resolve) => sseUpstream.server.close(() => resolve()));
+  });
+
   it("regular record mode DOES cache in memory — second request served from cache", async () => {
     // Use a counting upstream to verify only the first request is proxied
     const countingUpstream = await createCountingUpstream("cached response");

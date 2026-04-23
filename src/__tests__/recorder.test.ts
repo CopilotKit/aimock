@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Fixture, FixtureFile } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { proxyAndRecord } from "../recorder.js";
+import { proxyAndRecord, type ProxyCapturedResponse } from "../recorder.js";
 import type { RecordConfig } from "../types.js";
 import { Logger } from "../logger.js";
 import { LLMock } from "../llmock.js";
@@ -110,13 +110,13 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("proxyAndRecord", () => {
-  it("returns false when provider is not configured", async () => {
+  it('returns "not_configured" when provider is not configured', async () => {
     const fixtures: Fixture[] = [];
     const logger = new Logger("silent");
     const record: RecordConfig = { providers: {} };
 
     // Create a mock req/res pair — we just need them to exist,
-    // proxyAndRecord should return false before using them
+    // proxyAndRecord should short-circuit before using them
     const { req, res } = createMockReqRes();
 
     const result = await proxyAndRecord(
@@ -129,10 +129,10 @@ describe("proxyAndRecord", () => {
       { record, logger },
     );
 
-    expect(result).toBe(false);
+    expect(result).toBe("not_configured");
   });
 
-  it("returns false when record config is undefined", async () => {
+  it('returns "not_configured" when record config is undefined', async () => {
     const fixtures: Fixture[] = [];
     const logger = new Logger("silent");
 
@@ -148,7 +148,71 @@ describe("proxyAndRecord", () => {
       { record: undefined, logger },
     );
 
-    expect(result).toBe(false);
+    expect(result).toBe("not_configured");
+  });
+
+  it("beforeWriteResponse hook receives raw upstream bytes (binary-safe)", async () => {
+    // Pins the refactor's claim that the hook sees raw upstream bytes, not a
+    // UTF-8-decoded-then-re-encoded view. Uses a deliberately non-UTF8 byte
+    // sequence so any round-trip through String() would corrupt it.
+    const bytes = Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x01, 0x02, 0x7f, 0x80]);
+
+    const binaryUpstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "application/octet-stream" });
+      upRes.end(bytes);
+    });
+    await new Promise<void>((resolve) => binaryUpstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (binaryUpstream.address() as { port: number }).port;
+
+    let captured: ProxyCapturedResponse | undefined;
+
+    // Minimal HTTP server that invokes proxyAndRecord with our capture hook,
+    // so req/res are real and the full recorder pipeline exercises the hook.
+    const recorderServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks).toString();
+        await proxyAndRecord(
+          req,
+          res,
+          JSON.parse(rawBody),
+          "openai",
+          "/v1/chat/completions",
+          [],
+          {
+            record: {
+              providers: { openai: `http://127.0.0.1:${upstreamPort}` },
+              proxyOnly: true,
+            },
+            logger: new Logger("silent"),
+          },
+          rawBody,
+          {
+            beforeWriteResponse: (response) => {
+              captured = response;
+              return false; // let the default relay proceed; we only wanted to observe
+            },
+          },
+        );
+      });
+    });
+    await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+    const recorderPort = (recorderServer.address() as { port: number }).port;
+
+    try {
+      await post(`http://127.0.0.1:${recorderPort}/v1/chat/completions`, {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      expect(captured).toBeDefined();
+      expect(captured!.body).toBeInstanceOf(Buffer);
+      expect(Buffer.compare(captured!.body, bytes)).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => binaryUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+    }
   });
 });
 
