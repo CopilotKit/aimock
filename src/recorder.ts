@@ -420,8 +420,13 @@ function buildFixtureResponse(
 
   const obj = parsed as Record<string, unknown>;
 
-  // Error response
-  if (obj.error) {
+  // Error response — only match the actual { error: { message: "..." } } shape
+  // used by OpenAI/Anthropic/etc., not arbitrary truthy `.error` fields.
+  if (
+    typeof obj.error === "object" &&
+    obj.error !== null &&
+    typeof (obj.error as Record<string, unknown>).message === "string"
+  ) {
     const err = obj.error as Record<string, unknown>;
     return {
       error: {
@@ -488,10 +493,19 @@ function buildFixtureResponse(
   }
 
   // OpenAI video generation: { id, status, ... }
+  // Guard against false positives: many API responses have `id` + `status` fields
+  // (e.g. chat completions, Anthropic messages). Reject if the response has fields
+  // that indicate a known non-video format.
   if (
     typeof obj.id === "string" &&
     typeof obj.status === "string" &&
-    (obj.status === "completed" || obj.status === "in_progress" || obj.status === "failed")
+    (obj.status === "completed" || obj.status === "in_progress" || obj.status === "failed") &&
+    !("choices" in obj) &&
+    !("content" in obj) &&
+    !("candidates" in obj) &&
+    !("message" in obj) &&
+    !("data" in obj) &&
+    !("object" in obj)
   ) {
     if (obj.status === "completed" && obj.url) {
       return {
@@ -626,6 +640,42 @@ function buildFixtureResponse(
       if (hasContent) {
         return { content: textBlock.text as string };
       }
+    }
+  }
+
+  // Cohere v2 chat: { finish_reason: "...", message: { content: [{ type: "text", text: "..." }] } }
+  // Must come before Ollama since both have `message`, but Cohere has `finish_reason` at top level
+  // (not nested in `choices`) and `message.content` as an array of typed objects.
+  if (
+    typeof obj.finish_reason === "string" &&
+    obj.message &&
+    typeof obj.message === "object" &&
+    Array.isArray((obj.message as Record<string, unknown>).content)
+  ) {
+    const msg = obj.message as Record<string, unknown>;
+    const contentBlocks = msg.content as Array<Record<string, unknown>>;
+    const textBlock = contentBlocks.find((b) => b.type === "text" && typeof b.text === "string");
+    const toolCallBlocks = contentBlocks.filter((b) => b.type === "tool_call");
+
+    if (toolCallBlocks.length > 0) {
+      const toolCalls: ToolCall[] = toolCallBlocks.map((b) => ({
+        name: String(b.name ?? (b.function as Record<string, unknown>)?.name ?? ""),
+        arguments:
+          typeof b.parameters === "string"
+            ? b.parameters
+            : typeof b.parameters === "object"
+              ? JSON.stringify(b.parameters)
+              : typeof (b.function as Record<string, unknown>)?.arguments === "string"
+                ? String((b.function as Record<string, unknown>).arguments)
+                : JSON.stringify((b.function as Record<string, unknown>)?.arguments),
+      }));
+      if (textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0) {
+        return { content: textBlock.text as string, toolCalls };
+      }
+      return { toolCalls };
+    }
+    if (textBlock && typeof textBlock.text === "string" && textBlock.text.length > 0) {
+      return { content: textBlock.text as string };
     }
   }
 
