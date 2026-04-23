@@ -171,15 +171,20 @@ export async function proxyAndRecord(
     if (collapsed.content === "" && (!collapsed.toolCalls || collapsed.toolCalls.length === 0)) {
       defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
     }
+    const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
     if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
       if (collapsed.content) {
         // Both content and toolCalls present — save as ContentWithToolCallsResponse
-        fixtureResponse = { content: collapsed.content, toolCalls: collapsed.toolCalls };
+        fixtureResponse = {
+          content: collapsed.content,
+          toolCalls: collapsed.toolCalls,
+          ...reasoningSpread,
+        };
       } else {
-        fixtureResponse = { toolCalls: collapsed.toolCalls };
+        fixtureResponse = { toolCalls: collapsed.toolCalls, ...reasoningSpread };
       }
     } else {
-      fixtureResponse = { content: collapsed.content ?? "" };
+      fixtureResponse = { content: collapsed.content ?? "", ...reasoningSpread };
     }
   } else {
     // Non-streaming — try to parse as JSON
@@ -560,7 +565,7 @@ function buildFixtureResponse(
             ...(openaiReasoning ? { reasoning: openaiReasoning } : {}),
           };
         }
-        return { toolCalls };
+        return { toolCalls, ...(openaiReasoning ? { reasoning: openaiReasoning } : {}) };
       }
       // Text content only
       if (hasContent) {
@@ -598,7 +603,7 @@ function buildFixtureResponse(
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         };
       }
-      return { toolCalls };
+      return { toolCalls, ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}) };
     }
     if (hasContent) {
       return {
@@ -639,7 +644,7 @@ function buildFixtureResponse(
             ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
           };
         }
-        return { toolCalls };
+        return { toolCalls, ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
       }
       if (hasContent) {
         return {
@@ -689,7 +694,7 @@ function buildFixtureResponse(
             ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
           };
         }
-        return { toolCalls };
+        return { toolCalls, ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
       }
       if (hasContent) {
         return {
