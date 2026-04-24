@@ -10,6 +10,7 @@
         { label: "Quick Start: LLM", href: "/chat-completions" },
         { label: "Quick Start: aimock", href: "/aimock-cli" },
         { label: "Examples", href: "/examples" },
+        { label: "MCP Server", href: "/mcp" },
       ],
     },
     {
