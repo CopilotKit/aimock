@@ -73,7 +73,9 @@
           <tbody>
             <tr>
               <td><code>search-docs</code></td>
-              <td>Semantic search over aimock documentation — guides, API references, provider configs</td>
+              <td>
+                Semantic search over aimock documentation — guides, API references, provider configs
+              </td>
             </tr>
             <tr>
               <td><code>search-code</code></td>
@@ -99,16 +101,12 @@
         <h3>Claude Code</h3>
         <p>Add via the CLI:</p>
         <div class="code-block">
-          <div class="code-block-header">
-            Terminal <span class="lang-tag">bash</span>
-          </div>
+          <div class="code-block-header">Terminal <span class="lang-tag">bash</span></div>
           <pre><code>claude mcp add aimock-docs --transport http https://mcp.aimock.copilotkit.dev/mcp</code></pre>
         </div>
         <p>Or add to <code>~/.claude/mcp.json</code>:</p>
         <div class="code-block">
-          <div class="code-block-header">
-            ~/.claude/mcp.json <span class="lang-tag">json</span>
-          </div>
+          <div class="code-block-header">~/.claude/mcp.json <span class="lang-tag">json</span></div>
           <pre><code>{
   <span class="prop">"mcp-servers"</span>: {
     <span class="prop">"aimock-docs"</span>: {
@@ -137,9 +135,7 @@
 
         <h3>Cursor</h3>
         <div class="code-block">
-          <div class="code-block-header">
-            .cursor/mcp.json <span class="lang-tag">json</span>
-          </div>
+          <div class="code-block-header">.cursor/mcp.json <span class="lang-tag">json</span></div>
           <pre><code>{
   <span class="prop">"mcpServers"</span>: {
     <span class="prop">"aimock-docs"</span>: {
@@ -152,9 +148,7 @@
 
         <h3>OpenAI Codex</h3>
         <div class="code-block">
-          <div class="code-block-header">
-            codex-mcp.json <span class="lang-tag">json</span>
-          </div>
+          <div class="code-block-header">codex-mcp.json <span class="lang-tag">json</span></div>
           <pre><code>{
   <span class="prop">"mcpServers"</span>: {
     <span class="prop">"aimock-docs"</span>: {
@@ -187,17 +181,17 @@
         <h3>Generic (Streamable HTTP)</h3>
         <p>Any MCP-compatible client can connect via Streamable HTTP:</p>
         <div class="code-block">
-          <div class="code-block-header">
-            Endpoint <span class="lang-tag">text</span>
-          </div>
+          <div class="code-block-header">Endpoint <span class="lang-tag">text</span></div>
           <pre><code>URL:       https://mcp.aimock.copilotkit.dev/mcp
 Transport: Streamable HTTP
 Method:    POST</code></pre>
         </div>
 
         <h2>What Gets Indexed</h2>
-        <p>The MCP server indexes two sources from the
-          <a href="https://github.com/CopilotKit/aimock" target="_blank">aimock repository</a>:</p>
+        <p>
+          The MCP server indexes two sources from the
+          <a href="https://github.com/CopilotKit/aimock" target="_blank">aimock repository</a>:
+        </p>
         <ul>
           <li>
             <strong>Documentation</strong> — all HTML pages from <code>docs/</code>, chunked for
