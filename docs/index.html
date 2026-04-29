@@ -756,6 +756,119 @@
         border-top: 2px solid #22d3ee;
       }
 
+      /* ─── Section: Multi-Turn Matching ─────────────────────────────── */
+      .section-matching {
+        padding: 4.5rem 0;
+        position: relative;
+        background: linear-gradient(
+          180deg,
+          var(--bg-deep) 0%,
+          #0f1628 30%,
+          #0f1628 70%,
+          var(--bg-deep) 100%
+        );
+      }
+      .section-matching .container {
+        position: relative;
+        z-index: 1;
+      }
+      .section-matching h2 {
+        font-size: clamp(1.8rem, 4vw, 2.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        text-align: center;
+        margin-bottom: 1rem;
+      }
+      .matching-sub {
+        text-align: center;
+        color: var(--text-secondary);
+        font-size: 1.05rem;
+        max-width: 640px;
+        margin: 0 auto 3.5rem;
+        line-height: 1.7;
+      }
+      .matching-criteria {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 2rem;
+        max-width: 900px;
+        margin: 3rem auto 0;
+        position: relative;
+      }
+      .matching-criteria::before {
+        content: "";
+        position: absolute;
+        top: 28px;
+        left: calc(16.67% + 1rem);
+        right: calc(16.67% + 1rem);
+        height: 2px;
+        background: var(--border);
+      }
+      .criteria-item {
+        text-align: center;
+        position: relative;
+      }
+      .criteria-item-label {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: var(--bg-card);
+        border: 2px solid var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: var(--accent);
+        margin: 0 auto 1.25rem;
+        position: relative;
+        z-index: 1;
+      }
+      .criteria-item h3 {
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+      .criteria-item p {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        line-height: 1.6;
+      }
+      .how-it-works-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .how-it-works-list li {
+        padding: 0.75rem 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.9rem;
+        line-height: 1.6;
+      }
+      .how-it-works-list li:last-child {
+        border-bottom: none;
+      }
+      .how-it-works-list code {
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        color: var(--accent);
+        background: rgba(0, 255, 136, 0.08);
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+      }
+
+      @media (max-width: 768px) {
+        .matching-criteria {
+          grid-template-columns: 1fr;
+          gap: 2.5rem;
+        }
+        .matching-criteria::before {
+          display: none;
+        }
+      }
+
       /* ─── Section: Suite Reveal ──────────────────────────────────── */
       .section-suite {
         padding: 4.5rem 0;
@@ -1259,9 +1372,8 @@
           <div class="run-or">or</div>
           <div class="run-cmd">
             <span class="prompt-sign">$</span>
-            <code
-              >docker run -v $(pwd)/fixtures:/fixtures -p 4010:4010 ghcr.io/copilotkit/aimock</code
-            >
+            <!-- prettier-ignore -->
+            <code>docker run -v $(pwd)/fixtures:/fixtures -p 4010:4010 ghcr.io/copilotkit/aimock -h 0.0.0.0 -f /fixtures</code>
             <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
           </div>
         </div>
@@ -1381,7 +1493,102 @@
       </div>
     </section>
 
-    <!-- ─── Section 3: Transition ────────────────────────────────── -->
+    <!-- ─── Section 3: Multi-Turn Matching ─────────────────────────── -->
+    <section class="section-matching" id="matching">
+      <div class="container">
+        <h2 class="fade-in">Match by conversation state, not counters</h2>
+        <p class="matching-sub fade-in" style="transition-delay: 0.1s">
+          Multi-turn AI flows &mdash; human-in-the-loop, subagents, tool use &mdash; need different
+          responses at different conversation stages. <code>turnIndex</code> and
+          <code>hasToolResult</code> match based on what&rsquo;s already in the request. No mutable
+          server-side state, safe for concurrent and shared instances.
+        </p>
+
+        <div class="demo-grid fade-in" style="transition-delay: 0.2s">
+          <!-- Left: fixtures.json -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">fixtures.json</span>
+            </div>
+            <div class="demo-body">
+              <pre><span class="syn-bracket">{</span>
+  <span class="syn-key">"fixtures"</span><span class="syn-bracket">:</span> <span class="syn-bracket">[</span>
+    <span class="syn-bracket">{</span>
+      <span class="syn-key">"match"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+        <span class="syn-key">"userMessage"</span><span class="syn-bracket">:</span> <span class="syn-str">"plan a trip"</span><span class="syn-bracket">,</span>
+        <span class="syn-key">"turnIndex"</span><span class="syn-bracket">:</span> <span class="syn-num">0</span>
+      <span class="syn-bracket">},</span>
+      <span class="syn-key">"response"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+        <span class="syn-key">"toolCalls"</span><span class="syn-bracket">:</span> <span class="syn-bracket">[{</span> <span class="syn-key">"name"</span><span class="syn-bracket">:</span> <span class="syn-str">"generate_steps"</span> <span class="syn-bracket">}]</span>
+      <span class="syn-bracket">}</span>
+    <span class="syn-bracket">},</span>
+    <span class="syn-bracket">{</span>
+      <span class="syn-key">"match"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+        <span class="syn-key">"userMessage"</span><span class="syn-bracket">:</span> <span class="syn-str">"plan a trip"</span><span class="syn-bracket">,</span>
+        <span class="syn-key">"turnIndex"</span><span class="syn-bracket">:</span> <span class="syn-num">1</span>
+      <span class="syn-bracket">},</span>
+      <span class="syn-key">"response"</span><span class="syn-bracket">:</span> <span class="syn-bracket">{</span>
+        <span class="syn-key">"content"</span><span class="syn-bracket">:</span> <span class="syn-str">"Great choices! Your trip is booked."</span>
+      <span class="syn-bracket">}</span>
+    <span class="syn-bracket">}</span>
+  <span class="syn-bracket">]</span>
+<span class="syn-bracket">}</span></pre>
+            </div>
+          </div>
+
+          <!-- Right: how it works -->
+          <div class="demo-panel">
+            <div class="demo-titlebar">
+              <div class="dots"><span></span><span></span><span></span></div>
+              <span class="title">how it works</span>
+            </div>
+            <div class="demo-body">
+              <ul class="how-it-works-list">
+                <li>
+                  <strong>Turn 0</strong> &mdash; no assistant messages yet &rarr; returns tool call
+                  (<code>generate_steps</code>)
+                </li>
+                <li>
+                  <strong>Turn 1</strong> &mdash; one assistant message in history &rarr; returns
+                  final answer
+                </li>
+                <li>
+                  <strong>Stateless</strong> &mdash; works with 100 concurrent clients, no shared
+                  counters
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="matching-criteria fade-in" style="transition-delay: 0.3s">
+          <div class="criteria-item">
+            <div class="criteria-item-label">0,1,2</div>
+            <h3>turnIndex</h3>
+            <p>
+              Count of assistant messages in the request. Increases with each conversational turn.
+            </p>
+          </div>
+          <div class="criteria-item">
+            <div class="criteria-item-label">T/F</div>
+            <h3>hasToolResult</h3>
+            <p>
+              Does the request contain tool results? Distinguishes pre- and post-tool-call turns.
+            </p>
+          </div>
+          <div class="criteria-item">
+            <div class="criteria-item-label">n++</div>
+            <h3>sequenceIndex</h3>
+            <p>
+              Server-side counter for repeated identical requests. Use when stateless criteria
+              don&rsquo;t apply.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ─── Section 4: The Full Suite ────────────────────────────── -->
     <section class="section-suite" id="suite">
       <div class="container">
@@ -1470,7 +1677,7 @@
             <div class="demo-body">
               <pre><span class="t-green">$</span> npx @copilotkit/aimock --config aimock.json
 
-<span class="t-blue">&#9889;</span> aimock v1.0.0
+<span class="t-blue">&#9889;</span> aimock v1.16.0
 
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/chat/completions
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/messages
