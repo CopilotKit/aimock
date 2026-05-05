@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Added
+
+- **Snapshot-style recording** — When `X-Test-Id` is present, recorded fixtures are saved to `<fixturePath>/<slugified-testId>/<provider>.json` instead of timestamp-based filenames. Multiple fixtures for the same test+provider merge into one file. Stable paths enable meaningful PR diffs and easy test-to-fixture mapping. (Feature request by @jantimon, issue #155)
+
 ## [1.18.0] - 2026-05-04
 
 ### Added

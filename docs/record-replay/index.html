@@ -465,6 +465,88 @@
           fixture is saved to disk with a warning but not registered in memory.
         </p>
 
+        <h2 id="snapshot-style-recording">Snapshot-Style Recording</h2>
+        <p>
+          When the <code>X-Test-Id</code> header is present on a request, aimock uses
+          <strong>snapshot-style recording</strong> instead of the default timestamp-based
+          filenames. Fixtures are organized by test, producing stable file paths that work well with
+          version control and PR diffs.
+        </p>
+
+        <h3>Directory structure</h3>
+        <p>
+          The test ID is slugified into a directory name, and each provider gets its own file within
+          that directory:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Snapshot directory layout <span class="lang-tag">text</span>
+          </div>
+          <pre><code>fixtures/recorded/
+  agent-chat--handles-tool-call/
+    openai.json        # All OpenAI fixtures for this test
+    anthropic.json     # All Anthropic fixtures for this test
+  simple-test/
+    openai.json</code></pre>
+        </div>
+
+        <p>
+          The slugify rules: Common test file prefixes (<code>.spec.ts</code>,
+          <code>.test.tsx</code>, <code>.e2e.js</code>, etc.) are automatically stripped from the
+          test ID before slugifying, so <code>my-app.spec.ts › greeting</code> becomes
+          <code>greeting</code>. Then Playwright's <code>&nbsp;›&nbsp;</code> separator becomes
+          <code>--</code>, non-word characters become <code>-</code>, runs of 3+ dashes collapse to
+          <code>--</code>, and the result is lowercased. For example,
+          <code>"agent chat › handles tool call"</code> becomes
+          <code>agent-chat--handles-tool-call</code>.
+        </p>
+
+        <h3>Merge behavior on re-run</h3>
+        <p>
+          When you re-run a test, the new fixture is <strong>appended</strong> to the existing
+          <code>&lt;provider&gt;.json</code> file rather than overwriting it. This preserves
+          multi-turn conversations in a single file. If the existing file is corrupted (invalid
+          JSON), it is silently replaced.
+        </p>
+
+        <h3>Sending <code>X-Test-Id</code> from test frameworks</h3>
+
+        <div class="code-block">
+          <div class="code-block-header">Playwright <span class="lang-tag">ts</span></div>
+          <pre><code><span class="cm">// Playwright exposes testInfo.titlePath which joins suite + test titles</span>
+<span class="kw">import</span> { test } <span class="kw">from</span> <span class="str">"@playwright/test"</span>;
+
+test(<span class="str">"handles tool call"</span>, <span class="kw">async</span> ({ page }, testInfo) => {
+  <span class="cm">// titlePath = ["agent chat", "handles tool call"]</span>
+  <span class="kw">const</span> testId = testInfo.titlePath.join(<span class="str">" › "</span>);
+  <span class="cm">// Set on your OpenAI/Anthropic client config as a default header:</span>
+  <span class="cm">// headers: { "X-Test-Id": testId }</span>
+});</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">Vitest <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">import</span> { describe, it } <span class="kw">from</span> <span class="str">"vitest"</span>;
+
+describe(<span class="str">"agent chat"</span>, () => {
+  it(<span class="str">"handles tool call"</span>, <span class="kw">async</span> () => {
+    <span class="cm">// Pass X-Test-Id on each LLM request:</span>
+    <span class="kw">const</span> resp = <span class="kw">await</span> fetch(<span class="str">"http://localhost:4010/v1/chat/completions"</span>, {
+      headers: { <span class="str">"X-Test-Id"</span>: <span class="str">"agent chat › handles tool call"</span> },
+      <span class="cm">// ...body</span>
+    });
+  });
+});</code></pre>
+        </div>
+
+        <h3>Fallback behavior</h3>
+        <p>
+          When no <code>X-Test-Id</code> header is present (or the value is
+          <code>__default__</code>), recording falls back to the standard timestamp-based filename:
+          <code>&lt;provider&gt;-&lt;timestamp&gt;-&lt;uuid&gt;.json</code>.
+        </p>
+
         <h2>Fixture Lifecycle</h2>
         <ul>
           <li>

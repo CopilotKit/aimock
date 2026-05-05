@@ -493,6 +493,16 @@
 <span class="op">mock</span>.<span class="fn">loadFixtureDir</span>(<span class="str">"./fixtures"</span>);</code></pre>
         </div>
 
+        <div class="info-box">
+          <p>
+            <strong>Snapshot-style recording:</strong> When recording with <code>X-Test-Id</code>,
+            fixtures are automatically organized into per-test directories
+            (<code>&lt;fixturePath&gt;/&lt;test-slug&gt;/&lt;provider&gt;.json</code>). See
+            <a href="/record-replay#snapshot-style-recording">Snapshot-Style Recording</a> for
+            details.
+          </p>
+        </div>
+
         <h3>Programmatically</h3>
         <div class="code-block">
           <div class="code-block-header">programmatic.ts <span class="lang-tag">ts</span></div>
