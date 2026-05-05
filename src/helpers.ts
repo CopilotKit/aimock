@@ -11,6 +11,7 @@ import type {
   AudioResponse,
   TranscriptionResponse,
   VideoResponse,
+  RawJSONResponse,
   SSEChunk,
   ToolCall,
   ChatCompletion,
@@ -131,6 +132,10 @@ export function isVideoResponse(r: FixtureResponse): r is VideoResponse {
     (r as VideoResponse).video != null &&
     typeof (r as VideoResponse).video === "object"
   );
+}
+
+export function isJSONResponse(r: FixtureResponse): r is RawJSONResponse {
+  return "json" in r && (r as RawJSONResponse).json !== undefined;
 }
 
 export function extractOverrides(

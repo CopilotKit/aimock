@@ -42,6 +42,7 @@ import { handleTranscription } from "./transcription.js";
 import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
 import { handleElevenLabsAudio } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
+import { handleFal, falQueueStates } from "./fal.js";
 import { handleOllama, handleOllamaGenerate } from "./ollama.js";
 import { handleCohere } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
@@ -86,6 +87,7 @@ const ELEVENLABS_MUSIC_RE = /^\/v1\/music(?:\/(.+))?$/;
 const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/(.+)$/;
 const FAL_QUEUE_REQUESTS_RE = /^\/fal\/queue\/requests\/(.+)$/;
 const FAL_RUN_RE = /^\/fal\/run\/(.+)$/;
+const FAL_PREFIX_RE = /^\/fal(?:\/.*)?$/;
 const DEFAULT_CHUNK_SIZE = 20;
 
 // OpenAI-compatible endpoint suffixes for path prefix normalization.
@@ -303,6 +305,7 @@ async function handleControlAPI(
     journal.clear();
     videoStates.clear();
     falJobs.clear();
+    falQueueStates.clear();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
@@ -1782,6 +1785,50 @@ export async function createServer(
         }
       }
       return;
+    }
+
+    // /fal/* with `x-fal-target-host` header — general fal.ai routing
+    // (queue.fal.run, fal.run, rest.fal.ai, rest.alpha.fal.ai).
+    // Matches the requestMiddleware path-mirror convention used by
+    // @fal-ai/client when proxyUrl can't be honoured server-side.
+    if (FAL_PREFIX_RE.test(pathname) && req.headers["x-fal-target-host"]) {
+      setCorsHeaders(res);
+      try {
+        const raw = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+        if (chaosAction) {
+          applyChaosAction(
+            chaosAction,
+            res,
+            null,
+            journal,
+            {
+              method: req.method ?? "GET",
+              path: pathname,
+              headers: flattenHeaders(req.headers),
+              body: { model: "", messages: [] },
+            },
+            "fixture",
+            defaults.registry,
+          );
+          return;
+        }
+        const outcome = await handleFal(req, res, raw, pathname, fixtures, defaults, journal);
+        if (outcome === "handled") return;
+        // passthrough: fall through to legacy fal-audio routes below
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+        return;
+      }
     }
 
     // POST /fal/queue/submit/{model} — fal.ai Queue Submit

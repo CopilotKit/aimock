@@ -92,6 +92,7 @@ export { handleTranscription } from "./transcription.js";
 export { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
 export { handleElevenLabsAudio } from "./elevenlabs-audio.js";
 export { handleFalQueue } from "./fal-audio.js";
+export { handleFal, FalQueueStateMap } from "./fal.js";
 
 // Helpers
 export {
@@ -335,6 +336,7 @@ export type {
   AudioResponse,
   TranscriptionResponse,
   VideoResponse,
+  RawJSONResponse,
   ResponseOverrides,
   ContentWithToolCallsResponse,
   FixtureFileResponse,

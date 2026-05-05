@@ -28,6 +28,7 @@ import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
 import { falJobs } from "./fal-audio.js";
+import { falQueueStates } from "./fal.js";
 
 export class LLMock {
   private fixtures: Fixture[] = [];
@@ -193,6 +194,19 @@ export class LLMock {
     });
   }
 
+  // fal.queue.* is the dominant client API; onFalRun is a sync alias.
+  onFalQueue(modelOrPrompt: string | RegExp, response: unknown, opts?: FixtureOpts): this {
+    return this.addFixture({
+      match: { model: modelOrPrompt, endpoint: "fal" },
+      response: { json: response },
+      ...opts,
+    });
+  }
+
+  onFalRun(modelOrPrompt: string | RegExp, response: unknown, opts?: FixtureOpts): this {
+    return this.onFalQueue(modelOrPrompt, response, opts);
+  }
+
   // ---- Service mock convenience methods ----
 
   onSearch(pattern: string | RegExp, results: SearchResult[]): this {
@@ -318,6 +332,7 @@ export class LLMock {
     this.rerankFixtures.length = 0;
     this.moderationFixtures.length = 0;
     falJobs.clear();
+    falQueueStates.clear();
     if (this.serverInstance) {
       this.serverInstance.journal.clear();
       this.serverInstance.videoStates.clear();

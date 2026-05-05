@@ -265,15 +265,39 @@ export async function proxyAndRecord(
       // Not JSON — could be an unknown format
       defaults.logger.warn("Upstream response is not valid JSON — saving as error fixture");
     }
-    let encodingFormat: string | undefined;
-    try {
-      encodingFormat = rawBody ? JSON.parse(rawBody).encoding_format : undefined;
-    } catch (err) {
-      defaults.logger.debug(
-        `Could not parse encoding_format from raw body: ${err instanceof Error ? err.message : "unknown error"}`,
-      );
+    // fal.ai returns arbitrary, model-specific JSON shapes (images, video URLs,
+    // audio file objects, etc.). Round-trip the payload verbatim instead of
+    // letting buildFixtureResponse mis-classify it as ImageResponse / VideoResponse.
+    if (request._endpointType === "fal" && parsedResponse !== null) {
+      const obj = parsedResponse as Record<string, unknown>;
+      const isErrorShape =
+        typeof obj.error === "object" &&
+        obj.error !== null &&
+        typeof (obj.error as Record<string, unknown>).message === "string";
+      if (isErrorShape) {
+        const err = obj.error as Record<string, unknown>;
+        fixtureResponse = {
+          error: {
+            message: String(err.message ?? "Unknown error"),
+            type: String(err.type ?? "api_error"),
+            code: err.code ? String(err.code) : undefined,
+          },
+          status: upstreamStatus,
+        };
+      } else {
+        fixtureResponse = { json: parsedResponse, status: upstreamStatus };
+      }
+    } else {
+      let encodingFormat: string | undefined;
+      try {
+        encodingFormat = rawBody ? JSON.parse(rawBody).encoding_format : undefined;
+      } catch (err) {
+        defaults.logger.debug(
+          `Could not parse encoding_format from raw body: ${err instanceof Error ? err.message : "unknown error"}`,
+        );
+      }
+      fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
     }
-    fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
   }
 
   // If the client disconnected mid-stream, the collected data is likely
@@ -986,14 +1010,21 @@ type EndpointType =
   | "video"
   | "embedding"
   | "audio-gen"
-  | "fal-audio";
+  | "fal-audio"
+  | "fal";
 
 function buildFixtureMatch(request: ChatCompletionRequest): {
   userMessage?: string;
   inputText?: string;
+  model?: string;
   endpoint?: EndpointType;
 } {
-  const match: { userMessage?: string; inputText?: string; endpoint?: EndpointType } = {};
+  const match: {
+    userMessage?: string;
+    inputText?: string;
+    model?: string;
+    endpoint?: EndpointType;
+  } = {};
 
   // Include endpoint type for multimedia fixtures
   if (request._endpointType && request._endpointType !== "chat") {
@@ -1013,6 +1044,13 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
     if (text) {
       match.userMessage = text;
     }
+  }
+
+  // fal.ai fixtures are typically authored against the model id (e.g.
+  // /flux/, /kling/) since the request body is opaque per-model JSON. Persist
+  // the resolved model so replay matches what `onFalQueue(/flux/, ...)` writes.
+  if (request._endpointType === "fal" && request.model) {
+    match.model = request.model;
   }
 
   return match;

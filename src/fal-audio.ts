@@ -74,7 +74,7 @@ export const falJobs = new FalJobMap();
 
 // ─── Audio response translation ──────────────────────────────────────────
 
-function audioToFalFile(response: AudioResponse): Record<string, unknown> {
+export function audioToFalFile(response: AudioResponse): Record<string, unknown> {
   let contentType: string;
   let data: string;
 

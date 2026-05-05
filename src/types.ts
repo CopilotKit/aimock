@@ -82,7 +82,8 @@ export interface FixtureMatch {
     | "video"
     | "embedding"
     | "audio-gen"
-    | "fal-audio";
+    | "fal-audio"
+    | "fal";
 }
 
 // Fixture response types
@@ -187,6 +188,16 @@ export interface VideoResponse {
   };
 }
 
+/**
+ * Pass-through JSON response. Used by handlers (e.g. fal.ai) that record
+ * arbitrary upstream JSON payloads and replay them verbatim, without the
+ * provider-specific shape coercion the other response types impose.
+ */
+export interface RawJSONResponse extends ResponseOverrides {
+  json: unknown;
+  status?: number;
+}
+
 export type FixtureResponse =
   | TextResponse
   | ToolCallResponse
@@ -196,7 +207,8 @@ export type FixtureResponse =
   | ImageResponse
   | AudioResponse
   | TranscriptionResponse
-  | VideoResponse;
+  | VideoResponse
+  | RawJSONResponse;
 
 // Streaming physics
 
@@ -281,7 +293,8 @@ export type FixtureFileResponse =
   | ImageResponse
   | AudioResponse
   | TranscriptionResponse
-  | VideoResponse;
+  | VideoResponse
+  | RawJSONResponse;
 
 export interface FixtureFile {
   fixtures: FixtureFileEntry[];
@@ -306,7 +319,8 @@ export interface FixtureFileEntry {
       | "video"
       | "embedding"
       | "audio-gen"
-      | "fal-audio";
+      | "fal-audio"
+      | "fal";
     // predicate not supported in JSON files
   };
   response: FixtureFileResponse;
