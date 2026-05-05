@@ -619,6 +619,22 @@ export function getTestId(req: http.IncomingMessage): string {
   return "__default__";
 }
 
+// ─── Snapshot recording helpers ──────────────────────────────────────────────
+
+/**
+ * Convert a test ID (e.g. Playwright titlePath) into a filesystem-safe slug
+ * suitable for use as a directory name in snapshot-style recording.
+ */
+export function slugifyTestId(testId: string): string {
+  return testId
+    .replace(/^.*?\.(?:spec|test|e2e)\.(?:tsx|ts|jsx|js|mjs|cjs)(?=\s|›|$)\s*›?\s*/i, "") // strip test file extension prefix
+    .replace(/\s*[›>]\s*/g, "--") // Playwright titlePath separator → double dash
+    .replace(/[^\w-]/g, "-") // non-word chars → dash
+    .replace(/-{3,}/g, "--") // collapse 3+ dashes to double
+    .replace(/^-+|-+$/g, "") // trim leading/trailing dashes
+    .toLowerCase();
+}
+
 // ─── Embedding helpers ─────────────────────────────────────────────────────
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;

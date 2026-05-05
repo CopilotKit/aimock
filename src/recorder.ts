@@ -16,6 +16,7 @@ import type { Logger } from "./logger.js";
 import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
+import { getTestId, slugifyTestId } from "./helpers.js";
 
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
 const STRIP_HEADERS = new Set([
@@ -331,15 +332,41 @@ export async function proxyAndRecord(
 
   // In proxy-only mode, skip recording to disk and in-memory caching
   if (!defaults.record?.proxyOnly) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
-    const filepath = path.join(fixturePath, filename);
+    // Determine file path: snapshot-style (by testId) or legacy timestamp
+    const testId = getTestId(req);
+    let isSnapshotMode = testId !== "__default__";
+
+    let filepath!: string;
+    let mergeExisting = false;
+
+    if (isSnapshotMode) {
+      const slug = slugifyTestId(testId);
+      if (!slug) {
+        // Slug resolved to empty (e.g. testId was all punctuation) — fall back
+        // to timestamp-based recording so we still capture the fixture.
+        isSnapshotMode = false;
+      } else {
+        const dir = path.join(fixturePath, slug);
+        filepath = path.join(dir, `${providerKey}.json`);
+        mergeExisting = true;
+      }
+    }
+
+    if (!isSnapshotMode) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
+      filepath = path.join(fixturePath, filename);
+    }
 
     let writtenToDisk = false;
     try {
-      // Ensure fixture directory exists
-      fs.mkdirSync(fixturePath, { recursive: true });
-
+      // Create the target directory (must be inside try/catch so filesystem
+      // errors don't prevent the upstream response from being relayed).
+      if (isSnapshotMode) {
+        fs.mkdirSync(path.dirname(filepath), { recursive: true });
+      } else {
+        fs.mkdirSync(fixturePath, { recursive: true });
+      }
       // Collect warnings for the fixture file
       const warnings: string[] = [];
       if (isEmptyMatch) {
@@ -353,10 +380,24 @@ export async function proxyAndRecord(
       // NOTE: the persisted fixture is always the real upstream response, even when chaos
       // later mutates the relay (e.g. malformed via beforeWriteResponse). Chaos is a live-traffic
       // decoration; the recorded artifact must stay truthful so replay sees what upstream said.
-      const fileContent: Record<string, unknown> = { fixtures: [fixture] };
+      let fileContent: { fixtures: unknown[]; _warning?: string };
+
+      if (mergeExisting && fs.existsSync(filepath)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
+          fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
+        } catch {
+          // Corrupted file — overwrite
+          fileContent = { fixtures: [fixture] };
+        }
+      } else {
+        fileContent = { fixtures: [fixture] };
+      }
+
       if (warnings.length > 0) {
         fileContent._warning = warnings.join("; ");
       }
+
       fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
       writtenToDisk = true;
     } catch (err) {
