@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- **CORS: Firefox preflight blocked by restricted `Allow-Headers`** — Changed `Access-Control-Allow-Headers` from `Content-Type, Authorization` to wildcard `*`, fixing Firefox's strict CORS enforcement when the OpenAI SDK sends `User-Agent` in the preflight. (Issue #158)
 - **GitHub Action: cosmetic binary rename** — `action.yml` fixtures branch referenced the legacy `llmock` binary (still functional); updated to `aimock` for consistency
 - **GitHub Action: hardcoded URLs in docs examples** — All workflow examples now use `steps.<id>.outputs.url` instead of hardcoded `http://127.0.0.1:4010`
 

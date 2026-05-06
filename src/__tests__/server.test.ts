@@ -607,6 +607,7 @@ describe("CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers["access-control-allow-origin"]).toBe("*");
     expect(res.headers["access-control-allow-methods"]).toContain("POST");
+    expect(res.headers["access-control-allow-headers"]).toBe("*");
   });
 
   it("includes CORS headers on 404 responses", async () => {
