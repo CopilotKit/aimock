@@ -28,6 +28,7 @@ import {
   isAudioResponse,
   flattenHeaders,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
@@ -631,7 +632,7 @@ async function handleCompletions(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, body);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 

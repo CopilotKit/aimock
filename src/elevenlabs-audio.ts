@@ -6,6 +6,7 @@ import {
   isErrorResponse,
   FORMAT_TO_CONTENT_TYPE,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -152,7 +153,7 @@ export async function handleElevenLabsAudio(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, syntheticReq);
 
   // Error fixture
   if (isErrorResponse(response)) {

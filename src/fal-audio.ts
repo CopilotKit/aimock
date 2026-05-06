@@ -1,7 +1,13 @@
 import type http from "node:http";
 import crypto from "node:crypto";
 import type { AudioResponse, ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
-import { isAudioResponse, isErrorResponse, FORMAT_TO_CONTENT_TYPE, getTestId } from "./helpers.js";
+import {
+  isAudioResponse,
+  isErrorResponse,
+  FORMAT_TO_CONTENT_TYPE,
+  getTestId,
+  resolveResponse,
+} from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { proxyAndRecord } from "./recorder.js";
 import type { Journal } from "./journal.js";
@@ -295,7 +301,7 @@ async function handleQueueSubmit(
   }
 
   journal.incrementFixtureMatchCount(fixture, fixtures, testId);
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
@@ -577,7 +583,7 @@ async function handleSyncRun(
   }
 
   journal.incrementFixtureMatchCount(fixture, fixtures, getTestId(req));
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;

@@ -235,11 +235,17 @@ export interface ChaosConfig {
 
 export type ChaosAction = "drop" | "malformed" | "disconnect";
 
+// Response factory — allows dynamic fixture responses based on the incoming request
+
+export type ResponseFactory = (
+  req: ChatCompletionRequest,
+) => FixtureResponse | Promise<FixtureResponse>;
+
 // Fixture
 
 export interface Fixture {
   match: FixtureMatch;
-  response: FixtureResponse;
+  response: FixtureResponse | ResponseFactory;
   latency?: number;
   chunkSize?: number;
   truncateAfterChunks?: number;

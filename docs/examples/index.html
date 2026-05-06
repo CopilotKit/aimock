@@ -607,6 +607,52 @@ test.<span class="fn">beforeEach</span>(<span class="kw">async</span> ({ <span c
   ]
 }</code></pre>
         </div>
+
+        <!-- ─── Dynamic / Async Responses ──────────────────────────── -->
+
+        <h2>Dynamic / Async Responses</h2>
+
+        <p>
+          Fixture responses can be functions &mdash; sync or async &mdash; that receive the request
+          and return the response dynamically. Use this when you need to await side effects, compute
+          responses based on request content, or inject runtime data into fixtures.
+        </p>
+
+        <h3>Async response with side-effect</h3>
+        <p>
+          Wait for an external operation to complete before constructing the fixture response.
+          Eliminates race conditions in multi-turn E2E tests where entity creation happens
+          out-of-band.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">async-side-effect.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">toolCallId</span>: <span class="str">"call_create_entity"</span> },
+  <span class="kw">async</span> (<span class="op">req</span>) <span class="kw">=&gt;</span> {
+    <span class="kw">const</span> <span class="op">entity</span> = <span class="kw">await</span> <span class="op">createEntityPromise</span>;
+    <span class="kw">return</span> {
+      <span class="prop">content</span>: <span class="str">`Entity "${entity.name}" created!`</span>,
+      <span class="prop">toolCalls</span>: [{
+        <span class="prop">name</span>: <span class="str">"next_step"</span>,
+        <span class="prop">arguments</span>: <span class="op">JSON</span>.<span class="fn">stringify</span>({ <span class="prop">entityId</span>: <span class="op">entity</span>.<span class="prop">id</span> }),
+      }],
+    };
+  },
+);</code></pre>
+        </div>
+
+        <h3>Request-aware response</h3>
+        <p>
+          Compute the response from the incoming request content. Useful for echo-style fixtures,
+          transformations, or conditional logic that goes beyond what match fields can express.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">request-aware.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onMessage</span>(<span class="str">"translate"</span>, (<span class="op">req</span>) <span class="kw">=&gt;</span> {
+  <span class="kw">const</span> <span class="op">text</span> = <span class="op">req</span>.<span class="prop">messages</span>.<span class="fn">at</span>(-<span class="num">1</span>)?.<span class="prop">content</span> <span class="kw">??</span> <span class="str">""</span>;
+  <span class="kw">return</span> { <span class="prop">content</span>: <span class="str">`Translated: ${text.toUpperCase()}`</span> };
+});</code></pre>
+        </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

@@ -59,17 +59,20 @@ export function matchFixture(
       if (match.endpoint !== reqEndpoint) continue;
     } else if (reqEndpoint && reqEndpoint !== "chat" && reqEndpoint !== "embedding") {
       // Fixture has no endpoint restriction but request is multimedia —
-      // only match if the response type is compatible
+      // only match if the response type is compatible.
+      // Function responses cannot be checked statically, so treat them as compatible.
       const r = fixture.response;
-      const compatible =
-        (reqEndpoint === "image" && isImageResponse(r)) ||
-        (reqEndpoint === "speech" && isAudioResponse(r)) ||
-        (reqEndpoint === "audio-gen" && isAudioResponse(r)) ||
-        (reqEndpoint === "fal-audio" && isAudioResponse(r)) ||
-        (reqEndpoint === "fal" && (isJSONResponse(r) || isErrorResponse(r))) ||
-        (reqEndpoint === "transcription" && isTranscriptionResponse(r)) ||
-        (reqEndpoint === "video" && isVideoResponse(r));
-      if (!compatible) continue;
+      if (typeof r !== "function") {
+        const compatible =
+          (reqEndpoint === "image" && isImageResponse(r)) ||
+          (reqEndpoint === "speech" && isAudioResponse(r)) ||
+          (reqEndpoint === "audio-gen" && isAudioResponse(r)) ||
+          (reqEndpoint === "fal-audio" && isAudioResponse(r)) ||
+          (reqEndpoint === "fal" && (isJSONResponse(r) || isErrorResponse(r))) ||
+          (reqEndpoint === "transcription" && isTranscriptionResponse(r)) ||
+          (reqEndpoint === "video" && isVideoResponse(r));
+        if (!compatible) continue;
+      }
     }
 
     // userMessage — case-sensitive match against the last user message content.

@@ -1,6 +1,12 @@
 import type * as http from "node:http";
 import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
-import { isTranscriptionResponse, isErrorResponse, flattenHeaders, getTestId } from "./helpers.js";
+import {
+  isTranscriptionResponse,
+  isErrorResponse,
+  flattenHeaders,
+  getTestId,
+  resolveResponse,
+} from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -125,7 +131,7 @@ export async function handleTranscription(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;

@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
 import type {
+  ChatCompletionRequest,
+  Fixture,
   FixtureResponse,
+  ResponseFactory,
   TextResponse,
   ToolCallResponse,
   ContentWithToolCallsResponse,
@@ -31,6 +34,37 @@ export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string
     }
   }
   return flat;
+}
+
+export function isResponseFactory(r: FixtureResponse | ResponseFactory): r is ResponseFactory {
+  return typeof r === "function";
+}
+
+export async function resolveResponse(
+  fixture: Fixture,
+  request: ChatCompletionRequest,
+): Promise<FixtureResponse> {
+  if (typeof fixture.response === "function") {
+    const raw = await fixture.response(request);
+    return normalizeFactoryResponse(raw);
+  }
+  return fixture.response;
+}
+
+function normalizeFactoryResponse(raw: FixtureResponse): FixtureResponse {
+  const r = { ...raw } as Record<string, unknown>;
+  if (typeof r.content === "object" && r.content !== null) {
+    r.content = JSON.stringify(r.content);
+  }
+  if (Array.isArray(r.toolCalls)) {
+    r.toolCalls = (r.toolCalls as Array<Record<string, unknown>>).map((tc) => {
+      if (typeof tc.arguments === "object" && tc.arguments !== null) {
+        return { ...tc, arguments: JSON.stringify(tc.arguments) };
+      }
+      return tc;
+    });
+  }
+  return r as unknown as FixtureResponse;
 }
 
 export function generateId(prefix = "chatcmpl"): string {

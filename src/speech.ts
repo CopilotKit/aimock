@@ -6,6 +6,7 @@ import {
   flattenHeaders,
   getTestId,
   FORMAT_TO_CONTENT_TYPE,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -155,7 +156,7 @@ export async function handleSpeech(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, syntheticReq);
 
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;

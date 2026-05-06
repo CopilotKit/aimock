@@ -237,242 +237,248 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
     const f = fixtures[i];
     const response = f.response;
 
-    // --- Error checks ---
+    // Skip response-shape validation for function responses — they are
+    // evaluated at runtime so we cannot statically inspect them.
+    if (typeof response === "function") {
+      // Still validate match fields and numeric options below.
+    } else {
+      // --- Error checks ---
 
-    // Response type recognition
-    // Note: isContentWithToolCallsResponse must be checked before isTextResponse
-    // and isToolCallResponse since it is a structural superset of both.
-    if (
-      !isContentWithToolCallsResponse(response) &&
-      !isTextResponse(response) &&
-      !isToolCallResponse(response) &&
-      !isErrorResponse(response) &&
-      !isEmbeddingResponse(response) &&
-      !isImageResponse(response) &&
-      !isAudioResponse(response) &&
-      !isTranscriptionResponse(response) &&
-      !isVideoResponse(response) &&
-      !isJSONResponse(response)
-    ) {
-      results.push({
-        severity: "error",
-        fixtureIndex: i,
-        message:
-          "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, or json)",
-      });
-    }
-
-    // Text response checks
-    if (isTextResponse(response)) {
-      if (response.content === "") {
+      // Response type recognition
+      // Note: isContentWithToolCallsResponse must be checked before isTextResponse
+      // and isToolCallResponse since it is a structural superset of both.
+      if (
+        !isContentWithToolCallsResponse(response) &&
+        !isTextResponse(response) &&
+        !isToolCallResponse(response) &&
+        !isErrorResponse(response) &&
+        !isEmbeddingResponse(response) &&
+        !isImageResponse(response) &&
+        !isAudioResponse(response) &&
+        !isTranscriptionResponse(response) &&
+        !isVideoResponse(response) &&
+        !isJSONResponse(response)
+      ) {
         results.push({
           severity: "error",
           fixtureIndex: i,
-          message: "content is empty string",
+          message:
+            "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, or json)",
         });
       }
-      validateReasoning(response, i, results);
-      validateWebSearches(response, i, results);
-    }
 
-    // ContentWithToolCalls response checks
-    if (isContentWithToolCallsResponse(response)) {
-      if (response.content === "") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: "content is empty string",
-        });
-      }
-      if (response.toolCalls.length === 0) {
-        results.push({
-          severity: "warning",
-          fixtureIndex: i,
-          message: "toolCalls array is empty — fixture will never produce tool calls",
-        });
-      }
-      for (let j = 0; j < response.toolCalls.length; j++) {
-        const tc = response.toolCalls[j];
-        if (!tc.name) {
+      // Text response checks
+      if (isTextResponse(response)) {
+        if (response.content === "") {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `toolCalls[${j}].name is empty`,
+            message: "content is empty string",
           });
         }
-        try {
-          JSON.parse(tc.arguments);
-        } catch {
+        validateReasoning(response, i, results);
+        validateWebSearches(response, i, results);
+      }
+
+      // ContentWithToolCalls response checks
+      if (isContentWithToolCallsResponse(response)) {
+        if (response.content === "") {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+            message: "content is empty string",
+          });
+        }
+        if (response.toolCalls.length === 0) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "toolCalls array is empty — fixture will never produce tool calls",
+          });
+        }
+        for (let j = 0; j < response.toolCalls.length; j++) {
+          const tc = response.toolCalls[j];
+          if (!tc.name) {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].name is empty`,
+            });
+          }
+          try {
+            JSON.parse(tc.arguments);
+          } catch {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+            });
+          }
+        }
+        validateReasoning(response, i, results);
+        validateWebSearches(response, i, results);
+      }
+
+      // Tool call response checks
+      if (isToolCallResponse(response)) {
+        if (response.toolCalls.length === 0) {
+          results.push({
+            severity: "warning",
+            fixtureIndex: i,
+            message: "toolCalls array is empty — fixture will never produce tool calls",
+          });
+        }
+        for (let j = 0; j < response.toolCalls.length; j++) {
+          const tc = response.toolCalls[j];
+          if (!tc.name) {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].name is empty`,
+            });
+          }
+          try {
+            JSON.parse(tc.arguments);
+          } catch {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+            });
+          }
+        }
+      }
+
+      // Error response checks
+      if (isErrorResponse(response)) {
+        if (!response.error.message) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: "error.message is empty",
+          });
+        }
+        if (response.status !== undefined && (response.status < 100 || response.status > 599)) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `error status ${response.status} is not a valid HTTP status code`,
           });
         }
       }
-      validateReasoning(response, i, results);
-      validateWebSearches(response, i, results);
-    }
 
-    // Tool call response checks
-    if (isToolCallResponse(response)) {
-      if (response.toolCalls.length === 0) {
-        results.push({
-          severity: "warning",
-          fixtureIndex: i,
-          message: "toolCalls array is empty — fixture will never produce tool calls",
-        });
-      }
-      for (let j = 0; j < response.toolCalls.length; j++) {
-        const tc = response.toolCalls[j];
-        if (!tc.name) {
+      // Embedding response checks
+      if (isEmbeddingResponse(response)) {
+        if (response.embedding.length === 0) {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `toolCalls[${j}].name is empty`,
+            message: "embedding array is empty",
           });
         }
-        try {
-          JSON.parse(tc.arguments);
-        } catch {
+        for (let j = 0; j < response.embedding.length; j++) {
+          if (typeof response.embedding[j] !== "number") {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `embedding[${j}] is not a number`,
+            });
+            break; // one error is enough
+          }
+        }
+      }
+
+      // Audio response checks — validate object-form audio
+      if (isAudioResponse(response) && typeof response.audio === "object") {
+        const audioObj = response.audio;
+        if (typeof audioObj.b64Json !== "string" || audioObj.b64Json === "") {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+            message: "audio.b64Json must be a non-empty string",
+          });
+        }
+        if (audioObj.contentType !== undefined && typeof audioObj.contentType !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `audio.contentType must be a string, got ${typeof audioObj.contentType}`,
           });
         }
       }
-    }
 
-    // Error response checks
-    if (isErrorResponse(response)) {
-      if (!response.error.message) {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: "error.message is empty",
-        });
-      }
-      if (response.status !== undefined && (response.status < 100 || response.status > 599)) {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `error status ${response.status} is not a valid HTTP status code`,
-        });
-      }
-    }
-
-    // Embedding response checks
-    if (isEmbeddingResponse(response)) {
-      if (response.embedding.length === 0) {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: "embedding array is empty",
-        });
-      }
-      for (let j = 0; j < response.embedding.length; j++) {
-        if (typeof response.embedding[j] !== "number") {
+      // Validate ResponseOverrides fields
+      if (
+        isTextResponse(response) ||
+        isToolCallResponse(response) ||
+        isContentWithToolCallsResponse(response)
+      ) {
+        const r = response as ResponseOverrides;
+        if (r.id !== undefined && typeof r.id !== "string") {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `embedding[${j}] is not a number`,
+            message: `override "id" must be a string, got ${typeof r.id}`,
           });
-          break; // one error is enough
         }
-      }
-    }
-
-    // Audio response checks — validate object-form audio
-    if (isAudioResponse(response) && typeof response.audio === "object") {
-      const audioObj = response.audio;
-      if (typeof audioObj.b64Json !== "string" || audioObj.b64Json === "") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: "audio.b64Json must be a non-empty string",
-        });
-      }
-      if (audioObj.contentType !== undefined && typeof audioObj.contentType !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `audio.contentType must be a string, got ${typeof audioObj.contentType}`,
-        });
-      }
-    }
-
-    // Validate ResponseOverrides fields
-    if (
-      isTextResponse(response) ||
-      isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response)
-    ) {
-      const r = response as ResponseOverrides;
-      if (r.id !== undefined && typeof r.id !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "id" must be a string, got ${typeof r.id}`,
-        });
-      }
-      if (r.created !== undefined && (typeof r.created !== "number" || r.created < 0)) {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "created" must be a non-negative number`,
-        });
-      }
-      if (r.model !== undefined && typeof r.model !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "model" must be a string, got ${typeof r.model}`,
-        });
-      }
-      if (r.finishReason !== undefined && typeof r.finishReason !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "finishReason" must be a string, got ${typeof r.finishReason}`,
-        });
-      }
-      if (r.role !== undefined && typeof r.role !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "role" must be a string, got ${typeof r.role}`,
-        });
-      }
-      if (r.systemFingerprint !== undefined && typeof r.systemFingerprint !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex: i,
-          message: `override "systemFingerprint" must be a string, got ${typeof r.systemFingerprint}`,
-        });
-      }
-      if (r.usage !== undefined) {
-        if (typeof r.usage !== "object" || r.usage === null || Array.isArray(r.usage)) {
+        if (r.created !== undefined && (typeof r.created !== "number" || r.created < 0)) {
           results.push({
             severity: "error",
             fixtureIndex: i,
-            message: `override "usage" must be an object`,
+            message: `override "created" must be a non-negative number`,
           });
-        } else {
-          // Check all known usage fields are numbers if present
-          for (const key of Object.keys(r.usage)) {
-            const val = (r.usage as Record<string, unknown>)[key];
-            if (val !== undefined && typeof val !== "number") {
-              results.push({
-                severity: "error",
-                fixtureIndex: i,
-                message: `override "usage.${key}" must be a number, got ${typeof val}`,
-              });
+        }
+        if (r.model !== undefined && typeof r.model !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `override "model" must be a string, got ${typeof r.model}`,
+          });
+        }
+        if (r.finishReason !== undefined && typeof r.finishReason !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `override "finishReason" must be a string, got ${typeof r.finishReason}`,
+          });
+        }
+        if (r.role !== undefined && typeof r.role !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `override "role" must be a string, got ${typeof r.role}`,
+          });
+        }
+        if (r.systemFingerprint !== undefined && typeof r.systemFingerprint !== "string") {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `override "systemFingerprint" must be a string, got ${typeof r.systemFingerprint}`,
+          });
+        }
+        if (r.usage !== undefined) {
+          if (typeof r.usage !== "object" || r.usage === null || Array.isArray(r.usage)) {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `override "usage" must be an object`,
+            });
+          } else {
+            // Check all known usage fields are numbers if present
+            for (const key of Object.keys(r.usage)) {
+              const val = (r.usage as Record<string, unknown>)[key];
+              if (val !== undefined && typeof val !== "number") {
+                results.push({
+                  severity: "error",
+                  fixtureIndex: i,
+                  message: `override "usage.${key}" must be a number, got ${typeof val}`,
+                });
+              }
             }
           }
         }
       }
-    }
+    } // end: skip response-shape validation for function responses
 
     // Numeric sanity checks
     if (f.latency !== undefined && f.latency < 0) {

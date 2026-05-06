@@ -182,6 +182,18 @@
 }</code></pre>
         </div>
 
+        <div class="info-box">
+          <p>
+            <strong>Async fixture responses for race-free multi-turn tests.</strong> When a
+            multi-turn test depends on side effects between turns (database writes, entity creation,
+            external API calls), async fixture responses let you <code>await</code> those operations
+            before constructing the response &mdash; eliminating race conditions without
+            <code>setTimeout</code> hacks. See
+            <a href="/examples#dynamic-async-responses">Dynamic / Async Responses</a> on the
+            Examples page.
+          </p>
+        </div>
+
         <h3>Programmatic API</h3>
         <p>
           The <code>onTurn()</code> convenience method combines <code>turnIndex</code> with a

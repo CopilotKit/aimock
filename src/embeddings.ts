@@ -20,6 +20,7 @@ import {
   buildEmbeddingResponse,
   flattenHeaders,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -152,7 +153,7 @@ export async function handleEmbeddings(
     return;
 
   if (fixture) {
-    const response = fixture.response;
+    const response = await resolveResponse(fixture, syntheticReq);
 
     // Error response
     if (isErrorResponse(response)) {

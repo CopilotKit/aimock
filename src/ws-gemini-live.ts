@@ -22,6 +22,7 @@ import {
   isAudioResponse,
   formatToMime,
   generateToolCallId,
+  resolveResponse,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
@@ -373,7 +374,7 @@ async function processMessage(
   // Commit messages to conversation history only after successful fixture match
   session.conversationHistory.push(...newMessages);
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 

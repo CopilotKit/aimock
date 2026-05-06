@@ -12,6 +12,7 @@ import type {
   MockServerOptions,
   Mountable,
   RecordConfig,
+  ResponseFactory,
   TranscriptionResponse,
   VideoResponse,
 } from "./types.js";
@@ -99,21 +100,29 @@ export class LLMock {
 
   // ---- Convenience ----
 
-  on(match: FixtureMatch, response: FixtureFileResponse, opts?: FixtureOpts): this {
+  on(
+    match: FixtureMatch,
+    response: FixtureFileResponse | ResponseFactory,
+    opts?: FixtureOpts,
+  ): this {
     return this.addFixture({
       match,
-      response: normalizeResponse(response),
+      response: typeof response === "function" ? response : normalizeResponse(response),
       ...opts,
     });
   }
 
-  onMessage(pattern: string | RegExp, response: FixtureFileResponse, opts?: FixtureOpts): this {
+  onMessage(
+    pattern: string | RegExp,
+    response: FixtureFileResponse | ResponseFactory,
+    opts?: FixtureOpts,
+  ): this {
     return this.on({ userMessage: pattern }, response, opts);
   }
 
   onEmbedding(
     pattern: string | RegExp,
-    response: FixtureFileResponse,
+    response: FixtureFileResponse | ResponseFactory,
     opts?: EmbeddingFixtureOpts,
   ): this {
     return this.on({ inputText: pattern }, response, opts);
@@ -124,18 +133,26 @@ export class LLMock {
     return this.on({ userMessage: pattern, responseFormat: "json_object" }, { content }, opts);
   }
 
-  onToolCall(name: string, response: FixtureFileResponse, opts?: FixtureOpts): this {
+  onToolCall(
+    name: string,
+    response: FixtureFileResponse | ResponseFactory,
+    opts?: FixtureOpts,
+  ): this {
     return this.on({ toolName: name }, response, opts);
   }
 
-  onToolResult(id: string, response: FixtureFileResponse, opts?: FixtureOpts): this {
+  onToolResult(
+    id: string,
+    response: FixtureFileResponse | ResponseFactory,
+    opts?: FixtureOpts,
+  ): this {
     return this.on({ toolCallId: id }, response, opts);
   }
 
   onTurn(
     turn: number,
     pattern: string | RegExp,
-    response: FixtureFileResponse,
+    response: FixtureFileResponse | ResponseFactory,
     opts?: FixtureOpts,
   ): this {
     return this.on({ userMessage: pattern, turnIndex: turn }, response, opts);

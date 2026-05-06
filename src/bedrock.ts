@@ -37,6 +37,7 @@ import {
   isErrorResponse,
   flattenHeaders,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -472,7 +473,7 @@ export async function handleBedrock(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
 
   // Error response
   if (isErrorResponse(response)) {
@@ -1069,7 +1070,7 @@ export async function handleBedrockStream(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 

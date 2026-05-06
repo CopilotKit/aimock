@@ -14,7 +14,7 @@ import {
   buildToolCallStreamEvents,
   type ResponsesSSEEvent,
 } from "./responses.js";
-import { isTextResponse, isToolCallResponse, isErrorResponse } from "./helpers.js";
+import { isTextResponse, isToolCallResponse, isErrorResponse, resolveResponse } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
@@ -185,7 +185,7 @@ async function processMessage(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 

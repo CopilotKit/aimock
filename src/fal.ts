@@ -7,6 +7,7 @@ import {
   isJSONResponse,
   flattenHeaders,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { proxyAndRecord } from "./recorder.js";
@@ -361,7 +362,7 @@ export async function handleFal(
       }
 
       journal.incrementFixtureMatchCount(fixture, fixtures, testId);
-      const response = fixture.response;
+      const response = await resolveResponse(fixture, syntheticReq);
 
       if (isErrorResponse(response)) {
         const status = response.status ?? 500;

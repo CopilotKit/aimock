@@ -14,6 +14,7 @@ import {
   isTextResponse,
   isToolCallResponse,
   isErrorResponse,
+  resolveResponse,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
@@ -334,7 +335,7 @@ async function handleResponseCreate(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 

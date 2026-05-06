@@ -30,6 +30,7 @@ import {
   isErrorResponse,
   flattenHeaders,
   getTestId,
+  resolveResponse,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -863,7 +864,7 @@ export async function handleCohere(
     return;
   }
 
-  const response = fixture.response;
+  const response = await resolveResponse(fixture, completionReq);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
