@@ -58,7 +58,7 @@ runs:
             --host ${{ inputs.host }} \
             ${{ inputs.args }} &
         else
-          llmock --fixtures "${{ inputs.fixtures }}" \
+          aimock --fixtures "${{ inputs.fixtures }}" \
             --port ${{ inputs.port }} \
             --host ${{ inputs.host }} \
             ${{ inputs.args }} &

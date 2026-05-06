@@ -6,6 +6,11 @@
 
 - **Snapshot-style recording** — When `X-Test-Id` is present, recorded fixtures are saved to `<fixturePath>/<slugified-testId>/<provider>.json` instead of timestamp-based filenames. Multiple fixtures for the same test+provider merge into one file. Stable paths enable meaningful PR diffs and easy test-to-fixture mapping. (Feature request by @jantimon, issue #155)
 
+### Fixed
+
+- **GitHub Action: cosmetic binary rename** — `action.yml` fixtures branch referenced the legacy `llmock` binary (still functional); updated to `aimock` for consistency
+- **GitHub Action: hardcoded URLs in docs examples** — All workflow examples now use `steps.<id>.outputs.url` instead of hardcoded `http://127.0.0.1:4010`
+
 ## [1.18.0] - 2026-05-04
 
 ### Added
