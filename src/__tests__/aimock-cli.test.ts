@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFile, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAimockCli, type AimockCliDeps } from "../aimock-cli.js";
@@ -186,6 +186,66 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: server lifecycle", () => {
     const { stderr, code } = await runCli(["--config", configPath]);
     expect(stderr).toContain("Failed to load config");
     expect(code).toBe(1);
+  });
+});
+
+describe.skipIf(!CLI_AVAILABLE)("aimock CLI: npx/bunx symlink invocation (#160)", () => {
+  let tmpDir: string;
+  let symlinkPath: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    symlinkPath = join(tmpDir, "aimock");
+    symlinkSync(CLI_PATH, symlinkPath);
+  });
+
+  afterEach(() => {
+    try {
+      unlinkSync(symlinkPath);
+    } catch {
+      /* already cleaned up */
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("starts when invoked as 'aimock' symlink (npx/bunx scenario)", async () => {
+    const fixturePath = writeFixtureFile(tmpDir);
+    const configPath = writeConfig(tmpDir, {
+      llm: { fixtures: fixturePath },
+    });
+
+    let out = "";
+    let err = "";
+    const cp = execFile("node", [symlinkPath, "--config", configPath]);
+    cp.stdout?.on("data", (d: string) => {
+      out += d;
+    });
+    cp.stderr?.on("data", (d: string) => {
+      err += d;
+    });
+
+    // Wait for "listening" output — proves the entry-point guard fired
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        reject(new Error(`Timed out — stdout: ${out}, stderr: ${err}`));
+      }, 5000);
+      const check = () => {
+        if (/listening on/i.test(out) || /listening on/i.test(err)) {
+          clearTimeout(deadline);
+          resolve();
+          return;
+        }
+        setTimeout(check, 50);
+      };
+      check();
+    });
+
+    expect(out).toContain("listening on");
+
+    cp.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      cp.on("close", () => resolve());
+    });
   });
 });
 

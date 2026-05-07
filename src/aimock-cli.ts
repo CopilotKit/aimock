@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { resolve, basename } from "node:path";
 import { loadConfig, startFromConfig } from "./config-loader.js";
 import { runConvertCli, type ConvertCliDeps } from "./convert.js";
 
@@ -137,7 +137,8 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
 // Run when executed as a script (not when imported for testing).
 /* v8 ignore start -- entry-point guard, exercised by integration tests */
 const scriptName = process.argv[1] ?? "";
-if (scriptName.endsWith("aimock-cli.js") || scriptName.endsWith("aimock-cli.ts")) {
+const base = basename(scriptName);
+if (base === "aimock" || base === "aimock-cli.js" || base === "aimock-cli.ts") {
   runAimockCli();
 }
 /* v8 ignore stop */
