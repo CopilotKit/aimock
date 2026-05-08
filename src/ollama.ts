@@ -44,6 +44,8 @@ import { proxyAndRecord } from "./recorder.js";
 interface OllamaMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  tool_calls?: Array<{ function: { name: string; arguments: unknown } }>;
+  images?: string[];
 }
 
 interface OllamaToolDef {
@@ -68,6 +70,8 @@ interface OllamaGenerateRequest {
   prompt: string;
   stream?: boolean; // default true!
   options?: { temperature?: number; num_predict?: number };
+  system?: string;
+  images?: string[];
 }
 
 // ─── Duration fields (zeroed, required on final/non-streaming responses) ────
@@ -88,10 +92,27 @@ export function ollamaToCompletionRequest(req: OllamaRequest): ChatCompletionReq
   const messages: ChatMessage[] = [];
 
   for (const msg of req.messages) {
-    messages.push({
+    const chatMsg: ChatMessage = {
       role: msg.role as ChatMessage["role"],
       content: msg.content,
-    });
+    };
+
+    // Map inbound tool_calls on assistant messages to the internal format
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      chatMsg.tool_calls = msg.tool_calls.map((tc, i) => ({
+        id: `call_${i}`,
+        type: "function" as const,
+        function: {
+          name: tc.function.name,
+          arguments:
+            typeof tc.function.arguments === "string"
+              ? tc.function.arguments
+              : JSON.stringify(tc.function.arguments),
+        },
+      }));
+    }
+
+    messages.push(chatMsg);
   }
 
   // Convert tools
@@ -118,9 +139,18 @@ export function ollamaToCompletionRequest(req: OllamaRequest): ChatCompletionReq
 }
 
 function ollamaGenerateToCompletionRequest(req: OllamaGenerateRequest): ChatCompletionRequest {
+  const messages: ChatMessage[] = [];
+
+  // Prepend system message if present
+  if (req.system) {
+    messages.push({ role: "system", content: req.system });
+  }
+
+  messages.push({ role: "user", content: req.prompt });
+
   return {
     model: req.model,
-    messages: [{ role: "user", content: req.prompt }],
+    messages,
     stream: req.stream ?? true,
     temperature: req.options?.temperature,
     max_tokens: req.options?.num_predict,

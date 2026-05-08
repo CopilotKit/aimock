@@ -51,14 +51,20 @@ interface CohereToolCallDef {
   };
 }
 
+interface CohereContentPart {
+  type: string;
+  text?: string;
+}
+
 interface CohereMessage {
   role: "user" | "assistant" | "system" | "tool";
-  content: string;
+  content: string | CohereContentPart[];
   tool_call_id?: string;
   tool_calls?: CohereToolCallDef[];
 }
 
-interface CohereToolDef {
+// OpenAI-style tool definition (wrapped in { type: "function", function: { ... } })
+interface CohereToolDefOpenAI {
   type: string;
   function: {
     name: string;
@@ -67,12 +73,23 @@ interface CohereToolDef {
   };
 }
 
+// Cohere v2 native tool definition (flat: { name, description, parameter_definitions })
+interface CohereToolDefNative {
+  name: string;
+  description?: string;
+  parameter_definitions?: object;
+}
+
+type CohereToolDef = CohereToolDefOpenAI | CohereToolDefNative;
+
 interface CohereRequest {
   model: string;
   messages: CohereMessage[];
   stream?: boolean;
   tools?: CohereToolDef[];
   response_format?: { type: string; json_schema?: object };
+  temperature?: number;
+  max_tokens?: number;
 }
 
 // ─── Cohere SSE event types ─────────────────────────────────────────────────
@@ -119,19 +136,34 @@ function cohereUsage(overrides?: ResponseOverrides): typeof ZERO_USAGE {
 
 // ─── Input conversion: Cohere → ChatCompletionRequest ───────────────────────
 
+/** Extract plain text from structured content (array of { type, text } parts) or passthrough string. */
+function extractTextContent(content: string | CohereContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((part) => part.type === "text" && part.text !== undefined)
+    .map((part) => part.text!)
+    .join("");
+}
+
+/** Type guard: is this an OpenAI-style tool definition (has `function` key)? */
+function isOpenAIToolDef(t: CohereToolDef): t is CohereToolDefOpenAI {
+  return "function" in t && typeof (t as CohereToolDefOpenAI).function === "object";
+}
+
 export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionRequest {
   const messages: ChatMessage[] = [];
 
   for (const msg of req.messages) {
+    const textContent = extractTextContent(msg.content);
     if (msg.role === "system") {
-      messages.push({ role: "system", content: msg.content });
+      messages.push({ role: "system", content: textContent });
     } else if (msg.role === "user") {
-      messages.push({ role: "user", content: msg.content });
+      messages.push({ role: "user", content: textContent });
     } else if (msg.role === "assistant") {
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         messages.push({
           role: "assistant",
-          content: msg.content || null,
+          content: textContent || null,
           tool_calls: msg.tool_calls.map((tc) => ({
             id: tc.id ?? generateToolCallId(),
             type: "function" as const,
@@ -142,28 +174,41 @@ export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionReq
           })),
         });
       } else {
-        messages.push({ role: "assistant", content: msg.content });
+        messages.push({ role: "assistant", content: textContent });
       }
     } else if (msg.role === "tool") {
       messages.push({
         role: "tool",
-        content: msg.content,
+        content: textContent,
         tool_call_id: msg.tool_call_id,
       });
     }
   }
 
-  // Convert tools
+  // Convert tools — accept both OpenAI format and Cohere v2 native format
   let tools: ToolDefinition[] | undefined;
   if (req.tools && req.tools.length > 0) {
-    tools = req.tools.map((t) => ({
-      type: "function" as const,
-      function: {
-        name: t.function.name,
-        description: t.function.description,
-        parameters: t.function.parameters,
-      },
-    }));
+    tools = req.tools.map((t) => {
+      if (isOpenAIToolDef(t)) {
+        return {
+          type: "function" as const,
+          function: {
+            name: t.function.name,
+            description: t.function.description,
+            parameters: t.function.parameters,
+          },
+        };
+      }
+      // Cohere v2 native format: { name, description, parameter_definitions }
+      return {
+        type: "function" as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameter_definitions,
+        },
+      };
+    });
   }
 
   return {
@@ -172,6 +217,8 @@ export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionReq
     stream: req.stream,
     tools,
     ...(req.response_format && { response_format: req.response_format }),
+    ...(req.temperature !== undefined && { temperature: req.temperature }),
+    ...(req.max_tokens !== undefined && { max_tokens: req.max_tokens }),
   };
 }
 

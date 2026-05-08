@@ -27,7 +27,6 @@ import {
   isAudioResponse,
   extractOverrides,
   formatToMime,
-  generateToolCallId,
   flattenHeaders,
   getTestId,
   resolveResponse,
@@ -45,7 +44,7 @@ import { proxyAndRecord } from "./recorder.js";
 interface GeminiPart {
   text?: string;
   thought?: boolean;
-  functionCall?: { name: string; args: Record<string, unknown>; id?: string };
+  functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: unknown };
   inlineData?: { mimeType: string; data: string };
 }
@@ -182,6 +181,9 @@ export function geminiToCompletionRequest(
     messages,
     stream,
     temperature: req.generationConfig?.temperature,
+    max_tokens: req.generationConfig?.maxOutputTokens,
+    top_p: req.generationConfig?.topP as number | undefined,
+    top_k: req.generationConfig?.topK as number | undefined,
     tools,
   };
 }
@@ -295,7 +297,7 @@ function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
     logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
     argsObj = {};
   }
-  return { functionCall: { name: tc.name, args: argsObj, id: tc.id || generateToolCallId() } };
+  return { functionCall: { name: tc.name, args: argsObj } };
 }
 
 function buildGeminiToolCallStreamChunks(

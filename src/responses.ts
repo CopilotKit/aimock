@@ -63,6 +63,7 @@ interface ResponsesRequest {
   stream?: boolean;
   temperature?: number;
   max_output_tokens?: number;
+  response_format?: { type: string; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -226,8 +227,10 @@ export function responsesToCompletionRequest(req: ResponsesRequest): ChatComplet
     messages: responsesInputToMessages(req),
     stream: req.stream,
     temperature: req.temperature,
+    max_tokens: req.max_output_tokens,
     tools: responsesToolsToCompletionsTools(req.tools),
     tool_choice: req.tool_choice,
+    response_format: req.response_format,
   };
 }
 
