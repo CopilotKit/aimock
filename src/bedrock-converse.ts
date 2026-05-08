@@ -121,14 +121,14 @@ function buildBedrockStreamTextEvents(
     const blockIndex = 0;
     events.push({
       eventType: "contentBlockStart",
-      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
+      payload: { contentBlockIndex: blockIndex, start: { reasoningContent: {} } },
     });
     for (let i = 0; i < reasoning.length; i += chunkSize) {
       events.push({
         eventType: "contentBlockDelta",
         payload: {
           contentBlockIndex: blockIndex,
-          delta: { type: "thinking_delta", thinking: reasoning.slice(i, i + chunkSize) },
+          delta: { reasoningContent: { text: reasoning.slice(i, i + chunkSize) } },
         },
       });
     }
@@ -141,14 +141,14 @@ function buildBedrockStreamTextEvents(
   const textBlockIndex = reasoning ? 1 : 0;
   events.push({
     eventType: "contentBlockStart",
-    payload: { contentBlockIndex: textBlockIndex, start: { type: "text" } },
+    payload: { contentBlockIndex: textBlockIndex, start: {} },
   });
   for (let i = 0; i < content.length; i += chunkSize) {
     events.push({
       eventType: "contentBlockDelta",
       payload: {
         contentBlockIndex: textBlockIndex,
-        delta: { type: "text_delta", text: content.slice(i, i + chunkSize) },
+        delta: { text: content.slice(i, i + chunkSize) },
       },
     });
   }
@@ -375,6 +375,7 @@ export function converseToCompletionRequest(
     messages,
     stream: false,
     temperature: req.inferenceConfig?.temperature,
+    max_tokens: req.inferenceConfig?.maxTokens,
     tools,
   };
 }
@@ -403,6 +404,7 @@ function buildConverseTextResponse(
     },
     stopReason: converseStopReason(overrides?.finishReason, "end_turn"),
     usage: converseUsage(overrides),
+    metrics: { latencyMs: 0 },
   };
 }
 
@@ -437,6 +439,7 @@ function buildConverseToolCallResponse(
     },
     stopReason: converseStopReason(overrides?.finishReason, "tool_use"),
     usage: converseUsage(overrides),
+    metrics: { latencyMs: 0 },
   };
 }
 
@@ -482,6 +485,7 @@ function buildConverseContentWithToolCallsResponse(
     },
     stopReason: converseStopReason(overrides?.finishReason, "tool_use"),
     usage: converseUsage(overrides),
+    metrics: { latencyMs: 0 },
   };
 }
 

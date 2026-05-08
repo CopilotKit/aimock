@@ -519,29 +519,58 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
 
     expect(eventTypes[0]).toBe("messageStart");
 
-    // Find thinking and text block starts — payloads are flat (not double-wrapped)
+    // Find reasoning and text block starts — payloads are flat (not double-wrapped)
+    // Reasoning block uses `start: { reasoningContent: {} }` (Converse format)
     const thinkingStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "thinking",
+        (f.payload as { start?: { reasoningContent?: unknown } }).start?.reasoningContent !==
+          undefined,
     );
+    // Text block uses `start: {}` (empty object, no `type` field)
     const textStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "text",
+        !(f.payload as { start?: { reasoningContent?: unknown; toolUse?: unknown } }).start
+          ?.reasoningContent &&
+        !(f.payload as { start?: { reasoningContent?: unknown; toolUse?: unknown } }).start
+          ?.toolUse,
     );
 
     expect(thinkingStartIdx).toBeGreaterThan(0);
     expect(textStartIdx).toBeGreaterThan(thinkingStartIdx);
 
+    // Verify start payloads have no spurious `type` field
+    const thinkingStartPayload = (
+      frames[thinkingStartIdx].payload as { start: Record<string, unknown> }
+    ).start;
+    expect(thinkingStartPayload).toHaveProperty("reasoningContent");
+    expect(thinkingStartPayload).not.toHaveProperty("type");
+    const textStartPayload = (frames[textStartIdx].payload as { start: Record<string, unknown> })
+      .start;
+    expect(textStartPayload).not.toHaveProperty("type");
+    expect(Object.keys(textStartPayload)).toEqual([]);
+
     // Verify reasoning content appears in the stream — flat payloads
+    // Reasoning deltas use `delta: { reasoningContent: { text: "..." } }` (Converse format)
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { delta?: { reasoningContent?: unknown } }).delta?.reasoningContent !==
+          undefined,
     );
+    for (const td of thinkingDeltas) {
+      const delta = (td.payload as { delta: Record<string, unknown> }).delta;
+      expect(delta).toHaveProperty("reasoningContent");
+      expect(delta).not.toHaveProperty("type");
+      expect(delta).not.toHaveProperty("thinking");
+    }
     const fullThinking = thinkingDeltas
-      .map((f) => (f.payload as { delta: { thinking: string } }).delta.thinking)
+      .map(
+        (f) =>
+          (f.payload as { delta: { reasoningContent: { text: string } } }).delta.reasoningContent
+            .text,
+      )
       .join("");
     expect(fullThinking).toBe("Let me think step by step about this problem.");
 
@@ -561,7 +590,8 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
+        (f.payload as { delta?: { reasoningContent?: unknown } }).delta?.reasoningContent !==
+          undefined,
     );
     expect(thinkingDeltas).toHaveLength(0);
   });

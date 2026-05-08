@@ -1,5 +1,17 @@
 # @copilotkit/aimock
 
+## [1.19.4] - 2026-05-08
+
+### Fixed
+
+- **Converse stream: spurious `type` field in contentBlockDelta and contentBlockStart** — `delta` objects contained a Claude Messages API `type` field (`text_delta`, `thinking_delta`) that is not a member of the Converse API's tagged union. botocore's single-member union parser rejected the extra field with `ResponseParserError`. Also fixed reasoning deltas to use `reasoningContent` (Converse format) instead of `thinking` (Claude format). (Issue #165, reported by @KMiya84377)
+- **Converse: `inferenceConfig.maxTokens` silently dropped** — `converseToCompletionRequest` now forwards `maxTokens` to `max_tokens`
+- **Converse: non-streaming responses missing `metrics`** — Added `metrics: { latencyMs: 0 }` to all 3 non-streaming converse response builders, matching the streaming path and AWS ConverseResponse spec
+
+### Added
+
+- **Bedrock drift test expansion** — invoke-with-response-stream drift test with binary frame parsing and Anthropic-native event shape comparison. Converse-stream SDK shapes for tool call (`toolUse` start/delta) and reasoning (`reasoningContent` start/delta) variants. Three-way triangulate comparisons for all variants.
+
 ## [1.19.3] - 2026-05-08
 
 ### Fixed

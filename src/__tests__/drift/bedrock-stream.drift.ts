@@ -7,10 +7,16 @@
 
 import http from "node:http";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ServerInstance } from "../../server.js";
+import { createServer, type ServerInstance } from "../../server.js";
+import type { Fixture } from "../../types.js";
 import { extractShape, triangulate, formatDriftReport, shouldFail } from "./schema.js";
 import { httpPost, startDriftServer, stopDriftServer } from "./helpers.js";
-import { bedrockConverseStreamEventShapes } from "./sdk-shapes.js";
+import {
+  bedrockConverseStreamEventShapes,
+  bedrockConverseStreamToolShapes,
+  bedrockConverseStreamReasoningShapes,
+  bedrockInvokeStreamEventShapes,
+} from "./sdk-shapes.js";
 
 // ---------------------------------------------------------------------------
 // Credentials check
@@ -203,6 +209,65 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
     }
   });
 
+  it("invoke-with-response-stream mock shape matches SDK expectations", async () => {
+    const sdkEvents = bedrockInvokeStreamEventShapes();
+
+    const mockRes = await httpPostBinary(
+      `${instance.url}/model/anthropic.claude-3-haiku-20240307-v1:0/invoke-with-response-stream`,
+      {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 10,
+        messages: [{ role: "user", content: "Say hello" }],
+      },
+    );
+
+    expect(mockRes.status).toBe(200);
+    expect(mockRes.headers["content-type"]).toBe("application/vnd.amazon.eventstream");
+
+    const frames = parseFrames(mockRes.body);
+    expect(frames.length).toBeGreaterThanOrEqual(6);
+
+    // All frames should have eventType "chunk" (Bedrock invoke-stream wrapping)
+    for (const frame of frames) {
+      expect(frame.eventType).toBe("chunk");
+    }
+
+    // Extract the Anthropic-native event type from each frame's payload
+    const payloadEvents = frames.map((f) => {
+      const payload = f.payload as Record<string, unknown>;
+      return {
+        type: (payload.type as string) ?? "",
+        dataShape: extractShape(payload),
+      };
+    });
+
+    // Key event types must be present
+    const eventTypes = payloadEvents.map((e) => e.type);
+    for (const expected of [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]) {
+      expect(eventTypes, `missing event type: ${expected}`).toContain(expected);
+    }
+
+    // Compare each SDK event type against the mock
+    for (const sdkEvent of sdkEvents) {
+      const mockEvent = payloadEvents.find((m) => m.type === sdkEvent.type);
+      if (!mockEvent) continue; // already asserted presence above
+
+      const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
+      const report = formatDriftReport(`Bedrock InvokeStream:${sdkEvent.type}`, diffs);
+
+      if (shouldFail(diffs)) {
+        expect.soft([], report).toEqual(diffs.filter((d) => d.severity === "critical"));
+      }
+    }
+  });
+
   it("converse mock shape matches SDK expectations", async () => {
     const sdkShape = bedrockConverseResponseShape();
 
@@ -334,6 +399,207 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
       if (shouldFail(diffs)) {
         expect.soft([], report).toEqual(diffs.filter((d) => d.severity === "critical"));
       }
+    }
+  });
+
+  it("converse-stream tool-call event shapes match SDK expectations", async () => {
+    const mockRes = await httpPostBinary(
+      `${instance.url}/model/anthropic.claude-3-haiku-20240307-v1:0/converse-stream`,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [{ text: "Weather in Paris" }],
+          },
+        ],
+        inferenceConfig: { maxTokens: 10 },
+      },
+    );
+
+    expect(mockRes.status).toBe(200);
+    expect(mockRes.headers["content-type"]).toBe("application/vnd.amazon.eventstream");
+
+    const frames = parseFrames(mockRes.body);
+    expect(frames.length).toBeGreaterThanOrEqual(5);
+
+    // ── Tool-specific event types must be present ────────────────────
+    const eventTypes = frames.map((f) => f.eventType);
+    for (const expected of [
+      "messageStart",
+      "contentBlockStart",
+      "contentBlockDelta",
+      "contentBlockStop",
+      "messageStop",
+      "metadata",
+    ]) {
+      expect(eventTypes, `missing event type: ${expected}`).toContain(expected);
+    }
+
+    // ── contentBlockStart must contain toolUse descriptor ────────────
+    const toolStart = frames.find(
+      (f) =>
+        f.eventType === "contentBlockStart" &&
+        (f.payload as { start?: { toolUse?: unknown } }).start?.toolUse !== undefined,
+    );
+    expect(toolStart).toBeDefined();
+    const toolStartPayload = toolStart!.payload as {
+      contentBlockIndex: number;
+      start: { toolUse: { toolUseId: string; name: string } };
+    };
+    expect(toolStartPayload.start.toolUse.name).toBe("get_weather");
+    expect(toolStartPayload.start.toolUse.toolUseId).toBeDefined();
+
+    // ── contentBlockDelta must contain toolUse.input ─────────────────
+    const toolDeltas = frames.filter(
+      (f) =>
+        f.eventType === "contentBlockDelta" &&
+        (f.payload as { delta?: { toolUse?: unknown } }).delta?.toolUse !== undefined,
+    );
+    expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
+    const fullJson = toolDeltas
+      .map((f) => (f.payload as { delta: { toolUse: { input: string } } }).delta.toolUse.input)
+      .join("");
+    expect(JSON.parse(fullJson)).toEqual({ city: "Paris" });
+
+    // ── messageStop must have tool_use stopReason ────────────────────
+    const msgStop = frames.find((f) => f.eventType === "messageStop");
+    expect(msgStop).toBeDefined();
+    expect(msgStop!.payload).toEqual({ stopReason: "tool_use" });
+
+    // ── Shape comparison against SDK tool expectations ───────────────
+    const sdkEvents = bedrockConverseStreamToolShapes();
+    const mockEvents = frames.map((f) => ({
+      type: f.eventType,
+      dataShape: extractShape(f.payload),
+    }));
+
+    for (const sdkEvent of sdkEvents) {
+      const mockEvent = mockEvents.find((m) => m.type === sdkEvent.type);
+      if (!mockEvent) continue;
+
+      const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
+      const report = formatDriftReport(`Bedrock ConverseStream Tool:${sdkEvent.type}`, diffs);
+
+      if (shouldFail(diffs)) {
+        expect.soft([], report).toEqual(diffs.filter((d) => d.severity === "critical"));
+      }
+    }
+  });
+
+  it("converse-stream reasoning event shapes match SDK expectations", async () => {
+    // Create a dedicated server with a reasoning fixture
+    const reasoningFixture: Fixture = {
+      match: { userMessage: "Think carefully" },
+      response: {
+        content: "The answer is 42.",
+        reasoning: "Let me think step by step...",
+      },
+    };
+    const reasoningInstance = await createServer([reasoningFixture], {
+      port: 0,
+      chunkSize: 100,
+    });
+
+    try {
+      const mockRes = await httpPostBinary(
+        `${reasoningInstance.url}/model/anthropic.claude-3-haiku-20240307-v1:0/converse-stream`,
+        {
+          messages: [
+            {
+              role: "user",
+              content: [{ text: "Think carefully" }],
+            },
+          ],
+          inferenceConfig: { maxTokens: 100 },
+        },
+      );
+
+      expect(mockRes.status).toBe(200);
+      expect(mockRes.headers["content-type"]).toBe("application/vnd.amazon.eventstream");
+
+      const frames = parseFrames(mockRes.body);
+      expect(frames.length).toBeGreaterThanOrEqual(7); // reasoning block + text block + envelope
+
+      // ── Key event types must be present ──────────────────────────────
+      const eventTypes = frames.map((f) => f.eventType);
+      for (const expected of [
+        "messageStart",
+        "contentBlockStart",
+        "contentBlockDelta",
+        "contentBlockStop",
+        "messageStop",
+        "metadata",
+      ]) {
+        expect(eventTypes, `missing event type: ${expected}`).toContain(expected);
+      }
+
+      // ── contentBlockStart must contain reasoningContent descriptor ──
+      const reasoningStart = frames.find(
+        (f) =>
+          f.eventType === "contentBlockStart" &&
+          (f.payload as { start?: { reasoningContent?: unknown } }).start?.reasoningContent !==
+            undefined,
+      );
+      expect(reasoningStart).toBeDefined();
+      const reasoningStartPayload = reasoningStart!.payload as {
+        contentBlockIndex: number;
+        start: { reasoningContent: Record<string, unknown> };
+      };
+      expect(reasoningStartPayload.contentBlockIndex).toBe(0);
+      expect(reasoningStartPayload.start.reasoningContent).toEqual({});
+
+      // ── contentBlockDelta must contain reasoningContent.text ─────────
+      const reasoningDeltas = frames.filter(
+        (f) =>
+          f.eventType === "contentBlockDelta" &&
+          (f.payload as { delta?: { reasoningContent?: unknown } }).delta?.reasoningContent !==
+            undefined,
+      );
+      expect(reasoningDeltas.length).toBeGreaterThanOrEqual(1);
+      const fullReasoning = reasoningDeltas
+        .map(
+          (f) =>
+            (f.payload as { delta: { reasoningContent: { text: string } } }).delta.reasoningContent
+              .text,
+        )
+        .join("");
+      expect(fullReasoning).toBe("Let me think step by step...");
+
+      // ── Text content block follows reasoning block ──────────────────
+      const textDeltas = frames.filter(
+        (f) =>
+          f.eventType === "contentBlockDelta" &&
+          (f.payload as { delta?: { text?: string } }).delta?.text !== undefined,
+      );
+      expect(textDeltas.length).toBeGreaterThanOrEqual(1);
+      const fullText = textDeltas
+        .map((f) => (f.payload as { delta: { text: string } }).delta.text)
+        .join("");
+      expect(fullText).toBe("The answer is 42.");
+
+      // ── Shape comparison against SDK reasoning expectations ─────────
+      const sdkEvents = bedrockConverseStreamReasoningShapes();
+      const mockEvents = frames.map((f) => ({
+        type: f.eventType,
+        dataShape: extractShape(f.payload),
+      }));
+
+      for (const sdkEvent of sdkEvents) {
+        const mockEvent = mockEvents.find((m) => m.type === sdkEvent.type);
+        if (!mockEvent) continue;
+
+        const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
+        const report = formatDriftReport(
+          `Bedrock ConverseStream Reasoning:${sdkEvent.type}`,
+          diffs,
+        );
+
+        if (shouldFail(diffs)) {
+          expect.soft([], report).toEqual(diffs.filter((d) => d.severity === "critical"));
+        }
+      }
+    } finally {
+      await new Promise<void>((r) => reasoningInstance.server.close(() => r()));
     }
   });
 });

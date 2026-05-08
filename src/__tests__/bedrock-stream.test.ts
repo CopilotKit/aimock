@@ -703,6 +703,7 @@ describe("POST /model/{modelId}/converse (non-streaming)", () => {
     expect(body.output.message.content[0].text).toBe("Hi there!");
     expect(body.stopReason).toBe("end_turn");
     expect(body.usage).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(typeof body.metrics.latencyMs).toBe("number");
   });
 
   it("returns tool call response in Converse format", async () => {
@@ -719,6 +720,18 @@ describe("POST /model/{modelId}/converse (non-streaming)", () => {
     expect(body.output.message.content[0].toolUse.input).toEqual({ city: "SF" });
     expect(body.output.message.content[0].toolUse.toolUseId).toBeDefined();
     expect(body.stopReason).toBe("tool_use");
+    expect(typeof body.metrics.latencyMs).toBe("number");
+  });
+
+  it("returns metrics field in content+toolCalls response", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/model/${MODEL_ID}/converse`, {
+      messages: [{ role: "user", content: [{ text: "search-and-explain" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(typeof body.metrics.latencyMs).toBe("number");
   });
 
   it("returns 404 when no fixture matches", async () => {
@@ -771,8 +784,18 @@ describe("POST /model/{modelId}/converse-stream", () => {
     expect(frames[0].payload).toEqual({ role: "assistant" });
 
     expect(frames[1].eventType).toBe("contentBlockStart");
+    // Text contentBlockStart has an empty start object (no spurious `type` field)
+    const startPayloadText = frames[1].payload as { start: Record<string, unknown> };
+    expect(startPayloadText.start).not.toHaveProperty("type");
+    expect(Object.keys(startPayloadText.start)).toEqual([]);
 
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
+    // Verify no spurious `type` field in any text delta
+    for (const d of deltas) {
+      const delta = (d.payload as { delta: Record<string, unknown> }).delta;
+      expect(delta).not.toHaveProperty("type");
+      expect(Object.keys(delta)).toEqual(["text"]);
+    }
     const fullText = deltas
       .map((f) => (f.payload as { delta: { text: string } }).delta.text)
       .join("");
@@ -881,21 +904,32 @@ describe("POST /model/{modelId}/converse-stream (content + toolCalls)", () => {
     expect(frames[0].eventType).toBe("messageStart");
     expect(frames[0].payload).toEqual({ role: "assistant" });
 
-    // Text contentBlockStart
+    // Text contentBlockStart — start is an empty object (no spurious `type` field)
     const textBlockStart = frames.find(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "text",
+        !(f.payload as { start?: { toolUse?: unknown; reasoningContent?: unknown } }).start
+          ?.toolUse &&
+        !(f.payload as { start?: { toolUse?: unknown; reasoningContent?: unknown } }).start
+          ?.reasoningContent,
     );
     expect(textBlockStart).toBeDefined();
+    const textStart = (textBlockStart!.payload as { start: Record<string, unknown> }).start;
+    expect(textStart).not.toHaveProperty("type");
+    expect(Object.keys(textStart)).toEqual([]);
 
-    // Text deltas
+    // Text deltas — no spurious `type` field in delta
     const textDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
         (f.payload as { delta?: { text?: string } }).delta?.text !== undefined,
     );
     expect(textDeltas.length).toBeGreaterThanOrEqual(1);
+    for (const td of textDeltas) {
+      const delta = (td.payload as { delta: Record<string, unknown> }).delta;
+      expect(delta).not.toHaveProperty("type");
+      expect(Object.keys(delta)).toEqual(["text"]);
+    }
     const fullText = textDeltas
       .map((f) => (f.payload as { delta: { text: string } }).delta.text)
       .join("");
@@ -1055,10 +1089,14 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     expect(blockStarts.length).toBe(2); // one text, one tool
 
     // 3. Text content block appears before tool call block
+    //    Text block start has an empty `start` object (no `type` field)
     const textBlockStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { start?: { type?: string } }).start?.type === "text",
+        !(f.payload as { start?: { toolUse?: unknown; reasoningContent?: unknown } }).start
+          ?.toolUse &&
+        !(f.payload as { start?: { toolUse?: unknown; reasoningContent?: unknown } }).start
+          ?.reasoningContent,
     );
     const toolBlockStartIdx = frames.findIndex(
       (f) =>
@@ -1146,9 +1184,10 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     );
     expect(indices).toEqual([0, 1, 2]);
 
-    // Text block at index 0
-    const textStart = blockStarts[0].payload as { start: { type: string } };
-    expect(textStart.start.type).toBe("text");
+    // Text block at index 0 — start is empty (no `type` field)
+    const textStartPayload = blockStarts[0].payload as { start: Record<string, unknown> };
+    expect(Object.keys(textStartPayload.start)).toEqual([]);
+    expect(textStartPayload.start).not.toHaveProperty("type");
 
     // Tool blocks at indices 1 and 2
     const tool1Start = blockStarts[1].payload as {
@@ -1335,6 +1374,18 @@ describe("converseToCompletionRequest", () => {
     );
 
     expect(result.temperature).toBe(0.7);
+  });
+
+  it("forwards inferenceConfig.maxTokens as max_tokens", () => {
+    const result = converseToCompletionRequest(
+      {
+        messages: [{ role: "user", content: [{ text: "hi" }] }],
+        inferenceConfig: { maxTokens: 100 },
+      },
+      "model-id",
+    );
+
+    expect(result.max_tokens).toBe(100);
   });
 
   it("sets model from modelId parameter", () => {
@@ -1783,6 +1834,7 @@ describe("converseToCompletionRequest (edge cases)", () => {
       "model",
     );
     expect(result.temperature).toBeUndefined();
+    expect(result.max_tokens).toBe(100);
   });
 
   it("handles assistant text blocks with missing text alongside toolUse (text ?? '')", () => {

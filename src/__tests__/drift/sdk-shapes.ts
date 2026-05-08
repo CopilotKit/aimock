@@ -746,14 +746,14 @@ export function bedrockConverseStreamEventShapes(): SSEEventShape[] {
       type: "contentBlockStart",
       dataShape: extractShape({
         contentBlockIndex: 0,
-        start: { type: "text" },
+        start: {},
       }),
     },
     {
       type: "contentBlockDelta",
       dataShape: extractShape({
         contentBlockIndex: 0,
-        delta: { type: "text_delta", text: "Hello" },
+        delta: { text: "Hello" },
       }),
     },
     {
@@ -773,6 +773,177 @@ export function bedrockConverseStreamEventShapes(): SSEEventShape[] {
       dataShape: extractShape({
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
         metrics: { latencyMs: 0 },
+      }),
+    },
+  ];
+}
+
+/**
+ * Expected event shapes for Bedrock ConverseStream tool call responses.
+ *
+ * Tool calls use `contentBlockStart` with a `toolUse` start descriptor
+ * and `contentBlockDelta` with `toolUse.input` string chunks.
+ */
+export function bedrockConverseStreamToolShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "messageStart",
+      dataShape: extractShape({
+        role: "assistant",
+      }),
+    },
+    {
+      type: "contentBlockStart",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        start: { toolUse: { toolUseId: "toolu_test", name: "get_weather" } },
+      }),
+    },
+    {
+      type: "contentBlockDelta",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        delta: { toolUse: { input: '{"city":' } },
+      }),
+    },
+    {
+      type: "contentBlockStop",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+      }),
+    },
+    {
+      type: "messageStop",
+      dataShape: extractShape({
+        stopReason: "tool_use",
+      }),
+    },
+    {
+      type: "metadata",
+      dataShape: extractShape({
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        metrics: { latencyMs: 0 },
+      }),
+    },
+  ];
+}
+
+/**
+ * Expected event shapes for Bedrock ConverseStream reasoning responses.
+ *
+ * Reasoning content uses `contentBlockStart` with a `reasoningContent`
+ * start descriptor and `contentBlockDelta` with `reasoningContent.text`
+ * string chunks, followed by the regular text content block.
+ */
+export function bedrockConverseStreamReasoningShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "messageStart",
+      dataShape: extractShape({
+        role: "assistant",
+      }),
+    },
+    {
+      type: "contentBlockStart",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        start: { reasoningContent: {} },
+      }),
+    },
+    {
+      type: "contentBlockDelta",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        delta: { reasoningContent: { text: "Let me think..." } },
+      }),
+    },
+    {
+      type: "contentBlockStop",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+      }),
+    },
+    {
+      type: "messageStop",
+      dataShape: extractShape({
+        stopReason: "end_turn",
+      }),
+    },
+    {
+      type: "metadata",
+      dataShape: extractShape({
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        metrics: { latencyMs: 0 },
+      }),
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// AWS Bedrock Invoke-with-Response-Stream (Anthropic native inside EventStream)
+// ---------------------------------------------------------------------------
+
+/**
+ * Expected event shapes for Bedrock invoke-with-response-stream responses.
+ *
+ * Unlike ConverseStream (which uses Bedrock-native camelCase payloads),
+ * invoke-with-response-stream wraps Anthropic-native streaming events inside
+ * AWS binary Event Stream frames. Every frame has `:event-type` = "chunk"
+ * and the JSON payload is the raw Anthropic SSE event object.
+ */
+export function bedrockInvokeStreamEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "message_start",
+      dataShape: extractShape({
+        type: "message_start",
+        message: {
+          id: "msg_abc123",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "anthropic.claude-3-haiku",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }),
+    },
+    {
+      type: "content_block_start",
+      dataShape: extractShape({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+    },
+    {
+      type: "content_block_delta",
+      dataShape: extractShape({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Hello" },
+      }),
+    },
+    {
+      type: "content_block_stop",
+      dataShape: extractShape({
+        type: "content_block_stop",
+        index: 0,
+      }),
+    },
+    {
+      type: "message_delta",
+      dataShape: extractShape({
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 0 },
+      }),
+    },
+    {
+      type: "message_stop",
+      dataShape: extractShape({
+        type: "message_stop",
       }),
     },
   ];
