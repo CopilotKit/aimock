@@ -209,7 +209,9 @@ export function buildTextChunks(
         object: "chat.completion.chunk",
         created,
         model: effectiveModel,
-        choices: [{ index: 0, delta: { reasoning_content: slice }, finish_reason: null }],
+        choices: [
+          { index: 0, delta: { reasoning_content: slice }, logprobs: null, finish_reason: null },
+        ],
         ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
       });
     }
@@ -225,6 +227,7 @@ export function buildTextChunks(
       {
         index: 0,
         delta: { role: overrides?.role ?? "assistant", content: "" },
+        logprobs: null,
         finish_reason: null,
       },
     ],
@@ -239,7 +242,7 @@ export function buildTextChunks(
       object: "chat.completion.chunk",
       created,
       model: effectiveModel,
-      choices: [{ index: 0, delta: { content: slice }, finish_reason: null }],
+      choices: [{ index: 0, delta: { content: slice }, logprobs: null, finish_reason: null }],
       ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
     });
   }
@@ -250,7 +253,9 @@ export function buildTextChunks(
     object: "chat.completion.chunk",
     created,
     model: effectiveModel,
-    choices: [{ index: 0, delta: {}, finish_reason: overrides?.finishReason ?? "stop" }],
+    choices: [
+      { index: 0, delta: {}, logprobs: null, finish_reason: overrides?.finishReason ?? "stop" },
+    ],
     ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
   });
 
@@ -279,6 +284,7 @@ export function buildToolCallChunks(
       {
         index: 0,
         delta: { role: overrides?.role ?? "assistant", content: null },
+        logprobs: null,
         finish_reason: null,
       },
     ],
@@ -309,6 +315,7 @@ export function buildToolCallChunks(
               },
             ],
           },
+          logprobs: null,
           finish_reason: null,
         },
       ],
@@ -330,6 +337,7 @@ export function buildToolCallChunks(
             delta: {
               tool_calls: [{ index: tcIdx, function: { arguments: slice } }],
             },
+            logprobs: null,
             finish_reason: null,
           },
         ],
@@ -344,7 +352,14 @@ export function buildToolCallChunks(
     object: "chat.completion.chunk",
     created,
     model: effectiveModel,
-    choices: [{ index: 0, delta: {}, finish_reason: overrides?.finishReason ?? "tool_calls" }],
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        logprobs: null,
+        finish_reason: overrides?.finishReason ?? "tool_calls",
+      },
+    ],
     ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
   });
 
@@ -374,6 +389,7 @@ export function buildTextCompletion(
           refusal: null,
           ...(reasoning ? { reasoning_content: reasoning } : {}),
         },
+        logprobs: null,
         finish_reason: overrides?.finishReason ?? "stop",
       },
     ],
@@ -416,6 +432,7 @@ export function buildToolCallCompletion(
             function: { name: tc.name, arguments: tc.arguments },
           })),
         },
+        logprobs: null,
         finish_reason: overrides?.finishReason ?? "tool_calls",
       },
     ],
@@ -457,7 +474,9 @@ export function buildContentWithToolCallsChunks(
         object: "chat.completion.chunk",
         created,
         model: effectiveModel,
-        choices: [{ index: 0, delta: { reasoning_content: slice }, finish_reason: null }],
+        choices: [
+          { index: 0, delta: { reasoning_content: slice }, logprobs: null, finish_reason: null },
+        ],
         ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
       });
     }
@@ -473,6 +492,7 @@ export function buildContentWithToolCallsChunks(
       {
         index: 0,
         delta: { role: overrides?.role ?? "assistant", content: "" },
+        logprobs: null,
         finish_reason: null,
       },
     ],
@@ -487,7 +507,7 @@ export function buildContentWithToolCallsChunks(
       object: "chat.completion.chunk",
       created,
       model: effectiveModel,
-      choices: [{ index: 0, delta: { content: slice }, finish_reason: null }],
+      choices: [{ index: 0, delta: { content: slice }, logprobs: null, finish_reason: null }],
       ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
     });
   }
@@ -516,6 +536,7 @@ export function buildContentWithToolCallsChunks(
               },
             ],
           },
+          logprobs: null,
           finish_reason: null,
         },
       ],
@@ -537,6 +558,7 @@ export function buildContentWithToolCallsChunks(
             delta: {
               tool_calls: [{ index: tcIdx, function: { arguments: slice } }],
             },
+            logprobs: null,
             finish_reason: null,
           },
         ],
@@ -551,7 +573,14 @@ export function buildContentWithToolCallsChunks(
     object: "chat.completion.chunk",
     created,
     model: effectiveModel,
-    choices: [{ index: 0, delta: {}, finish_reason: overrides?.finishReason ?? "tool_calls" }],
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        logprobs: null,
+        finish_reason: overrides?.finishReason ?? "tool_calls",
+      },
+    ],
     ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
   });
 
@@ -585,6 +614,7 @@ export function buildContentWithToolCallsCompletion(
             function: { name: tc.name, arguments: tc.arguments },
           })),
         },
+        logprobs: null,
         finish_reason: overrides?.finishReason ?? "tool_calls",
       },
     ],

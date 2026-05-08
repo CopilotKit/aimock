@@ -620,6 +620,7 @@ function buildMessageOutputEvents(
   });
   events.push({
     type: "response.content_part.added",
+    item_id: msgId,
     output_index: outputIndex,
     content_index: 0,
     part: { type: "output_text", text: "", annotations: [] },
@@ -637,12 +638,14 @@ function buildMessageOutputEvents(
 
   events.push({
     type: "response.output_text.done",
+    item_id: msgId,
     output_index: outputIndex,
     content_index: 0,
     text: content,
   });
   events.push({
     type: "response.content_part.done",
+    item_id: msgId,
     output_index: outputIndex,
     content_index: 0,
     part: { type: "output_text", text: content, annotations: [] },

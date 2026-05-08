@@ -20,7 +20,7 @@ const toolFixture: Fixture = {
 const errorFixture: Fixture = {
   match: { userMessage: "fail" },
   response: {
-    error: { message: "Rate limited", type: "rate_limit_error", code: "rate_limit" },
+    error: { message: "Rate limited", type: "RESOURCE_EXHAUSTED", code: "rate_limit" },
     status: 429,
   },
 };
@@ -224,7 +224,7 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     expect(msg.error).toBeDefined();
     expect(msg.error.code).toBe(429);
     expect(msg.error.message).toBe("Rate limited");
-    expect(msg.error.status).toBe("ERROR");
+    expect(msg.error.status).toBe("RESOURCE_EXHAUSTED");
 
     ws.close();
   });

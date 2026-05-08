@@ -117,7 +117,7 @@ const errorFixture: Fixture = {
   response: {
     error: {
       message: "Rate limited",
-      type: "rate_limit_error",
+      type: "RESOURCE_EXHAUSTED",
       code: "rate_limit",
     },
     status: 429,
@@ -587,7 +587,7 @@ describe("Gemini error format conformance", () => {
     expect(body.error).toBeDefined();
     expect(body.error.code).toBe(429);
     expect(body.error.message).toBe("Rate limited");
-    expect(body.error.status).toBe("rate_limit_error");
+    expect(body.error.status).toBe("RESOURCE_EXHAUSTED");
     // Should NOT have OpenAI-style fields
     expect(body.error.type).toBeUndefined();
     expect(body.status).toBeUndefined();
@@ -608,7 +608,7 @@ describe("Gemini error field preservation", () => {
     // Gemini format: { error: { code: <httpStatus>, message, status: <type> } }
     expect(body.error.code).toBe(429);
     expect(body.error.message).toBe("Rate limited");
-    expect(body.error.status).toBe("rate_limit_error");
+    expect(body.error.status).toBe("RESOURCE_EXHAUSTED");
   });
 });
 

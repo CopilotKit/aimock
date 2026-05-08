@@ -519,36 +519,29 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
 
     expect(eventTypes[0]).toBe("messageStart");
 
-    // Find thinking and text block starts
+    // Find thinking and text block starts — payloads are flat (not double-wrapped)
     const thinkingStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
-          ?.start?.type === "thinking",
+        (f.payload as { start?: { type?: string } }).start?.type === "thinking",
     );
     const textStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
-          ?.start?.type === "text",
+        (f.payload as { start?: { type?: string } }).start?.type === "text",
     );
 
     expect(thinkingStartIdx).toBeGreaterThan(0);
     expect(textStartIdx).toBeGreaterThan(thinkingStartIdx);
 
-    // Verify reasoning content appears in the stream
+    // Verify reasoning content appears in the stream — flat payloads
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
-          ?.delta?.type === "thinking_delta",
+        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
     );
     const fullThinking = thinkingDeltas
-      .map(
-        (f) =>
-          (f.payload as { contentBlockDelta: { delta: { thinking: string } } }).contentBlockDelta
-            .delta.thinking,
-      )
+      .map((f) => (f.payload as { delta: { thinking: string } }).delta.thinking)
       .join("");
     expect(fullThinking).toBe("Let me think step by step about this problem.");
 
@@ -568,8 +561,7 @@ describe("POST /model/{id}/converse-stream (reasoning streaming)", () => {
     const thinkingDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { contentBlockDelta?: { delta?: { type?: string } } }).contentBlockDelta
-          ?.delta?.type === "thinking_delta",
+        (f.payload as { delta?: { type?: string } }).delta?.type === "thinking_delta",
     );
     expect(thinkingDeltas).toHaveLength(0);
   });

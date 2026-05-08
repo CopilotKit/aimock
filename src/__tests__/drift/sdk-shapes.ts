@@ -181,6 +181,7 @@ export function openaiResponsesTextEventShapes(): SSEEventShape[] {
       type: "response.content_part.added",
       dataShape: extractShape({
         type: "response.content_part.added",
+        item_id: "msg_abc123",
         output_index: 0,
         content_index: 0,
         part: { type: "output_text", text: "" },
@@ -200,6 +201,7 @@ export function openaiResponsesTextEventShapes(): SSEEventShape[] {
       type: "response.output_text.done",
       dataShape: extractShape({
         type: "response.output_text.done",
+        item_id: "msg_abc123",
         output_index: 0,
         content_index: 0,
         text: "Hello!",
@@ -209,6 +211,7 @@ export function openaiResponsesTextEventShapes(): SSEEventShape[] {
       type: "response.content_part.done",
       dataShape: extractShape({
         type: "response.content_part.done",
+        item_id: "msg_abc123",
         output_index: 0,
         content_index: 0,
         part: { type: "output_text", text: "Hello!" },
@@ -715,6 +718,61 @@ export function geminiLiveToolCallEventShapes(): SSEEventShape[] {
             },
           ],
         },
+      }),
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// AWS Bedrock Converse Stream
+// ---------------------------------------------------------------------------
+
+/**
+ * Expected event shapes for Bedrock ConverseStream responses.
+ *
+ * ConverseStream uses AWS binary Event Stream framing where the event type is
+ * carried in the `:event-type` header and the payload is a flat JSON object
+ * (NOT wrapped with the event type name as a key).
+ */
+export function bedrockConverseStreamEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "messageStart",
+      dataShape: extractShape({
+        role: "assistant",
+      }),
+    },
+    {
+      type: "contentBlockStart",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        start: { type: "text" },
+      }),
+    },
+    {
+      type: "contentBlockDelta",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+        delta: { type: "text_delta", text: "Hello" },
+      }),
+    },
+    {
+      type: "contentBlockStop",
+      dataShape: extractShape({
+        contentBlockIndex: 0,
+      }),
+    },
+    {
+      type: "messageStop",
+      dataShape: extractShape({
+        stopReason: "end_turn",
+      }),
+    },
+    {
+      type: "metadata",
+      dataShape: extractShape({
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        metrics: { latencyMs: 0 },
       }),
     },
   ];

@@ -23,7 +23,7 @@ const TOOL_FIXTURE: Fixture = {
 const ERROR_FIXTURE: Fixture = {
   match: { userMessage: "error-test" },
   response: {
-    error: { message: "Rate limited", type: "rate_limit_error" },
+    error: { message: "Rate limited", type: "RESOURCE_EXHAUSTED" },
     status: 429,
   },
 };
@@ -793,7 +793,7 @@ describe("WS Gemini Live BidiGenerateContent conformance", () => {
       expect(msg.error).toBeDefined();
       expect(msg.error.code).toBe(429);
       expect(msg.error.message).toBe("Rate limited");
-      expect(msg.error.status).toBe("ERROR");
+      expect(msg.error.status).toBe("RESOURCE_EXHAUSTED");
     });
 
     it("no-match error: code 404, status NOT_FOUND", async () => {

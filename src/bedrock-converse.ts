@@ -114,66 +114,56 @@ function buildBedrockStreamTextEvents(
   overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [
-    { eventType: "messageStart", payload: { messageStart: { role: "assistant" } } },
+    { eventType: "messageStart", payload: { role: "assistant" } },
   ];
 
   if (reasoning) {
     const blockIndex = 0;
     events.push({
       eventType: "contentBlockStart",
-      payload: {
-        contentBlockStart: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
-      },
+      payload: { contentBlockIndex: blockIndex, start: { type: "thinking" } },
     });
     for (let i = 0; i < reasoning.length; i += chunkSize) {
       events.push({
         eventType: "contentBlockDelta",
         payload: {
-          contentBlockDelta: {
-            contentBlockIndex: blockIndex,
-            delta: { type: "thinking_delta", thinking: reasoning.slice(i, i + chunkSize) },
-          },
+          contentBlockIndex: blockIndex,
+          delta: { type: "thinking_delta", thinking: reasoning.slice(i, i + chunkSize) },
         },
       });
     }
     events.push({
       eventType: "contentBlockStop",
-      payload: { contentBlockStop: { contentBlockIndex: blockIndex } },
+      payload: { contentBlockIndex: blockIndex },
     });
   }
 
   const textBlockIndex = reasoning ? 1 : 0;
   events.push({
     eventType: "contentBlockStart",
-    payload: {
-      contentBlockStart: { contentBlockIndex: textBlockIndex, start: { type: "text" } },
-    },
+    payload: { contentBlockIndex: textBlockIndex, start: { type: "text" } },
   });
   for (let i = 0; i < content.length; i += chunkSize) {
     events.push({
       eventType: "contentBlockDelta",
       payload: {
-        contentBlockDelta: {
-          contentBlockIndex: textBlockIndex,
-          delta: { type: "text_delta", text: content.slice(i, i + chunkSize) },
-        },
+        contentBlockIndex: textBlockIndex,
+        delta: { type: "text_delta", text: content.slice(i, i + chunkSize) },
       },
     });
   }
   events.push({
     eventType: "contentBlockStop",
-    payload: { contentBlockStop: { contentBlockIndex: textBlockIndex } },
+    payload: { contentBlockIndex: textBlockIndex },
   });
   events.push({
     eventType: "messageStop",
-    payload: {
-      messageStop: { stopReason: converseStopReason(overrides?.finishReason, "end_turn") },
-    },
+    payload: { stopReason: converseStopReason(overrides?.finishReason, "end_turn") },
   });
   const usage = converseUsage(overrides);
   events.push({
     eventType: "metadata",
-    payload: { metadata: { usage, metrics: { latencyMs: 0 } } },
+    payload: { usage, metrics: { latencyMs: 0 } },
   });
   return events;
 }
@@ -197,10 +187,8 @@ function buildBedrockStreamContentWithToolCallsEvents(
     events.push({
       eventType: "contentBlockStart",
       payload: {
-        contentBlockStart: {
-          contentBlockIndex: blockIndex,
-          start: { toolUse: { toolUseId, name: tc.name } },
-        },
+        contentBlockIndex: blockIndex,
+        start: { toolUse: { toolUseId, name: tc.name } },
       },
     });
     const argsStr = parseConverseToolArgumentsForStream(tc, logger);
@@ -208,29 +196,25 @@ function buildBedrockStreamContentWithToolCallsEvents(
       events.push({
         eventType: "contentBlockDelta",
         payload: {
-          contentBlockDelta: {
-            contentBlockIndex: blockIndex,
-            delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
-          },
+          contentBlockIndex: blockIndex,
+          delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
         },
       });
     }
     events.push({
       eventType: "contentBlockStop",
-      payload: { contentBlockStop: { contentBlockIndex: blockIndex } },
+      payload: { contentBlockIndex: blockIndex },
     });
     blockIndex++;
   }
   events.push({
     eventType: "messageStop",
-    payload: {
-      messageStop: { stopReason: converseStopReason(overrides?.finishReason, "tool_use") },
-    },
+    payload: { stopReason: converseStopReason(overrides?.finishReason, "tool_use") },
   });
   const usage = converseUsage(overrides);
   events.push({
     eventType: "metadata",
-    payload: { metadata: { usage, metrics: { latencyMs: 0 } } },
+    payload: { usage, metrics: { latencyMs: 0 } },
   });
   return events;
 }
@@ -242,7 +226,7 @@ function buildBedrockStreamToolCallEvents(
   overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [
-    { eventType: "messageStart", payload: { messageStart: { role: "assistant" } } },
+    { eventType: "messageStart", payload: { role: "assistant" } },
   ];
 
   for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
@@ -251,10 +235,8 @@ function buildBedrockStreamToolCallEvents(
     events.push({
       eventType: "contentBlockStart",
       payload: {
-        contentBlockStart: {
-          contentBlockIndex: tcIdx,
-          start: { toolUse: { toolUseId, name: tc.name } },
-        },
+        contentBlockIndex: tcIdx,
+        start: { toolUse: { toolUseId, name: tc.name } },
       },
     });
     const argsStr = parseConverseToolArgumentsForStream(tc, logger);
@@ -262,28 +244,24 @@ function buildBedrockStreamToolCallEvents(
       events.push({
         eventType: "contentBlockDelta",
         payload: {
-          contentBlockDelta: {
-            contentBlockIndex: tcIdx,
-            delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
-          },
+          contentBlockIndex: tcIdx,
+          delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
         },
       });
     }
     events.push({
       eventType: "contentBlockStop",
-      payload: { contentBlockStop: { contentBlockIndex: tcIdx } },
+      payload: { contentBlockIndex: tcIdx },
     });
   }
   events.push({
     eventType: "messageStop",
-    payload: {
-      messageStop: { stopReason: converseStopReason(overrides?.finishReason, "tool_use") },
-    },
+    payload: { stopReason: converseStopReason(overrides?.finishReason, "tool_use") },
   });
   const usage = converseUsage(overrides);
   events.push({
     eventType: "metadata",
-    payload: { metadata: { usage, metrics: { latencyMs: 0 } } },
+    payload: { usage, metrics: { latencyMs: 0 } },
   });
   return events;
 }

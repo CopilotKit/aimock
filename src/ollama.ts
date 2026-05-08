@@ -136,6 +136,7 @@ function buildOllamaChatTextChunks(
   reasoning?: string,
 ): object[] {
   const chunks: object[] = [];
+  const createdAt = new Date().toISOString();
 
   // Reasoning chunks (before content)
   if (reasoning) {
@@ -143,6 +144,7 @@ function buildOllamaChatTextChunks(
       const slice = reasoning.slice(i, i + chunkSize);
       chunks.push({
         model,
+        created_at: createdAt,
         message: { role: "assistant", content: "", reasoning_content: slice },
         done: false,
       });
@@ -153,6 +155,7 @@ function buildOllamaChatTextChunks(
     const slice = content.slice(i, i + chunkSize);
     chunks.push({
       model,
+      created_at: createdAt,
       message: { role: "assistant", content: slice },
       done: false,
     });
@@ -161,6 +164,7 @@ function buildOllamaChatTextChunks(
   // Final chunk with done: true and all duration fields
   chunks.push({
     model,
+    created_at: createdAt,
     message: { role: "assistant", content: "" },
     done: true,
     ...DURATION_FIELDS,
@@ -172,6 +176,7 @@ function buildOllamaChatTextChunks(
 function buildOllamaChatTextResponse(content: string, model: string, reasoning?: string): object {
   return {
     model,
+    created_at: new Date().toISOString(),
     message: {
       role: "assistant",
       content,
@@ -207,8 +212,10 @@ function buildOllamaChatToolCallChunks(
 
   // Tool calls are sent in a single chunk (no streaming of individual args)
   const chunks: object[] = [];
+  const createdAt = new Date().toISOString();
   chunks.push({
     model,
+    created_at: createdAt,
     message: {
       role: "assistant",
       content: "",
@@ -220,6 +227,7 @@ function buildOllamaChatToolCallChunks(
   // Final chunk
   chunks.push({
     model,
+    created_at: createdAt,
     message: { role: "assistant", content: "" },
     done: true,
     ...DURATION_FIELDS,
@@ -253,6 +261,7 @@ function buildOllamaChatToolCallResponse(
 
   return {
     model,
+    created_at: new Date().toISOString(),
     message: {
       role: "assistant",
       content: "",
@@ -273,12 +282,14 @@ function buildOllamaChatContentWithToolCallsChunks(
   logger: Logger,
 ): object[] {
   const chunks: object[] = [];
+  const createdAt = new Date().toISOString();
 
   // Content chunks first
   for (let i = 0; i < content.length; i += chunkSize) {
     const slice = content.slice(i, i + chunkSize);
     chunks.push({
       model,
+      created_at: createdAt,
       message: { role: "assistant", content: slice },
       done: false,
     });
@@ -305,6 +316,7 @@ function buildOllamaChatContentWithToolCallsChunks(
 
   chunks.push({
     model,
+    created_at: createdAt,
     message: {
       role: "assistant",
       content: "",
@@ -316,6 +328,7 @@ function buildOllamaChatContentWithToolCallsChunks(
   // Final chunk
   chunks.push({
     model,
+    created_at: createdAt,
     message: { role: "assistant", content: "" },
     done: true,
     ...DURATION_FIELDS,
@@ -350,6 +363,7 @@ function buildOllamaChatContentWithToolCallsResponse(
 
   return {
     model,
+    created_at: new Date().toISOString(),
     message: {
       role: "assistant",
       content,

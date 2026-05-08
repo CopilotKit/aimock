@@ -1,5 +1,15 @@
 # @copilotkit/aimock
 
+## [1.19.2] - 2026-05-07
+
+### Fixed
+
+- **Converse stream: double-wrapped Event Stream payloads** — `buildBedrockStreamTextEvents`, `buildBedrockStreamToolCallEvents`, and `buildBedrockStreamContentWithToolCallsEvents` emitted payloads wrapped with the event type name (e.g. `{ messageStart: { role: "assistant" } }`). The `:event-type` header already carries the event name, so AWS SDK (botocore) expected flat payloads (e.g. `{ role: "assistant" }`). The redundant wrapping caused botocore's `BaseEventStreamParser` to silently return empty dicts, producing `KeyError: 'role'` in downstream frameworks like Strands Agents. (Issue #162, reported by @KMiya84377)
+- **Responses API: missing item_id on 3 SSE event types** — Added `item_id` to `response.output_text.done`, `response.content_part.added`, and `response.content_part.done` events, matching the real OpenAI Responses API shape. SDK drift shapes updated.
+- **Chat Completions: missing logprobs on choices** — Added `logprobs: null` to all streaming chunks and non-streaming choices. Removed `logprobs` from drift allowlist so future omissions are caught.
+- **Ollama: missing created_at on /api/chat** — Added `created_at` to all 6 `/api/chat` builder functions (text, tool call, content+tools, and their streaming variants). The `/api/generate` path already had it.
+- **Gemini: error fixtures used Anthropic-style error codes** — Test fixtures and the Gemini Live WebSocket handler now use Google canonical gRPC status codes (`RESOURCE_EXHAUSTED`, `INTERNAL`) instead of `rate_limit_error` / `ERROR`.
+
 ## [1.19.1] - 2026-05-07
 
 ### Fixed

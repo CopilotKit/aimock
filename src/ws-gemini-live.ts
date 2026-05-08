@@ -390,7 +390,11 @@ async function processMessage(
     });
     ws.send(
       JSON.stringify({
-        error: { code: status, message: response.error.message, status: "ERROR" },
+        error: {
+          code: status,
+          message: response.error.message,
+          status: response.error.type ?? "INTERNAL",
+        },
       }),
     );
     return;

@@ -765,24 +765,21 @@ describe("POST /model/{modelId}/converse-stream", () => {
 
     const frames = parseFrames(res.body);
 
-    // Verify event sequence
+    // Verify event sequence — payloads are NOT wrapped with the event type name;
+    // the :event-type header already carries that information.
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
+    expect(frames[0].payload).toEqual({ role: "assistant" });
 
     expect(frames[1].eventType).toBe("contentBlockStart");
 
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     const fullText = deltas
-      .map(
-        (f) =>
-          (f.payload as { contentBlockDelta: { delta: { text: string } } }).contentBlockDelta.delta
-            .text,
-      )
+      .map((f) => (f.payload as { delta: { text: string } }).delta.text)
       .join("");
     expect(fullText).toBe("Hi there!");
 
     const msgStop = frames.find((f) => f.eventType === "messageStop");
-    expect(msgStop!.payload).toEqual({ messageStop: { stopReason: "end_turn" } });
+    expect(msgStop!.payload).toEqual({ stopReason: "end_turn" });
   });
 
   it("returns tool call response as Event Stream", async () => {
@@ -795,29 +792,23 @@ describe("POST /model/{modelId}/converse-stream", () => {
     const frames = parseFrames(res.body);
 
     expect(frames[0].eventType).toBe("messageStart");
+    expect(frames[0].payload).toEqual({ role: "assistant" });
 
     const startFrame = frames.find((f) => f.eventType === "contentBlockStart");
     const startPayload = startFrame!.payload as {
       contentBlockIndex: number;
-      contentBlockStart: {
-        contentBlockIndex: number;
-        start: { toolUse: { toolUseId: string; name: string } };
-      };
+      start: { toolUse: { toolUseId: string; name: string } };
     };
-    expect(startPayload.contentBlockStart.start.toolUse.name).toBe("get_weather");
+    expect(startPayload.start.toolUse.name).toBe("get_weather");
 
     const deltas = frames.filter((f) => f.eventType === "contentBlockDelta");
     const fullJson = deltas
-      .map(
-        (f) =>
-          (f.payload as { contentBlockDelta: { delta: { toolUse: { input: string } } } })
-            .contentBlockDelta.delta.toolUse.input,
-      )
+      .map((f) => (f.payload as { delta: { toolUse: { input: string } } }).delta.toolUse.input)
       .join("");
     expect(JSON.parse(fullJson)).toEqual({ city: "SF" });
 
     const msgStop = frames.find((f) => f.eventType === "messageStop");
-    expect(msgStop!.payload).toEqual({ messageStop: { stopReason: "tool_use" } });
+    expect(msgStop!.payload).toEqual({ stopReason: "tool_use" });
   });
 
   it("supports streaming profile (ttft/tps)", async () => {
@@ -886,16 +877,15 @@ describe("POST /model/{modelId}/converse-stream (content + toolCalls)", () => {
 
     const frames = parseFrames(res.body);
 
-    // messageStart
+    // messageStart — payload is flat (not wrapped with event type name)
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
+    expect(frames[0].payload).toEqual({ role: "assistant" });
 
     // Text contentBlockStart
     const textBlockStart = frames.find(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
-          ?.start?.type === "text",
+        (f.payload as { start?: { type?: string } }).start?.type === "text",
     );
     expect(textBlockStart).toBeDefined();
 
@@ -903,16 +893,11 @@ describe("POST /model/{modelId}/converse-stream (content + toolCalls)", () => {
     const textDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { contentBlockDelta?: { delta?: { text?: string } } }).contentBlockDelta
-          ?.delta?.text !== undefined,
+        (f.payload as { delta?: { text?: string } }).delta?.text !== undefined,
     );
     expect(textDeltas.length).toBeGreaterThanOrEqual(1);
     const fullText = textDeltas
-      .map(
-        (f) =>
-          (f.payload as { contentBlockDelta: { delta: { text: string } } }).contentBlockDelta.delta
-            .text,
-      )
+      .map((f) => (f.payload as { delta: { text: string } }).delta.text)
       .join("");
     expect(fullText).toBe("Let me look that up.");
 
@@ -920,49 +905,40 @@ describe("POST /model/{modelId}/converse-stream (content + toolCalls)", () => {
     const toolBlockStart = frames.find(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { toolUse?: unknown } } }).contentBlockStart
-          ?.start?.toolUse !== undefined,
+        (f.payload as { start?: { toolUse?: unknown } }).start?.toolUse !== undefined,
     );
     expect(toolBlockStart).toBeDefined();
     const toolStartPayload = toolBlockStart!.payload as {
       contentBlockIndex: number;
-      contentBlockStart: {
-        contentBlockIndex: number;
-        start: { toolUse: { toolUseId: string; name: string } };
-      };
+      start: { toolUse: { toolUseId: string; name: string } };
     };
-    expect(toolStartPayload.contentBlockStart.start.toolUse.name).toBe("web_search");
-    expect(toolStartPayload.contentBlockStart.start.toolUse.toolUseId).toBeDefined();
+    expect(toolStartPayload.start.toolUse.name).toBe("web_search");
+    expect(toolStartPayload.start.toolUse.toolUseId).toBeDefined();
 
     // Tool deltas — toolUse.input
     const toolDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { contentBlockDelta?: { delta?: { toolUse?: unknown } } }).contentBlockDelta
-          ?.delta?.toolUse !== undefined,
+        (f.payload as { delta?: { toolUse?: unknown } }).delta?.toolUse !== undefined,
     );
     expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
     const fullJson = toolDeltas
-      .map(
-        (f) =>
-          (f.payload as { contentBlockDelta: { delta: { toolUse: { input: string } } } })
-            .contentBlockDelta.delta.toolUse.input,
-      )
+      .map((f) => (f.payload as { delta: { toolUse: { input: string } } }).delta.toolUse.input)
       .join("");
     expect(JSON.parse(fullJson)).toEqual({ query: "vitest testing" });
 
     // messageStop with tool_use stop reason
     const msgStop = frames.find((f) => f.eventType === "messageStop");
-    expect(msgStop!.payload).toEqual({ messageStop: { stopReason: "tool_use" } });
+    expect(msgStop!.payload).toEqual({ stopReason: "tool_use" });
   });
 });
 
-// ─── converse-stream: contentBlockStop wrapper shape ──────────────────────────
+// ─── converse-stream: payload shape (not double-wrapped) ──────────────────────
 
-describe("POST /model/{modelId}/converse-stream (contentBlockStop wrapper shape)", () => {
+describe("POST /model/{modelId}/converse-stream (payload shape)", () => {
   const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-  it("contentBlockStop events have wrapped { contentBlockStop: { contentBlockIndex: N } } shape", async () => {
+  it("contentBlockStop payloads are flat { contentBlockIndex: N } (not double-wrapped)", async () => {
     instance = await createServer(allFixtures);
     const res = await postBinary(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
       messages: [{ role: "user", content: [{ text: "hello" }] }],
@@ -975,17 +951,15 @@ describe("POST /model/{modelId}/converse-stream (contentBlockStop wrapper shape)
     expect(stopFrames.length).toBeGreaterThanOrEqual(1);
 
     for (const frame of stopFrames) {
-      // Must be the wrapped shape, not the flat { contentBlockIndex: N }
-      const payload = frame.payload as { contentBlockStop: { contentBlockIndex: number } };
-      expect(payload).toHaveProperty("contentBlockStop");
-      expect(payload.contentBlockStop).toHaveProperty("contentBlockIndex");
-      expect(typeof payload.contentBlockStop.contentBlockIndex).toBe("number");
-      // Must NOT have a top-level contentBlockIndex (that would be the flat shape)
-      expect(Object.keys(payload)).toEqual(["contentBlockStop"]);
+      const payload = frame.payload as { contentBlockIndex: number };
+      expect(payload).toHaveProperty("contentBlockIndex");
+      expect(typeof payload.contentBlockIndex).toBe("number");
+      // Must NOT be double-wrapped with the event type name
+      expect(payload).not.toHaveProperty("contentBlockStop");
     }
   });
 
-  it("tool-call contentBlockStop events also have the wrapped shape", async () => {
+  it("tool-call contentBlockStop payloads are also flat", async () => {
     instance = await createServer(allFixtures);
     const res = await postBinary(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
       messages: [{ role: "user", content: [{ text: "weather" }] }],
@@ -998,14 +972,13 @@ describe("POST /model/{modelId}/converse-stream (contentBlockStop wrapper shape)
     expect(stopFrames.length).toBeGreaterThanOrEqual(1);
 
     for (const frame of stopFrames) {
-      const payload = frame.payload as { contentBlockStop: { contentBlockIndex: number } };
-      expect(payload).toHaveProperty("contentBlockStop");
-      expect(payload.contentBlockStop).toHaveProperty("contentBlockIndex");
-      expect(Object.keys(payload)).toEqual(["contentBlockStop"]);
+      const payload = frame.payload as { contentBlockIndex: number };
+      expect(payload).toHaveProperty("contentBlockIndex");
+      expect(payload).not.toHaveProperty("contentBlockStop");
     }
   });
 
-  it("messageStop events have the wrapped { messageStop: { stopReason: '...' } } shape", async () => {
+  it("messageStop payloads are flat { stopReason: '...' } (not double-wrapped)", async () => {
     instance = await createServer(allFixtures);
     const res = await postBinary(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
       messages: [{ role: "user", content: [{ text: "hello" }] }],
@@ -1017,10 +990,45 @@ describe("POST /model/{modelId}/converse-stream (contentBlockStop wrapper shape)
     const msgStopFrames = frames.filter((f) => f.eventType === "messageStop");
     expect(msgStopFrames).toHaveLength(1);
 
-    const payload = msgStopFrames[0].payload as { messageStop: { stopReason: string } };
-    expect(payload).toHaveProperty("messageStop");
-    expect(payload.messageStop).toHaveProperty("stopReason");
-    expect(Object.keys(payload)).toEqual(["messageStop"]);
+    const payload = msgStopFrames[0].payload as { stopReason: string };
+    expect(payload).toHaveProperty("stopReason");
+    expect(payload).not.toHaveProperty("messageStop");
+    expect(Object.keys(payload)).toEqual(["stopReason"]);
+  });
+
+  it("messageStart payloads are flat { role: 'assistant' } (not double-wrapped)", async () => {
+    instance = await createServer(allFixtures);
+    const res = await postBinary(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
+      messages: [{ role: "user", content: [{ text: "hello" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const frames = parseFrames(res.body);
+
+    const msgStartFrames = frames.filter((f) => f.eventType === "messageStart");
+    expect(msgStartFrames).toHaveLength(1);
+
+    const payload = msgStartFrames[0].payload as { role: string };
+    expect(payload).toEqual({ role: "assistant" });
+    expect(payload).not.toHaveProperty("messageStart");
+  });
+
+  it("metadata payloads are flat { usage: ..., metrics: ... } (not double-wrapped)", async () => {
+    instance = await createServer(allFixtures);
+    const res = await postBinary(`${instance.url}/model/${MODEL_ID}/converse-stream`, {
+      messages: [{ role: "user", content: [{ text: "hello" }] }],
+    });
+
+    expect(res.status).toBe(200);
+    const frames = parseFrames(res.body);
+
+    const metadataFrames = frames.filter((f) => f.eventType === "metadata");
+    expect(metadataFrames).toHaveLength(1);
+
+    const payload = metadataFrames[0].payload as { usage: object; metrics: object };
+    expect(payload).toHaveProperty("usage");
+    expect(payload).toHaveProperty("metrics");
+    expect(payload).not.toHaveProperty("metadata");
   });
 });
 
@@ -1038,9 +1046,9 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     expect(res.status).toBe(200);
     const frames = parseFrames(res.body);
 
-    // 1. Stream starts with messageStart (role: assistant)
+    // 1. Stream starts with messageStart (role: assistant) — flat payload
     expect(frames[0].eventType).toBe("messageStart");
-    expect(frames[0].payload).toEqual({ messageStart: { role: "assistant" } });
+    expect(frames[0].payload).toEqual({ role: "assistant" });
 
     // 2. Collect all contentBlockStart frames
     const blockStarts = frames.filter((f) => f.eventType === "contentBlockStart");
@@ -1050,50 +1058,42 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     const textBlockStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { type?: string } } }).contentBlockStart
-          ?.start?.type === "text",
+        (f.payload as { start?: { type?: string } }).start?.type === "text",
     );
     const toolBlockStartIdx = frames.findIndex(
       (f) =>
         f.eventType === "contentBlockStart" &&
-        (f.payload as { contentBlockStart?: { start?: { toolUse?: unknown } } }).contentBlockStart
-          ?.start?.toolUse !== undefined,
+        (f.payload as { start?: { toolUse?: unknown } }).start?.toolUse !== undefined,
     );
     expect(textBlockStartIdx).toBeLessThan(toolBlockStartIdx);
 
-    // 4. Tool call block has contentBlockStart with toolUse (toolUseId + name)
+    // 4. Tool call block has contentBlockStart with toolUse (toolUseId + name) — flat payload
     const toolBlockStart = frames[toolBlockStartIdx];
     const toolStartPayload = toolBlockStart.payload as {
-      contentBlockStart: {
-        contentBlockIndex: number;
-        start: { toolUse: { toolUseId: string; name: string } };
-      };
+      contentBlockIndex: number;
+      start: { toolUse: { toolUseId: string; name: string } };
     };
-    expect(toolStartPayload.contentBlockStart.start.toolUse.name).toBe("web_search");
-    expect(toolStartPayload.contentBlockStart.start.toolUse.toolUseId).toBeDefined();
-    expect(typeof toolStartPayload.contentBlockStart.start.toolUse.toolUseId).toBe("string");
+    expect(toolStartPayload.start.toolUse.name).toBe("web_search");
+    expect(toolStartPayload.start.toolUse.toolUseId).toBeDefined();
+    expect(typeof toolStartPayload.start.toolUse.toolUseId).toBe("string");
 
     // 5. Tool call block has contentBlockDelta chunks after its start
-    const toolBlockIndex = toolStartPayload.contentBlockStart.contentBlockIndex;
+    const toolBlockIndex = toolStartPayload.contentBlockIndex;
     const toolDeltas = frames.filter(
       (f) =>
         f.eventType === "contentBlockDelta" &&
-        (f.payload as { contentBlockDelta?: { contentBlockIndex?: number } }).contentBlockDelta
-          ?.contentBlockIndex === toolBlockIndex,
+        (f.payload as { contentBlockIndex?: number }).contentBlockIndex === toolBlockIndex,
     );
     expect(toolDeltas.length).toBeGreaterThanOrEqual(1);
 
-    // 6. Tool call block has contentBlockStop
+    // 6. Tool call block has contentBlockStop — flat payload
     const toolBlockStop = frames.find(
       (f) =>
         f.eventType === "contentBlockStop" &&
-        (f.payload as { contentBlockStop?: { contentBlockIndex?: number } }).contentBlockStop
-          ?.contentBlockIndex === toolBlockIndex,
+        (f.payload as { contentBlockIndex?: number }).contentBlockIndex === toolBlockIndex,
     );
     expect(toolBlockStop).toBeDefined();
-    expect(toolBlockStop!.payload).toEqual({
-      contentBlockStop: { contentBlockIndex: toolBlockIndex },
-    });
+    expect(toolBlockStop!.payload).toEqual({ contentBlockIndex: toolBlockIndex });
 
     // 7. Stream ends with messageStop (stopReason: tool_use) then metadata
     const msgStopIdx = frames.findIndex((f) => f.eventType === "messageStop");
@@ -1103,28 +1103,18 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     expect(metadataIdx).toBe(msgStopIdx + 1); // metadata immediately follows messageStop
     expect(metadataIdx).toBe(frames.length - 1); // metadata is last frame
 
-    const msgStopPayload = frames[msgStopIdx].payload as {
-      messageStop: { stopReason: string };
-    };
-    expect(msgStopPayload).toEqual({ messageStop: { stopReason: "tool_use" } });
+    const msgStopPayload = frames[msgStopIdx].payload as { stopReason: string };
+    expect(msgStopPayload).toEqual({ stopReason: "tool_use" });
 
-    // 8. contentBlockIndex values are sequential across text and tool blocks
+    // 8. contentBlockIndex values are sequential across text and tool blocks — flat payloads
     const allBlockStarts = frames
       .filter((f) => f.eventType === "contentBlockStart")
-      .map(
-        (f) =>
-          (f.payload as { contentBlockStart: { contentBlockIndex: number } }).contentBlockStart
-            .contentBlockIndex,
-      );
+      .map((f) => (f.payload as { contentBlockIndex: number }).contentBlockIndex);
     expect(allBlockStarts).toEqual([0, 1]);
 
     const allBlockStops = frames
       .filter((f) => f.eventType === "contentBlockStop")
-      .map(
-        (f) =>
-          (f.payload as { contentBlockStop: { contentBlockIndex: number } }).contentBlockStop
-            .contentBlockIndex,
-      );
+      .map((f) => (f.payload as { contentBlockIndex: number }).contentBlockIndex);
     expect(allBlockStops).toEqual([0, 1]);
   });
 
@@ -1147,46 +1137,40 @@ describe("POST /model/{modelId}/converse-stream (contentWithToolCalls full struc
     expect(res.status).toBe(200);
     const frames = parseFrames(res.body);
 
-    // contentBlockIndex: 0 = text, 1 = tool_a, 2 = tool_b
+    // contentBlockIndex: 0 = text, 1 = tool_a, 2 = tool_b — flat payloads
     const blockStarts = frames.filter((f) => f.eventType === "contentBlockStart");
     expect(blockStarts).toHaveLength(3);
 
     const indices = blockStarts.map(
-      (f) =>
-        (f.payload as { contentBlockStart: { contentBlockIndex: number } }).contentBlockStart
-          .contentBlockIndex,
+      (f) => (f.payload as { contentBlockIndex: number }).contentBlockIndex,
     );
     expect(indices).toEqual([0, 1, 2]);
 
     // Text block at index 0
-    const textStart = blockStarts[0].payload as {
-      contentBlockStart: { start: { type: string } };
-    };
-    expect(textStart.contentBlockStart.start.type).toBe("text");
+    const textStart = blockStarts[0].payload as { start: { type: string } };
+    expect(textStart.start.type).toBe("text");
 
     // Tool blocks at indices 1 and 2
     const tool1Start = blockStarts[1].payload as {
-      contentBlockStart: { start: { toolUse: { name: string } } };
+      start: { toolUse: { name: string } };
     };
-    expect(tool1Start.contentBlockStart.start.toolUse.name).toBe("tool_a");
+    expect(tool1Start.start.toolUse.name).toBe("tool_a");
 
     const tool2Start = blockStarts[2].payload as {
-      contentBlockStart: { start: { toolUse: { name: string } } };
+      start: { toolUse: { name: string } };
     };
-    expect(tool2Start.contentBlockStart.start.toolUse.name).toBe("tool_b");
+    expect(tool2Start.start.toolUse.name).toBe("tool_b");
 
-    // contentBlockStop indices are also sequential
+    // contentBlockStop indices are also sequential — flat payloads
     const blockStops = frames.filter((f) => f.eventType === "contentBlockStop");
     const stopIndices = blockStops.map(
-      (f) =>
-        (f.payload as { contentBlockStop: { contentBlockIndex: number } }).contentBlockStop
-          .contentBlockIndex,
+      (f) => (f.payload as { contentBlockIndex: number }).contentBlockIndex,
     );
     expect(stopIndices).toEqual([0, 1, 2]);
 
-    // messageStop with tool_use
+    // messageStop with tool_use — flat payload
     const msgStop = frames.find((f) => f.eventType === "messageStop");
-    expect(msgStop!.payload).toEqual({ messageStop: { stopReason: "tool_use" } });
+    expect(msgStop!.payload).toEqual({ stopReason: "tool_use" });
   });
 });
 

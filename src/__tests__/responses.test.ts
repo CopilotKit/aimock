@@ -425,6 +425,57 @@ describe("POST /v1/responses (streaming)", () => {
     }
   });
 
+  it("output_text.done includes item_id", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    const events = parseResponsesSSEEvents(res.body);
+    const doneEvents = events.filter((e) => e.type === "response.output_text.done");
+    expect(doneEvents.length).toBeGreaterThan(0);
+    for (const d of doneEvents) {
+      expect(d.item_id).toBeDefined();
+      expect(typeof d.item_id).toBe("string");
+    }
+  });
+
+  it("content_part.added includes item_id", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    const events = parseResponsesSSEEvents(res.body);
+    const addedEvents = events.filter((e) => e.type === "response.content_part.added");
+    expect(addedEvents.length).toBeGreaterThan(0);
+    for (const d of addedEvents) {
+      expect(d.item_id).toBeDefined();
+      expect(typeof d.item_id).toBe("string");
+    }
+  });
+
+  it("content_part.done includes item_id", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-4",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+    });
+
+    const events = parseResponsesSSEEvents(res.body);
+    const doneEvents = events.filter((e) => e.type === "response.content_part.done");
+    expect(doneEvents.length).toBeGreaterThan(0);
+    for (const d of doneEvents) {
+      expect(d.item_id).toBeDefined();
+      expect(typeof d.item_id).toBe("string");
+    }
+  });
+
   it("text deltas reconstruct full content", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
