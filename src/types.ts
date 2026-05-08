@@ -378,6 +378,7 @@ export interface SSEChunk {
 export interface SSEChoice {
   index: number;
   delta: SSEDelta;
+  logprobs: null;
   finish_reason: string | null;
 }
 
@@ -410,6 +411,7 @@ export interface ChatCompletion {
 export interface ChatCompletionChoice {
   index: number;
   message: ChatCompletionMessage;
+  logprobs: null;
   finish_reason: string;
 }
 

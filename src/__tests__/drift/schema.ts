@@ -208,8 +208,6 @@ const ALLOWLISTED_PATHS = new Set([
   "usageMetadata.totalTokenCount",
   "usageMetadata.cachedContentTokenCount",
   "system_fingerprint",
-  "logprobs",
-  "choices[].logprobs",
   "service_tier",
   "x_groq",
   // Gemini streaming metadata fields vary

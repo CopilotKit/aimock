@@ -182,7 +182,7 @@ describe("OpenAI Chat Completions conformance", () => {
       expect(typeof json.created).toBe("number");
     });
 
-    it("choices[0] has index, message, and finish_reason", async () => {
+    it("choices[0] has index, message, logprobs, and finish_reason", async () => {
       const res = await httpPost(chatPath(), {
         model: "gpt-4",
         messages: [{ role: "user", content: "hello" }],
@@ -192,6 +192,8 @@ describe("OpenAI Chat Completions conformance", () => {
       const choice = json.choices[0];
       expect(choice).toHaveProperty("index");
       expect(choice).toHaveProperty("message");
+      expect(choice).toHaveProperty("logprobs");
+      expect(choice.logprobs).toBeNull();
       expect(choice).toHaveProperty("finish_reason");
       expect(choice.message.role).toBe("assistant");
       expect(typeof choice.message.content).toBe("string");
@@ -276,7 +278,7 @@ describe("OpenAI Chat Completions conformance", () => {
       expect(res.body.trimEnd()).toMatch(/data: \[DONE\]$/);
     });
 
-    it("each chunk has id, object chat.completion.chunk, created, model, choices", async () => {
+    it("each chunk has id, object chat.completion.chunk, created, model, choices with logprobs", async () => {
       const res = await httpPost(chatPath(), {
         model: "gpt-4",
         messages: [{ role: "user", content: "hello" }],
@@ -291,6 +293,8 @@ describe("OpenAI Chat Completions conformance", () => {
         expect(c).toHaveProperty("created");
         expect(c).toHaveProperty("model");
         expect(c).toHaveProperty("choices");
+        expect(c.choices[0]).toHaveProperty("logprobs");
+        expect(c.choices[0].logprobs).toBeNull();
       }
     });
 
