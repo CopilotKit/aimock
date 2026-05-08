@@ -328,6 +328,7 @@ describe("POST /api/chat (non-streaming)", () => {
 
     const body = JSON.parse(res.body);
     expect(body.model).toBe("llama3");
+    expect(body.created_at).toEqual(expect.any(String));
     expect(body.message.role).toBe("assistant");
     expect(body.message.content).toBe("Hi there!");
     expect(body.done).toBe(true);
@@ -350,6 +351,7 @@ describe("POST /api/chat (non-streaming)", () => {
 
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
+    expect(body.created_at).toEqual(expect.any(String));
     expect(body.done).toBe(true);
     expect(body.message.tool_calls).toHaveLength(1);
     expect(body.message.tool_calls[0].function.name).toBe("get_weather");
@@ -377,15 +379,17 @@ describe("POST /api/chat (streaming)", () => {
     const chunks = parseNDJSON(res.body);
     expect(chunks.length).toBeGreaterThan(1);
 
-    // All non-final chunks should have done: false
+    // All non-final chunks should have done: false and created_at
     const nonFinal = chunks.slice(0, -1);
     for (const chunk of nonFinal) {
       expect((chunk as { done: boolean }).done).toBe(false);
+      expect((chunk as { created_at: string }).created_at).toEqual(expect.any(String));
     }
 
-    // Final chunk should have done: true and all duration fields
+    // Final chunk should have done: true, created_at, and all duration fields
     const final = chunks[chunks.length - 1] as Record<string, unknown>;
     expect(final.done).toBe(true);
+    expect(final.created_at).toEqual(expect.any(String));
     expect(final.done_reason).toBe("stop");
     expect(final.total_duration).toBe(0);
     expect(final.load_duration).toBe(0);
@@ -445,6 +449,11 @@ describe("POST /api/chat (streaming)", () => {
     expect(toolChunk).toBeDefined();
     expect(toolChunk!.message.tool_calls![0].function.name).toBe("get_weather");
     expect(toolChunk!.message.tool_calls![0].function.arguments).toEqual({ city: "NYC" });
+
+    // All chunks should have created_at
+    for (const chunk of chunks) {
+      expect((chunk as { created_at: string }).created_at).toEqual(expect.any(String));
+    }
   });
 
   it("uses fixture chunkSize for text streaming", async () => {
