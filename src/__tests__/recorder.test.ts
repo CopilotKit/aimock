@@ -1531,6 +1531,455 @@ describe("recorder edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Multi-turn disambiguation — recording a single agent run with shared
+// userMessage across LLM calls must produce distinct fixture match criteria.
+// Regression for the case where the recorder wrote only `userMessage` and
+// the in-memory cache then shadowed every subsequent call in the same run.
+// ---------------------------------------------------------------------------
+
+describe("recorder multi-turn disambiguation", () => {
+  it("2 LLM calls in one tool-using run record as 2 fixtures with distinct match", async () => {
+    // Upstream serves different responses for the two turns of the run.
+    // Turn 0 (no assistant, no tool messages) → tool call.
+    // Turn 1 (one assistant + one tool result already in messages) → text.
+    const { recorderUrl, fixturePath } = await setupUpstreamAndRecorder([
+      {
+        match: { userMessage: "weather in Tokyo", turnIndex: 0, hasToolResult: false },
+        response: {
+          toolCalls: [{ name: "get_weather", arguments: '{"location":"Tokyo"}', id: "call_w1" }],
+        },
+      },
+      {
+        match: { userMessage: "weather in Tokyo", turnIndex: 1, hasToolResult: true },
+        response: { content: "Tokyo is 22°C and partly cloudy." },
+      },
+    ]);
+
+    // Turn 0 — no assistant or tool messages yet.
+    const resp0 = await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "weather in Tokyo" }],
+      tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+    });
+    expect(resp0.status).toBe(200);
+    const body0 = JSON.parse(resp0.body);
+    expect(body0.choices[0].message.tool_calls[0].function.name).toBe("get_weather");
+
+    // Turn 1 — assistant tool-call turn + tool result already accumulated.
+    const resp1 = await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "weather in Tokyo" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_w1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"location":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_w1", content: '{"temp":22,"sky":"partly cloudy"}' },
+      ],
+      tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+    });
+    expect(resp1.status).toBe(200);
+    const body1 = JSON.parse(resp1.body);
+    expect(body1.choices[0].message.content).toBe("Tokyo is 22°C and partly cloudy.");
+
+    // Two fixture files written, each with a distinct match payload.
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(2);
+
+    const matches = files
+      .map((f) => JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8")) as FixtureFile)
+      .map((file) => file.fixtures[0].match);
+
+    // All recorded matches share the userMessage but differ on turnIndex /
+    // hasToolResult — that's the disambiguator.
+    expect(matches.every((m) => m.userMessage === "weather in Tokyo")).toBe(true);
+
+    const keys = matches.map((m) => `${m.turnIndex}|${m.hasToolResult}`).sort();
+    expect(keys).toEqual(["0|false", "1|true"]);
+  });
+
+  it("3 LLM calls (chained tool calls) record as 3 fixtures with distinct match", async () => {
+    // Three-turn run: tool_call → result → tool_call → result → final content.
+    const { recorderUrl, fixturePath } = await setupUpstreamAndRecorder([
+      {
+        match: { userMessage: "plan a trip", turnIndex: 0, hasToolResult: false },
+        response: {
+          toolCalls: [{ name: "find_flights", arguments: '{"to":"Tokyo"}', id: "call_a" }],
+        },
+      },
+      {
+        match: { userMessage: "plan a trip", turnIndex: 1, hasToolResult: true },
+        response: {
+          toolCalls: [{ name: "book_hotel", arguments: '{"city":"Tokyo"}', id: "call_b" }],
+        },
+      },
+      {
+        match: { userMessage: "plan a trip", turnIndex: 2, hasToolResult: true },
+        response: { content: "Trip booked: flight + hotel in Tokyo." },
+      },
+    ]);
+
+    // Turn 0
+    let resp = await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "plan a trip" }],
+    });
+    expect(resp.status).toBe(200);
+    expect(JSON.parse(resp.body).choices[0].message.tool_calls[0].function.name).toBe(
+      "find_flights",
+    );
+
+    // Turn 1
+    resp = await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "plan a trip" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_a",
+              type: "function",
+              function: { name: "find_flights", arguments: '{"to":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_a", content: '{"flights":["JL001"]}' },
+      ],
+    });
+    expect(resp.status).toBe(200);
+    expect(JSON.parse(resp.body).choices[0].message.tool_calls[0].function.name).toBe("book_hotel");
+
+    // Turn 2
+    resp = await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "plan a trip" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_a",
+              type: "function",
+              function: { name: "find_flights", arguments: '{"to":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_a", content: '{"flights":["JL001"]}' },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_b",
+              type: "function",
+              function: { name: "book_hotel", arguments: '{"city":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_b", content: '{"hotel":"Park Hyatt"}' },
+      ],
+    });
+    expect(resp.status).toBe(200);
+    expect(JSON.parse(resp.body).choices[0].message.content).toBe(
+      "Trip booked: flight + hotel in Tokyo.",
+    );
+
+    // Three fixture files, each a distinct match.
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(3);
+
+    const matches = files
+      .map((f) => JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8")) as FixtureFile)
+      .map((file) => file.fixtures[0].match);
+
+    const keys = matches.map((m) => `${m.turnIndex}|${m.hasToolResult}`).sort();
+    expect(keys).toEqual(["0|false", "1|true", "2|true"]);
+  });
+
+  it("recorded fixtures replay deterministically against a fresh aimock", async () => {
+    // Phase 1: record a 2-turn run.
+    const { recorderUrl, fixturePath } = await setupUpstreamAndRecorder([
+      {
+        match: { userMessage: "weather in Tokyo", turnIndex: 0, hasToolResult: false },
+        response: {
+          toolCalls: [{ name: "get_weather", arguments: '{"location":"Tokyo"}', id: "call_w1" }],
+        },
+      },
+      {
+        match: { userMessage: "weather in Tokyo", turnIndex: 1, hasToolResult: true },
+        response: { content: "Tokyo is 22°C and partly cloudy." },
+      },
+    ]);
+
+    // Drive the run against the recorder so it proxies and records.
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "weather in Tokyo" }],
+    });
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "weather in Tokyo" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_w1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"location":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_w1", content: '{"temp":22}' },
+      ],
+    });
+
+    // Stop the recording servers so Phase 2 owns the ports / fixtures.
+    await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
+    await new Promise<void>((resolve) => upstream!.server.close(() => resolve()));
+    recorder = undefined;
+    upstream = undefined;
+
+    // Load the recorded fixture files and feed them to a fresh aimock that
+    // has NO upstream — replay must come from fixture cache or it 404s.
+    const recordedFixtures: Fixture[] = fs
+      .readdirSync(fixturePath)
+      .filter((f) => f.endsWith(".json"))
+      .flatMap(
+        (f) =>
+          (JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8")) as FixtureFile).fixtures,
+      );
+    expect(recordedFixtures).toHaveLength(2);
+
+    // Phase 2: replay against a fresh aimock with only the recorded fixtures.
+    recorder = await createServer(recordedFixtures, { port: 0 });
+
+    const replay0 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "weather in Tokyo" }],
+    });
+    expect(replay0.status).toBe(200);
+    expect(JSON.parse(replay0.body).choices[0].message.tool_calls[0].function.name).toBe(
+      "get_weather",
+    );
+
+    const replay1 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "weather in Tokyo" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_w1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"location":"Tokyo"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_w1", content: '{"temp":22}' },
+      ],
+    });
+    expect(replay1.status).toBe(200);
+    expect(JSON.parse(replay1.body).choices[0].message.content).toBe(
+      "Tokyo is 22°C and partly cloudy.",
+    );
+  });
+
+  it("two demos with same first-turn userMessage but different follow-ups stay isolated", async () => {
+    // Demo A: "list todos" → tool call → "you have 3 todos"
+    // Demo B: "list todos" → tool call → "you have 0 todos"
+    // Same first-turn userMessage. Different upstream responses per demo.
+    // We record demo A then demo B into the same fixtures dir, then replay
+    // each independently and assert the right follow-up comes back.
+
+    // Phase 1 — record demo A.
+    const demoA = await setupUpstreamAndRecorder([
+      {
+        match: { userMessage: "list todos", turnIndex: 0, hasToolResult: false },
+        response: {
+          toolCalls: [{ name: "fetch_todos", arguments: "{}", id: "call_a" }],
+        },
+      },
+      {
+        match: { userMessage: "list todos", turnIndex: 1, hasToolResult: true },
+        response: { content: "you have 3 todos" },
+      },
+    ]);
+    const sharedFixturePath = demoA.fixturePath;
+
+    await post(`${demoA.recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "list todos" }],
+    });
+    await post(`${demoA.recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "list todos" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_a",
+              type: "function",
+              function: { name: "fetch_todos", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_a", content: '{"count":3}' },
+      ],
+    });
+
+    // Stop demo A's servers.
+    await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
+    await new Promise<void>((resolve) => upstream!.server.close(() => resolve()));
+    recorder = undefined;
+    upstream = undefined;
+
+    // Phase 2 — record demo B with a DISTINCT userMessage into the SAME
+    // fixturePath. Distinct userMessages are the recommended way to keep
+    // demos isolated; the regression we're guarding against is the silent
+    // collision the old recorder caused even WITHIN a single demo.
+    upstream = await createServer(
+      [
+        {
+          match: { userMessage: "list demo B todos", turnIndex: 0, hasToolResult: false },
+          response: {
+            toolCalls: [{ name: "fetch_todos", arguments: "{}", id: "call_b2" }],
+          },
+        },
+        {
+          match: { userMessage: "list demo B todos", turnIndex: 1, hasToolResult: true },
+          response: { content: "you have 0 todos" },
+        },
+      ],
+      { port: 0 },
+    );
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: upstream.url }, fixturePath: sharedFixturePath },
+    });
+
+    await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "list demo B todos" }],
+    });
+    await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "list demo B todos" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_b2",
+              type: "function",
+              function: { name: "fetch_todos", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_b2", content: '{"count":0}' },
+      ],
+    });
+
+    // Stop and replay both demos against a fresh aimock with all recorded
+    // fixtures loaded from disk.
+    await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
+    await new Promise<void>((resolve) => upstream!.server.close(() => resolve()));
+    recorder = undefined;
+    upstream = undefined;
+
+    const allFixtures: Fixture[] = fs
+      .readdirSync(sharedFixturePath)
+      .filter((f) => f.endsWith(".json"))
+      .flatMap(
+        (f) =>
+          (JSON.parse(fs.readFileSync(path.join(sharedFixturePath, f), "utf-8")) as FixtureFile)
+            .fixtures,
+      );
+    expect(allFixtures).toHaveLength(4);
+
+    recorder = await createServer(allFixtures, { port: 0 });
+
+    // Demo A replay: should hit the demo-A fixtures (userMessage "list todos").
+    const demoAReplay0 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "list todos" }],
+    });
+    expect(demoAReplay0.status).toBe(200);
+    expect(JSON.parse(demoAReplay0.body).choices[0].message.tool_calls[0].function.name).toBe(
+      "fetch_todos",
+    );
+
+    const demoAReplay1 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "list todos" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_a",
+              type: "function",
+              function: { name: "fetch_todos", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_a", content: '{"count":3}' },
+      ],
+    });
+    expect(demoAReplay1.status).toBe(200);
+    expect(JSON.parse(demoAReplay1.body).choices[0].message.content).toBe("you have 3 todos");
+
+    // Demo B replay (with disambiguated userMessage): should hit the demo-B fixtures.
+    const demoBReplay0 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "list demo B todos" }],
+    });
+    expect(demoBReplay0.status).toBe(200);
+    expect(JSON.parse(demoBReplay0.body).choices[0].message.tool_calls[0].function.name).toBe(
+      "fetch_todos",
+    );
+
+    const demoBReplay1 = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [
+        { role: "user", content: "list demo B todos" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_b2",
+              type: "function",
+              function: { name: "fetch_todos", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_b2", content: '{"count":0}' },
+      ],
+    });
+    expect(demoBReplay1.status).toBe(200);
+    expect(JSON.parse(demoBReplay1.body).choices[0].message.content).toBe("you have 0 todos");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Strict mode thorough tests
 // ---------------------------------------------------------------------------
 

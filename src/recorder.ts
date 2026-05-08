@@ -321,9 +321,14 @@ export async function proxyAndRecord(
     response: fixtureResponse,
   };
 
-  // Check if the match is empty (all undefined values) — warn but still save to disk
-  const matchValues = Object.values(fixtureMatch);
-  const isEmptyMatch = matchValues.length === 0 || matchValues.every((v) => v === undefined);
+  // Check if the match is empty — warn but still save to disk.
+  // Note: turnIndex/hasToolResult are pure multi-turn disambiguators and don't,
+  // by themselves, constitute a meaningful match key. A "real" match needs at
+  // least one of userMessage / inputText / endpoint to be useful.
+  const isEmptyMatch =
+    fixtureMatch.userMessage === undefined &&
+    fixtureMatch.inputText === undefined &&
+    fixtureMatch.endpoint === undefined;
   if (isEmptyMatch) {
     defaults.logger.warn(
       "Recorded fixture has empty match criteria — skipping in-memory registration",
@@ -1059,12 +1064,16 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
   inputText?: string;
   model?: string;
   endpoint?: EndpointType;
+  turnIndex?: number;
+  hasToolResult?: boolean;
 } {
   const match: {
     userMessage?: string;
     inputText?: string;
     model?: string;
     endpoint?: EndpointType;
+    turnIndex?: number;
+    hasToolResult?: boolean;
   } = {};
 
   // Include endpoint type for multimedia fixtures
@@ -1092,6 +1101,16 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
   // the resolved model so replay matches what `onFalQueue(/flux/, ...)` writes.
   if (request._endpointType === "fal" && request.model) {
     match.model = request.model;
+  }
+
+  // Multi-turn disambiguation: writing only `userMessage` lets the recorder's
+  // in-memory cache shadow follow-up turns that share it (initial tool call
+  // vs. text reply after the tool result). turnIndex + hasToolResult give
+  // each call a distinct, matcher-aware key. Skip for non-chat (no messages).
+  const messages = request.messages ?? [];
+  if (messages.length > 0) {
+    match.turnIndex = messages.filter((m) => m.role === "assistant").length;
+    match.hasToolResult = messages.some((m) => m.role === "tool");
   }
 
   return match;

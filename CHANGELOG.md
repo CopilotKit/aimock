@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [1.19.3] - 2026-05-08
+
+### Fixed
+
+- **Recorder: multi-turn runs collapsed to a single fixture**. `--record` mode wrote only `userMessage` to the saved fixture's `match` block, so two LLM calls in the same agent run that share the user message (the canonical tool-call → tool-result → follow-up shape) collided in the in-memory fixture cache: as soon as turn 0 was recorded, turn 1 matched it on the same `userMessage` substring, the recorder was skipped, and the follow-up text turn was silently lost. Replaying the resulting single fixture against the same run looped on the tool call until the framework's recursion limit fired. Recorder now also writes `turnIndex` (count of `assistant` messages) and `hasToolResult` (any `role:"tool"` present) — the matcher in 1.16.0 already accepts both — so each call in a run produces a distinct, deterministic match key. Existing single-`userMessage` fixtures continue to match unchanged. Surfaced as: CopilotKit's beautiful-chat showcase having to hot-patch `dist/recorder.js` inside its running aimock container to make `--record` produce usable multi-turn recordings.
+
 ## [1.19.2] - 2026-05-07
 
 ### Fixed
