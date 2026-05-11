@@ -1726,12 +1726,36 @@ export async function createServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+        // Try to match a fixture so chaos evaluation can use fixture-level overrides
+        let elSoundFixture: Fixture | null = null;
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          const syntheticReq: ChatCompletionRequest = {
+            model: (parsed.model_id as string) ?? "eleven_text_to_sound_v2",
+            messages: [{ role: "user", content: (parsed.text as string) ?? "" }],
+            _endpointType: "audio-gen",
+          };
+          const testId = getTestId(req);
+          elSoundFixture = matchFixture(
+            fixtures,
+            syntheticReq,
+            journal.getFixtureMatchCountsForTest(testId),
+            defaults.requestTransform,
+          );
+        } catch {
+          // JSON parse failure — fixture matching not possible, handler will report the error
+        }
+        const chaosAction = evaluateChaos(
+          elSoundFixture,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+        );
         if (chaosAction) {
           applyChaosAction(
             chaosAction,
             res,
-            null,
+            elSoundFixture,
             journal,
             {
               method: req.method ?? "POST",
@@ -1767,12 +1791,43 @@ export async function createServer(
       const musicSubType = musicMatch[1] ?? "music";
       try {
         const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+        // Try to match a fixture so chaos evaluation can use fixture-level overrides
+        let elMusicFixture: Fixture | null = null;
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          const prompt =
+            (typeof parsed.prompt === "string" ? parsed.prompt : null) ??
+            (parsed.composition_plan != null
+              ? typeof parsed.composition_plan === "string"
+                ? parsed.composition_plan
+                : JSON.stringify(parsed.composition_plan)
+              : "");
+          const syntheticReq: ChatCompletionRequest = {
+            model: (parsed.model_id as string) ?? "music_v1",
+            messages: [{ role: "user", content: prompt }],
+            _endpointType: "audio-gen",
+          };
+          const testId = getTestId(req);
+          elMusicFixture = matchFixture(
+            fixtures,
+            syntheticReq,
+            journal.getFixtureMatchCountsForTest(testId),
+            defaults.requestTransform,
+          );
+        } catch {
+          // JSON parse failure — fixture matching not possible, handler will report the error
+        }
+        const chaosAction = evaluateChaos(
+          elMusicFixture,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+        );
         if (chaosAction) {
           applyChaosAction(
             chaosAction,
             res,
-            null,
+            elMusicFixture,
             journal,
             {
               method: req.method ?? "POST",
@@ -1801,6 +1856,10 @@ export async function createServer(
       return;
     }
 
+    // Body read by the general fal handler; preserved so legacy fal-audio
+    // routes below don't double-consume the stream on passthrough.
+    let falBody: string | undefined;
+
     // /fal/* with `x-fal-target-host` header — general fal.ai routing
     // (queue.fal.run, fal.run, rest.fal.ai, rest.alpha.fal.ai).
     // Matches the requestMiddleware path-mirror convention used by
@@ -1808,7 +1867,8 @@ export async function createServer(
     if (FAL_PREFIX_RE.test(pathname) && req.headers["x-fal-target-host"]) {
       setCorsHeaders(res);
       try {
-        const raw = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+        falBody = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+        const raw = falBody;
         const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
         if (chaosAction) {
           applyChaosAction(
@@ -1850,13 +1910,41 @@ export async function createServer(
     if (falQueueSubmitMatch && req.method === "POST") {
       setCorsHeaders(res);
       try {
-        const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+        const raw = falBody ?? (await readBody(req));
+        // Try to match a fixture so chaos evaluation can use fixture-level overrides
+        let falSubmitFixture: Fixture | null = null;
+        try {
+          const parsed = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+          const prompt =
+            (typeof parsed.prompt === "string" ? parsed.prompt : null) ??
+            (typeof parsed.text === "string" ? parsed.text : null) ??
+            "";
+          const syntheticReq: ChatCompletionRequest = {
+            model: falQueueSubmitMatch[1],
+            messages: [{ role: "user", content: prompt }],
+            _endpointType: "fal-audio",
+          };
+          const testId = getTestId(req);
+          falSubmitFixture = matchFixture(
+            fixtures,
+            syntheticReq,
+            journal.getFixtureMatchCountsForTest(testId),
+            defaults.requestTransform,
+          );
+        } catch {
+          // JSON parse failure — fixture matching not possible, handler will report the error
+        }
+        const chaosAction = evaluateChaos(
+          falSubmitFixture,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+        );
         if (chaosAction) {
           applyChaosAction(
             chaosAction,
             res,
-            null,
+            falSubmitFixture,
             journal,
             {
               method: req.method ?? "POST",
@@ -1893,7 +1981,8 @@ export async function createServer(
     ) {
       setCorsHeaders(res);
       try {
-        const raw = req.method === "POST" ? await readBody(req) : "{}";
+        const raw =
+          req.method === "POST" || req.method === "PUT" ? (falBody ?? (await readBody(req))) : "{}";
         const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
         if (chaosAction) {
           applyChaosAction(
@@ -1933,13 +2022,41 @@ export async function createServer(
     if (falRunMatch && req.method === "POST") {
       setCorsHeaders(res);
       try {
-        const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
+        const raw = falBody ?? (await readBody(req));
+        // Try to match a fixture so chaos evaluation can use fixture-level overrides
+        let falRunFixture: Fixture | null = null;
+        try {
+          const parsed = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+          const prompt =
+            (typeof parsed.prompt === "string" ? parsed.prompt : null) ??
+            (typeof parsed.text === "string" ? parsed.text : null) ??
+            "";
+          const syntheticReq: ChatCompletionRequest = {
+            model: falRunMatch[1],
+            messages: [{ role: "user", content: prompt }],
+            _endpointType: "fal-audio",
+          };
+          const testId = getTestId(req);
+          falRunFixture = matchFixture(
+            fixtures,
+            syntheticReq,
+            journal.getFixtureMatchCountsForTest(testId),
+            defaults.requestTransform,
+          );
+        } catch {
+          // JSON parse failure — fixture matching not possible, handler will report the error
+        }
+        const chaosAction = evaluateChaos(
+          falRunFixture,
+          defaults.chaos,
+          req.headers,
+          defaults.logger,
+        );
         if (chaosAction) {
           applyChaosAction(
             chaosAction,
             res,
-            null,
+            falRunFixture,
             journal,
             {
               method: req.method ?? "POST",
