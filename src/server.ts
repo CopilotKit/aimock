@@ -421,7 +421,8 @@ async function handleCompletions(
     if (modelFallback && !body.model) {
       body.model = modelFallback;
     }
-  } catch {
+  } catch (parseErr: unknown) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown parse error";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -434,7 +435,7 @@ async function handleCompletions(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
           param: null,
           code: "invalid_json",
@@ -922,6 +923,8 @@ export async function createServer(
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: { message: msg, type: "server_error" } }));
+      } else if (!res.writableEnded) {
+        res.end();
       }
     });
   });
@@ -1117,10 +1120,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1142,10 +1145,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1167,10 +1170,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1364,10 +1367,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1402,10 +1405,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1441,10 +1444,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -2008,10 +2011,10 @@ export async function createServer(
           res.write(
             `data: ${JSON.stringify({ error: { message: msg, type: "server_error" } })}\n\n`,
           );
+          res.end();
         } catch (writeErr) {
           logger.debug("Failed to write error recovery response:", writeErr);
         }
-        res.end();
       }
     }
   }

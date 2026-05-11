@@ -127,8 +127,11 @@ export async function proxyAndRecord(
   let target: URL;
   try {
     target = resolveUpstreamUrl(upstreamUrl, pathname);
-  } catch {
-    defaults.logger.error(`Invalid upstream URL for provider "${providerKey}": ${upstreamUrl}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    defaults.logger.error(
+      `Invalid upstream URL for provider "${providerKey}": ${upstreamUrl} (${msg})`,
+    );
     writeErrorResponse(
       res,
       502,
@@ -263,9 +266,11 @@ export async function proxyAndRecord(
     let parsedResponse: unknown = null;
     try {
       parsedResponse = JSON.parse(upstreamBody);
-    } catch {
-      // Not JSON — could be an unknown format
-      defaults.logger.warn("Upstream response is not valid JSON — saving as error fixture");
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : "unknown";
+      defaults.logger.warn(
+        `Upstream response is not valid JSON (${msg}) — saving as error fixture`,
+      );
     }
     // fal.ai returns arbitrary, model-specific JSON shapes (images, video URLs,
     // audio file objects, etc.). Round-trip the payload verbatim instead of
@@ -392,8 +397,11 @@ export async function proxyAndRecord(
         try {
           const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
           fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
-        } catch {
-          // Corrupted file — overwrite
+        } catch (mergeErr) {
+          const msg = mergeErr instanceof Error ? mergeErr.message : "unknown";
+          defaults.logger.warn(
+            `Could not read existing fixture file ${filepath} (${msg}) — overwriting`,
+          );
           fileContent = { fixtures: [fixture] };
         }
       } else {
@@ -556,7 +564,12 @@ function makeUpstreamRequest(
             !clientRes.destroyed &&
             !clientRes.writableEnded
           ) {
-            clientRes.write(chunk);
+            try {
+              clientRes.write(chunk);
+            } catch {
+              // Client socket errored (disconnect, reset, etc.) — stop relaying.
+              clientDisconnected = true;
+            }
           }
         });
         res.on("error", reject);
@@ -569,7 +582,11 @@ function makeUpstreamRequest(
             !clientRes.destroyed &&
             !clientRes.writableEnded
           ) {
-            clientRes.end();
+            try {
+              clientRes.end();
+            } catch {
+              /* client already gone */
+            }
           }
           resolve({
             status: res.statusCode ?? 500,
