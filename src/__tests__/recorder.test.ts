@@ -4192,4 +4192,323 @@ describe("recorder SSE progressive streaming", () => {
     // slack for scheduler jitter but require clearly more than "all at once".
     expect(span).toBeGreaterThanOrEqual(100);
   });
+
+  it("includes Cache-Control, Connection, and X-Accel-Buffering headers on SSE relay", async () => {
+    // Upstream returns SSE — recorder must set standard anti-buffering headers
+    // so reverse proxies (nginx, Cloudflare, CDN, Bun.serve) do not buffer.
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write('data: {"chunk":0}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-sse-hdrs-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "sse headers" }],
+      stream: true,
+    });
+
+    expect(resp.headers["cache-control"]).toBe("no-cache, no-transform");
+    expect(resp.headers["connection"]).toBe("keep-alive");
+    expect(resp.headers["x-accel-buffering"]).toBe("no");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NDJSON progressive streaming — recorder must tee upstream chunks to the
+// client as they arrive, not buffer and replay in a single write.
+// ---------------------------------------------------------------------------
+
+describe("recorder NDJSON progressive streaming", () => {
+  let rawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  it("streams NDJSON lines progressively to the client (not buffered)", async () => {
+    // Raw upstream that emits 5 NDJSON lines spaced by 50ms each.
+    // The recorder must relay each chunk as it arrives; if it buffers
+    // and replays via a single res.end(), the client observes all lines
+    // within microseconds of each other.
+    const FRAME_DELAY_MS = 50;
+    const NUM_FRAMES = 5;
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "application/x-ndjson",
+      });
+      let i = 0;
+      const emit = () => {
+        if (i < NUM_FRAMES) {
+          const line = JSON.stringify({
+            model: "llama3",
+            message: { role: "assistant", content: `chunk-${i}` },
+            done: false,
+          });
+          res.write(line + "\n");
+          i++;
+          setTimeout(emit, FRAME_DELAY_MS);
+        } else {
+          const doneLine = JSON.stringify({
+            model: "llama3",
+            message: { role: "assistant", content: "" },
+            done: true,
+          });
+          res.write(doneLine + "\n");
+          res.end();
+        }
+      };
+      setTimeout(emit, FRAME_DELAY_MS);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-ndjson-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { ollama: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    // Issue request and capture the wall-clock arrival time of each
+    // client-visible data event.
+    const arrivalTimes: number[] = [];
+    const body = JSON.stringify({
+      model: "llama3",
+      messages: [{ role: "user", content: "stream me" }],
+      stream: true,
+    });
+    const parsedUrl = new URL(recorder.url);
+    await new Promise<void>((resolve, reject) => {
+      const clientReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: "/api/chat",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          res.on("data", () => {
+            arrivalTimes.push(Date.now());
+          });
+          res.on("end", () => resolve());
+          res.on("error", reject);
+        },
+      );
+      clientReq.on("error", reject);
+      clientReq.write(body);
+      clientReq.end();
+    });
+
+    // We should observe multiple client-visible data events, and the span
+    // between first and last should reflect the upstream frame spacing.
+    expect(arrivalTimes.length).toBeGreaterThanOrEqual(2);
+    const span = arrivalTimes[arrivalTimes.length - 1] - arrivalTimes[0];
+    expect(span).toBeGreaterThanOrEqual(100);
+  });
+
+  it("preserves application/x-ndjson content-type in client response", async () => {
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write(
+        JSON.stringify({
+          model: "llama3",
+          message: { role: "assistant", content: "hi" },
+          done: true,
+        }) + "\n",
+      );
+      res.end();
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-ndjson-ct-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { ollama: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    const body = JSON.stringify({
+      model: "llama3",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    });
+    const parsedUrl = new URL(recorder.url);
+    const clientCT = await new Promise<string>((resolve, reject) => {
+      const clientReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: "/api/chat",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          const ct = res.headers["content-type"] ?? "";
+          res.on("data", () => {});
+          res.on("end", () => resolve(ct));
+          res.on("error", reject);
+        },
+      );
+      clientReq.on("error", reject);
+      clientReq.write(body);
+      clientReq.end();
+    });
+
+    expect(clientCT.toLowerCase()).toContain("application/x-ndjson");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bedrock binary event stream progressive streaming — recorder must tee
+// upstream chunks to the client as they arrive, not buffer and replay.
+// ---------------------------------------------------------------------------
+
+describe("recorder Bedrock binary event stream progressive streaming", () => {
+  let rawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  it("streams Bedrock event stream frames progressively to the client (not buffered)", async () => {
+    const FRAME_DELAY_MS = 50;
+    const NUM_FRAMES = 5;
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "application/vnd.amazon.eventstream",
+      });
+      let i = 0;
+      const emit = () => {
+        if (i < NUM_FRAMES) {
+          // Emit a minimal binary payload that looks like Bedrock event data.
+          // We don't need valid CRC framing here — the test verifies progressive
+          // relay timing, not parse correctness.
+          const payload = Buffer.from(`bedrock-chunk-${i}`);
+          res.write(payload);
+          i++;
+          setTimeout(emit, FRAME_DELAY_MS);
+        } else {
+          res.end();
+        }
+      };
+      setTimeout(emit, FRAME_DELAY_MS);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-bedrock-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { bedrock: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    const arrivalTimes: number[] = [];
+    const body = JSON.stringify({
+      messages: [{ role: "user", content: [{ text: "stream me" }] }],
+      modelId: "anthropic.claude-3-sonnet",
+    });
+    const parsedUrl = new URL(recorder.url);
+    await new Promise<void>((resolve, reject) => {
+      const clientReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: "/model/anthropic.claude-3-sonnet/converse-stream",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          res.on("data", () => {
+            arrivalTimes.push(Date.now());
+          });
+          res.on("end", () => resolve());
+          res.on("error", reject);
+        },
+      );
+      clientReq.on("error", reject);
+      clientReq.write(body);
+      clientReq.end();
+    });
+
+    expect(arrivalTimes.length).toBeGreaterThanOrEqual(2);
+    const span = arrivalTimes[arrivalTimes.length - 1] - arrivalTimes[0];
+    expect(span).toBeGreaterThanOrEqual(100);
+  });
+
+  it("preserves application/vnd.amazon.eventstream content-type in client response", async () => {
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/vnd.amazon.eventstream" });
+      res.write(Buffer.from("bedrock-data"));
+      res.end();
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-bedrock-ct-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { bedrock: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    const body = JSON.stringify({
+      messages: [{ role: "user", content: [{ text: "hi" }] }],
+      modelId: "anthropic.claude-3-sonnet",
+    });
+    const parsedUrl = new URL(recorder.url);
+    const clientCT = await new Promise<string>((resolve, reject) => {
+      const clientReq = http.request(
+        {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port,
+          path: "/model/anthropic.claude-3-sonnet/converse-stream",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          const ct = res.headers["content-type"] ?? "";
+          res.on("data", () => {});
+          res.on("end", () => resolve(ct));
+          res.on("error", reject);
+        },
+      );
+      clientReq.on("error", reject);
+      clientReq.write(body);
+      clientReq.end();
+    });
+
+    expect(clientCT.toLowerCase()).toContain("application/vnd.amazon.eventstream");
+  });
 });
