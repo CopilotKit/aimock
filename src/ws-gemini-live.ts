@@ -23,6 +23,8 @@ import {
   formatToMime,
   generateToolCallId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
@@ -226,6 +228,7 @@ export function handleWebSocketGeminiLive(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): void {
   const { logger } = defaults;
@@ -269,6 +272,7 @@ async function processMessage(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
   session: SessionState,
 ): Promise<void> {
@@ -374,14 +378,18 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (defaults.strict) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
       journal.add({
         method: "WS",
         path,
         headers: {},
         body: completionReq,
-        response: { status: 404, fixture: null },
+        response: {
+          status: 404,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+        },
       });
       ws.close(1008, "Strict mode: no fixture matched");
       return;

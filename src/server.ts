@@ -29,6 +29,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
@@ -611,11 +613,12 @@ async function handleCompletions(
       // outcome === "not_configured" — fall through to strict/404
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
-    if (defaults.strict) {
+    if (effectiveStrict) {
       defaults.logger.error(
         `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
       );
@@ -626,7 +629,11 @@ async function handleCompletions(
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
@@ -2233,6 +2240,7 @@ export async function createServer(
         ...defaults,
         model: "gpt-4",
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     } else if (pathname === REALTIME_PATH) {
       const model = parsedUrl.searchParams.get("model") ?? "gpt-4o-realtime";
@@ -2240,12 +2248,14 @@ export async function createServer(
         ...defaults,
         model,
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     } else if (pathname === GEMINI_LIVE_PATH) {
       handleWebSocketGeminiLive(ws, fixtures, journal, {
         ...defaults,
         model: "gemini-2.0-flash",
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     }
   }

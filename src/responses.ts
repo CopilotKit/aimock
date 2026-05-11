@@ -28,6 +28,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -1011,11 +1013,12 @@ export async function handleResponses(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
-    if (defaults.strict) {
+    if (effectiveStrict) {
       defaults.logger.error(
         `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/responses"}`,
       );
@@ -1025,7 +1028,11 @@ export async function handleResponses(
       path: req.url ?? "/v1/responses",
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,

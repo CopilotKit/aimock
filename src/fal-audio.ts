@@ -7,6 +7,8 @@ import {
   FORMAT_TO_CONTENT_TYPE,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { proxyAndRecord } from "./recorder.js";
@@ -277,8 +279,9 @@ async function handleQueueSubmit(
       }
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
     journal.add({
@@ -286,7 +289,11 @@ async function handleQueueSubmit(
       path: pathname,
       headers: {},
       body: syntheticReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     res.writeHead(strictStatus, { "Content-Type": "application/json" });
     res.end(
@@ -560,8 +567,9 @@ async function handleSyncRun(
       }
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
     journal.add({
@@ -569,7 +577,11 @@ async function handleSyncRun(
       path: pathname,
       headers: {},
       body: syntheticReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     res.writeHead(strictStatus, { "Content-Type": "application/json" });
     res.end(

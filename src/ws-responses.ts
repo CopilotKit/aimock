@@ -14,7 +14,14 @@ import {
   buildToolCallStreamEvents,
   type ResponsesSSEEvent,
 } from "./responses.js";
-import { isTextResponse, isToolCallResponse, isErrorResponse, resolveResponse } from "./helpers.js";
+import {
+  isTextResponse,
+  isToolCallResponse,
+  isErrorResponse,
+  resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
+} from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
@@ -65,6 +72,7 @@ export function handleWebSocketResponses(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): void {
   const { logger } = defaults;
@@ -98,6 +106,7 @@ async function processMessage(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): Promise<void> {
   let parsed: unknown;
@@ -168,7 +177,7 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (defaults.strict) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
       ws.close(1008, "Strict mode: no fixture matched");
       return;
@@ -178,7 +187,11 @@ async function processMessage(
       path: "/v1/responses",
       headers: {},
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+      },
     });
     ws.send(
       JSON.stringify(

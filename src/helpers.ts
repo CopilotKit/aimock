@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -22,6 +23,45 @@ import type {
 } from "./types.js";
 
 const REDACTED_HEADERS = new Set(["authorization", "x-api-key", "api-key"]);
+
+/**
+ * Resolve effective strict mode from per-request header and server default.
+ * Header values override the server default — same precedence pattern as chaos
+ * config headers (see resolveChaosConfig in chaos.ts).
+ *
+ * Header: `X-AIMock-Strict` — "true"/"1" → strict on, "false"/"0" → strict off.
+ * When absent or unrecognised, falls back to the server-level default.
+ */
+export function resolveStrictMode(
+  serverDefault: boolean | undefined,
+  rawHeaders?: IncomingHttpHeaders,
+): boolean {
+  if (rawHeaders) {
+    const header = rawHeaders["x-aimock-strict"];
+    const val = typeof header === "string" ? header : Array.isArray(header) ? header[0] : undefined;
+    if (val === "true" || val === "1") return true;
+    if (val === "false" || val === "0") return false;
+  }
+  return serverDefault ?? false;
+}
+
+/**
+ * Returns `true` or `false` when the X-AIMock-Strict header overrides the
+ * server default, or `undefined` when it doesn't. Designed to be spread
+ * directly into a journal entry's `response` object:
+ *
+ *   response: { status, fixture, ...strictOverrideField(defaults.strict, req.headers) }
+ */
+export function strictOverrideField(
+  serverDefault: boolean | undefined,
+  rawHeaders?: IncomingHttpHeaders,
+): { strictOverride?: boolean } {
+  const effective = resolveStrictMode(serverDefault, rawHeaders);
+  if (effective !== (serverDefault ?? false)) {
+    return { strictOverride: effective };
+  }
+  return {};
+}
 
 export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
   const flat: Record<string, string> = {};

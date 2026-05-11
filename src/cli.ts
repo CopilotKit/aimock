@@ -27,7 +27,7 @@ Options:
       --metrics             Enable Prometheus metrics at GET /metrics
       --record              Record mode: proxy unmatched requests and save fixtures
       --proxy-only          Proxy mode: forward unmatched requests without saving
-      --strict              Strict mode: fail on unmatched requests
+      --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)

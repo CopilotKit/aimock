@@ -21,6 +21,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -232,7 +234,7 @@ export async function handleEmbeddings(
     }
   }
 
-  if (defaults.strict) {
+  if (resolveStrictMode(defaults.strict, req.headers)) {
     logger.error(
       `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/embeddings"}`,
     );
@@ -241,7 +243,11 @@ export async function handleEmbeddings(
       path: req.url ?? "/v1/embeddings",
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
-      response: { status: 503, fixture: null },
+      response: {
+        status: 503,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,

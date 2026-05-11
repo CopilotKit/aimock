@@ -38,6 +38,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -447,11 +449,12 @@ export async function handleBedrock(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
-    if (defaults.strict) {
+    if (effectiveStrict) {
       logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
     }
     journal.add({
@@ -459,7 +462,11 @@ export async function handleBedrock(
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
@@ -1062,11 +1069,12 @@ export async function handleBedrockStream(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
-    if (defaults.strict) {
+    if (effectiveStrict) {
       logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
     }
     journal.add({
@@ -1074,7 +1082,11 @@ export async function handleBedrockStream(
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: strictStatus,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
