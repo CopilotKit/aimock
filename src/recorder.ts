@@ -61,7 +61,8 @@ export interface ProxyOptions {
    * unwritten.
    *
    * NOT invoked when the upstream response was streamed progressively to the
-   * client (SSE) — the bytes are already on the wire and can't be mutated.
+   * client (SSE, NDJSON, or binary event streams) — the bytes are already on
+   * the wire and can't be mutated.
    * Callers that need to observe the bypass should pass `onHookBypassed`.
    */
   beforeWriteResponse?: (response: ProxyCapturedResponse) => boolean | Promise<boolean>;
@@ -72,7 +73,7 @@ export interface ProxyOptions {
    * Intended for observability (log/metric/journal annotation) — proxyAndRecord
    * still returns `"relayed"`.
    */
-  onHookBypassed?: (reason: "sse_streamed") => void;
+  onHookBypassed?: (reason: "sse_streamed" | "ndjson_streamed" | "binary_streamed") => void;
 }
 
 /**
@@ -428,15 +429,20 @@ export async function proxyAndRecord(
     defaults.logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
   }
 
-  // Relay upstream response to client (skip when SSE was already streamed
-  // progressively by makeUpstreamRequest — headers and body are already on
-  // the wire).
+  // Relay upstream response to client (skip when the response was already
+  // streamed progressively by makeUpstreamRequest — headers and body are
+  // already on the wire).
   if (streamedToClient) {
-    // SSE: the hook can't run because the body is already on the wire. Surface
+    // The hook can't run because the body is already on the wire. Surface
     // the bypass so the caller (typically the chaos layer) can record it —
-    // otherwise a configured chaos action silently no-ops on SSE traffic.
+    // otherwise a configured chaos action silently no-ops on streamed traffic.
     if (options?.beforeWriteResponse && options.onHookBypassed) {
-      options.onHookBypassed("sse_streamed");
+      const bypassReason: "sse_streamed" | "ndjson_streamed" | "binary_streamed" = isBinaryStream
+        ? "binary_streamed"
+        : ctString.toLowerCase().includes("application/x-ndjson")
+          ? "ndjson_streamed"
+          : "sse_streamed";
+      options.onHookBypassed(bypassReason);
     }
   } else {
     // Give the caller a chance to mutate or replace the response before relay.
@@ -502,18 +508,27 @@ function makeUpstreamRequest(
         res.setTimeout(BODY_TIMEOUT_MS, () => {
           req.destroy(new Error(`Upstream response timed out after ${BODY_TIMEOUT_MS / 1000}s`));
         });
-        // Detect Server-Sent Events so we can tee upstream chunks to the
+        // Detect streaming content types so we can tee upstream chunks to the
         // client as they arrive rather than buffering the entire stream and
         // replaying it in a single res.end() at the bottom of proxyAndRecord.
-        // Buffering collapses every SSE frame into one client-visible write,
-        // which defeats progressive rendering in downstream consumers.
+        // Buffering collapses every frame into one client-visible write,
+        // which defeats progressive rendering in downstream consumers and
+        // can trip HTTP idle timeouts on slow calls.
         const ct = res.headers["content-type"];
         const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
-        const isSSE = ctStr.toLowerCase().includes("text/event-stream");
+        const ctLower = ctStr.toLowerCase();
+        const isSSE = ctLower.includes("text/event-stream");
+        const isNDJSON = ctLower.includes("application/x-ndjson");
+        const isBinaryEventStream = ctLower.includes("application/vnd.amazon.eventstream");
+        const isProgressiveStream = isSSE || isNDJSON || isBinaryEventStream;
         let streamedToClient = false;
         let clientDisconnected = false;
-        if (isSSE && clientRes && !clientRes.headersSent) {
-          const relayHeaders: Record<string, string> = {};
+        if (isProgressiveStream && clientRes && !clientRes.headersSent) {
+          const relayHeaders: Record<string, string> = {
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          };
           if (ctStr) relayHeaders["Content-Type"] = ctStr;
           // Normalize status codes for the client: aimock acts as a gateway,
           // so upstream provider details should not leak.
