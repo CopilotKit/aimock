@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-05-11
+
+### Added
+
+- **Per-request strict mode via `X-AIMock-Strict` header** — overrides the server-wide `--strict` flag per request (`true`/`1` = strict, `false`/`0` = lenient). When strict: fixture miss returns 503; when lenient: fixture miss proxies to real provider. Follows the `X-AIMock-Chaos-*` precedence pattern. Journal entries record `strictOverride` when the header overrides the server default. Enables the same aimock instance to serve both deterministic test probes and live demo traffic simultaneously.
+
 ### Fixed
 
 - **Progressive relay for NDJSON and Bedrock binary event streams** — Ollama NDJSON and Bedrock binary event streams were fully buffered before relay, triggering downstream idle timeouts; now relayed progressively as chunks arrive
