@@ -127,8 +127,10 @@ export async function proxyAndRecord(
   let target: URL;
   try {
     target = resolveUpstreamUrl(upstreamUrl, pathname);
-  } catch {
-    defaults.logger.error(`Invalid upstream URL for provider "${providerKey}": ${upstreamUrl}`);
+  } catch (err) {
+    defaults.logger.error(
+      `Invalid upstream URL for provider "${providerKey}": ${upstreamUrl} — ${err instanceof Error ? err.message : String(err)}`,
+    );
     writeErrorResponse(
       res,
       502,
@@ -442,31 +444,50 @@ export async function proxyAndRecord(
         : ctString.toLowerCase().includes("application/x-ndjson")
           ? "ndjson_streamed"
           : "sse_streamed";
-      options.onHookBypassed(bypassReason);
+      try {
+        options.onHookBypassed(bypassReason);
+      } catch (err) {
+        defaults.logger.warn(
+          `onHookBypassed callback threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   } else {
     // Give the caller a chance to mutate or replace the response before relay.
     // Used by the chaos layer to turn a successful proxy into a malformed body.
     // `body` is the raw upstream bytes so binary payloads survive round-tripping.
     if (options?.beforeWriteResponse) {
-      const handled = await options.beforeWriteResponse({
-        status: upstreamStatus,
-        contentType: ctString,
-        body: rawBuffer,
-      });
+      let handled: boolean | undefined;
+      try {
+        handled = await options.beforeWriteResponse({
+          status: upstreamStatus,
+          contentType: ctString,
+          body: rawBuffer,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`beforeWriteResponse hook failed for ${providerKey}: ${msg}`);
+      }
       if (handled) return "handled_by_hook";
     }
 
-    const relayHeaders: Record<string, string> = {};
-    if (ctString) {
-      relayHeaders["Content-Type"] = ctString;
-    }
     // Normalize status codes for the client: aimock acts as a gateway, so
     // upstream provider details (429 rate-limits, 503 outages, etc.) should
     // not leak. Successes → 200, errors → 502 (Bad Gateway).
     const clientStatus = upstreamStatus >= 200 && upstreamStatus < 300 ? 200 : 502;
-    res.writeHead(clientStatus, relayHeaders);
     const isAudioRelay = ctString.toLowerCase().startsWith("audio/");
+    // When an upstream error (non-2xx) is relayed for an audio endpoint, the
+    // body is typically a JSON error object — override the content-type so
+    // clients don't try to decode JSON as audio.
+    const relayHeaders: Record<string, string> = {};
+    const clientCt =
+      (clientStatus >= 200 && clientStatus < 300) || !isAudioRelay
+        ? (ctString ?? "application/json")
+        : "application/json";
+    if (clientCt) {
+      relayHeaders["Content-Type"] = clientCt;
+    }
+    res.writeHead(clientStatus, relayHeaders);
     res.end(isBinaryStream || isAudioRelay ? rawBuffer : upstreamBody);
   }
 
