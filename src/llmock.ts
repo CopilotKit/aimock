@@ -29,7 +29,7 @@ import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
 import { falJobs } from "./fal-audio.js";
-import { falQueueStates } from "./fal.js";
+import { falQueueStates, imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
 
 export class LLMock {
   private fixtures: Fixture[] = [];
@@ -222,6 +222,25 @@ export class LLMock {
 
   onFalRun(modelOrPrompt: string | RegExp, response: unknown, opts?: FixtureOpts): this {
     return this.onFalQueue(modelOrPrompt, response, opts);
+  }
+
+  /**
+   * Register a fal.ai image fixture. Wraps an `ImageResponse` (the shape used
+   * by `onImage` and OpenAI/Azure image fixtures) into fal's image envelope
+   * before storing it as a `RawJSONResponse`. Defaults `width`/`height` to
+   * 1024 when the fixture's `ImageItem` doesn't carry them.
+   */
+  onFalImage(modelOrPrompt: string | RegExp, response: ImageResponse, opts?: FixtureOpts): this {
+    return this.onFalQueue(modelOrPrompt, imageResponseToFalJson(response), opts);
+  }
+
+  /**
+   * Register a fal.ai video fixture. Wraps a `VideoResponse` into fal's video
+   * envelope (`{ video: { url, content_type, file_name, file_size }, seed }`)
+   * before storing it as a `RawJSONResponse`.
+   */
+  onFalVideo(modelOrPrompt: string | RegExp, response: VideoResponse, opts?: FixtureOpts): this {
+    return this.onFalQueue(modelOrPrompt, videoResponseToFalJson(response), opts);
   }
 
   // ---- Service mock convenience methods ----

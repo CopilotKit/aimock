@@ -312,3 +312,219 @@ describe("fal.ai general handler — record and replay", () => {
     expect(upstreamCalls).toBe(1);
   });
 });
+
+describe("fal.ai general handler — typed helpers + polling progression", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("onFalImage wraps an ImageResponse into fal's image envelope", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalImage(/flux/, {
+      images: [{ url: "https://mock.fal.media/files/x.png" }],
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a cat" } }),
+    });
+    expect(submit.status).toBe(200);
+    const envelope = await submit.json();
+
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(result.status).toBe(200);
+    const data = await result.json();
+    expect(data.images).toEqual([
+      {
+        url: "https://mock.fal.media/files/x.png",
+        width: 1024,
+        height: 1024,
+        content_type: "image/png",
+      },
+    ]);
+    expect(data.has_nsfw_concepts).toEqual([false]);
+    expect(data.timings).toEqual({ inference: 0 });
+    expect(data.seed).toBe(0);
+  });
+
+  test("onFalImage falls back to a mock URL when ImageItem omits one", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalImage(/flux/, { images: [{}] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "fallback" } }),
+    });
+    const envelope = await submit.json();
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    const data = await result.json();
+    expect(data.images[0].url).toBe("https://mock.fal.media/files/generated_image_0.png");
+  });
+
+  test("onFalVideo wraps a VideoResponse into fal's video envelope", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalVideo(/kling/, {
+      video: { id: "v1", status: "completed", url: "https://mock.fal.media/files/clip.mp4" },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/kling-video/v2/master`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a dragon" } }),
+    });
+    const envelope = await submit.json();
+
+    const result = await fetch(
+      `${mock.url}/fal/fal-ai/kling-video/v2/master/requests/${envelope.request_id}`,
+      { headers: { "x-fal-target-host": "queue.fal.run" } },
+    );
+    expect(result.status).toBe(200);
+    const data = await result.json();
+    expect(data.video).toEqual({
+      url: "https://mock.fal.media/files/clip.mp4",
+      content_type: "video/mp4",
+      file_name: "clip.mp4",
+      file_size: 0,
+    });
+    expect(data.seed).toBe(0);
+  });
+
+  test("sync run returns the image envelope directly", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalImage(/flux/, { images: [{ url: "https://mock.fal.media/y.jpg" }] });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "fal.run" },
+      body: JSON.stringify({ prompt: "flux sync" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.images[0].content_type).toBe("image/jpeg");
+    expect(data.request_id).toBeUndefined();
+  });
+
+  test("polling progression: IN_QUEUE -> IN_PROGRESS -> COMPLETED with logs + metrics", async () => {
+    mock = new LLMock({
+      port: 0,
+      falQueue: { pollsBeforeInProgress: 1, pollsBeforeCompleted: 2 },
+    });
+    mock.onFalImage(/flux/, { images: [{ url: "https://mock.fal.media/x.png" }] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "slow" } }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.queue_position).toBe(1);
+
+    const jobPath = `${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`;
+    const headers = { "x-fal-target-host": "queue.fal.run" };
+
+    const poll1 = await fetch(`${jobPath}/status`, { headers });
+    const poll1Data = await poll1.json();
+    expect(poll1Data.status).toBe("IN_PROGRESS");
+    expect(poll1Data.queue_position).toBe(0);
+    expect(Array.isArray(poll1Data.logs)).toBe(true);
+    expect(poll1Data.logs.length).toBeGreaterThanOrEqual(2);
+    expect(poll1Data.metrics).toBeUndefined();
+
+    const poll2 = await fetch(`${jobPath}/status`, { headers });
+    const poll2Data = await poll2.json();
+    expect(poll2Data.status).toBe("COMPLETED");
+    expect(poll2Data.metrics).toBeDefined();
+    expect(typeof poll2Data.metrics.inference_time).toBe("number");
+
+    const result = await fetch(jobPath, { headers });
+    expect(result.status).toBe(200);
+    const resultData = await result.json();
+    expect(resultData.images).toBeDefined();
+  });
+
+  test("result before completion returns 202 with current status", async () => {
+    mock = new LLMock({
+      port: 0,
+      falQueue: { pollsBeforeInProgress: 5, pollsBeforeCompleted: 10 },
+    });
+    mock.onFalImage(/flux/, { images: [{ url: "https://mock.fal.media/x.png" }] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "never" } }),
+    });
+    const { request_id } = await submit.json();
+
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(result.status).toBe(202);
+    const data = await result.json();
+    expect(data.status).toBe("IN_QUEUE");
+    expect(data.images).toBeUndefined();
+  });
+
+  test("cancel before completion returns 200 CANCELLED", async () => {
+    mock = new LLMock({
+      port: 0,
+      falQueue: { pollsBeforeInProgress: 5, pollsBeforeCompleted: 10 },
+    });
+    mock.onFalImage(/flux/, { images: [{ url: "https://mock.fal.media/x.png" }] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "cancel me" } }),
+    });
+    const { request_id } = await submit.json();
+
+    const cancel = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${request_id}/cancel`, {
+      method: "PUT",
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(cancel.status).toBe(200);
+    expect((await cancel.json()).status).toBe("CANCELLED");
+
+    const status = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${request_id}/status`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    const statusData = await status.json();
+    expect(statusData.status).toBe("CANCELLED");
+  });
+
+  test("cancel after completion keeps ALREADY_COMPLETED semantics", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalImage(/flux/, { images: [{ url: "https://mock.fal.media/x.png" }] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "done" } }),
+    });
+    const { request_id } = await submit.json();
+
+    const cancel = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${request_id}/cancel`, {
+      method: "PUT",
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(cancel.status).toBe(400);
+    expect((await cancel.json()).status).toBe("ALREADY_COMPLETED");
+  });
+});
