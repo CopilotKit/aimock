@@ -102,7 +102,10 @@ export const falQueueStates = new FalQueueStateMap();
 
 function imageItemToFalImage(item: ImageItem, index: number): Record<string, unknown> {
   const url = item.url ?? `https://mock.fal.media/files/generated_image_${index}.png`;
-  const ext = url.split(".").pop()?.split("?")[0]?.toLowerCase() ?? "png";
+  const urlPath = url.split("?")[0].split("#")[0];
+  const lastSegment = urlPath.split("/").pop() ?? "";
+  const dotIndex = lastSegment.lastIndexOf(".");
+  const ext = dotIndex > 0 ? lastSegment.slice(dotIndex + 1).toLowerCase() : "png";
   const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
   return {
     url,
@@ -135,8 +138,11 @@ export function imageResponseToFalJson(response: ImageResponse): Record<string, 
  */
 export function videoResponseToFalJson(response: VideoResponse): Record<string, unknown> {
   const url = response.video.url ?? "https://mock.fal.media/files/generated_video.mp4";
-  const fileName = url.split("/").pop()?.split("?")[0] ?? "generated_video.mp4";
-  const ext = fileName.split(".").pop()?.toLowerCase() ?? "mp4";
+  const urlPath = url.split("?")[0].split("#")[0];
+  const lastSegment = urlPath.split("/").pop() ?? "";
+  const dotIndex = lastSegment.lastIndexOf(".");
+  const fileName = dotIndex > 0 ? lastSegment : "generated_video.mp4";
+  const ext = dotIndex > 0 ? lastSegment.slice(dotIndex + 1).toLowerCase() : "mp4";
   return {
     video: {
       url,
@@ -155,7 +161,10 @@ function resolveProgression(config: FalQueueConfig | undefined): {
   pollsBeforeCompleted: number;
 } {
   const pollsBeforeInProgress = config?.pollsBeforeInProgress ?? 0;
-  const pollsBeforeCompleted = Math.max(pollsBeforeInProgress, config?.pollsBeforeCompleted ?? 0);
+  const pollsBeforeCompleted = Math.max(
+    pollsBeforeInProgress,
+    config?.pollsBeforeCompleted ?? (pollsBeforeInProgress > 0 ? pollsBeforeInProgress + 1 : 0),
+  );
   return { pollsBeforeInProgress, pollsBeforeCompleted };
 }
 
@@ -168,20 +177,20 @@ function advanceJob(job: FalQueueJob): void {
   if (job.status === "COMPLETED" || job.status === "CANCELLED") return;
 
   job.pollCount += 1;
-  if (job.pollCount >= job.pollsBeforeCompleted) {
+  if (job.status === "IN_QUEUE" && job.pollCount >= job.pollsBeforeInProgress) {
+    job.status = "IN_PROGRESS";
+    job.logs.push({
+      timestamp: new Date().toISOString(),
+      level: "INFO",
+      message: "Job started processing.",
+    });
+  } else if (job.pollCount >= job.pollsBeforeCompleted) {
     job.status = "COMPLETED";
     job.completedAt = Date.now();
     job.logs.push({
       timestamp: new Date().toISOString(),
       level: "INFO",
       message: "Job completed.",
-    });
-  } else if (job.pollCount >= job.pollsBeforeInProgress && job.status === "IN_QUEUE") {
-    job.status = "IN_PROGRESS";
-    job.logs.push({
-      timestamp: new Date().toISOString(),
-      level: "INFO",
-      message: "Job started processing.",
     });
   }
 }
@@ -414,6 +423,18 @@ export async function handleFal(
         res.end(JSON.stringify({ status: "ALREADY_COMPLETED" }));
         return "handled";
       }
+      if (job.status === "CANCELLED") {
+        journal.add({
+          method: req.method ?? "PUT",
+          path: pathname,
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 200, fixture: null },
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "CANCELLED" }));
+        return "handled";
+      }
       job.status = "CANCELLED";
       job.logs.push({
         timestamp: new Date().toISOString(),
@@ -453,7 +474,26 @@ export async function handleFal(
     case "queue-submit":
     case "sync-run": {
       const modelId = route.modelId!;
-      const parsedBody = parseBody(body);
+      let parsedBody: Record<string, unknown> | null;
+      try {
+        parsedBody = parseBody(body);
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : String(err);
+        journal.add({
+          method: req.method ?? "POST",
+          path: pathname,
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 400, fixture: null },
+        });
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: { message: detail, type: "invalid_request_error", code: "malformed_body" },
+          }),
+        );
+        return "handled";
+      }
       const prompt = extractPromptFromBody(parsedBody);
       const syntheticReq: ChatCompletionRequest = {
         model: modelId,
@@ -619,8 +659,9 @@ function parseBody(raw: string): Record<string, unknown> | null {
   if (!raw.trim()) return null;
   try {
     return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Malformed JSON body: ${detail}`);
   }
 }
 
