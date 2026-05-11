@@ -4192,4 +4192,34 @@ describe("recorder SSE progressive streaming", () => {
     // slack for scheduler jitter but require clearly more than "all at once".
     expect(span).toBeGreaterThanOrEqual(100);
   });
+
+  it("includes Cache-Control, Connection, and X-Accel-Buffering headers on SSE relay", async () => {
+    // Upstream returns SSE — recorder must set standard anti-buffering headers
+    // so reverse proxies (nginx, Cloudflare, CDN, Bun.serve) do not buffer.
+    rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write('data: {"chunk":0}\n\n');
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer!.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-sse-hdrs-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: rawUrl }, fixturePath: tmpDir, proxyOnly: true },
+    });
+
+    const resp = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "sse headers" }],
+      stream: true,
+    });
+
+    expect(resp.headers["cache-control"]).toBe("no-cache, no-transform");
+    expect(resp.headers["connection"]).toBe("keep-alive");
+    expect(resp.headers["x-accel-buffering"]).toBe("no");
+  });
 });

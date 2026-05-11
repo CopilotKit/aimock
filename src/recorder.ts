@@ -513,7 +513,11 @@ function makeUpstreamRequest(
         let streamedToClient = false;
         let clientDisconnected = false;
         if (isSSE && clientRes && !clientRes.headersSent) {
-          const relayHeaders: Record<string, string> = {};
+          const relayHeaders: Record<string, string> = {
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          };
           if (ctStr) relayHeaders["Content-Type"] = ctStr;
           // Normalize status codes for the client: aimock acts as a gateway,
           // so upstream provider details should not leak.
