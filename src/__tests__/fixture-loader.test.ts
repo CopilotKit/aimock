@@ -956,6 +956,44 @@ describe("validateFixtures", () => {
     expect(results.filter((r) => r.message.includes("systemMessage"))).toHaveLength(0);
   });
 
+  it("no error: systemMessage is a non-empty array of strings", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "test", systemMessage: ["Atai", "PST"] } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.filter((r) => r.message.includes("systemMessage"))).toHaveLength(0);
+  });
+
+  it("error: systemMessage is an empty array", () => {
+    const fixtures = [makeFixture({ match: { userMessage: "test", systemMessage: [] as never } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" &&
+          r.message.includes("systemMessage") &&
+          r.message.includes("at least one"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: systemMessage array contains a non-string element", () => {
+    const fixtures = [
+      makeFixture({
+        match: { userMessage: "test", systemMessage: ["ok", 42 as never] },
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" &&
+          r.message.includes("systemMessage[1]") &&
+          r.message.includes("must be a string"),
+      ),
+    ).toBe(true);
+  });
+
   // --- Warning checks ---
 
   it("warning: duplicate userMessage", () => {

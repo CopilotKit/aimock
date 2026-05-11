@@ -371,6 +371,97 @@ describe("matchFixture — systemMessage (string)", () => {
   });
 });
 
+describe("matchFixture — systemMessage (string[] AND)", () => {
+  it("matches when every substring is present in the system text", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "tz=PST"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "ctx: name=Atai\nctx: tz=PST\nctx: misc" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when any substring is missing", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "tz=PST"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "ctx: name=Atai\nctx: tz=EST" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches across multiple system messages (any substring may live in any of them)", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "default-activities"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "Persona: helpful." },
+        { role: "system", content: "Context: name=Atai" },
+        { role: "system", content: "Context: default-activities" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when there are no system messages", () => {
+    const fixture = makeFixture({ systemMessage: ["anything"] });
+    const req = makeReq({ messages: [{ role: "user", content: "hi" }] });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("treats single-element array same as a string substring", () => {
+    const fixture = makeFixture({ systemMessage: ["Atai"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("combines with userMessage — both gate plus all substrings must match", () => {
+    const fixture = makeFixture({
+      userMessage: "Plan my morning",
+      systemMessage: ["name=Atai", "tz=PST"],
+    });
+    const matching = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai\ntz=PST" },
+        { role: "user", content: "Plan my morning please" },
+      ],
+    });
+    expect(matchFixture([fixture], matching)).toBe(fixture);
+
+    const partial = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai" }, // tz missing
+        { role: "user", content: "Plan my morning please" },
+      ],
+    });
+    expect(matchFixture([fixture], partial)).toBeNull();
+  });
+
+  it("falls through to the next fixture when one substring is missing", () => {
+    const specific = makeFixture(
+      { userMessage: "hi", systemMessage: ["Atai", "PST"] },
+      { content: "exact-defaults" },
+    );
+    const fallback = makeFixture({ userMessage: "hi" }, { content: "generic" });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai\ntz=EST" }, // tz mismatch
+        { role: "user", content: "hi" },
+      ],
+    });
+    expect(matchFixture([specific, fallback], req)).toBe(fallback);
+  });
+});
+
 describe("matchFixture — systemMessage (RegExp)", () => {
   it("matches when the joined system text satisfies the regexp", () => {
     const fixture = makeFixture({ systemMessage: /name=Atai/ });
