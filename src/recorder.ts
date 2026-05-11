@@ -244,15 +244,20 @@ export async function proxyAndRecord(
     } else {
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
+        const sanitizedToolCalls = collapsed.toolCalls.map((tc) => ({
+          ...tc,
+          name: tc.name ?? "",
+          arguments: tc.arguments ?? "{}",
+        }));
         if (collapsed.content) {
           // Both content and toolCalls present — save as ContentWithToolCallsResponse
           fixtureResponse = {
             content: collapsed.content,
-            toolCalls: collapsed.toolCalls,
+            toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
           };
         } else {
-          fixtureResponse = { toolCalls: collapsed.toolCalls, ...reasoningSpread };
+          fixtureResponse = { toolCalls: sanitizedToolCalls, ...reasoningSpread };
         }
       } else {
         fixtureResponse = { content: collapsed.content ?? "", ...reasoningSpread };
@@ -368,6 +373,9 @@ export async function proxyAndRecord(
     try {
       // Create the target directory (must be inside try/catch so filesystem
       // errors don't prevent the upstream response from being relayed).
+      // Keep synchronous: for streamed responses the HTTP reply is already on
+      // the wire, so any async yield lets callers observe the filesystem before
+      // the fixture is written.
       if (isSnapshotMode) {
         fs.mkdirSync(path.dirname(filepath), { recursive: true });
       } else {
@@ -392,8 +400,10 @@ export async function proxyAndRecord(
         try {
           const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
           fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
-        } catch {
-          // Corrupted file — overwrite
+        } catch (parseErr) {
+          defaults.logger.warn(
+            `Corrupted fixture file ${filepath}, overwriting: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+          );
           fileContent = { fixtures: [fixture] };
         }
       } else {
@@ -404,7 +414,12 @@ export async function proxyAndRecord(
         fileContent._warning = warnings.join("; ");
       }
 
-      fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
+      // Atomic write: write to temp file then rename to avoid read-modify-write races
+      // Keep synchronous — for streamed responses the HTTP response is already on the
+      // wire, so async writes would race with callers checking the filesystem.
+      const tmpPath = filepath + ".tmp." + process.pid;
+      fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), "utf-8");
+      fs.renameSync(tmpPath, filepath);
       writtenToDisk = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown filesystem error";
@@ -644,8 +659,10 @@ function buildFixtureResponse(
         // Malformed embedding — return a zero-dimension embedding fixture
         return { embedding: [] };
       }
-      const aligned = new Uint8Array(buf).buffer; // Always offset 0
-      const floats = new Float32Array(aligned, 0, buf.byteLength / 4);
+      // Uint8Array constructor copies Buffer data to a fresh ArrayBuffer at offset 0,
+      // guaranteeing the alignment Float32Array requires.
+      const copied = new Uint8Array(buf);
+      const floats = new Float32Array(copied.buffer, 0, buf.byteLength / 4);
       return { embedding: Array.from(floats) };
     }
     // OpenAI image generation: { created, data: [{ url, b64_json, revised_prompt }] }
@@ -731,7 +748,12 @@ function buildFixtureResponse(
     !("message" in obj) &&
     !("data" in obj) &&
     !("object" in obj) &&
-    !("outputs" in obj)
+    !("outputs" in obj) &&
+    !("model" in obj) &&
+    !("response" in obj) &&
+    !("done" in obj) &&
+    !("usage" in obj) &&
+    !("error" in obj)
   ) {
     if (obj.status === "completed" && obj.url) {
       return {
