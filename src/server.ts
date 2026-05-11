@@ -354,14 +354,21 @@ async function handleControlAPI(
     };
     // Insert at front so it matches before everything else
     fixtures.unshift(errorFixture);
-    // Remove synchronously on first match to prevent race conditions where
-    // two concurrent requests both match before the removal fires.
+    // One-shot: match once then self-remove.  We use a `consumed` flag to
+    // prevent double-matching from concurrent requests and defer the actual
+    // splice via queueMicrotask so it never mutates the fixtures array while
+    // matchFixture is iterating over it.
+    let consumed = false;
     const original = errorFixture.match.predicate!;
     errorFixture.match.predicate = (req) => {
+      if (consumed) return false;
       const result = original(req);
       if (result) {
-        const idx = fixtures.indexOf(errorFixture);
-        if (idx !== -1) fixtures.splice(idx, 1);
+        consumed = true;
+        queueMicrotask(() => {
+          const idx = fixtures.indexOf(errorFixture);
+          if (idx !== -1) fixtures.splice(idx, 1);
+        });
       }
       return result;
     };
@@ -421,7 +428,8 @@ async function handleCompletions(
     if (modelFallback && !body.model) {
       body.model = modelFallback;
     }
-  } catch {
+  } catch (err) {
+    const parseDetail = err instanceof Error ? err.message : String(err);
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -434,7 +442,7 @@ async function handleCompletions(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${parseDetail}`,
           type: "invalid_request_error",
           param: null,
           code: "invalid_json",
@@ -1190,8 +1198,13 @@ export async function createServer(
               parsed.model = deploymentId;
               raw = JSON.stringify(parsed);
             }
-          } catch {
-            // Fall through — let handleEmbeddings report the parse error
+          } catch (err) {
+            if (!(err instanceof SyntaxError)) {
+              defaults.logger.error(
+                `Unexpected error in Azure model injection: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            // Fall through for parse errors — let handleEmbeddings report them
           }
         }
         await handleEmbeddings(
