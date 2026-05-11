@@ -619,12 +619,35 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
         message: `match.hasToolResult must be a boolean, got ${typeof f.match.hasToolResult}`,
       });
     }
-    if (f.match.systemMessage !== undefined && typeof f.match.systemMessage !== "string") {
-      results.push({
-        severity: "error",
-        fixtureIndex: i,
-        message: `match.systemMessage must be a string, got ${typeof f.match.systemMessage}`,
-      });
+    if (f.match.systemMessage !== undefined) {
+      const sm = f.match.systemMessage;
+      if (typeof sm === "string") {
+        // ok
+      } else if (Array.isArray(sm)) {
+        if (sm.length === 0) {
+          results.push({
+            severity: "error",
+            fixtureIndex: i,
+            message: `match.systemMessage array must contain at least one substring`,
+          });
+        } else {
+          for (let j = 0; j < sm.length; j++) {
+            if (typeof sm[j] !== "string") {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `match.systemMessage[${j}] must be a string, got ${typeof sm[j]}`,
+              });
+            }
+          }
+        }
+      } else {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: `match.systemMessage must be a string or string[], got ${typeof sm}`,
+        });
+      }
     }
 
     // --- Warning checks ---

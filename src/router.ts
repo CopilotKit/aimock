@@ -113,23 +113,50 @@ export function matchFixture(
       }
     }
 
-    // systemMessage — case-sensitive substring (or regexp) match against the
-    // joined text of every system message in the request. Use to gate a
-    // fixture on host-supplied context (e.g. agent-context entries) so that
-    // when the calling app changes that context the fixture stops matching
-    // and the request falls through to the next fixture or upstream proxy.
+    // systemMessage — case-sensitive substring, regexp, or array-of-substrings
+    // match against the joined text of every system message in the request.
+    // Use to gate a fixture on host-supplied context (e.g. agent-context
+    // entries) so that when the calling app changes that context the fixture
+    // stops matching and the request falls through to the next fixture or
+    // upstream proxy.
+    //
+    // Array form (string[]) requires ALL substrings to be present — useful
+    // when the gate must combine multiple non-adjacent tokens (e.g. a default
+    // name AND a default activity list whose positions in the serialised
+    // context JSON aren't stable).
     if (match.systemMessage !== undefined) {
       const text = getSystemText(effective.messages);
       if (!text) continue;
-      if (typeof match.systemMessage === "string") {
+      const sm = match.systemMessage;
+      if (Array.isArray(sm)) {
+        // Empty array is treated as "no constraint" → effectively matches
+        // unconditionally. Validation rejects this at load time for JSON
+        // fixtures; programmatic callers that pass [] get the same
+        // permissive behaviour as not setting systemMessage at all.
+        let allPresent = true;
+        for (const needle of sm) {
+          if (useExactMatch) {
+            if (text !== needle) {
+              allPresent = false;
+              break;
+            }
+          } else {
+            if (!text.includes(needle)) {
+              allPresent = false;
+              break;
+            }
+          }
+        }
+        if (!allPresent) continue;
+      } else if (typeof sm === "string") {
         if (useExactMatch) {
-          if (text !== match.systemMessage) continue;
+          if (text !== sm) continue;
         } else {
-          if (!text.includes(match.systemMessage)) continue;
+          if (!text.includes(sm)) continue;
         }
       } else {
-        match.systemMessage.lastIndex = 0;
-        if (!match.systemMessage.test(text)) continue;
+        sm.lastIndex = 0;
+        if (!sm.test(text)) continue;
       }
     }
 

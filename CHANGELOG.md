@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [1.21.0] - 2026-05-11
+
+### Added
+
+- **`match.systemMessage` accepts `string[]`** — array form requires ALL substrings to be present in the joined system-message text (AND semantics). Use this when the gate must combine multiple non-adjacent tokens that may appear in any order — e.g., a host that serialises agent-context entries into a system message whose entry order is not stable, but where a fixture should only match when every default value is present (`["\"value\": \"Atai\"", "[\"Viewed the pricing page\",\"Watched the product demo video\"]"]`). Single-string and `RegExp` forms continue to work unchanged. JSON form accepts `string | string[]`; programmatic form accepts `string | string[] | RegExp`.
+
 ## [1.20.0] - 2026-05-11
 
 ### Fixed

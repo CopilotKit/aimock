@@ -65,15 +65,20 @@ export interface ToolDefinition {
 export interface FixtureMatch {
   userMessage?: string | RegExp;
   /**
-   * Substring or regexp matched against the concatenated text content of every
-   * `system` role message in the request. Gates fixture activation on values
-   * the host plumbs in via system messages (agent context, persona, dynamic
-   * config) instead of the user-typed prompt — so changing context state in
-   * the calling app causes stale fixtures to fall through to a real upstream
-   * instead of silently returning a baked response that no longer reflects
-   * reality.
+   * Substring, regexp, or array of substrings matched against the concatenated
+   * text content of every `system` role message in the request. Gates fixture
+   * activation on values the host plumbs in via system messages (agent
+   * context, persona, dynamic config) instead of the user-typed prompt — so
+   * changing context state in the calling app causes stale fixtures to fall
+   * through to a real upstream instead of silently returning a baked response
+   * that no longer reflects reality.
+   *
+   * When given an array of strings, ALL substrings must be present (AND
+   * semantics). Useful when the gate must combine multiple non-adjacent
+   * tokens — e.g., a default name AND a default activity list whose JSON
+   * positions vary across requests.
    */
-  systemMessage?: string | RegExp;
+  systemMessage?: string | string[] | RegExp;
   inputText?: string | RegExp;
   toolCallId?: string;
   toolName?: string;
@@ -319,7 +324,12 @@ export interface FixtureFile {
 export interface FixtureFileEntry {
   match: {
     userMessage?: string;
-    systemMessage?: string;
+    /**
+     * String (single substring) or array of strings (all must be present).
+     * Mirrors the runtime FixtureMatch.systemMessage but without the RegExp
+     * form, which JSON cannot express.
+     */
+    systemMessage?: string | string[];
     inputText?: string;
     toolCallId?: string;
     toolName?: string;
