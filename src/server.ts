@@ -877,6 +877,9 @@ export async function createServer(
     get requestTransform() {
       return serverOptions.requestTransform;
     },
+    get falQueue() {
+      return serverOptions.falQueue;
+    },
   };
 
   // Validate chaos config rates

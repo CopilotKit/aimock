@@ -1,6 +1,15 @@
 import type http from "node:http";
 import crypto from "node:crypto";
-import type { ChatCompletionRequest, Fixture, HandlerDefaults, RawJSONResponse } from "./types.js";
+import type {
+  ChatCompletionRequest,
+  FalQueueConfig,
+  Fixture,
+  HandlerDefaults,
+  ImageItem,
+  ImageResponse,
+  RawJSONResponse,
+  VideoResponse,
+} from "./types.js";
 import {
   isAudioResponse,
   isErrorResponse,
@@ -19,11 +28,23 @@ import { audioToFalFile } from "./fal-audio.js";
 const FAL_QUEUE_MAX_ENTRIES = 10_000;
 const FAL_QUEUE_TTL_MS = 3_600_000; // 1 hour
 
+type FalQueueStatus = "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+
 interface FalQueueJob {
   requestId: string;
   modelId: string;
-  status: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED";
+  status: FalQueueStatus;
   result: unknown;
+  /** Number of `/status` (or `/{id}`) polls the caller has made against this job. */
+  pollCount: number;
+  /** Poll-count threshold for `IN_QUEUE → IN_PROGRESS` transition. */
+  pollsBeforeInProgress: number;
+  /** Poll-count threshold for `IN_PROGRESS → COMPLETED` transition. */
+  pollsBeforeCompleted: number;
+  submittedAt: number;
+  completedAt: number | null;
+  /** State-transition log entries surfaced in the `/status` response. */
+  logs: Array<{ timestamp: string; level: string; message: string }>;
   createdAt: number;
 }
 
@@ -76,6 +97,117 @@ export class FalQueueStateMap {
 }
 
 export const falQueueStates = new FalQueueStateMap();
+
+// ─── Typed-response → fal envelope converters ───────────────────────────
+
+function imageItemToFalImage(item: ImageItem, index: number): Record<string, unknown> {
+  const url = item.url ?? `https://mock.fal.media/files/generated_image_${index}.png`;
+  const ext = url.split(".").pop()?.split("?")[0]?.toLowerCase() ?? "png";
+  const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+  return {
+    url,
+    width: 1024,
+    height: 1024,
+    content_type: contentType,
+  };
+}
+
+/**
+ * Translate an `ImageResponse` fixture into fal's image envelope shape:
+ * `{ images: [...], timings, seed, has_nsfw_concepts, prompt }`.
+ * Used by `LLMock.onFalImage` to keep callers from re-deriving the wire shape.
+ */
+export function imageResponseToFalJson(response: ImageResponse): Record<string, unknown> {
+  const items = response.images ?? (response.image ? [response.image] : []);
+  const images = items.map((item, i) => imageItemToFalImage(item, i));
+  return {
+    images,
+    timings: { inference: 0 },
+    seed: 0,
+    has_nsfw_concepts: images.map(() => false),
+    prompt: "",
+  };
+}
+
+/**
+ * Translate a `VideoResponse` fixture into fal's video envelope shape:
+ * `{ video: { url, content_type, file_name, file_size }, seed }`.
+ */
+export function videoResponseToFalJson(response: VideoResponse): Record<string, unknown> {
+  const url = response.video.url ?? "https://mock.fal.media/files/generated_video.mp4";
+  const fileName = url.split("/").pop()?.split("?")[0] ?? "generated_video.mp4";
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "mp4";
+  return {
+    video: {
+      url,
+      content_type: `video/${ext}`,
+      file_name: fileName,
+      file_size: 0,
+    },
+    seed: 0,
+  };
+}
+
+// ─── Queue progression ─────────────────────────────────────────────────
+
+function resolveProgression(config: FalQueueConfig | undefined): {
+  pollsBeforeInProgress: number;
+  pollsBeforeCompleted: number;
+} {
+  const pollsBeforeInProgress = config?.pollsBeforeInProgress ?? 0;
+  const pollsBeforeCompleted = Math.max(pollsBeforeInProgress, config?.pollsBeforeCompleted ?? 0);
+  return { pollsBeforeInProgress, pollsBeforeCompleted };
+}
+
+/**
+ * Mutates a job in place to advance its state on a status/result poll.
+ * IN_QUEUE → IN_PROGRESS → COMPLETED based on poll-count thresholds. No-op
+ * once COMPLETED or CANCELLED.
+ */
+function advanceJob(job: FalQueueJob): void {
+  if (job.status === "COMPLETED" || job.status === "CANCELLED") return;
+
+  job.pollCount += 1;
+  if (job.pollCount >= job.pollsBeforeCompleted) {
+    job.status = "COMPLETED";
+    job.completedAt = Date.now();
+    job.logs.push({
+      timestamp: new Date().toISOString(),
+      level: "INFO",
+      message: "Job completed.",
+    });
+  } else if (job.pollCount >= job.pollsBeforeInProgress && job.status === "IN_QUEUE") {
+    job.status = "IN_PROGRESS";
+    job.logs.push({
+      timestamp: new Date().toISOString(),
+      level: "INFO",
+      message: "Job started processing.",
+    });
+  }
+}
+
+function queuePosition(job: FalQueueJob): number {
+  if (job.status !== "IN_QUEUE") return 0;
+  return Math.max(0, job.pollsBeforeInProgress - job.pollCount);
+}
+
+function statusResponseBody(job: FalQueueJob): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    status: job.status,
+    request_id: job.requestId,
+    response_url: `https://${FAL_HOSTS.queue}/${job.modelId}/requests/${job.requestId}`,
+    logs: job.logs,
+  };
+  if (job.status === "IN_QUEUE" || job.status === "IN_PROGRESS") {
+    body.queue_position = queuePosition(job);
+  }
+  if (job.status === "COMPLETED" && job.completedAt != null) {
+    body.metrics = {
+      inference_time: (job.completedAt - job.submittedAt) / 1000,
+    };
+  }
+  return body;
+}
 
 // ─── Hosts and routing ──────────────────────────────────────────────────
 
@@ -234,12 +366,8 @@ export async function handleFal(
         respondNotFound(req, res, pathname, journal, route.requestId!);
         return "handled";
       }
-      const responseBody = {
-        status: job.status,
-        request_id: job.requestId,
-        response_url: `https://${FAL_HOSTS.queue}/${job.modelId}/requests/${job.requestId}`,
-      };
-      writeJson(req, res, 200, responseBody, pathname, journal);
+      advanceJob(job);
+      writeJson(req, res, 200, statusResponseBody(job), pathname, journal);
       return "handled";
     }
 
@@ -247,6 +375,13 @@ export async function handleFal(
       const job = falQueueStates.get(stateKey(route.requestId!));
       if (!job) {
         respondNotFound(req, res, pathname, journal, route.requestId!);
+        return "handled";
+      }
+      // Callers may fetch result without first polling status — advance so
+      // tests that skip the status check still reach completion.
+      advanceJob(job);
+      if (job.status !== "COMPLETED") {
+        writeJson(req, res, 202, statusResponseBody(job), pathname, journal);
         return "handled";
       }
       writeJson(req, res, 200, job.result, pathname, journal);
@@ -267,15 +402,33 @@ export async function handleFal(
         res.end(JSON.stringify({ status: "NOT_FOUND" }));
         return "handled";
       }
+      if (job.status === "COMPLETED") {
+        journal.add({
+          method: req.method ?? "PUT",
+          path: pathname,
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 400, fixture: null },
+        });
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ALREADY_COMPLETED" }));
+        return "handled";
+      }
+      job.status = "CANCELLED";
+      job.logs.push({
+        timestamp: new Date().toISOString(),
+        level: "INFO",
+        message: "Job cancelled.",
+      });
       journal.add({
         method: req.method ?? "PUT",
         path: pathname,
         headers: flattenHeaders(req.headers),
         body: null,
-        response: { status: 400, fixture: null },
+        response: { status: 200, fixture: null },
       });
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ALREADY_COMPLETED" }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "CANCELLED" }));
       return "handled";
     }
 
@@ -417,19 +570,36 @@ export async function handleFal(
       }
 
       const requestId = crypto.randomUUID();
-      falQueueStates.set(stateKey(requestId), {
+      const progression = resolveProgression(defaults.falQueue);
+      const now = Date.now();
+      const initialStatus: FalQueueStatus =
+        progression.pollsBeforeCompleted === 0 ? "COMPLETED" : "IN_QUEUE";
+      const job: FalQueueJob = {
         requestId,
         modelId,
-        status: "COMPLETED",
+        status: initialStatus,
         result: payload,
-        createdAt: Date.now(),
-      });
+        pollCount: 0,
+        pollsBeforeInProgress: progression.pollsBeforeInProgress,
+        pollsBeforeCompleted: progression.pollsBeforeCompleted,
+        submittedAt: now,
+        completedAt: initialStatus === "COMPLETED" ? now : null,
+        logs: [
+          {
+            timestamp: new Date(now).toISOString(),
+            level: "INFO",
+            message: "Job enqueued.",
+          },
+        ],
+        createdAt: now,
+      };
+      falQueueStates.set(stateKey(requestId), job);
       const envelope = {
         request_id: requestId,
         response_url: `https://${FAL_HOSTS.queue}/${modelId}/requests/${requestId}`,
         status_url: `https://${FAL_HOSTS.queue}/${modelId}/requests/${requestId}/status`,
         cancel_url: `https://${FAL_HOSTS.queue}/${modelId}/requests/${requestId}/cancel`,
-        queue_position: 0,
+        queue_position: queuePosition(job),
       };
       journal.add({
         method: req.method ?? "POST",

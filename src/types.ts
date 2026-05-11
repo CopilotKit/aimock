@@ -493,6 +493,24 @@ export interface MockServerOptions {
    * positives from shortened keys.
    */
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  /**
+   * Configure fal.ai queue polling progression. By default a job completes
+   * on submit (preserves the legacy `COMPLETED`-on-submit shape). Opt into a
+   * realistic `IN_QUEUE → IN_PROGRESS → COMPLETED` progression by setting
+   * positive poll thresholds — useful for exercising client code that polls
+   * `/status` and reacts to intermediate states.
+   *
+   * Applies to the general fal handler (`x-fal-target-host`-routed); the
+   * legacy `/fal/queue/...` audio handler is unaffected.
+   */
+  falQueue?: FalQueueConfig;
+}
+
+export interface FalQueueConfig {
+  /** Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Default: 0 (complete on submit). */
+  pollsBeforeInProgress?: number;
+  /** Status polls before transitioning to `COMPLETED`. Must be >= pollsBeforeInProgress. Default: 0. */
+  pollsBeforeCompleted?: number;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler
@@ -508,4 +526,5 @@ export interface HandlerDefaults {
   record?: RecordConfig;
   strict?: boolean;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  falQueue?: FalQueueConfig;
 }
