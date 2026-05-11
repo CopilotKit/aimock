@@ -82,6 +82,72 @@ function get(
   });
 }
 
+function postRaw(
+  url: string,
+  rawBody: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(rawBody),
+          ...headers,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(rawBody);
+    req.end();
+  });
+}
+
+function del(
+  url: string,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "DELETE",
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Test state
 // ---------------------------------------------------------------------------
@@ -637,6 +703,9 @@ describe("recorder strict mode", () => {
     // Need to create a new recorder with both record + strict
     await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
 
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
       port: 0,
@@ -1092,7 +1161,7 @@ describe("recorder end-to-end replay", () => {
     );
 
     // Clear journal to distinguish proxy vs fixture-match
-    await fetch(`${recorderUrl}/v1/_requests`, { method: "DELETE" });
+    await del(`${recorderUrl}/v1/_requests`);
 
     // Second request — should match recorded fixture
     const resp2 = await post(`${recorderUrl}/v1/chat/completions`, {
@@ -1290,20 +1359,31 @@ describe("recorder edge cases", () => {
 
     // Check the default path
     const defaultPath = path.resolve("./fixtures/recorded");
-    expect(fs.existsSync(defaultPath)).toBe(true);
-    const files = fs.readdirSync(defaultPath);
-    const fixtureFiles = files.filter((f) => f.startsWith("openai-") && f.endsWith(".json"));
-    expect(fixtureFiles.length).toBeGreaterThanOrEqual(1);
-
-    // Clean up the default path files we just created
-    for (const f of fixtureFiles) {
-      fs.unlinkSync(path.join(defaultPath, f));
-    }
-    // Remove dir if empty
     try {
-      fs.rmdirSync(defaultPath);
-    } catch {
-      // ignore — might not be empty if other tests ran
+      expect(fs.existsSync(defaultPath)).toBe(true);
+      const files = fs.readdirSync(defaultPath);
+      const fixtureFiles = files.filter((f) => f.startsWith("openai-") && f.endsWith(".json"));
+      expect(fixtureFiles.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      // Clean up the default path files we created
+      if (fs.existsSync(defaultPath)) {
+        const cleanupFiles = fs.readdirSync(defaultPath);
+        for (const f of cleanupFiles.filter(
+          (f) => f.startsWith("openai-") && f.endsWith(".json"),
+        )) {
+          fs.unlinkSync(path.join(defaultPath, f));
+        }
+        // Remove dir if empty — only swallow expected ENOTEMPTY/ENOENT
+        try {
+          fs.rmdirSync(defaultPath);
+        } catch (err: unknown) {
+          const code =
+            err instanceof Error && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+          if (code !== "ENOTEMPTY" && code !== "ENOENT") {
+            console.warn("Unexpected error cleaning up defaultPath:", err);
+          }
+        }
+      }
     }
   });
 
@@ -1418,11 +1498,7 @@ describe("recorder edge cases", () => {
     // Send body with specific formatting (extra spaces, key order)
     const customBody =
       '{"model":  "gpt-4",  "messages": [{"role": "user", "content": "preserve me"}]}';
-    const resp = await fetch(`${recorder.url}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: customBody,
-    });
+    const resp = await postRaw(`${recorder.url}/v1/chat/completions`, customBody);
     expect(resp.status).toBe(200);
 
     // The upstream should have received the original body, not re-serialized
