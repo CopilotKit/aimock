@@ -1,10 +1,10 @@
 /**
  * Ollama drift tests.
  *
- * Compares aimock's Ollama endpoint output shapes against a real local
- * Ollama instance. Skips automatically if Ollama is not reachable.
+ * Compares aimock's Ollama endpoint output shapes against a real Ollama
+ * instance. Skips unless OLLAMA_HOST is set in the environment.
  *
- * Requires: local Ollama running at http://localhost:11434
+ * Requires: OLLAMA_HOST env var (e.g. http://localhost:11434)
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -13,21 +13,10 @@ import { extractShape, triangulate, formatDriftReport } from "./schema.js";
 import { httpPost, startDriftServer, stopDriftServer } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
-// Connectivity check
+// Environment-based opt-in (consistent with other drift files)
 // ---------------------------------------------------------------------------
 
-let OLLAMA_REACHABLE = false;
-
-async function checkOllamaConnectivity(): Promise<boolean> {
-  try {
-    const res = await fetch("http://localhost:11434/api/tags", {
-      signal: AbortSignal.timeout(3000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
+const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://localhost:11434";
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -36,7 +25,6 @@ async function checkOllamaConnectivity(): Promise<boolean> {
 let instance: ServerInstance;
 
 beforeAll(async () => {
-  OLLAMA_REACHABLE = await checkOllamaConnectivity();
   instance = await startDriftServer();
 });
 
@@ -119,7 +107,7 @@ function parseNDJSON(body: string): object[] {
     .map((line) => JSON.parse(line) as object);
 }
 
-describe.skipIf(!OLLAMA_REACHABLE)("Ollama drift", () => {
+describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
   it("/api/chat response shape matches", async () => {
     const sdkShape = ollamaChatResponseShape();
 
@@ -130,7 +118,7 @@ describe.skipIf(!OLLAMA_REACHABLE)("Ollama drift", () => {
     };
 
     const [realRes, mockRes] = await Promise.all([
-      httpPost("http://localhost:11434/api/chat", body),
+      httpPost(`${OLLAMA_HOST}/api/chat`, body),
       httpPost(`${instance.url}/api/chat`, body),
     ]);
 
@@ -161,7 +149,7 @@ describe.skipIf(!OLLAMA_REACHABLE)("Ollama drift", () => {
     };
 
     const [realRes, mockRes] = await Promise.all([
-      httpPost("http://localhost:11434/api/chat", body),
+      httpPost(`${OLLAMA_HOST}/api/chat`, body),
       httpPost(`${instance.url}/api/chat`, body),
     ]);
 
@@ -199,7 +187,7 @@ describe.skipIf(!OLLAMA_REACHABLE)("Ollama drift", () => {
     };
 
     const [realRes, mockRes] = await Promise.all([
-      httpPost("http://localhost:11434/api/generate", body),
+      httpPost(`${OLLAMA_HOST}/api/generate`, body),
       httpPost(`${instance.url}/api/generate`, body),
     ]);
 

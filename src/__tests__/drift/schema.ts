@@ -424,25 +424,23 @@ export function compareSSESequences(
     }
   }
 
-  // Compare shapes of matching event types
+  // Compare shapes of matching event types — collect ALL events per type and
+  // merge their shapes so that variant payloads (e.g. text_delta vs
+  // thinking_delta on the same Anthropic event type) are all represented.
   for (const type of realTypeSet) {
     if (!mockTypeSet.has(type)) continue;
-    const realEvent = real.find((e) => e.type === type);
-    const mockEvent = mock.find((e) => e.type === type);
-    const sdkEvent = sdk.find((e) => e.type === type);
 
-    if (realEvent && mockEvent) {
-      const eventDiffs = triangulate(
-        sdkEvent?.dataShape ?? null,
-        realEvent.dataShape,
-        mockEvent.dataShape,
-      );
-      for (const d of eventDiffs) {
-        diffs.push({
-          ...d,
-          path: `SSE:${type}.${d.path}`,
-        });
-      }
+    const realEvents = real.filter((e) => e.type === type);
+    const mockEvents = mock.filter((e) => e.type === type);
+    const sdkEvents = sdk.filter((e) => e.type === type);
+
+    const realMerged = mergeShapes(realEvents.map((e) => e.dataShape));
+    const mockMerged = mergeShapes(mockEvents.map((e) => e.dataShape));
+    const sdkMerged = sdkEvents.length > 0 ? mergeShapes(sdkEvents.map((e) => e.dataShape)) : null;
+
+    const eventDiffs = triangulateAt(`SSE:${type}`, sdkMerged, realMerged, mockMerged);
+    for (const d of eventDiffs) {
+      diffs.push(d);
     }
   }
 
