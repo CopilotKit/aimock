@@ -49,6 +49,9 @@ def test_hello(aimock):
 # Add fixtures
 aimock.on_message("pattern", {"content": "response"})
 aimock.on_embedding("pattern", {"embedding": [0.1, 0.2]})
+aimock.on_system_message("name=Atai", {"content": "..."}, user_message="who am I")
+# Array form: all substrings must appear in the joined system text (AND)
+aimock.on_system_message(["name=Atai", "tz=PST"], {"content": "..."})
 aimock.add_fixture(match={...}, response={...}, chunkSize=10, latency=50)
 aimock.load_fixtures("path/to/fixtures.json")
 

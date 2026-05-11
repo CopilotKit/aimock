@@ -154,6 +154,29 @@ class AIMockServer:
         self.add_fixture({"inputText": pattern}, response)
         return self
 
+    def on_system_message(
+        self,
+        pattern: str | list[str],
+        response: dict[str, Any],
+        *,
+        user_message: str | None = None,
+        **opts: Any,
+    ) -> AIMockServer:
+        """Convenience: add a fixture matching ``systemMessage``.
+
+        ``pattern`` may be a single substring or a list of substrings; the
+        list form requires ALL substrings to appear in the joined text of
+        every ``role: "system"`` message (AND semantics). Pass
+        ``user_message=`` to ALSO gate on the user prompt — the two
+        matchers are AND-combined inside the same fixture's ``match``
+        block, mirroring the on-the-wire fixture shape.
+        """
+        match: dict[str, Any] = {"systemMessage": pattern}
+        if user_message is not None:
+            match["userMessage"] = user_message
+        self.add_fixture(match, response, **opts)
+        return self
+
     def load_fixtures(self, path: str | Path) -> AIMockServer:
         """Read a JSON fixture file and POST its contents to the control API.
 
