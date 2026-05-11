@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi, type MockInstance } from "vitest";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -10,6 +10,7 @@ import type { RecordConfig } from "../types.js";
 import { Logger } from "../logger.js";
 import { LLMock } from "../llmock.js";
 import { encodeEventStreamMessage } from "../aws-event-stream.js";
+import { loadFixtureFile } from "../fixture-loader.js";
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -64,6 +65,72 @@ function get(
         port: parsed.port,
         path: parsed.pathname + parsed.search,
         method: "GET",
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function postRaw(
+  url: string,
+  rawBody: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(rawBody),
+          ...headers,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(rawBody);
+    req.end();
+  });
+}
+
+function del(
+  url: string,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "DELETE",
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -637,6 +704,9 @@ describe("recorder strict mode", () => {
     // Need to create a new recorder with both record + strict
     await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
 
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
       port: 0,
@@ -1092,7 +1162,7 @@ describe("recorder end-to-end replay", () => {
     );
 
     // Clear journal to distinguish proxy vs fixture-match
-    await fetch(`${recorderUrl}/v1/_requests`, { method: "DELETE" });
+    await del(`${recorderUrl}/v1/_requests`);
 
     // Second request — should match recorded fixture
     const resp2 = await post(`${recorderUrl}/v1/chat/completions`, {
@@ -1290,20 +1360,31 @@ describe("recorder edge cases", () => {
 
     // Check the default path
     const defaultPath = path.resolve("./fixtures/recorded");
-    expect(fs.existsSync(defaultPath)).toBe(true);
-    const files = fs.readdirSync(defaultPath);
-    const fixtureFiles = files.filter((f) => f.startsWith("openai-") && f.endsWith(".json"));
-    expect(fixtureFiles.length).toBeGreaterThanOrEqual(1);
-
-    // Clean up the default path files we just created
-    for (const f of fixtureFiles) {
-      fs.unlinkSync(path.join(defaultPath, f));
-    }
-    // Remove dir if empty
     try {
-      fs.rmdirSync(defaultPath);
-    } catch {
-      // ignore — might not be empty if other tests ran
+      expect(fs.existsSync(defaultPath)).toBe(true);
+      const files = fs.readdirSync(defaultPath);
+      const fixtureFiles = files.filter((f) => f.startsWith("openai-") && f.endsWith(".json"));
+      expect(fixtureFiles.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      // Clean up the default path files we created
+      if (fs.existsSync(defaultPath)) {
+        const cleanupFiles = fs.readdirSync(defaultPath);
+        for (const f of cleanupFiles.filter(
+          (f) => f.startsWith("openai-") && f.endsWith(".json"),
+        )) {
+          fs.unlinkSync(path.join(defaultPath, f));
+        }
+        // Remove dir if empty — only swallow expected ENOTEMPTY/ENOENT
+        try {
+          fs.rmdirSync(defaultPath);
+        } catch (err: unknown) {
+          const code =
+            err instanceof Error && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+          if (code !== "ENOTEMPTY" && code !== "ENOENT") {
+            console.warn("Unexpected error cleaning up defaultPath:", err);
+          }
+        }
+      }
     }
   });
 
@@ -1418,11 +1499,7 @@ describe("recorder edge cases", () => {
     // Send body with specific formatting (extra spaces, key order)
     const customBody =
       '{"model":  "gpt-4",  "messages": [{"role": "user", "content": "preserve me"}]}';
-    const resp = await fetch(`${recorder.url}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: customBody,
-    });
+    const resp = await postRaw(`${recorder.url}/v1/chat/completions`, customBody);
     expect(resp.status).toBe(200);
 
     // The upstream should have received the original body, not re-serialized
@@ -1758,10 +1835,7 @@ describe("recorder multi-turn disambiguation", () => {
     const recordedFixtures: Fixture[] = fs
       .readdirSync(fixturePath)
       .filter((f) => f.endsWith(".json"))
-      .flatMap(
-        (f) =>
-          (JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8")) as FixtureFile).fixtures,
-      );
+      .flatMap((f) => loadFixtureFile(path.join(fixturePath, f)));
     expect(recordedFixtures).toHaveLength(2);
 
     // Phase 2: replay against a fresh aimock with only the recorded fixtures.
@@ -1908,11 +1982,7 @@ describe("recorder multi-turn disambiguation", () => {
     const allFixtures: Fixture[] = fs
       .readdirSync(sharedFixturePath)
       .filter((f) => f.endsWith(".json"))
-      .flatMap(
-        (f) =>
-          (JSON.parse(fs.readFileSync(path.join(sharedFixturePath, f), "utf-8")) as FixtureFile)
-            .fixtures,
-      );
+      .flatMap((f) => loadFixtureFile(path.join(sharedFixturePath, f)));
     expect(allFixtures).toHaveLength(4);
 
     recorder = await createServer(allFixtures, { port: 0 });
@@ -2478,6 +2548,24 @@ describe("recorder filesystem write failure", () => {
 // buildFixtureResponse for non-OpenAI formats
 // ---------------------------------------------------------------------------
 
+/** Shared helper: spins up a raw HTTP server that returns `responseBody` as JSON. */
+function createRawUpstream(
+  responseBody: object,
+  servers: http.Server[],
+): Promise<{ url: string; server: http.Server }> {
+  return new Promise((resolve) => {
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(responseBody));
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address() as { port: number };
+      servers.push(srv);
+      resolve({ url: `http://127.0.0.1:${addr.port}`, server: srv });
+    });
+  });
+}
+
 describe("recorder buildFixtureResponse non-OpenAI formats", () => {
   let servers: http.Server[] = [];
 
@@ -2488,28 +2576,17 @@ describe("recorder buildFixtureResponse non-OpenAI formats", () => {
     servers = [];
   });
 
-  function createRawUpstream(responseBody: object): Promise<{ url: string; server: http.Server }> {
-    return new Promise((resolve) => {
-      const srv = http.createServer((_req, res) => {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(responseBody));
-      });
-      srv.listen(0, "127.0.0.1", () => {
-        const addr = srv.address() as { port: number };
-        servers.push(srv);
-        resolve({ url: `http://127.0.0.1:${addr.port}`, server: srv });
-      });
-    });
-  }
-
   it("records Anthropic format (content array with type/text)", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      id: "msg_123",
-      type: "message",
-      role: "assistant",
-      content: [{ type: "text", text: "Bonjour from Anthropic" }],
-      stop_reason: "end_turn",
-    });
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        id: "msg_123",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Bonjour from Anthropic" }],
+        stop_reason: "end_turn",
+      },
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -2536,14 +2613,17 @@ describe("recorder buildFixtureResponse non-OpenAI formats", () => {
   });
 
   it("records Gemini format (candidates array)", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      candidates: [
-        {
-          content: { role: "model", parts: [{ text: "Hello from Gemini" }] },
-          finishReason: "STOP",
-        },
-      ],
-    });
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "Hello from Gemini" }] },
+            finishReason: "STOP",
+          },
+        ],
+      },
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -2568,11 +2648,14 @@ describe("recorder buildFixtureResponse non-OpenAI formats", () => {
   });
 
   it("records Ollama format (message object)", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      model: "llama3",
-      message: { role: "assistant", content: "Hello from Ollama" },
-      done: true,
-    });
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        model: "llama3",
+        message: { role: "assistant", content: "Hello from Ollama" },
+        done: true,
+      },
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -2664,6 +2747,7 @@ describe("recorder content + toolCalls coexistence", () => {
     expect(fixtureContent.fixtures[0].response.toolCalls).toBeDefined();
     expect(fixtureContent.fixtures[0].response.toolCalls).toHaveLength(1);
     expect(fixtureContent.fixtures[0].response.toolCalls![0].name).toBe("search");
+    expect(fixtureContent.fixtures[0].response.content).toBeDefined();
 
     await new Promise<void>((resolve) => rawServer.close(() => resolve()));
   });
@@ -3601,6 +3685,7 @@ describe("recorder streaming edge cases", () => {
     expect(savedResponse.toolCalls).toBeDefined();
     expect(savedResponse.toolCalls).toHaveLength(1);
     expect(savedResponse.toolCalls![0].name).toBe("get_weather");
+    expect(savedResponse.content).toBeDefined();
   });
 });
 
@@ -3618,30 +3703,19 @@ describe("buildFixtureResponse additional format variants", () => {
     servers = [];
   });
 
-  function createRawUpstream(responseBody: object): Promise<{ url: string; server: http.Server }> {
-    return new Promise((resolve) => {
-      const srv = http.createServer((_req, res) => {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(responseBody));
-      });
-      srv.listen(0, "127.0.0.1", () => {
-        const addr = srv.address() as { port: number };
-        servers.push(srv);
-        resolve({ url: `http://127.0.0.1:${addr.port}`, server: srv });
-      });
-    });
-  }
-
   it("detects Bedrock Converse format (output.message.content text)", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      output: {
-        message: {
-          role: "assistant",
-          content: [{ text: "Hello from Bedrock Converse" }],
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        output: {
+          message: {
+            role: "assistant",
+            content: [{ text: "Hello from Bedrock Converse" }],
+          },
         },
+        stopReason: "end_turn",
       },
-      stopReason: "end_turn",
-    });
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3667,22 +3741,25 @@ describe("buildFixtureResponse additional format variants", () => {
   });
 
   it("detects Bedrock Converse toolUse format", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      output: {
-        message: {
-          role: "assistant",
-          content: [
-            {
-              toolUse: {
-                name: "get_weather",
-                input: { city: "NYC" },
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        output: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                toolUse: {
+                  name: "get_weather",
+                  input: { city: "NYC" },
+                },
               },
-            },
-          ],
+            ],
+          },
         },
+        stopReason: "tool_use",
       },
-      stopReason: "tool_use",
-    });
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3714,17 +3791,20 @@ describe("buildFixtureResponse additional format variants", () => {
   });
 
   it("detects Anthropic tool_use with string input", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      content: [
-        {
-          type: "tool_use",
-          id: "toolu_str",
-          name: "search",
-          input: '{"query":"hello"}',
-        },
-      ],
-      role: "assistant",
-    });
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_str",
+            name: "search",
+            input: '{"query":"hello"}',
+          },
+        ],
+        role: "assistant",
+      },
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3757,22 +3837,25 @@ describe("buildFixtureResponse additional format variants", () => {
   });
 
   it("detects Gemini functionCall with string args", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      candidates: [
-        {
-          content: {
-            parts: [
-              {
-                functionCall: {
-                  name: "search",
-                  args: '{"query":"hello"}',
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: {
+                    name: "search",
+                    args: '{"query":"hello"}',
+                  },
                 },
-              },
-            ],
+              ],
+            },
           },
-        },
-      ],
-    });
+        ],
+      },
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3802,14 +3885,17 @@ describe("buildFixtureResponse additional format variants", () => {
   });
 
   it("detects Ollama message.content as array format", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      model: "llama3",
-      message: {
-        role: "assistant",
-        content: [{ text: "Array content from Ollama" }],
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        model: "llama3",
+        message: {
+          role: "assistant",
+          content: [{ text: "Array content from Ollama" }],
+        },
+        done: true,
       },
-      done: true,
-    });
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3836,22 +3922,25 @@ describe("buildFixtureResponse additional format variants", () => {
   });
 
   it("detects Ollama tool_calls with string arguments", async () => {
-    const { url: upstreamUrl } = await createRawUpstream({
-      model: "llama3",
-      message: {
-        role: "assistant",
-        content: "",
-        tool_calls: [
-          {
-            function: {
-              name: "search",
-              arguments: '{"query":"test"}',
+    const { url: upstreamUrl } = await createRawUpstream(
+      {
+        model: "llama3",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              function: {
+                name: "search",
+                arguments: '{"query":"test"}',
+              },
             },
-          },
-        ],
+          ],
+        },
+        done: true,
       },
-      done: true,
-    });
+      servers,
+    );
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
     recorder = await createServer([], {
@@ -3921,6 +4010,8 @@ function createMockReqRes(): { req: http.IncomingMessage; res: http.ServerRespon
   const req = Object.create(http.IncomingMessage.prototype) as http.IncomingMessage;
   req.headers = {};
   const res = Object.create(http.ServerResponse.prototype) as http.ServerResponse;
+  // Use explicit property instead of relying on Node.js internal _header getter
+  Object.defineProperty(res, "headersSent", { value: false, writable: true });
   return { req, res };
 }
 
@@ -3928,6 +4019,16 @@ async function setupUpstreamAndRecorder(
   upstreamFixtures: Fixture[],
   providerKey: string = "openai",
 ): Promise<{ upstreamUrl: string; recorderUrl: string; fixturePath: string }> {
+  // Ensure previous resources are cleaned up before reassignment
+  if (recorder) {
+    await new Promise<void>((resolve) => recorder!.server.close(() => resolve()));
+    recorder = undefined;
+  }
+  if (upstream) {
+    await new Promise<void>((resolve) => upstream!.server.close(() => resolve()));
+    upstream = undefined;
+  }
+
   // Create upstream "real API" server
   upstream = await createServer(upstreamFixtures, { port: 0 });
 
@@ -3956,7 +4057,7 @@ async function setupUpstreamAndRecorder(
 
 describe("makeUpstreamRequest body timeout", () => {
   let fastRawServer: http.Server | undefined;
-  let setTimeoutSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let setTimeoutSpy: MockInstance | undefined;
 
   afterEach(async () => {
     setTimeoutSpy?.mockRestore();
