@@ -162,7 +162,7 @@ export async function proxyAndRecord(
   let streamedToClient = false;
   let clientDisconnected = false;
   try {
-    const result = await makeUpstreamRequest(target, forwardHeaders, requestBody, res);
+    const result = await makeUpstreamRequest(target, forwardHeaders, requestBody, res, req.method);
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
     upstreamBody = result.body;
@@ -482,6 +482,7 @@ function makeUpstreamRequest(
   headers: Record<string, string>,
   body: string,
   clientRes?: http.ServerResponse,
+  method: string = "POST",
 ): Promise<{
   status: number;
   headers: http.IncomingHttpHeaders;
@@ -497,7 +498,7 @@ function makeUpstreamRequest(
     const req = transport.request(
       target,
       {
-        method: "POST",
+        method,
         timeout: UPSTREAM_TIMEOUT_MS,
         headers: {
           ...headers,
@@ -540,10 +541,14 @@ function makeUpstreamRequest(
           // before the first data chunk arrives.
           if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
           streamedToClient = true;
-          // Stop relaying if the client disconnects mid-stream
+          // Stop relaying if the client disconnects mid-stream.
+          // Check writableFinished to distinguish normal completion (where
+          // "close" also fires) from premature client disconnects.
           clientRes.on("close", () => {
-            clientDisconnected = true;
-            req.destroy();
+            if (!clientRes.writableFinished) {
+              clientDisconnected = true;
+              req.destroy();
+            }
           });
         }
         const chunks: Buffer[] = [];
@@ -561,6 +566,7 @@ function makeUpstreamRequest(
         });
         res.on("error", reject);
         res.on("end", () => {
+          res.setTimeout(0);
           const rawBuffer = Buffer.concat(chunks);
           if (
             streamedToClient &&
