@@ -382,6 +382,8 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;
+    /** When the X-AIMock-Strict header overrode the server default. */
+    strictOverride?: boolean;
   };
 }
 

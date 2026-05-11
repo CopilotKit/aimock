@@ -6,6 +6,7 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -106,8 +107,9 @@ export async function handleTranscription(
       }
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
     journal.add({

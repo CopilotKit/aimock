@@ -15,6 +15,7 @@ import {
   isToolCallResponse,
   isErrorResponse,
   resolveResponse,
+  resolveStrictMode,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
@@ -144,6 +145,7 @@ export function handleWebSocketRealtime(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): void {
   const { logger } = defaults;
@@ -210,6 +212,7 @@ async function processMessage(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
@@ -306,6 +309,7 @@ async function handleResponseCreate(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
@@ -332,7 +336,7 @@ async function handleResponseCreate(
   }
 
   if (!fixture) {
-    if (defaults.strict) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
       ws.close(1008, "Strict mode: no fixture matched");
       return;

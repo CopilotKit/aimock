@@ -28,6 +28,7 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -726,11 +727,12 @@ export async function handleGeminiInteractions(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const strictStatus = effectiveStrict ? 503 : 404;
+    const strictMessage = effectiveStrict
       ? "Strict mode: no fixture matched"
       : "No fixture matched";
-    if (defaults.strict) {
+    if (effectiveStrict) {
       logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
     }
     journal.add({
@@ -746,7 +748,7 @@ export async function handleGeminiInteractions(
       JSON.stringify(
         buildInteractionsErrorResponse(
           strictMessage,
-          defaults.strict ? "UNAVAILABLE" : "NOT_FOUND",
+          effectiveStrict ? "UNAVAILABLE" : "NOT_FOUND",
         ),
       ),
     );
