@@ -4,22 +4,18 @@ on:
     branches: [main]
   workflow_dispatch:
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
-    environment: npm
     permissions:
-      contents: write
-      id-token: write
-      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@v4
+      # No cache — release builds must be hermetic
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-          registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
 
       - name: Check if version is already published
@@ -54,30 +50,64 @@ jobs:
         if: steps.check.outputs.published == 'false'
         run: sed -i '/^https:\/\/github.com\/user-attachments\//d' README.md
 
-      - name: Build and publish
+      - name: Build
         if: steps.check.outputs.published == 'false'
-        run: pnpm build && npm publish --access public
+        run: pnpm build
+
+      - name: Upload workspace
+        if: steps.check.outputs.published == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace
+          path: .
+          include-hidden-files: true
+          retention-days: 1
+
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      published: ${{ steps.check.outputs.published }}
+
+  publish:
+    needs: build
+    if: needs.build.outputs.published == 'false'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    steps:
+      - name: Download workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: workspace
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        run: npm publish --access public
 
       - name: Ensure git tag exists
-        if: steps.check.outputs.published == 'false'
         run: |
-          TAG="v${{ steps.check.outputs.version }}"
+          TAG="v${{ needs.build.outputs.version }}"
           if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
             git tag "${TAG}"
             git push origin "${TAG}"
           fi
 
       - name: Update major version tag for GitHub Action
-        if: steps.check.outputs.published == 'false'
         run: |
-          MAJOR="v$(echo "${{ steps.check.outputs.version }}" | cut -d. -f1)"
+          MAJOR="v$(echo "${{ needs.build.outputs.version }}" | cut -d. -f1)"
           git tag -f "${MAJOR}"
           git push origin "${MAJOR}" --force
 
       - name: Create GitHub Release
-        if: steps.check.outputs.published == 'false'
         run: |
-          TAG="v${{ steps.check.outputs.version }}"
+          TAG="v${{ needs.build.outputs.version }}"
           gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag --latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -86,20 +116,18 @@ jobs:
         # GitHub's anti-recursion rule: tags pushed by GITHUB_TOKEN do NOT
         # trigger downstream workflows. Explicitly dispatch publish-docker.yml
         # so the GHCR image actually gets built on every release.
-        if: steps.check.outputs.published == 'false'
         run: |
-          TAG="v${{ steps.check.outputs.version }}"
+          TAG="v${{ needs.build.outputs.version }}"
           gh workflow run publish-docker.yml --ref "${TAG}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Slack
-        if: steps.check.outputs.published == 'false'
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          VERSION="v${{ steps.check.outputs.version }}"
+          VERSION="v${{ needs.build.outputs.version }}"
           curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "{\"text\":\"📦 *@copilotkit/aimock ${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${{ steps.check.outputs.version }}\nRelease: https://github.com/${{ github.repository }}/releases/tag/${VERSION}\"}"
+            -d "{\"text\":\"📦 *@copilotkit/aimock ${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${{ needs.build.outputs.version }}\nRelease: https://github.com/${{ github.repository }}/releases/tag/${VERSION}\"}"
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
