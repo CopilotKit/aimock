@@ -624,10 +624,48 @@ describe("matchFixture — model (string)", () => {
     expect(matchFixture([fixture], req)).toBe(fixture);
   });
 
-  it("does not match when the model string differs", () => {
+  it("matches when the request model starts with the fixture model", () => {
     const fixture = makeFixture({ model: "gpt-4o" });
     const req = makeReq({ model: "gpt-4o-mini" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when the request model does not start with the fixture model", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: "gpt-3.5-turbo" });
     expect(matchFixture([fixture], req)).toBeNull();
+  });
+});
+
+describe("matchFixture — model (startsWith)", () => {
+  it("matches when request model starts with fixture model", () => {
+    const fixture = makeFixture({ model: "claude-opus-4" });
+    const req = makeReq({ model: "claude-opus-4-20250514" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("matches exact model strings", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: "gpt-4o" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when models diverge", () => {
+    const fixture = makeFixture({ model: "claude-opus-4" });
+    const req = makeReq({ model: "claude-haiku-4" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when fixture model is longer than request model", () => {
+    const fixture = makeFixture({ model: "claude-opus-4-20250514" });
+    const req = makeReq({ model: "claude-opus-4" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("still supports regexp model matching", () => {
+    const fixture = makeFixture({ model: /^claude-opus/ });
+    const req = makeReq({ model: "claude-opus-4-20250514" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
   });
 });
 

@@ -1428,19 +1428,16 @@ describe("json_schema with schema in request", () => {
 describe("responseFormat + model + userMessage combined matching", () => {
   let srv: ServerInstance;
 
-  const COMBO_A: Fixture = {
-    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_object" },
-    response: { content: "combo-A" },
-  };
-
+  // Ordered most-specific model first: "gpt-4o" before "gpt-4" so the
+  // startsWith prefix match does not shadow longer model strings.
   const COMBO_B: Fixture = {
     match: { userMessage: "combo", model: "gpt-4o", responseFormat: "json_object" },
     response: { content: "combo-B" },
   };
 
-  const COMBO_C: Fixture = {
-    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_schema" },
-    response: { content: "combo-C" },
+  const COMBO_A: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_object" },
+    response: { content: "combo-A" },
   };
 
   const COMBO_D: Fixture = {
@@ -1448,8 +1445,13 @@ describe("responseFormat + model + userMessage combined matching", () => {
     response: { content: "combo-D" },
   };
 
+  const COMBO_C: Fixture = {
+    match: { userMessage: "combo", model: "gpt-4", responseFormat: "json_schema" },
+    response: { content: "combo-C" },
+  };
+
   beforeAll(async () => {
-    srv = await createServer([COMBO_A, COMBO_B, COMBO_C, COMBO_D], { port: 0 });
+    srv = await createServer([COMBO_B, COMBO_A, COMBO_D, COMBO_C], { port: 0 });
   });
 
   afterAll(async () => {

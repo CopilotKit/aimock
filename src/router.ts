@@ -199,13 +199,14 @@ export function matchFixture(
       if (reqType !== match.responseFormat) continue;
     }
 
-    // model — exact string or regexp
+    // model — startsWith for strings (recorded models are normalized
+    // prefixes that survive provider version bumps), regexp unchanged
     if (match.model !== undefined) {
       if (typeof match.model === "string") {
-        if (effective.model !== match.model) continue;
+        if (!effective.model?.startsWith(match.model)) continue;
       } else {
         match.model.lastIndex = 0;
-        if (!match.model.test(effective.model)) continue;
+        if (!match.model.test(effective.model ?? "")) continue;
       }
     }
 
