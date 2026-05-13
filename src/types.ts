@@ -268,6 +268,10 @@ export interface Fixture {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 export type FixtureOpts = Omit<Fixture, "match" | "response">;
@@ -359,6 +363,10 @@ export interface FixtureFileEntry {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 // Request journal

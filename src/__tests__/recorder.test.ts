@@ -4618,3 +4618,153 @@ describe("recorder Bedrock binary event stream progressive streaming", () => {
     expect(clientCT.toLowerCase()).toContain("application/vnd.amazon.eventstream");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fixture metadata recording (systemHash / toolsHash)
+// ---------------------------------------------------------------------------
+
+describe("fixture metadata recording", () => {
+  let metaUpstream: ServerInstance | undefined;
+  let metaRecorder: ServerInstance | undefined;
+  let metaTmpDir: string | undefined;
+
+  afterEach(async () => {
+    if (metaRecorder) {
+      await new Promise<void>((resolve) => metaRecorder!.server.close(() => resolve()));
+      metaRecorder = undefined;
+    }
+    if (metaUpstream) {
+      await new Promise<void>((resolve) => metaUpstream!.server.close(() => resolve()));
+      metaUpstream = undefined;
+    }
+    if (metaTmpDir) {
+      fs.rmSync(metaTmpDir, { recursive: true, force: true });
+      metaTmpDir = undefined;
+    }
+  });
+
+  async function setupMetaRecorder(): Promise<{ recorderUrl: string; fixturePath: string }> {
+    metaUpstream = await createServer(
+      [
+        {
+          match: { userMessage: "test metadata sys" },
+          response: { content: "ok sys" },
+        },
+        {
+          match: { userMessage: "test metadata tools" },
+          response: { content: "ok tools" },
+        },
+        {
+          match: { userMessage: "test no metadata" },
+          response: { content: "ok none" },
+        },
+        {
+          match: { userMessage: "first hash probe" },
+          response: { content: "ok diff" },
+        },
+        {
+          match: { userMessage: "second hash probe" },
+          response: { content: "ok diff two" },
+        },
+      ],
+      { port: 0 },
+    );
+    metaTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-meta-"));
+    metaRecorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: metaUpstream.url },
+        fixturePath: metaTmpDir,
+      },
+    });
+    return { recorderUrl: metaRecorder.url, fixturePath: metaTmpDir };
+  }
+
+  it("records systemHash when system message present", async () => {
+    const { recorderUrl, fixturePath } = await setupMetaRecorder();
+
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: "test metadata sys" },
+      ],
+    });
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    const fixture = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    expect(fixture.fixtures[0].metadata).toBeDefined();
+    expect(fixture.fixtures[0].metadata!.systemHash).toMatch(/^[a-f0-9]{8}$/);
+    expect(fixture.fixtures[0].metadata!.toolsHash).toBeUndefined();
+  });
+
+  it("records toolsHash when tools present", async () => {
+    const { recorderUrl, fixturePath } = await setupMetaRecorder();
+
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "test metadata tools" }],
+      tools: [{ type: "function", function: { name: "get_weather", parameters: {} } }],
+    });
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    const fixture = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    expect(fixture.fixtures[0].metadata).toBeDefined();
+    expect(fixture.fixtures[0].metadata!.toolsHash).toMatch(/^[a-f0-9]{8}$/);
+  });
+
+  it("omits metadata when no system message or tools", async () => {
+    const { recorderUrl, fixturePath } = await setupMetaRecorder();
+
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "test no metadata" }],
+    });
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    const fixture = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    expect(fixture.fixtures[0].metadata).toBeUndefined();
+  });
+
+  it("produces different systemHash for different system prompts", async () => {
+    const { recorderUrl, fixturePath } = await setupMetaRecorder();
+
+    // Use different user messages so the second request also proxies to upstream
+    // (same userMessage would match the first recorded fixture in memory).
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "Generate a title." },
+        { role: "user", content: "first hash probe" },
+      ],
+    });
+
+    await post(`${recorderUrl}/v1/chat/completions`, {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "Generate suggestions." },
+        { role: "user", content: "second hash probe" },
+      ],
+    });
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(2);
+    const fixtures = files.map(
+      (f) => JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8")) as FixtureFile,
+    );
+    const hash1 = fixtures[0].fixtures[0].metadata?.systemHash;
+    const hash2 = fixtures[1].fixtures[0].metadata?.systemHash;
+    expect(hash1).toBeDefined();
+    expect(hash2).toBeDefined();
+    expect(hash1).not.toBe(hash2);
+  });
+});

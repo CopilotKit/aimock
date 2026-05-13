@@ -334,10 +334,14 @@ export async function proxyAndRecord(
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
   const fixtureMatch = buildFixtureMatch(matchRequest);
 
+  // Build metadata (drift-detection hashes, not match criteria)
+  const metadata = buildFixtureMetadata(request);
+
   // Build and save the fixture
   const fixture: Fixture = {
     match: fixtureMatch,
     response: fixtureResponse,
+    ...(metadata && { metadata }),
   };
 
   // Check if the match is empty — warn but still save to disk.
@@ -1213,4 +1217,34 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
   }
 
   return match;
+}
+
+/**
+ * Build optional metadata for drift detection. Contains 8-char SHA-256
+ * hashes of the system prompt and tool definitions present in the request.
+ * Returns undefined when neither is present.
+ */
+function buildFixtureMetadata(
+  request: ChatCompletionRequest,
+): { systemHash?: string; toolsHash?: string } | undefined {
+  const meta: { systemHash?: string; toolsHash?: string } = {};
+
+  const messages = request.messages ?? [];
+  const systemTexts = messages
+    .filter((m) => m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+    .join("\n");
+  if (systemTexts) {
+    meta.systemHash = crypto.createHash("sha256").update(systemTexts).digest("hex").slice(0, 8);
+  }
+
+  if (request.tools && request.tools.length > 0) {
+    meta.toolsHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(request.tools))
+      .digest("hex")
+      .slice(0, 8);
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }
