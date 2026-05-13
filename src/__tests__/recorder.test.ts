@@ -4618,3 +4618,91 @@ describe("recorder Bedrock binary event stream progressive streaming", () => {
     expect(clientCT.toLowerCase()).toContain("application/vnd.amazon.eventstream");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Multi-call fixture collision (issue #185)
+// ---------------------------------------------------------------------------
+
+describe("multi-call fixture disambiguation (issue #185)", () => {
+  it("records distinct fixtures for same userMessage with different models", async () => {
+    // Upstream that responds to everything
+    const upstreamServer = await createServer(
+      [
+        {
+          match: { userMessage: "help me plan a trip" },
+          response: { content: "Here is your trip plan." },
+        },
+      ],
+      { port: 0 },
+    );
+
+    const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-multicall-"));
+    const recorderServer = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: upstreamServer.url },
+        fixturePath,
+      },
+    });
+
+    const url = `${recorderServer.url}/v1/chat/completions`;
+
+    // Call 1: opus + tools (assistant chat)
+    await post(url, {
+      model: "claude-opus-4-20250514",
+      messages: [{ role: "user", content: "help me plan a trip" }],
+      tools: [{ type: "function", function: { name: "search", parameters: {} } }],
+    });
+
+    // Call 2: haiku (title generation)
+    await post(url, {
+      model: "claude-3-5-haiku-20241022",
+      messages: [
+        { role: "system", content: "Generate a short title." },
+        { role: "user", content: "help me plan a trip" },
+      ],
+    });
+
+    // Call 3: haiku (suggestion generation)
+    await post(url, {
+      model: "claude-3-5-haiku-20241022",
+      messages: [
+        { role: "system", content: "Generate travel suggestions." },
+        { role: "user", content: "help me plan a trip" },
+      ],
+    });
+
+    // All three should produce separate fixture files
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(3);
+
+    const fixtures = files.map((f) => {
+      const data: FixtureFile = JSON.parse(fs.readFileSync(path.join(fixturePath, f), "utf-8"));
+      return data.fixtures[0];
+    });
+
+    // All share userMessage
+    expect(fixtures.every((f) => f.match.userMessage === "help me plan a trip")).toBe(true);
+
+    // Models are recorded and normalized (date stripped)
+    const models = fixtures.map((f) => f.match.model);
+    expect(models).toContain("claude-opus-4");
+    expect(models.filter((m) => m === "claude-3-5-haiku").length).toBe(2);
+
+    // The two haiku fixtures have different systemHash metadata
+    const haikuFixtures = fixtures.filter((f) => f.match.model === "claude-3-5-haiku");
+    const hashes = haikuFixtures.map((f) => (f as Record<string, unknown>).metadata);
+    expect(hashes[0]).toBeDefined();
+    expect(hashes[1]).toBeDefined();
+    const hash0 = (hashes[0] as Record<string, unknown>)?.systemHash;
+    const hash1 = (hashes[1] as Record<string, unknown>)?.systemHash;
+    expect(hash0).toBeDefined();
+    expect(hash1).toBeDefined();
+    expect(hash0).not.toBe(hash1);
+
+    // Cleanup
+    await new Promise<void>((resolve) => recorderServer.server.close(() => resolve()));
+    await new Promise<void>((resolve) => upstreamServer.server.close(() => resolve()));
+    fs.rmSync(fixturePath, { recursive: true });
+  });
+});
