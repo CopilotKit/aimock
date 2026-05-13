@@ -26,6 +26,7 @@ Options:
       --validate-on-load    Validate fixture schemas at startup
       --metrics             Enable Prometheus metrics at GET /metrics
       --record              Record mode: proxy unmatched requests and save fixtures
+      --record-full-model-version  Record exact model version without date stripping (default: false)
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
@@ -59,6 +60,7 @@ const { values } = parseArgs({
     "validate-on-load": { type: "boolean", default: false },
     metrics: { type: "boolean", default: false },
     record: { type: "boolean", default: false },
+    "record-full-model-version": { type: "boolean", default: false },
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "provider-openai": { type: "string" },
@@ -212,6 +214,7 @@ if (values.record || values["proxy-only"]) {
     // rather than resolving a URL string as a filesystem path.
     fixturePath: recordBaseIsUrl ? undefined : resolve(recordBase, "recorded"),
     proxyOnly: values["proxy-only"],
+    recordFullModelVersion: values["record-full-model-version"],
   };
 }
 
