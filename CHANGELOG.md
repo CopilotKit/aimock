@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Helper utilities and error serialization** — hardened helper functions and error serialization paths for correctness and robustness
+- **Journal and fixture-loader correctness** — fixed journal entry handling and fixture-loader edge cases
+- **WebSocket handler consistency and strict-mode journal** — aligned WebSocket handler behavior and ensured strict-mode journal entries are recorded correctly
+- **Provider handler consistency and proxy outcomes** — unified provider handler error paths and proxy outcome reporting
+- **Media handler hardening and chaos injection** — strengthened media handler validation and chaos injection reliability
+
+### Tests
+
+- **Bedrock mock consistency and CLI help text** — corrected Bedrock mock test assertions and CLI `--help` output coverage
+
 ## [1.22.0] - 2026-05-11
 
 ### Added
