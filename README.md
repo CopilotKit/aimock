@@ -1,6 +1,6 @@
 # aimock [![Unit Tests](https://github.com/CopilotKit/aimock/actions/workflows/test-unit.yml/badge.svg)](https://github.com/CopilotKit/aimock/actions/workflows/test-unit.yml) [![Drift Tests](https://github.com/CopilotKit/aimock/actions/workflows/test-drift.yml/badge.svg)](https://github.com/CopilotKit/aimock/actions/workflows/test-drift.yml) [![npm version](https://img.shields.io/npm/v/@copilotkit/aimock)](https://www.npmjs.com/package/@copilotkit/aimock)
 
-https://github.com/user-attachments/assets/646bf106-0320-41f2-a9b1-5090454830f3
+https://github.com/user-attachments/assets/76815122-574a-48e1-b275-edae0a014667
 
 Mock infrastructure for AI application testing — LLM APIs, image generation, text-to-speech, transcription, audio generation, video generation, MCP tools, A2A agents, AG-UI event streams, vector databases, search, rerank, and moderation. One package, one port, zero dependencies.
 
