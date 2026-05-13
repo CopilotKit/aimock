@@ -7,6 +7,20 @@
 - **Model-aware fixture recording** — recorded fixtures now include the model name in match criteria, preventing collisions when an app makes multiple LLM calls with the same user message but different models. Model names are normalized by stripping date/version suffixes (e.g., `claude-opus-4-20250514` → `claude-opus-4`) so fixtures survive version bumps. Disable with `recordFullModelVersion: true`. ([#185](https://github.com/CopilotKit/aimock/issues/185))
 - **Drift detection metadata** — recorded fixtures include `systemHash` and `toolsHash` in a `metadata` block for detecting system prompt or tool definition changes since recording.
 - **Prefix model matching** — fixture router uses `startsWith` for string model matching, so `model: "claude-opus-4"` matches any `claude-opus-4-*` version.
+- **GA Realtime protocol migration with Beta compatibility shim** — handler emits GA event names natively; `sendEvent()` wrapper translates back for Beta clients detected via `OpenAI-Beta` header. Default model changed to `gpt-realtime-2`.
+- **5 new GA Realtime models** — `gpt-realtime-2`, `gpt-realtime-1.5`, `gpt-realtime-mini`, `gpt-realtime-translate`, `gpt-realtime-whisper`.
+- **Translate and whisper session types** — dedicated session configurations for translation and transcription workloads on the Realtime API.
+- **Image input support** — Realtime sessions accept image content parts alongside text and audio.
+- **Commentary phase** — Realtime handler supports the GA commentary phase for model-generated annotations.
+- **`conversation.item.done` and `response.cancel` events** — new GA Realtime event types for item completion tracking and response cancellation.
+- **Endpoint type routing for Realtime** — router distinguishes GA vs Beta Realtime endpoints for fixture matching.
+- **Drift detection for GA Realtime** — drift test suite extended with GA protocol shapes, Beta conformance shapes, and three-way triangulation.
+
+### Tests
+
+- **73 GA Realtime integration tests** — comprehensive test coverage for all GA event types, Beta compatibility, session management, model routing, image input, translate/whisper, commentary, and cancellation.
+- **GA and Beta Realtime conformance suites** — API conformance tests validating event shapes against both GA and Beta protocol specs.
+- **GA Realtime drift detection** — SDK shape tests and provider triangulation for the GA Realtime protocol.
 
 ## [1.22.1] - 2026-05-12
 

@@ -37,7 +37,7 @@ interface RealtimeItem {
   type: "message" | "function_call" | "function_call_output";
   id?: string;
   role?: "user" | "assistant" | "system";
-  content?: Array<{ type: string; text?: string }>;
+  content?: Array<{ type: string; text?: string; url?: string; transcript?: string | null }>;
   name?: string;
   call_id?: string;
   arguments?: string;
@@ -52,8 +52,12 @@ interface SessionConfig {
   voice: string | null;
   input_audio_format: string | null;
   output_audio_format: string | null;
+  input_audio_noise_reduction: { type: string } | null;
+  input_audio_transcription: { model: string } | null;
   turn_detection: unknown | null;
   temperature: number;
+  type: "conversation" | "transcription" | "translation";
+  reasoning: { effort: string } | null;
 }
 
 interface RealtimeMessage {
@@ -83,10 +87,38 @@ export function realtimeItemsToMessages(
 
   for (const item of items) {
     if (item.type === "message") {
-      const text = item.content?.[0]?.text ?? "";
       const role =
         item.role === "assistant" ? "assistant" : item.role === "system" ? "system" : "user";
-      messages.push({ role, content: text });
+
+      // Check if content contains multimodal input types (input_text, input_image, input_audio)
+      const hasMultimodal = item.content?.some(
+        (p) => p.type === "input_text" || p.type === "input_image" || p.type === "input_audio",
+      );
+
+      if (hasMultimodal && item.content) {
+        // Map realtime input content types to ChatMessage content parts
+        const mappedContent = item.content.map((part) => {
+          if (part.type === "input_text") {
+            return { type: "text" as const, text: part.text ?? "" };
+          }
+          if (part.type === "input_image") {
+            return {
+              type: "image_url" as const,
+              image_url: { url: part.url ?? "" },
+            };
+          }
+          if (part.type === "input_audio") {
+            return { type: "text" as const, text: "[audio input]" };
+          }
+          // Pass through unknown content types as-is
+          return part;
+        });
+        messages.push({ role, content: mappedContent });
+      } else {
+        // Existing behavior: extract text from first content element
+        const text = item.content?.[0]?.text ?? "";
+        messages.push({ role, content: text });
+      }
     } else if (item.type === "function_call") {
       if (!item.name) {
         logger?.warn("Realtime function_call item missing 'name'");
@@ -120,18 +152,136 @@ export function realtimeItemsToMessages(
   return messages;
 }
 
-// ─── Event builders ─────────────────────────────────────────────────────────
+// ─── GA -> Beta translation ─────────────────────────────────────────────────
 
-function evt(type: string, extra: Record<string, unknown> = {}): string {
-  return JSON.stringify({ type, event_id: realtimeId("event"), ...extra });
+/** GA -> Beta event name mapping */
+const GA_TO_BETA_EVENT: Record<string, string> = {
+  "response.output_text.delta": "response.text.delta",
+  "response.output_text.done": "response.text.done",
+  "response.output_audio.delta": "response.audio.delta",
+  "response.output_audio.done": "response.audio.done",
+  "response.output_audio_transcript.delta": "response.audio_transcript.delta",
+  "response.output_audio_transcript.done": "response.audio_transcript.done",
+  "conversation.item.added": "conversation.item.created",
+};
+
+/** GA -> Beta content type mapping */
+const GA_TO_BETA_CONTENT_TYPE: Record<string, string> = {
+  output_text: "text",
+  output_audio: "audio",
+};
+
+/** Events suppressed in Beta mode (GA-only events) */
+const BETA_SUPPRESSED_EVENTS = new Set(["conversation.item.done"]);
+
+function translateGAToBeta(event: Record<string, unknown>): Record<string, unknown> | null {
+  const type = event.type as string;
+  if (BETA_SUPPRESSED_EVENTS.has(type)) return null;
+
+  const translated = { ...event };
+  if (GA_TO_BETA_EVENT[type]) {
+    translated.type = GA_TO_BETA_EVENT[type];
+  }
+
+  // Translate content types in nested structures
+  if (translated.part && typeof translated.part === "object") {
+    const part = { ...(translated.part as Record<string, unknown>) };
+    if (typeof part.type === "string" && GA_TO_BETA_CONTENT_TYPE[part.type]) {
+      part.type = GA_TO_BETA_CONTENT_TYPE[part.type];
+    }
+    translated.part = part;
+  }
+  if (translated.content_part && typeof translated.content_part === "object") {
+    const cp = { ...(translated.content_part as Record<string, unknown>) };
+    if (typeof cp.type === "string" && GA_TO_BETA_CONTENT_TYPE[cp.type]) {
+      cp.type = GA_TO_BETA_CONTENT_TYPE[cp.type];
+    }
+    translated.content_part = cp;
+  }
+  // Translate content arrays
+  if (Array.isArray(translated.content)) {
+    translated.content = (translated.content as Record<string, unknown>[]).map((c) => {
+      if (typeof c.type === "string" && GA_TO_BETA_CONTENT_TYPE[c.type]) {
+        return { ...c, type: GA_TO_BETA_CONTENT_TYPE[c.type] };
+      }
+      return c;
+    });
+  }
+  // Translate item.content arrays (response.output_item.added/done, conversation.item.added)
+  if (translated.item && typeof translated.item === "object") {
+    const item = { ...(translated.item as Record<string, unknown>) };
+    delete item.phase; // GA-only field
+    if (Array.isArray(item.content)) {
+      item.content = (item.content as Record<string, unknown>[]).map((c) => {
+        if (typeof c.type === "string" && GA_TO_BETA_CONTENT_TYPE[c.type]) {
+          return { ...c, type: GA_TO_BETA_CONTENT_TYPE[c.type] };
+        }
+        return c;
+      });
+    }
+    translated.item = item;
+  }
+  // Translate response.output[].content arrays (response.done)
+  if (translated.response && typeof translated.response === "object") {
+    const resp = { ...(translated.response as Record<string, unknown>) };
+    if (Array.isArray(resp.output)) {
+      resp.output = (resp.output as Record<string, unknown>[]).map((outItem) => {
+        const o = { ...(outItem as Record<string, unknown>) };
+        if (Array.isArray(o.content)) {
+          o.content = (o.content as Record<string, unknown>[]).map((c) =>
+            typeof c.type === "string" && GA_TO_BETA_CONTENT_TYPE[c.type]
+              ? { ...c, type: GA_TO_BETA_CONTENT_TYPE[c.type] }
+              : c,
+          );
+        }
+        return o;
+      });
+    }
+    translated.response = resp;
+  }
+
+  // Flatten GA session config for Beta (session.created / session.updated)
+  if (type === "session.created" || type === "session.updated") {
+    if (translated.session && typeof translated.session === "object") {
+      const session = { ...(translated.session as Record<string, unknown>) };
+      if (session.audio && typeof session.audio === "object") {
+        const audio = session.audio as Record<string, unknown>;
+        session.voice = audio.voice;
+        session.input_audio_format = audio.input_audio_format;
+        session.output_audio_format = audio.output_audio_format;
+        session.input_audio_transcription = audio.input_audio_transcription;
+        delete session.audio;
+      }
+      delete session.type;
+      delete session.reasoning;
+      translated.session = session;
+    }
+  }
+
+  return translated;
+}
+
+// ─── Event sending ──────────────────────────────────────────────────────────
+
+function sendEvent(ws: WebSocketConnection, event: Record<string, unknown>, isBeta: boolean): void {
+  const out = { ...event, event_id: event.event_id ?? realtimeId("event") };
+  if (isBeta) {
+    const translated = translateGAToBeta(out);
+    if (translated === null) return; // suppressed in Beta mode
+    ws.send(JSON.stringify(translated));
+  } else {
+    ws.send(JSON.stringify(out));
+  }
 }
 
 function buildErrorRealtimeEvent(
+  ws: WebSocketConnection,
   message: string,
+  isBeta: boolean,
   type = "invalid_request_error",
   code?: string,
-): string {
-  return evt("error", { error: { message, type, code } });
+): void {
+  sendEvent(ws, { type: "error", error: { message, type, code } }, isBeta);
 }
 
 // ─── Main handler ───────────────────────────────────────────────────────────
@@ -154,6 +304,10 @@ export function handleWebSocketRealtime(
   const { logger } = defaults;
   const sessionId = realtimeId("sess");
 
+  const isBeta = defaults.upgradeHeaders?.["openai-beta"]
+    ? String(defaults.upgradeHeaders["openai-beta"]).includes("realtime=v1")
+    : false;
+
   const session: SessionConfig = {
     model: defaults.model,
     modalities: ["text"],
@@ -162,44 +316,71 @@ export function handleWebSocketRealtime(
     voice: null,
     input_audio_format: null,
     output_audio_format: null,
+    input_audio_noise_reduction: null,
+    input_audio_transcription: null,
     turn_detection: null,
     temperature: 0.8,
+    type: "conversation",
+    reasoning: null,
   };
 
   const conversationItems: RealtimeItem[] = [];
 
-  // Send session.created immediately on connect
-  ws.send(
-    evt("session.created", {
+  // Send session.created immediately on connect (GA format — shim flattens for Beta)
+  sendEvent(
+    ws,
+    {
+      type: "session.created",
       session: {
         id: sessionId,
         object: "realtime.session",
-        ...session,
+        model: session.model,
         expires_at: Math.floor(Date.now() / 1000) + 3600,
-        max_response_output_tokens: "inf",
-        input_audio_transcription: null,
+        modalities: session.modalities,
+        instructions: session.instructions,
+        tools: session.tools,
         tool_choice: "auto",
+        temperature: session.temperature,
+        max_response_output_tokens: "inf",
+        audio: {
+          voice: session.voice,
+          input_audio_format: session.input_audio_format,
+          output_audio_format: session.output_audio_format,
+          input_audio_noise_reduction: session.input_audio_noise_reduction,
+          input_audio_transcription: session.input_audio_transcription,
+        },
+        turn_detection: session.turn_detection,
+        type: session.type,
+        reasoning: session.reasoning,
       },
-    }),
+    },
+    isBeta,
   );
 
   // Serialize message processing to prevent event interleaving
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
     pending = pending.then(() =>
-      processMessage(raw, ws, fixtures, journal, defaults, session, conversationItems).catch(
-        (err: unknown) => {
-          const msg = err instanceof Error ? err.message : "Internal error";
-          logger.error(`WebSocket realtime error: ${msg}`);
-          try {
-            ws.send(buildErrorRealtimeEvent(msg, "server_error"));
-          } catch (sendErr) {
-            defaults.logger.debug(
-              `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
-            );
-          }
-        },
-      ),
+      processMessage(
+        raw,
+        ws,
+        fixtures,
+        journal,
+        defaults,
+        session,
+        conversationItems,
+        isBeta,
+      ).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        logger.error(`WebSocket realtime error: ${msg}`);
+        try {
+          buildErrorRealtimeEvent(ws, msg, isBeta, "server_error");
+        } catch (sendErr) {
+          defaults.logger.debug(
+            `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
+          );
+        }
+      }),
     );
   });
 }
@@ -221,14 +402,19 @@ async function processMessage(
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
+  isBeta: boolean,
 ): Promise<void> {
   let parsed: RealtimeMessage;
   try {
     parsed = JSON.parse(raw) as RealtimeMessage;
   } catch (parseErr) {
     const detail = parseErr instanceof Error ? parseErr.message : "unknown";
-    ws.send(
-      buildErrorRealtimeEvent(`Malformed JSON: ${detail}`, "invalid_request_error", "invalid_json"),
+    buildErrorRealtimeEvent(
+      ws,
+      `Malformed JSON: ${detail}`,
+      isBeta,
+      "invalid_request_error",
+      "invalid_json",
     );
     return;
   }
@@ -238,33 +424,133 @@ async function processMessage(
   // ── session.update ────────────────────────────────────────────────────
   if (msgType === "session.update") {
     if (parsed.session) {
-      if (parsed.session.instructions !== undefined) {
-        session.instructions = parsed.session.instructions;
+      const s = parsed.session;
+
+      // Validate session.type value before applying any mutations
+      const validTypes = new Set(["conversation", "transcription", "translation"]);
+      if ((s as Record<string, unknown>).type !== undefined) {
+        if (!validTypes.has((s as Record<string, unknown>).type as string)) {
+          sendEvent(
+            ws,
+            {
+              type: "error",
+              error: {
+                message: `Invalid session type: ${(s as Record<string, unknown>).type}`,
+                type: "invalid_request_error",
+                code: "invalid_session_config",
+              },
+            },
+            isBeta,
+          );
+          return;
+        }
       }
-      if (parsed.session.tools !== undefined) {
-        session.tools = parsed.session.tools;
+
+      // Capture pre-mutation values for rollback on validation failure
+      const prevModel = session.model;
+      const prevType = session.type;
+
+      if (s.instructions !== undefined) session.instructions = s.instructions;
+      if (s.tools !== undefined) session.tools = s.tools;
+      if (s.modalities !== undefined) session.modalities = s.modalities;
+      if (s.model !== undefined) session.model = s.model;
+      if (s.temperature !== undefined) session.temperature = s.temperature;
+      if ((s as Record<string, unknown>).type !== undefined)
+        session.type = (s as Record<string, unknown>).type as SessionConfig["type"];
+      // GA nested audio config
+      if ((s as Record<string, unknown>).audio) {
+        const audio = (s as Record<string, unknown>).audio as Record<string, unknown>;
+        if (audio.voice !== undefined) session.voice = audio.voice as string | null;
+        if (audio.input_audio_format !== undefined)
+          session.input_audio_format = audio.input_audio_format as string | null;
+        if (audio.output_audio_format !== undefined)
+          session.output_audio_format = audio.output_audio_format as string | null;
+        if (audio.input_audio_noise_reduction !== undefined)
+          session.input_audio_noise_reduction = audio.input_audio_noise_reduction as {
+            type: string;
+          } | null;
+        if (audio.input_audio_transcription !== undefined)
+          session.input_audio_transcription = audio.input_audio_transcription as {
+            model: string;
+          } | null;
       }
-      if (parsed.session.modalities !== undefined) {
-        session.modalities = parsed.session.modalities;
+      // Beta flat fields (backward compat)
+      if (s.voice !== undefined) session.voice = s.voice;
+      if (s.input_audio_format !== undefined) session.input_audio_format = s.input_audio_format;
+      if (s.output_audio_format !== undefined) session.output_audio_format = s.output_audio_format;
+      // reasoning config
+      if ((s as Record<string, unknown>).reasoning !== undefined)
+        session.reasoning = (s as Record<string, unknown>).reasoning as {
+          effort: string;
+        } | null;
+
+      // Validate model+type combinations (rollback on failure)
+      const transcriptionModels = new Set(["gpt-realtime-whisper"]);
+      const translationModels = new Set(["gpt-realtime-translate"]);
+
+      if (session.type === "transcription" && !transcriptionModels.has(session.model)) {
+        session.model = prevModel;
+        session.type = prevType;
+        sendEvent(
+          ws,
+          {
+            type: "error",
+            error: {
+              message: `Model ${s.model ?? prevModel} does not support session type transcription`,
+              type: "invalid_request_error",
+              code: "invalid_session_config",
+            },
+          },
+          isBeta,
+        );
+        return;
       }
-      if (parsed.session.model !== undefined) {
-        session.model = parsed.session.model;
-      }
-      if (parsed.session.temperature !== undefined) {
-        session.temperature = parsed.session.temperature;
+      if (session.type === "translation" && !translationModels.has(session.model)) {
+        session.model = prevModel;
+        session.type = prevType;
+        sendEvent(
+          ws,
+          {
+            type: "error",
+            error: {
+              message: `Model ${s.model ?? prevModel} does not support session type translation`,
+              type: "invalid_request_error",
+              code: "invalid_session_config",
+            },
+          },
+          isBeta,
+        );
+        return;
       }
     }
-    ws.send(
-      evt("session.updated", {
+
+    sendEvent(
+      ws,
+      {
+        type: "session.updated",
         session: {
-          ...session,
           object: "realtime.session",
+          model: session.model,
           expires_at: Math.floor(Date.now() / 1000) + 3600,
-          max_response_output_tokens: "inf",
-          input_audio_transcription: null,
+          modalities: session.modalities,
+          instructions: session.instructions,
+          tools: session.tools,
           tool_choice: "auto",
+          temperature: session.temperature,
+          max_response_output_tokens: "inf",
+          audio: {
+            voice: session.voice,
+            input_audio_format: session.input_audio_format,
+            output_audio_format: session.output_audio_format,
+            input_audio_noise_reduction: session.input_audio_noise_reduction,
+            input_audio_transcription: session.input_audio_transcription,
+          },
+          turn_detection: session.turn_detection,
+          type: session.type,
+          reasoning: session.reasoning,
         },
-      }),
+      },
+      isBeta,
     );
     return;
   }
@@ -272,11 +558,11 @@ async function processMessage(
   // ── conversation.item.create ──────────────────────────────────────────
   if (msgType === "conversation.item.create") {
     if (!parsed.item) {
-      ws.send(
-        buildErrorRealtimeEvent(
-          "Missing 'item' in conversation.item.create",
-          "invalid_request_error",
-        ),
+      buildErrorRealtimeEvent(
+        ws,
+        "Missing 'item' in conversation.item.create",
+        isBeta,
+        "invalid_request_error",
       );
       return;
     }
@@ -289,7 +575,7 @@ async function processMessage(
         ? (conversationItems[conversationItems.length - 1].id ?? null)
         : null;
     conversationItems.push(item);
-    ws.send(evt("conversation.item.created", { previous_item_id: previousId, item }));
+    sendEvent(ws, { type: "conversation.item.added", previous_item_id: previousId, item }, isBeta);
     return;
   }
 
@@ -302,8 +588,51 @@ async function processMessage(
       defaults,
       session,
       conversationItems,
+      isBeta,
       parsed.response,
     );
+    return;
+  }
+
+  // ── input_audio_buffer.append ────────────────────────────────────────
+  if (msgType === "input_audio_buffer.append") {
+    // Accept silently — aimock doesn't process actual audio
+    return;
+  }
+
+  // ── input_audio_buffer.commit ──────────────────────────────────────
+  if (msgType === "input_audio_buffer.commit") {
+    sendEvent(ws, { type: "input_audio_buffer.committed" }, isBeta);
+    // In transcription/translation mode, add a placeholder user item
+    if (session.type === "transcription" || session.type === "translation") {
+      const audioItem: RealtimeItem = {
+        type: "message",
+        id: realtimeId("item"),
+        role: "user",
+        content: [{ type: "input_audio", transcript: null }],
+      };
+      conversationItems.push(audioItem);
+      sendEvent(
+        ws,
+        {
+          type: "conversation.item.added",
+          item: audioItem,
+        },
+        isBeta,
+      );
+    }
+    return;
+  }
+
+  // ── input_audio_buffer.clear ───────────────────────────────────────
+  if (msgType === "input_audio_buffer.clear") {
+    sendEvent(ws, { type: "input_audio_buffer.cleared" }, isBeta);
+    return;
+  }
+
+  // ── response.cancel ────────────────────────────────────────────────
+  if (msgType === "response.cancel") {
+    sendEvent(ws, { type: "response.cancelled" }, isBeta);
     return;
   }
 
@@ -326,15 +655,23 @@ async function handleResponseCreate(
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
+  isBeta: boolean,
   responseOverrides?: { instructions?: string; [key: string]: unknown },
 ): Promise<void> {
   const instructions = (responseOverrides?.instructions ?? session.instructions) || undefined;
   const messages = realtimeItemsToMessages(conversationItems, instructions, defaults.logger);
 
+  const endpointTypeMap: Record<string, string> = {
+    conversation: "realtime",
+    transcription: "realtime-transcription",
+    translation: "realtime-translation",
+  };
+  const endpointType = endpointTypeMap[session.type] ?? "realtime";
+
   const completionReq: ChatCompletionRequest = {
     model: session.model,
     messages,
-    _endpointType: "chat",
+    _endpointType: endpointType,
   };
 
   const testId = defaults.testId ?? DEFAULT_TEST_ID;
@@ -379,8 +716,10 @@ async function handleResponseCreate(
       },
     });
     // Send response.created with failed status then response.done with error
-    ws.send(
-      evt("response.created", {
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -389,10 +728,13 @@ async function handleResponseCreate(
           output: [],
           usage: null,
         },
-      }),
+      },
+      isBeta,
     );
-    ws.send(
-      evt("response.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -408,7 +750,8 @@ async function handleResponseCreate(
           },
           usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
         },
-      }),
+      },
+      isBeta,
     );
     return;
   }
@@ -427,8 +770,10 @@ async function handleResponseCreate(
       body: completionReq,
       response: { status, fixture },
     });
-    ws.send(
-      evt("response.created", {
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -437,10 +782,13 @@ async function handleResponseCreate(
           output: [],
           usage: null,
         },
-      }),
+      },
+      isBeta,
     );
-    ws.send(
-      evt("response.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -456,7 +804,8 @@ async function handleResponseCreate(
           },
           usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
         },
-      }),
+      },
+      isBeta,
     );
     return;
   }
@@ -472,8 +821,10 @@ async function handleResponseCreate(
     });
 
     // response.created
-    ws.send(
-      evt("response.created", {
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -482,7 +833,8 @@ async function handleResponseCreate(
           output: [],
           usage: null,
         },
-      }),
+      },
+      isBeta,
     );
 
     const interruption = createInterruptionSignal(fixture);
@@ -499,12 +851,18 @@ async function handleResponseCreate(
       type: "message",
       role: "assistant",
       status: "completed",
-      content: [{ type: "text", text: response.content }],
+      content: [{ type: "output_text", text: response.content }],
     };
 
+    // Determine phase: text is "commentary" when tool calls are also present
+    const hasToolCalls = response.toolCalls && response.toolCalls.length > 0;
+    const textPhase = hasToolCalls ? "commentary" : "final_answer";
+
     // response.output_item.added (text)
-    ws.send(
-      evt("response.output_item.added", {
+    sendEvent(
+      ws,
+      {
+        type: "response.output_item.added",
         response_id: responseId,
         output_index: textOutputIndex,
         item: {
@@ -513,22 +871,27 @@ async function handleResponseCreate(
           role: "assistant",
           status: "in_progress",
           content: [],
+          phase: textPhase,
         },
-      }),
+      },
+      isBeta,
     );
 
     // response.content_part.added
-    ws.send(
-      evt("response.content_part.added", {
+    sendEvent(
+      ws,
+      {
+        type: "response.content_part.added",
         response_id: responseId,
         item_id: textItemId,
         output_index: textOutputIndex,
         content_index: contentIndex,
-        part: { type: "text", text: "" },
-      }),
+        part: { type: "output_text", text: "" },
+      },
+      isBeta,
     );
 
-    // response.text.delta (chunked)
+    // response.output_text.delta (chunked) — GA name
     const content = response.content;
     for (let i = 0; i < content.length; i += chunkSize) {
       if (ws.isClosed) break;
@@ -539,14 +902,17 @@ async function handleResponseCreate(
       }
       if (ws.isClosed) break;
       const chunk = content.slice(i, i + chunkSize);
-      ws.send(
-        evt("response.text.delta", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_text.delta",
           response_id: responseId,
           item_id: textItemId,
           output_index: textOutputIndex,
           content_index: contentIndex,
           delta: chunk,
-        }),
+        },
+        isBeta,
       );
       interruption?.tick();
       if (interruption?.signal.aborted) {
@@ -568,15 +934,18 @@ async function handleResponseCreate(
       return;
     }
 
-    // response.text.done
-    ws.send(
-      evt("response.text.done", {
+    // response.output_text.done
+    sendEvent(
+      ws,
+      {
+        type: "response.output_text.done",
         response_id: responseId,
         item_id: textItemId,
         output_index: textOutputIndex,
         content_index: contentIndex,
         text: content,
-      }),
+      },
+      isBeta,
     );
 
     if (ws.isClosed) {
@@ -585,14 +954,17 @@ async function handleResponseCreate(
     }
 
     // response.content_part.done
-    ws.send(
-      evt("response.content_part.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.content_part.done",
         response_id: responseId,
         item_id: textItemId,
         output_index: textOutputIndex,
         content_index: contentIndex,
-        part: { type: "text", text: content },
-      }),
+        part: { type: "output_text", text: content },
+      },
+      isBeta,
     );
 
     if (ws.isClosed) {
@@ -601,12 +973,32 @@ async function handleResponseCreate(
     }
 
     // response.output_item.done (text)
-    ws.send(
-      evt("response.output_item.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.output_item.done",
         response_id: responseId,
         output_index: textOutputIndex,
-        item: textOutputItem,
-      }),
+        item: { ...textOutputItem, phase: textPhase },
+      },
+      isBeta,
+    );
+
+    // conversation.item.done (text message)
+    sendEvent(
+      ws,
+      {
+        type: "conversation.item.done",
+        item: {
+          id: textItemId,
+          object: "realtime.item",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: textOutputItem.content,
+        },
+      },
+      isBeta,
     );
 
     if (ws.isClosed) {
@@ -633,8 +1025,10 @@ async function handleResponseCreate(
       };
 
       // response.output_item.added
-      ws.send(
-        evt("response.output_item.added", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.added",
           response_id: responseId,
           output_index: outputIndex,
           item: {
@@ -644,8 +1038,10 @@ async function handleResponseCreate(
             call_id: callId,
             name: tc.name,
             arguments: "",
+            phase: "final_answer",
           },
-        }),
+        },
+        isBeta,
       );
 
       // response.function_call_arguments.delta (chunked)
@@ -659,14 +1055,17 @@ async function handleResponseCreate(
         }
         if (ws.isClosed) break;
         const chunk = args.slice(i, i + chunkSize);
-        ws.send(
-          evt("response.function_call_arguments.delta", {
+        sendEvent(
+          ws,
+          {
+            type: "response.function_call_arguments.delta",
             response_id: responseId,
             item_id: itemId,
             output_index: outputIndex,
             call_id: callId,
             delta: chunk,
-          }),
+          },
+          isBeta,
         );
         interruption?.tick();
         if (interruption?.signal.aborted) {
@@ -680,25 +1079,49 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
 
       // response.function_call_arguments.done
-      ws.send(
-        evt("response.function_call_arguments.done", {
+      sendEvent(
+        ws,
+        {
+          type: "response.function_call_arguments.done",
           response_id: responseId,
           item_id: itemId,
           output_index: outputIndex,
           call_id: callId,
           arguments: args,
-        }),
+        },
+        isBeta,
       );
 
       if (ws.isClosed) break;
 
       // response.output_item.done
-      ws.send(
-        evt("response.output_item.done", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.done",
           response_id: responseId,
           output_index: outputIndex,
-          item: toolOutputItem,
-        }),
+          item: { ...toolOutputItem, phase: "final_answer" },
+        },
+        isBeta,
+      );
+
+      // conversation.item.done (tool call)
+      sendEvent(
+        ws,
+        {
+          type: "conversation.item.done",
+          item: {
+            id: itemId,
+            object: "realtime.item",
+            type: "function_call",
+            status: "completed",
+            call_id: callId,
+            name: tc.name,
+            arguments: args,
+          },
+        },
+        isBeta,
       );
 
       if (ws.isClosed) break;
@@ -719,8 +1142,10 @@ async function handleResponseCreate(
     if (ws.isClosed) return;
 
     // response.done
-    ws.send(
-      evt("response.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -728,7 +1153,8 @@ async function handleResponseCreate(
           output: allOutputItems,
           usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
         },
-      }),
+      },
+      isBeta,
     );
 
     // Accumulate into conversation for multi-turn
@@ -763,12 +1189,14 @@ async function handleResponseCreate(
       type: "message",
       role: "assistant",
       status: "completed",
-      content: [{ type: "text", text: response.content }],
+      content: [{ type: "output_text", text: response.content }],
     };
 
     // response.created
-    ws.send(
-      evt("response.created", {
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -777,12 +1205,15 @@ async function handleResponseCreate(
           output: [],
           usage: null,
         },
-      }),
+      },
+      isBeta,
     );
 
     // response.output_item.added
-    ws.send(
-      evt("response.output_item.added", {
+    sendEvent(
+      ws,
+      {
+        type: "response.output_item.added",
         response_id: responseId,
         output_index: outputIndex,
         item: {
@@ -791,22 +1222,27 @@ async function handleResponseCreate(
           role: "assistant",
           status: "in_progress",
           content: [],
+          phase: "final_answer",
         },
-      }),
+      },
+      isBeta,
     );
 
     // response.content_part.added
-    ws.send(
-      evt("response.content_part.added", {
+    sendEvent(
+      ws,
+      {
+        type: "response.content_part.added",
         response_id: responseId,
         item_id: itemId,
         output_index: outputIndex,
         content_index: contentIndex,
-        part: { type: "text", text: "" },
-      }),
+        part: { type: "output_text", text: "" },
+      },
+      isBeta,
     );
 
-    // response.text.delta (chunked)
+    // response.output_text.delta (chunked) — GA name
     const content = response.content;
     const interruption = createInterruptionSignal(fixture);
     let interrupted = false;
@@ -820,14 +1256,17 @@ async function handleResponseCreate(
       }
       if (ws.isClosed) break;
       const chunk = content.slice(i, i + chunkSize);
-      ws.send(
-        evt("response.text.delta", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_text.delta",
           response_id: responseId,
           item_id: itemId,
           output_index: outputIndex,
           content_index: contentIndex,
           delta: chunk,
-        }),
+        },
+        isBeta,
       );
       interruption?.tick();
       if (interruption?.signal.aborted) {
@@ -848,40 +1287,68 @@ async function handleResponseCreate(
 
     if (ws.isClosed) return;
 
-    // response.text.done
-    ws.send(
-      evt("response.text.done", {
+    // response.output_text.done
+    sendEvent(
+      ws,
+      {
+        type: "response.output_text.done",
         response_id: responseId,
         item_id: itemId,
         output_index: outputIndex,
         content_index: contentIndex,
         text: content,
-      }),
+      },
+      isBeta,
     );
 
     // response.content_part.done
-    ws.send(
-      evt("response.content_part.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.content_part.done",
         response_id: responseId,
         item_id: itemId,
         output_index: outputIndex,
         content_index: contentIndex,
-        part: { type: "text", text: content },
-      }),
+        part: { type: "output_text", text: content },
+      },
+      isBeta,
     );
 
     // response.output_item.done
-    ws.send(
-      evt("response.output_item.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.output_item.done",
         response_id: responseId,
         output_index: outputIndex,
-        item: outputItem,
-      }),
+        item: { ...outputItem, phase: "final_answer" },
+      },
+      isBeta,
+    );
+
+    // conversation.item.done (text message)
+    sendEvent(
+      ws,
+      {
+        type: "conversation.item.done",
+        item: {
+          id: itemId,
+          object: "realtime.item",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: outputItem.content,
+        },
+      },
+      isBeta,
     );
 
     // response.done
-    ws.send(
-      evt("response.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -889,7 +1356,8 @@ async function handleResponseCreate(
           output: [outputItem],
           usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
         },
-      }),
+      },
+      isBeta,
     );
 
     // Accumulate assistant response into conversation for multi-turn
@@ -913,8 +1381,10 @@ async function handleResponseCreate(
     });
 
     // response.created
-    ws.send(
-      evt("response.created", {
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -923,7 +1393,8 @@ async function handleResponseCreate(
           output: [],
           usage: null,
         },
-      }),
+      },
+      isBeta,
     );
 
     const outputItems: unknown[] = [];
@@ -945,8 +1416,10 @@ async function handleResponseCreate(
       };
 
       // response.output_item.added
-      ws.send(
-        evt("response.output_item.added", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.added",
           response_id: responseId,
           output_index: tcIdx,
           item: {
@@ -956,8 +1429,10 @@ async function handleResponseCreate(
             call_id: callId,
             name: tc.name,
             arguments: "",
+            phase: "final_answer",
           },
-        }),
+        },
+        isBeta,
       );
 
       // response.function_call_arguments.delta (chunked)
@@ -971,14 +1446,17 @@ async function handleResponseCreate(
         }
         if (ws.isClosed) break;
         const chunk = args.slice(i, i + chunkSize);
-        ws.send(
-          evt("response.function_call_arguments.delta", {
+        sendEvent(
+          ws,
+          {
+            type: "response.function_call_arguments.delta",
             response_id: responseId,
             item_id: itemId,
             output_index: tcIdx,
             call_id: callId,
             delta: chunk,
-          }),
+          },
+          isBeta,
         );
         interruption?.tick();
         if (interruption?.signal.aborted) {
@@ -992,23 +1470,47 @@ async function handleResponseCreate(
       if (ws.isClosed) break;
 
       // response.function_call_arguments.done
-      ws.send(
-        evt("response.function_call_arguments.done", {
+      sendEvent(
+        ws,
+        {
+          type: "response.function_call_arguments.done",
           response_id: responseId,
           item_id: itemId,
           output_index: tcIdx,
           call_id: callId,
           arguments: args,
-        }),
+        },
+        isBeta,
       );
 
       // response.output_item.done
-      ws.send(
-        evt("response.output_item.done", {
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.done",
           response_id: responseId,
           output_index: tcIdx,
-          item: outputItem,
-        }),
+          item: { ...outputItem, phase: "final_answer" },
+        },
+        isBeta,
+      );
+
+      // conversation.item.done (tool call)
+      sendEvent(
+        ws,
+        {
+          type: "conversation.item.done",
+          item: {
+            id: itemId,
+            object: "realtime.item",
+            type: "function_call",
+            status: "completed",
+            call_id: callId,
+            name: tc.name,
+            arguments: args,
+          },
+        },
+        isBeta,
       );
 
       outputItems.push(outputItem);
@@ -1027,8 +1529,10 @@ async function handleResponseCreate(
     if (ws.isClosed) return;
 
     // response.done
-    ws.send(
-      evt("response.done", {
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
         response: {
           id: responseId,
           object: "realtime.response",
@@ -1036,7 +1540,8 @@ async function handleResponseCreate(
           output: outputItems,
           usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
         },
-      }),
+      },
+      isBeta,
     );
 
     // Accumulate assistant tool calls into conversation for multi-turn
@@ -1055,5 +1560,10 @@ async function handleResponseCreate(
     body: completionReq,
     response: { status: 500, fixture },
   });
-  ws.send(buildErrorRealtimeEvent("Fixture response did not match any known type", "server_error"));
+  buildErrorRealtimeEvent(
+    ws,
+    "Fixture response did not match any known type",
+    isBeta,
+    "server_error",
+  );
 }

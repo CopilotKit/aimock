@@ -74,7 +74,12 @@ export function matchFixture(
     const reqEndpoint = effective._endpointType as string | undefined;
     if (match.endpoint !== undefined) {
       if (match.endpoint !== reqEndpoint) continue;
-    } else if (reqEndpoint && reqEndpoint !== "chat" && reqEndpoint !== "embedding") {
+    } else if (
+      reqEndpoint &&
+      reqEndpoint !== "chat" &&
+      reqEndpoint !== "embedding" &&
+      !reqEndpoint.startsWith("realtime")
+    ) {
       // Fixture has no endpoint restriction but request is multimedia —
       // only match if the response type is compatible.
       // Function responses cannot be checked statically, so treat them as compatible.

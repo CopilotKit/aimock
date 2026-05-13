@@ -1161,7 +1161,10 @@ type EndpointType =
   | "embedding"
   | "audio-gen"
   | "fal-audio"
-  | "fal";
+  | "fal"
+  | "realtime"
+  | "realtime-transcription"
+  | "realtime-translation";
 
 function buildFixtureMatch(
   request: ChatCompletionRequest,
