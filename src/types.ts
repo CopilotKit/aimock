@@ -468,6 +468,8 @@ export interface RecordConfig {
   fixturePath?: string;
   /** Proxy unmatched requests without saving fixtures or caching in memory. */
   proxyOnly?: boolean;
+  /** When true, record the full model version string (e.g. "gpt-4o-2024-08-06") without stripping date suffixes. */
+  recordFullModelVersion?: boolean;
 }
 
 export interface MockServerOptions {
