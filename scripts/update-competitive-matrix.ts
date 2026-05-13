@@ -70,6 +70,43 @@ const FEATURE_RULES: FeatureRule[] = [
     keywords: ["websocket", "realtime", "ws://", "wss://"],
   },
   {
+    rowLabel: "Realtime GA protocol",
+    keywords: [
+      "gpt-realtime-2",
+      "realtime.*ga",
+      "ga.*protocol",
+      "output_text\\.delta",
+      "conversation\\.item\\.added",
+    ],
+  },
+  {
+    rowLabel: "Realtime Beta compatibility",
+    keywords: [
+      "openai-beta.*realtime",
+      "realtime=v1",
+      "beta.*shim",
+      "beta.*compat",
+      "response\\.text\\.delta",
+    ],
+  },
+  {
+    rowLabel: "Realtime translate/whisper",
+    keywords: [
+      "gpt-realtime-translate",
+      "gpt-realtime-whisper",
+      "realtime.*transcription",
+      "realtime.*translation",
+    ],
+  },
+  {
+    rowLabel: "Realtime image input",
+    keywords: ["input_image.*realtime", "realtime.*image", "realtime.*vision"],
+  },
+  {
+    rowLabel: "Realtime commentary phase",
+    keywords: ["commentary.*phase", "phase.*commentary", "final_answer.*commentary"],
+  },
+  {
     rowLabel: "Embeddings API",
     keywords: ["/v1/embeddings", "embeddings api", "embedding endpoint", "embedding model"],
   },
@@ -350,6 +387,11 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Request journal": ["Request journal"],
     "Drift detection": ["Drift detection"],
     "AG-UI event mocking": ["AG-UI event mocking", "AG-UI mocking", "AG-UI"],
+    "Realtime GA protocol": ["Realtime GA protocol", "GA Realtime"],
+    "Realtime Beta compatibility": ["Realtime Beta compatibility", "Beta Realtime"],
+    "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
+    "Realtime image input": ["Realtime image input"],
+    "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
   };
 
   if (variants[rowLabel]) {

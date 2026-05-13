@@ -98,7 +98,10 @@ export interface FixtureMatch {
     | "embedding"
     | "audio-gen"
     | "fal-audio"
-    | "fal";
+    | "fal"
+    | "realtime"
+    | "realtime-transcription"
+    | "realtime-translation";
 }
 
 // Fixture response types
@@ -225,6 +228,32 @@ export type FixtureResponse =
   | TranscriptionResponse
   | VideoResponse
   | RawJSONResponse;
+
+// GA Realtime session types
+
+export type RealtimePhase = "final_answer" | "commentary";
+
+export interface GASessionAudioConfig {
+  voice: string | null;
+  input_audio_format: string | null;
+  output_audio_format: string | null;
+  input_audio_noise_reduction: { type: string } | null;
+  input_audio_transcription: { model: string } | null;
+}
+
+export interface GASessionConfig {
+  model: string;
+  modalities: string[];
+  instructions: string;
+  tools: unknown[];
+  temperature: number;
+  max_response_output_tokens: number | "inf";
+  audio: GASessionAudioConfig;
+  turn_detection: unknown | null;
+  input_audio_transcription: { model: string } | null;
+  type: "conversation" | "transcription" | "translation";
+  reasoning: { effort: string } | null;
+}
 
 // Streaming physics
 
@@ -353,7 +382,10 @@ export interface FixtureFileEntry {
       | "embedding"
       | "audio-gen"
       | "fal-audio"
-      | "fal";
+      | "fal"
+      | "realtime"
+      | "realtime-transcription"
+      | "realtime-translation";
     // predicate not supported in JSON files
   };
   response: FixtureFileResponse;

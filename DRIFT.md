@@ -107,7 +107,7 @@ When a model is deprecated:
 
 ## WebSocket Drift Coverage
 
-In addition to the 23 existing drift tests (20 HTTP response-shape + 3 model deprecation), WebSocket drift tests cover aimock's WS protocols (4 verified + 2 canary = 6 WS tests):
+In addition to the 23 existing drift tests (20 HTTP response-shape + 3 model deprecation), WebSocket drift tests cover aimock's WS protocols (6 verified + 2 canary = 8 WS tests):
 
 ### Gemini Interactions API (Beta)
 
@@ -120,13 +120,20 @@ The Gemini Interactions API (`/v1beta/interactions`) is covered by 4 drift tests
 
 Uses `describe.skipIf(!GOOGLE_API_KEY)` like other Gemini tests. The Interactions API is in Beta — shapes may shift as Google iterates on the endpoint.
 
-| Protocol            | Text | Tool Call | Real Endpoint                                                       | Status     |
-| ------------------- | ---- | --------- | ------------------------------------------------------------------- | ---------- |
-| OpenAI Responses WS | ✓    | ✓         | `wss://api.openai.com/v1/responses`                                 | Verified   |
-| OpenAI Realtime     | ✓    | ✓         | `wss://api.openai.com/v1/realtime`                                  | Verified   |
-| Gemini Live         | —    | —         | `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent` | Unverified |
+| Protocol               | Text | Tool Call | Real Endpoint                                                       | Status     |
+| ---------------------- | ---- | --------- | ------------------------------------------------------------------- | ---------- |
+| OpenAI Responses WS    | ✓    | ✓         | `wss://api.openai.com/v1/responses`                                 | Verified   |
+| OpenAI Realtime (GA)   | ✓    | ✓         | `wss://api.openai.com/v1/realtime`                                  | Verified   |
+| OpenAI Realtime (Beta) | ✓    | ✓         | `wss://api.openai.com/v1/realtime` + `OpenAI-Beta: realtime=v1`     | Verified   |
+| Gemini Live            | —    | —         | `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent` | Unverified |
 
-**Models**: `gpt-4o-mini` for Responses WS, `gpt-4o-mini-realtime-preview` for Realtime.
+**Models**: `gpt-4o-mini` for Responses WS, `gpt-realtime-2` for Realtime GA (was `gpt-4o-mini-realtime-preview`).
+
+**GA Realtime Drift Tests**:
+
+- **Model canary** — Verifies all 5 GA models exist (`gpt-realtime-2`, `gpt-realtime-1.5`, `gpt-realtime-mini`, `gpt-realtime-translate`, `gpt-realtime-whisper`) and flags unknown realtime models
+- **Protocol probe** — Connects with both GA and Beta protocol, normalizes event sequences, and verifies consistency
+- **Event shape validation** — GA event names (`response.output_text.delta`, `conversation.item.added`, `conversation.item.done`) and nested session config (`session.audio.*`, `session.type`, `session.reasoning`)
 
 **Auth**: Uses the same `OPENAI_API_KEY` and `GOOGLE_API_KEY` environment variables as HTTP tests. No new secrets needed.
 
@@ -175,4 +182,4 @@ The fix workflow also supports `workflow_dispatch` for manual runs.
 
 ## Cost
 
-~29 API calls per run (20 HTTP response-shape + 3 model listing + 6 WS including canaries) using the cheapest available models (`gpt-4o-mini`, `gpt-4o-mini-realtime-preview`, `claude-haiku-4-5-20251001`, `gemini-2.5-flash`) with 10-100 max tokens each. Under $0.20/week at daily cadence. When Gemini Live text-capable models become available, the 2 canary tests will become full drift tests, increasing real WS connections from 4 to 6.
+~31 API calls per run (20 HTTP response-shape + 3 model listing + 8 WS including canaries) using the cheapest available models (`gpt-4o-mini`, `gpt-realtime-2`, `claude-haiku-4-5-20251001`, `gemini-2.5-flash`) with 10-100 max tokens each. Under $0.25/week at daily cadence. The GA protocol probe adds a second Realtime WS connection (one GA, one Beta) per run. When Gemini Live text-capable models become available, the 2 canary tests will become full drift tests, increasing real WS connections from 6 to 8.

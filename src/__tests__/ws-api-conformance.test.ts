@@ -391,15 +391,15 @@ describe("WS Realtime API conformance", () => {
     });
   });
 
-  describe("conversation.item.created", () => {
-    it("conversation.item.created has item with id", async () => {
+  describe("conversation.item.added", () => {
+    it("conversation.item.added has item with id", async () => {
       const ws = await connectWebSocket(instance.url, "/v1/realtime");
       await ws.waitForMessages(1); // session.created
       ws.send(realtimeItemCreate("hello"));
       const raw = await ws.waitForMessages(2);
       ws.close();
       const frame = JSON.parse(raw[1]) as any;
-      expect(frame.type).toBe("conversation.item.created");
+      expect(frame.type).toBe("conversation.item.added");
       expect(typeof frame.item.id).toBe("string");
       expect(frame.item.id.length).toBeGreaterThan(0);
     });
@@ -410,12 +410,12 @@ describe("WS Realtime API conformance", () => {
       const ws = await connectWebSocket(instance.url, "/v1/realtime");
       await ws.waitForMessages(1); // session.created
       ws.send(realtimeItemCreate("hello"));
-      await ws.waitForMessages(2); // + conversation.item.created
+      await ws.waitForMessages(2); // + conversation.item.added
       ws.send(realtimeResponseCreate());
-      // session.created + item.created + response.created + output_item.added
-      // + content_part.added + text.delta(s) + text.done + content_part.done
-      // + output_item.done + response.done = 10 min
-      const raw = await ws.waitForMessages(10);
+      // session.created + item.added + response.created + output_item.added
+      // + content_part.added + output_text.delta(s) + output_text.done + content_part.done
+      // + output_item.done + conversation.item.done + response.done = 11 min
+      const raw = await ws.waitForMessages(11);
       ws.close();
       return raw.slice(2).map((m) => JSON.parse(m) as any);
     }
@@ -445,18 +445,18 @@ describe("WS Realtime API conformance", () => {
       expect((itemAdded.item as any).role).toBe("assistant");
     });
 
-    it("response.content_part.added has part with type text", async () => {
+    it("response.content_part.added has part with type output_text", async () => {
       const frames = await getTextResponseFrames();
       const partAdded = frames.find((f: any) => f.type === "response.content_part.added")!;
       expect(partAdded).toBeDefined();
       const part = (partAdded as any).part;
-      expect(part.type).toBe("text");
+      expect(part.type).toBe("output_text");
       expect(part.text).toBe("");
     });
 
-    it("response.text.delta has response_id, item_id, output_index, content_index, delta as string", async () => {
+    it("response.output_text.delta has response_id, item_id, output_index, content_index, delta as string", async () => {
       const frames = await getTextResponseFrames();
-      const deltas = frames.filter((f: any) => f.type === "response.text.delta");
+      const deltas = frames.filter((f: any) => f.type === "response.output_text.delta");
       expect(deltas.length).toBeGreaterThan(0);
       for (const d of deltas) {
         expect(typeof (d as any).response_id).toBe("string");
@@ -467,19 +467,19 @@ describe("WS Realtime API conformance", () => {
       }
     });
 
-    it("response.text.done has full text", async () => {
+    it("response.output_text.done has full text", async () => {
       const frames = await getTextResponseFrames();
-      const textDone = frames.find((f: any) => f.type === "response.text.done")!;
+      const textDone = frames.find((f: any) => f.type === "response.output_text.done")!;
       expect(textDone).toBeDefined();
       expect((textDone as any).text).toBe("Hi there!");
     });
 
-    it("response.content_part.done has part with type text and text content", async () => {
+    it("response.content_part.done has part with type output_text and text content", async () => {
       const frames = await getTextResponseFrames();
       const partDone = frames.find((f: any) => f.type === "response.content_part.done")!;
       expect(partDone).toBeDefined();
       const part = (partDone as any).part;
-      expect(part.type).toBe("text");
+      expect(part.type).toBe("output_text");
       expect(typeof part.text).toBe("string");
       expect(part.text).toBe("Hi there!");
     });
@@ -510,11 +510,11 @@ describe("WS Realtime API conformance", () => {
       const ws = await connectWebSocket(instance.url, "/v1/realtime");
       await ws.waitForMessages(1); // session.created
       ws.send(realtimeItemCreate("weather"));
-      await ws.waitForMessages(2); // + conversation.item.created
+      await ws.waitForMessages(2); // + conversation.item.added
       ws.send(realtimeResponseCreate());
-      // session.created + item.created + response.created + output_item.added
-      // + args.delta(s) + args.done + output_item.done + response.done = 8 min
-      const raw = await ws.waitForMessages(8);
+      // session.created + item.added + response.created + output_item.added
+      // + args.delta(s) + args.done + output_item.done + conversation.item.done + response.done = 9 min
+      const raw = await ws.waitForMessages(9);
       ws.close();
       return raw.slice(2).map((m) => JSON.parse(m) as any);
     }
@@ -560,7 +560,7 @@ describe("WS Realtime API conformance", () => {
       const ws = await connectWebSocket(instance.url, "/v1/realtime");
       await ws.waitForMessages(1); // session.created
       ws.send(realtimeItemCreate("no-match-xyz-9999"));
-      await ws.waitForMessages(2); // + conversation.item.created
+      await ws.waitForMessages(2); // + conversation.item.added
       ws.send(realtimeResponseCreate());
       const raw = await ws.waitForMessages(4); // + response.created + response.done
       ws.close();
@@ -577,7 +577,7 @@ describe("WS Realtime API conformance", () => {
       const ws = await connectWebSocket(instance.url, "/v1/realtime");
       await ws.waitForMessages(1); // session.created
       ws.send(realtimeItemCreate("error-test"));
-      await ws.waitForMessages(2); // + conversation.item.created
+      await ws.waitForMessages(2); // + conversation.item.added
       ws.send(realtimeResponseCreate());
       const raw = await ws.waitForMessages(4); // + response.created + response.done
       ws.close();
@@ -599,6 +599,168 @@ describe("WS Realtime API conformance", () => {
       expect(frame.event_id).toMatch(/^event_/);
       expect(frame.error.message).toMatch(/^Malformed JSON:/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7a. GA Realtime conformance
+// ---------------------------------------------------------------------------
+
+describe("GA Realtime conformance", () => {
+  it("session.created includes nested audio config, type field, and reasoning field", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    const raw = await ws.waitForMessages(1);
+    ws.close();
+    const frame = JSON.parse(raw[0]) as any;
+    expect(frame.type).toBe("session.created");
+    const session = frame.session;
+    expect(session).toHaveProperty("audio");
+    expect(session).toHaveProperty("type", "conversation");
+    expect(session).toHaveProperty("reasoning");
+    expect(session.audio).toMatchObject({
+      voice: null,
+      input_audio_format: null,
+      output_audio_format: null,
+      input_audio_noise_reduction: null,
+      input_audio_transcription: null,
+    });
+  });
+
+  it("emits conversation.item.added (not .created) and conversation.item.done", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+    ws.send(realtimeResponseCreate());
+    const raw = await ws.waitForMessages(11);
+    ws.close();
+    const types = raw.map((m) => (JSON.parse(m) as any).type);
+    expect(types).toContain("conversation.item.added");
+    expect(types).not.toContain("conversation.item.created");
+    expect(types).toContain("conversation.item.done");
+  });
+
+  it("output_item events include phase field", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+    ws.send(realtimeResponseCreate());
+    const raw = await ws.waitForMessages(11);
+    ws.close();
+    const frames = raw.map((m) => JSON.parse(m) as any);
+    const outputItemAdded = frames.find((f: any) => f.type === "response.output_item.added");
+    expect(outputItemAdded).toBeDefined();
+    expect(outputItemAdded.item).toHaveProperty("phase");
+    expect(outputItemAdded.item.phase).toBe("final_answer");
+
+    const outputItemDone = frames.find((f: any) => f.type === "response.output_item.done");
+    expect(outputItemDone).toBeDefined();
+    expect(outputItemDone.item).toHaveProperty("phase");
+  });
+
+  it("response.cancel emits response.cancelled", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    await ws.waitForMessages(1); // session.created
+    ws.send(JSON.stringify({ type: "response.cancel" }));
+    const raw = await ws.waitForMessages(2);
+    ws.close();
+    const frame = JSON.parse(raw[1]) as any;
+    expect(frame.type).toBe("response.cancelled");
+  });
+
+  it("content types use GA names (output_text, not text)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+    ws.send(realtimeResponseCreate());
+    const raw = await ws.waitForMessages(11);
+    ws.close();
+    const frames = raw.map((m) => JSON.parse(m) as any);
+    const contentPartAdded = frames.find((f: any) => f.type === "response.content_part.added");
+    expect(contentPartAdded).toBeDefined();
+    expect(contentPartAdded.part.type).toBe("output_text");
+
+    const contentPartDone = frames.find((f: any) => f.type === "response.content_part.done");
+    expect(contentPartDone).toBeDefined();
+    expect(contentPartDone.part.type).toBe("output_text");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. Beta Realtime conformance (OpenAI-Beta: realtime=v1)
+// ---------------------------------------------------------------------------
+
+describe("Beta Realtime conformance (OpenAI-Beta: realtime=v1)", () => {
+  it("session.created uses flat config (no nested audio, no type, no reasoning)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    const raw = await ws.waitForMessages(1);
+    ws.close();
+    const frame = JSON.parse(raw[0]) as any;
+    expect(frame.type).toBe("session.created");
+    const session = frame.session;
+    // Beta: flat config — voice at top level, no nested audio object
+    expect(session).toHaveProperty("voice");
+    expect(session).not.toHaveProperty("audio");
+    expect(session).not.toHaveProperty("type");
+    expect(session).not.toHaveProperty("reasoning");
+  });
+
+  it("emits Beta event names (response.text.delta, conversation.item.created)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.created (Beta name)
+    ws.send(realtimeResponseCreate());
+    // Beta: no conversation.item.done, so fewer events than GA
+    const raw = await ws.waitForMessages(10);
+    ws.close();
+    const types = raw.map((m) => (JSON.parse(m) as any).type);
+    expect(types).toContain("conversation.item.created");
+    expect(types).not.toContain("conversation.item.added");
+    expect(types).toContain("response.text.delta");
+    expect(types).not.toContain("response.output_text.delta");
+    expect(types).toContain("response.text.done");
+    expect(types).not.toContain("response.output_text.done");
+  });
+
+  it("does NOT emit conversation.item.done (suppressed in Beta)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.created
+    ws.send(realtimeResponseCreate());
+    const raw = await ws.waitForMessages(10);
+    ws.close();
+    const types = raw.map((m) => (JSON.parse(m) as any).type);
+    expect(types).not.toContain("conversation.item.done");
+  });
+
+  it("uses Beta content type names (text, not output_text)", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    await ws.waitForMessages(1); // session.created
+    ws.send(realtimeItemCreate("hello"));
+    await ws.waitForMessages(2); // + conversation.item.created
+    ws.send(realtimeResponseCreate());
+    const raw = await ws.waitForMessages(10);
+    ws.close();
+    const frames = raw.map((m) => JSON.parse(m) as any);
+    const contentPartAdded = frames.find((f: any) => f.type === "response.content_part.added");
+    expect(contentPartAdded).toBeDefined();
+    expect(contentPartAdded.part.type).toBe("text");
+
+    const contentPartDone = frames.find((f: any) => f.type === "response.content_part.done");
+    expect(contentPartDone).toBeDefined();
+    expect(contentPartDone.part.type).toBe("text");
   });
 });
 

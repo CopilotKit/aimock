@@ -15,20 +15,29 @@ export interface WSTestClient {
   waitForClose(): Promise<void>;
 }
 
-export function connectWebSocket(url: string, path: string): Promise<WSTestClient> {
+export function connectWebSocket(
+  url: string,
+  path: string,
+  headers?: Record<string, string>,
+): Promise<WSTestClient> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const socket = net.connect(parseInt(parsed.port), parsed.hostname, () => {
       const key = randomBytes(16).toString("base64");
-      socket.write(
+      let headerStr =
         `GET ${path} HTTP/1.1\r\n` +
-          `Host: ${parsed.host}\r\n` +
-          `Upgrade: websocket\r\n` +
-          `Connection: Upgrade\r\n` +
-          `Sec-WebSocket-Key: ${key}\r\n` +
-          `Sec-WebSocket-Version: 13\r\n` +
-          `\r\n`,
-      );
+        `Host: ${parsed.host}\r\n` +
+        `Upgrade: websocket\r\n` +
+        `Connection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: ${key}\r\n` +
+        `Sec-WebSocket-Version: 13\r\n`;
+      if (headers) {
+        for (const [name, value] of Object.entries(headers)) {
+          headerStr += `${name}: ${value}\r\n`;
+        }
+      }
+      headerStr += `\r\n`;
+      socket.write(headerStr);
 
       let handshakeDone = false;
       let buffer = Buffer.alloc(0);
