@@ -465,6 +465,106 @@
           fixture is saved to disk with a warning but not registered in memory.
         </p>
 
+        <h2 id="model-aware-recording">Model-Aware Recording</h2>
+        <p>
+          When recording fixtures, aimock automatically includes the model name in match criteria.
+          This prevents collisions when your app makes multiple LLM calls with the same user message
+          but different models (e.g., Opus for chat + Haiku for title generation).
+        </p>
+        <p>
+          Model names are normalized by stripping date/version suffixes so fixtures survive provider
+          version bumps:
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Request Model</th>
+              <th>Recorded As</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>claude-opus-4-20250514</code></td>
+              <td><code>claude-opus-4</code></td>
+            </tr>
+            <tr>
+              <td><code>gpt-4o-2024-08-06</code></td>
+              <td><code>gpt-4o</code></td>
+            </tr>
+            <tr>
+              <td><code>claude-3-5-sonnet-20241022</code></td>
+              <td><code>claude-3-5-sonnet</code></td>
+            </tr>
+            <tr>
+              <td><code>llama3.1</code></td>
+              <td><code>llama3.1</code> (no date suffix &mdash; unchanged)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Matching uses prefix comparison, so <code>model: "claude-opus-4"</code> in a fixture
+          matches requests for <code>claude-opus-4-20250514</code>,
+          <code>claude-opus-4-20250915</code>, or any future version.
+        </p>
+
+        <p>
+          To record the full model version instead (disabling normalization), set
+          <code>recordFullModelVersion</code> to <code>true</code> in the recording config:
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Disable model normalization <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"llm"</span>: {
+    <span class="key">"record"</span>: {
+      <span class="key">"providers"</span>: { <span class="key">"openai"</span>: <span class="str">"sk-..."</span> },
+      <span class="key">"recordFullModelVersion"</span>: <span class="kw">true</span>
+    }
+  }
+}</code></pre>
+        </div>
+
+        <p>Or programmatically:</p>
+
+        <div class="code-block">
+          <div class="code-block-header">Programmatic usage <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">enableRecording</span>({
+  <span class="prop">providers</span>: { <span class="prop">openai</span>: <span class="str">"https://api.openai.com"</span> },
+  <span class="prop">fixturePath</span>: <span class="str">"./fixtures/recorded"</span>,
+  <span class="prop">recordFullModelVersion</span>: <span class="kw">true</span>,
+});</code></pre>
+        </div>
+
+        <h2>Drift Detection Metadata</h2>
+        <p>
+          Recorded fixtures include a <code>metadata</code> block with hashes of the system prompt
+          and tool definitions at recording time. These are informational only &mdash; not used for
+          matching &mdash; and help you detect when your prompts or tools have changed since the
+          fixture was recorded.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recorded fixture with metadata <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"hello"</span>, <span class="key">"model"</span>: <span class="str">"claude-opus-4"</span> },
+  <span class="key">"metadata"</span>: { <span class="key">"systemHash"</span>: <span class="str">"a7f3c291"</span>, <span class="key">"toolsHash"</span>: <span class="str">"e4b12d08"</span> },
+  <span class="key">"response"</span>: { <span class="key">"content"</span>: <span class="str">"Hi there!"</span> }
+}</code></pre>
+        </div>
+
+        <p>
+          When you re-record a fixture and the hashes differ from the previous version, it signals
+          that your application&rsquo;s prompts or tool definitions have evolved. This is useful for
+          auditing fixture freshness &mdash; if the hashes don&rsquo;t match, the recorded response
+          may no longer reflect what the real provider would return for the current prompt.
+        </p>
+
         <h2 id="snapshot-style-recording">Snapshot-Style Recording</h2>
         <p>
           When the <code>X-Test-Id</code> header is present on a request, aimock uses
