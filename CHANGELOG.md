@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Model-aware fixture recording** — recorded fixtures now include the model name in match criteria, preventing collisions when an app makes multiple LLM calls with the same user message but different models. Model names are normalized by stripping date/version suffixes (e.g., `claude-opus-4-20250514` → `claude-opus-4`) so fixtures survive version bumps. Disable with `recordFullModelVersion: true`. ([#185](https://github.com/CopilotKit/aimock/issues/185))
+- **Drift detection metadata** — recorded fixtures include `systemHash` and `toolsHash` in a `metadata` block for detecting system prompt or tool definition changes since recording.
+- **Prefix model matching** — fixture router uses `startsWith` for string model matching, so `model: "claude-opus-4"` matches any `claude-opus-4-*` version.
+
 ## [1.22.1] - 2026-05-12
 
 ### Fixed
