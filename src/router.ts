@@ -199,13 +199,19 @@ export function matchFixture(
       if (reqType !== match.responseFormat) continue;
     }
 
-    // model — exact string or regexp
+    // model — exact match or prefix + dash-digit boundary for strings (so that
+    // "claude-opus-4" matches "claude-opus-4-20250514" but "gpt-4" does NOT
+    // match "gpt-4o" and "gpt-4o" does NOT match "gpt-4o-mini"), regexp unchanged
     if (match.model !== undefined) {
       if (typeof match.model === "string") {
-        if (effective.model !== match.model) continue;
+        if (effective.model !== match.model) {
+          if (!effective.model?.startsWith(match.model)) continue;
+          const rest = effective.model.slice(match.model.length);
+          if (!/^-\d/.test(rest)) continue;
+        }
       } else {
         match.model.lastIndex = 0;
-        if (!match.model.test(effective.model)) continue;
+        if (!match.model.test(effective.model ?? "")) continue;
       }
     }
 

@@ -137,7 +137,7 @@ $ docker run -d -p 4010:4010 \
                 LLMock configuration. Accepts <code>fixtures</code>, <code>latency</code>,
                 <code>chunkSize</code>, <code>logLevel</code>, <code>validateOnLoad</code>,
                 <code>metrics</code>, <code>strict</code>, <code>chaos</code>,
-                <code>streamingProfile</code>.
+                <code>streamingProfile</code>, <code>record</code>.
               </td>
             </tr>
             <tr>
@@ -150,6 +150,76 @@ $ docker run -d -p 4010:4010 \
             </tr>
           </tbody>
         </table>
+
+        <h3>Recording Config (<code>llm.record</code>)</h3>
+        <p>
+          When <code>llm.record</code> is present, aimock proxies unmatched requests to real
+          providers and saves the responses as fixtures. See
+          <a href="/record-replay">Record &amp; Replay</a> for full details.
+        </p>
+
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Option</th>
+              <th>Type</th>
+              <th>Default</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>providers</code></td>
+              <td>object</td>
+              <td>&mdash;</td>
+              <td>
+                Map of provider names to upstream URLs or API keys (e.g.
+                <code>{ "openai": "sk-..." }</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>fixturePath</code></td>
+              <td>string</td>
+              <td><code>./fixtures/recorded</code></td>
+              <td>Directory where recorded fixtures are saved</td>
+            </tr>
+            <tr>
+              <td><code>proxyOnly</code></td>
+              <td>boolean</td>
+              <td><code>false</code></td>
+              <td>Proxy without saving fixtures to disk or caching in memory</td>
+            </tr>
+            <tr>
+              <td><code>recordFullModelVersion</code></td>
+              <td>boolean</td>
+              <td><code>false</code></td>
+              <td>
+                Record the exact model string without stripping date/version suffixes. Use when
+                tests depend on exact model version matching. See
+                <a href="/record-replay#model-aware-recording">Model-Aware Recording</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            Recording config example <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"llm"</span>: {
+    <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="prop">"record"</span>: {
+      <span class="prop">"providers"</span>: {
+        <span class="prop">"openai"</span>: <span class="str">"https://api.openai.com"</span>,
+        <span class="prop">"anthropic"</span>: <span class="str">"https://api.anthropic.com"</span>
+      },
+      <span class="prop">"fixturePath"</span>: <span class="str">"./fixtures/recorded"</span>,
+      <span class="prop">"recordFullModelVersion"</span>: <span class="kw">false</span>
+    }
+  }
+}</code></pre>
+        </div>
 
         <h2>CLI Flags</h2>
         <table class="endpoint-table">

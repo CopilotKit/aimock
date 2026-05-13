@@ -12,6 +12,7 @@ import type {
   ToolCall,
 } from "./types.js";
 import { getLastMessageByRole, getTextContent } from "./router.js";
+import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
 import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -332,12 +333,16 @@ export async function proxyAndRecord(
 
   // Build the match criteria from the (optionally transformed) request
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const fixtureMatch = buildFixtureMatch(matchRequest);
+  const fixtureMatch = buildFixtureMatch(matchRequest, defaults.record);
+
+  // Build metadata (drift-detection hashes, not match criteria)
+  const metadata = buildFixtureMetadata(request);
 
   // Build and save the fixture
   const fixture: Fixture = {
     match: fixtureMatch,
     response: fixtureResponse,
+    ...(metadata && { metadata }),
   };
 
   // Check if the match is empty — warn but still save to disk.
@@ -1158,7 +1163,10 @@ type EndpointType =
   | "fal-audio"
   | "fal";
 
-function buildFixtureMatch(request: ChatCompletionRequest): {
+function buildFixtureMatch(
+  request: ChatCompletionRequest,
+  recordConfig?: RecordConfig,
+): {
   userMessage?: string;
   inputText?: string;
   model?: string;
@@ -1195,11 +1203,11 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
     }
   }
 
-  // fal.ai fixtures are typically authored against the model id (e.g.
-  // /flux/, /kling/) since the request body is opaque per-model JSON. Persist
-  // the resolved model so replay matches what `onFalQueue(/flux/, ...)` writes.
-  if (request._endpointType === "fal" && request.model) {
-    match.model = request.model;
+  // Record normalized model for all requests so fixtures disambiguate
+  // calls that share the same userMessage but target different models.
+  if (request.model) {
+    match.model =
+      normalizeModelName(request.model, recordConfig?.recordFullModelVersion) ?? request.model;
   }
 
   // Multi-turn disambiguation: writing only `userMessage` lets the recorder's
@@ -1213,4 +1221,34 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
   }
 
   return match;
+}
+
+/**
+ * Build optional metadata for drift detection. Contains 8-char SHA-256
+ * hashes of the system prompt and tool definitions present in the request.
+ * Returns undefined when neither is present.
+ */
+function buildFixtureMetadata(
+  request: ChatCompletionRequest,
+): { systemHash?: string; toolsHash?: string } | undefined {
+  const meta: { systemHash?: string; toolsHash?: string } = {};
+
+  const messages = request.messages ?? [];
+  const systemTexts = messages
+    .filter((m) => m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+    .join("\n");
+  if (systemTexts) {
+    meta.systemHash = crypto.createHash("sha256").update(systemTexts).digest("hex").slice(0, 8);
+  }
+
+  if (request.tools && request.tools.length > 0) {
+    meta.toolsHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(request.tools))
+      .digest("hex")
+      .slice(0, 8);
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }

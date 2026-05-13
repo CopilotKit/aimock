@@ -268,6 +268,10 @@ export interface Fixture {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 export type FixtureOpts = Omit<Fixture, "match" | "response">;
@@ -359,6 +363,10 @@ export interface FixtureFileEntry {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 // Request journal
@@ -468,6 +476,12 @@ export interface RecordConfig {
   fixturePath?: string;
   /** Proxy unmatched requests without saving fixtures or caching in memory. */
   proxyOnly?: boolean;
+  /**
+   * When true, record the exact model version string returned by the provider
+   * (e.g. "gpt-4o-2024-08-06") instead of stripping the date suffix to a
+   * canonical alias (e.g. "gpt-4o"). Default: false.
+   */
+  recordFullModelVersion?: boolean;
 }
 
 export interface MockServerOptions {

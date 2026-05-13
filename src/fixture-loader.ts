@@ -77,6 +77,7 @@ export function entryToFixture(entry: FixtureFileEntry): Fixture {
     ...(entry.disconnectAfterMs !== undefined && { disconnectAfterMs: entry.disconnectAfterMs }),
     ...(entry.streamingProfile !== undefined && { streamingProfile: entry.streamingProfile }),
     ...(entry.chaos !== undefined && { chaos: entry.chaos }),
+    ...(entry.metadata !== undefined && { metadata: entry.metadata }),
   };
 }
 
