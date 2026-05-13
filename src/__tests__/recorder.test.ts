@@ -4016,6 +4016,95 @@ function createMockReqRes(): { req: http.IncomingMessage; res: http.ServerRespon
   return { req, res };
 }
 
+// ---------------------------------------------------------------------------
+// buildFixtureMatch model recording
+// ---------------------------------------------------------------------------
+
+describe("buildFixtureMatch model recording", () => {
+  let localUpstream: ServerInstance | undefined;
+  let localRecorder: ServerInstance | undefined;
+  let localTmpDir: string | undefined;
+
+  afterEach(async () => {
+    if (localRecorder) {
+      await new Promise<void>((resolve) => localRecorder!.server.close(() => resolve()));
+      localRecorder = undefined;
+    }
+    if (localUpstream) {
+      await new Promise<void>((resolve) => localUpstream!.server.close(() => resolve()));
+      localUpstream = undefined;
+    }
+    if (localTmpDir) {
+      fs.rmSync(localTmpDir, { recursive: true, force: true });
+      localTmpDir = undefined;
+    }
+  });
+
+  it("records normalized model for chat requests", async () => {
+    // Set up an upstream server that responds to the test message
+    localUpstream = await createServer(
+      [
+        {
+          match: { userMessage: "test model recording" },
+          response: { content: "model recorded" },
+        },
+      ],
+      { port: 0 },
+    );
+
+    localTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-model-"));
+    localRecorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: localUpstream.url },
+        fixturePath: localTmpDir,
+      },
+    });
+
+    await post(`${localRecorder.url}/v1/chat/completions`, {
+      model: "claude-opus-4-20250514",
+      messages: [{ role: "user", content: "test model recording" }],
+    });
+
+    const files = fs.readdirSync(localTmpDir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    const fixture = JSON.parse(fs.readFileSync(path.join(localTmpDir, files[0]), "utf-8"));
+    expect(fixture.fixtures[0].match.model).toBe("claude-opus-4");
+  });
+
+  it("records full model when recordFullModelVersion is true", async () => {
+    localUpstream = await createServer(
+      [
+        {
+          match: { userMessage: "test full model" },
+          response: { content: "full model recorded" },
+        },
+      ],
+      { port: 0 },
+    );
+
+    localTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-model-full-"));
+    localRecorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: localUpstream.url },
+        fixturePath: localTmpDir,
+        recordFullModelVersion: true,
+      },
+    });
+
+    await post(`${localRecorder.url}/v1/chat/completions`, {
+      model: "claude-opus-4-20250514",
+      messages: [{ role: "user", content: "test full model" }],
+    });
+
+    const files = fs.readdirSync(localTmpDir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    const fixture = JSON.parse(fs.readFileSync(path.join(localTmpDir, files[0]), "utf-8"));
+    expect(fixture.fixtures[0].match.model).toBe("claude-opus-4-20250514");
+  });
+});
+
 async function setupUpstreamAndRecorder(
   upstreamFixtures: Fixture[],
   providerKey: string = "openai",

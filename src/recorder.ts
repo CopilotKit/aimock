@@ -12,6 +12,7 @@ import type {
   ToolCall,
 } from "./types.js";
 import { getLastMessageByRole, getTextContent } from "./router.js";
+import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
 import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -332,7 +333,7 @@ export async function proxyAndRecord(
 
   // Build the match criteria from the (optionally transformed) request
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const fixtureMatch = buildFixtureMatch(matchRequest);
+  const fixtureMatch = buildFixtureMatch(matchRequest, defaults.record);
 
   // Build and save the fixture
   const fixture: Fixture = {
@@ -1158,7 +1159,10 @@ type EndpointType =
   | "fal-audio"
   | "fal";
 
-function buildFixtureMatch(request: ChatCompletionRequest): {
+function buildFixtureMatch(
+  request: ChatCompletionRequest,
+  recordConfig?: RecordConfig,
+): {
   userMessage?: string;
   inputText?: string;
   model?: string;
@@ -1195,11 +1199,11 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
     }
   }
 
-  // fal.ai fixtures are typically authored against the model id (e.g.
-  // /flux/, /kling/) since the request body is opaque per-model JSON. Persist
-  // the resolved model so replay matches what `onFalQueue(/flux/, ...)` writes.
-  if (request._endpointType === "fal" && request.model) {
-    match.model = request.model;
+  // Record normalized model for all requests so fixtures disambiguate
+  // calls that share the same userMessage but target different models.
+  if (request.model) {
+    match.model =
+      normalizeModelName(request.model, recordConfig?.recordFullModelVersion) ?? request.model;
   }
 
   // Multi-turn disambiguation: writing only `userMessage` lets the recorder's
