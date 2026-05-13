@@ -701,6 +701,29 @@ export async function handleGeminiInteractions(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify(buildInteractionsErrorResponse(strictMessage, "UNAVAILABLE")),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -728,34 +751,21 @@ export async function handleGeminiInteractions(
         return;
       }
     }
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (effectiveStrict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
-      JSON.stringify(
-        buildInteractionsErrorResponse(
-          strictMessage,
-          effectiveStrict ? "UNAVAILABLE" : "NOT_FOUND",
-        ),
-      ),
+      404,
+      JSON.stringify(buildInteractionsErrorResponse("No fixture matched", "NOT_FOUND")),
     );
     return;
   }

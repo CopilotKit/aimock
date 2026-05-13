@@ -651,6 +651,34 @@ export async function handleGemini(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            code: 503,
+            status: "UNAVAILABLE",
+          },
+        }),
+      );
+      return;
+    }
+
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -674,33 +702,25 @@ export async function handleGemini(
         return;
       }
     }
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (effectiveStrict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
-          code: strictStatus,
-          status: effectiveStrict ? "UNAVAILABLE" : "NOT_FOUND",
+          message: "No fixture matched",
+          code: 404,
+          status: "NOT_FOUND",
         },
       }),
     );

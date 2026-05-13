@@ -600,6 +600,34 @@ export async function handleConverse(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -623,31 +651,23 @@ export async function handleConverse(
         return;
       }
     }
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (effectiveStrict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -871,6 +891,34 @@ export async function handleConverseStream(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -894,31 +942,23 @@ export async function handleConverseStream(
         return;
       }
     }
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (effectiveStrict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),

@@ -534,6 +534,39 @@ async function handleCompletions(
   }
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      defaults.logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
+      );
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? COMPLETIONS_PATH,
+        headers: flattenHeaders(req.headers),
+        body,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+            param: null,
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
+
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
       // Hook is only passed when chaos wants to mutate the response. When
@@ -598,18 +631,7 @@ async function handleCompletions(
         });
         return;
       }
-      // outcome === "not_configured" — fall through to strict/404
-    }
-
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (effectiveStrict) {
-      defaults.logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
-      );
+      // outcome === "not_configured" — fall through to 404
     }
 
     journal.add({
@@ -618,17 +640,17 @@ async function handleCompletions(
       headers: flattenHeaders(req.headers),
       body,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
           param: null,
           code: "no_fixture_match",

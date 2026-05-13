@@ -133,6 +133,32 @@ export async function handleElevenLabsAudio(
 
   // No fixture match
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method,
+        path,
+        headers: {},
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -157,27 +183,26 @@ export async function handleElevenLabsAudio(
       }
     }
 
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
     journal.add({
       method,
       path,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
-        error: { message: strictMessage, type: "invalid_request_error", code: "no_fixture_match" },
+        error: {
+          message: "No fixture matched",
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        },
       }),
     );
     return;

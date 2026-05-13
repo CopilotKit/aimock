@@ -211,31 +211,7 @@ export async function handleEmbeddings(
     return;
   }
 
-  // No fixture match — try record-and-replay proxy if configured
-  if (defaults.record) {
-    const outcome = await proxyAndRecord(
-      req,
-      res,
-      syntheticReq,
-      providerKey,
-      req.url ?? "/v1/embeddings",
-      fixtures,
-      defaults,
-      raw,
-    );
-    if (outcome === "handled_by_hook") return;
-    if (outcome !== "not_configured") {
-      journal.add({
-        method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
-        headers: flattenHeaders(req.headers),
-        body: syntheticReq,
-        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
-      });
-      return;
-    }
-  }
-
+  // No fixture match — check strict mode first, then try proxy
   if (resolveStrictMode(defaults.strict, req.headers)) {
     logger.error(
       `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/embeddings"}`,
@@ -263,6 +239,30 @@ export async function handleEmbeddings(
       }),
     );
     return;
+  }
+
+  if (defaults.record) {
+    const outcome = await proxyAndRecord(
+      req,
+      res,
+      syntheticReq,
+      providerKey,
+      req.url ?? "/v1/embeddings",
+      fixtures,
+      defaults,
+      raw,
+    );
+    if (outcome === "handled_by_hook") return;
+    if (outcome !== "not_configured") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/embeddings",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+      });
+      return;
+    }
   }
 
   // No fixture match — generate deterministic embeddings from input text

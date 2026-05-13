@@ -318,6 +318,31 @@ async function handleQueueSubmit(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: {},
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -342,27 +367,22 @@ async function handleQueueSubmit(
       }
     }
 
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
-    res.writeHead(strictStatus, { "Content-Type": "application/json" });
+    res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
           code: "no_fixture_match",
         },
@@ -646,6 +666,31 @@ async function handleSyncRun(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: {},
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -670,27 +715,22 @@ async function handleSyncRun(
       }
     }
 
-    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const strictStatus = effectiveStrict ? 503 : 404;
-    const strictMessage = effectiveStrict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: {
-        status: strictStatus,
+        status: 404,
         fixture: null,
         ...strictOverrideField(defaults.strict, req.headers),
       },
     });
-    res.writeHead(strictStatus, { "Content-Type": "application/json" });
+    res.writeHead(404, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
           code: "no_fixture_match",
         },
