@@ -93,6 +93,129 @@ export interface ProxyOptions {
 export type ProxyOutcome = "not_configured" | "relayed" | "handled_by_hook";
 
 /**
+ * Result of `persistFixture`:
+ * - `"skipped"` — proxy-only mode; the caller has nothing else to do.
+ * - `"written"` — fixture saved to `filepath` and (unless the match was empty)
+ *    registered into the in-memory cache so the next identical request matches.
+ * - `"failed"` — filesystem write failed. Caller decides how to surface it
+ *    (e.g. setting `X-AIMock-Record-Error` on a relay response).
+ */
+export type PersistFixtureResult =
+  | { kind: "skipped" }
+  | { kind: "written"; filepath: string }
+  | { kind: "failed"; error: string };
+
+/**
+ * Write a built fixture to disk (snapshot vs. timestamp file layout) and, when
+ * the match is non-empty, register it in the in-memory cache so subsequent
+ * identical requests match. Extracted from `proxyAndRecord` so the fal
+ * queue-walk recorder (which makes multiple upstream calls before knowing the
+ * final body) can share the same persistence behavior without re-implementing
+ * snapshot-mode merging and warnings.
+ */
+export function persistFixture(opts: {
+  record: RecordConfig;
+  providerKey: RecordProviderKey;
+  testId: string;
+  fixture: Fixture;
+  fixtures: Fixture[];
+  warnings?: string[];
+  logger: Logger;
+}): PersistFixtureResult {
+  const { record, providerKey, testId, fixture, fixtures, warnings = [], logger } = opts;
+
+  // Match criteria with no userMessage / inputText / endpoint will not match
+  // any future request — warn, then save to disk for inspection but skip the
+  // in-memory registration so a defective fixture doesn't shadow real ones.
+  // turnIndex/hasToolResult are pure multi-turn disambiguators on their own.
+  const m = fixture.match;
+  const isEmptyMatch =
+    m.userMessage === undefined && m.inputText === undefined && m.endpoint === undefined;
+  if (isEmptyMatch) {
+    logger.warn("Recorded fixture has empty match criteria — skipping in-memory registration");
+  }
+
+  if (record.proxyOnly) {
+    logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
+    return { kind: "skipped" };
+  }
+
+  const fixturePath = record.fixturePath ?? "./fixtures/recorded";
+  let isSnapshotMode = testId !== DEFAULT_TEST_ID;
+  let filepath: string;
+  let mergeExisting = false;
+
+  if (isSnapshotMode) {
+    const slug = slugifyTestId(testId);
+    if (!slug) {
+      // Slug resolved to empty (e.g. testId was all punctuation) — fall back
+      // to timestamp-based recording so we still capture the fixture.
+      isSnapshotMode = false;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      filepath = path.join(
+        fixturePath,
+        `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
+      );
+    } else {
+      filepath = path.join(fixturePath, slug, `${providerKey}.json`);
+      mergeExisting = true;
+    }
+  } else {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    filepath = path.join(
+      fixturePath,
+      `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
+    );
+  }
+
+  const fileWarnings = [
+    ...(isEmptyMatch ? ["Empty match criteria — this fixture will not match any request"] : []),
+    ...warnings,
+  ];
+
+  try {
+    fs.mkdirSync(isSnapshotMode ? path.dirname(filepath) : fixturePath, { recursive: true });
+
+    // Auth headers are forwarded to upstream but excluded from saved fixtures.
+    // The persisted fixture is always the real upstream response, even when
+    // chaos later mutates the relay; replay must see what upstream said.
+    let fileContent: { fixtures: unknown[]; _warning?: string };
+    if (mergeExisting && fs.existsSync(filepath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
+        fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
+      } catch (mergeErr) {
+        const msg = mergeErr instanceof Error ? mergeErr.message : "unknown";
+        logger.warn(`Could not read existing fixture file ${filepath} (${msg}) — overwriting`);
+        fileContent = { fixtures: [fixture] };
+      }
+    } else {
+      fileContent = { fixtures: [fixture] };
+    }
+    if (fileWarnings.length > 0) {
+      fileContent._warning = fileWarnings.join("; ");
+    }
+    // Atomic write: write to temp file then rename to avoid read-modify-write
+    // races. Keep synchronous — for streamed responses the HTTP reply is
+    // already on the wire, so async writes would race with callers checking
+    // the filesystem before the fixture has landed.
+    const tmpPath = filepath + ".tmp." + process.pid;
+    fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), "utf-8");
+    fs.renameSync(tmpPath, filepath);
+
+    if (!isEmptyMatch) {
+      fixtures.push(fixture);
+    }
+    logger.warn(`Response recorded → ${filepath}`);
+    return { kind: "written", filepath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+    logger.error(`Failed to save fixture to disk: ${msg}`);
+    return { kind: "failed", error: msg };
+  }
+}
+
+/**
  * Proxy an unmatched request to the real upstream provider, record the
  * response as a fixture on disk and in memory, then relay the response
  * back to the original client.
@@ -125,7 +248,6 @@ export async function proxyAndRecord(
     return "not_configured";
   }
 
-  const fixturePath = record.fixturePath ?? "./fixtures/recorded";
   let target: URL;
   try {
     target = resolveUpstreamUrl(upstreamUrl, pathname);
@@ -331,136 +453,34 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
-  // Build the match criteria from the (optionally transformed) request
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const fixtureMatch = buildFixtureMatch(matchRequest, defaults.record);
-
-  // Build metadata (drift-detection hashes, not match criteria)
   const metadata = buildFixtureMetadata(request);
-
-  // Build and save the fixture
   const fixture: Fixture = {
-    match: fixtureMatch,
+    match: buildFixtureMatch(matchRequest, defaults.record),
     response: fixtureResponse,
     ...(metadata && { metadata }),
   };
 
-  // Check if the match is empty — warn but still save to disk.
-  // Note: turnIndex/hasToolResult are pure multi-turn disambiguators and don't,
-  // by themselves, constitute a meaningful match key. A "real" match needs at
-  // least one of userMessage / inputText / endpoint to be useful.
-  const isEmptyMatch =
-    fixtureMatch.userMessage === undefined &&
-    fixtureMatch.inputText === undefined &&
-    fixtureMatch.endpoint === undefined;
-  if (isEmptyMatch) {
-    defaults.logger.warn(
-      "Recorded fixture has empty match criteria — skipping in-memory registration",
-    );
+  const persistWarnings: string[] = [];
+  if (collapsed?.truncated) {
+    persistWarnings.push("Stream response was truncated — fixture may be incomplete");
   }
-
-  // In proxy-only mode, skip recording to disk and in-memory caching
-  if (!defaults.record?.proxyOnly) {
-    // Determine file path: snapshot-style (by testId) or legacy timestamp
-    const testId = getTestId(req);
-    let isSnapshotMode = testId !== DEFAULT_TEST_ID;
-
-    let filepath!: string;
-    let mergeExisting = false;
-
-    if (isSnapshotMode) {
-      const slug = slugifyTestId(testId);
-      if (!slug) {
-        // Slug resolved to empty (e.g. testId was all punctuation) — fall back
-        // to timestamp-based recording so we still capture the fixture.
-        isSnapshotMode = false;
-      } else {
-        const dir = path.join(fixturePath, slug);
-        filepath = path.join(dir, `${providerKey}.json`);
-        mergeExisting = true;
-      }
-    }
-
-    if (!isSnapshotMode) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
-      filepath = path.join(fixturePath, filename);
-    }
-
-    let writtenToDisk = false;
-    try {
-      // Create the target directory (must be inside try/catch so filesystem
-      // errors don't prevent the upstream response from being relayed).
-      // Keep synchronous: for streamed responses the HTTP reply is already on
-      // the wire, so any async yield lets callers observe the filesystem before
-      // the fixture is written.
-      if (isSnapshotMode) {
-        fs.mkdirSync(path.dirname(filepath), { recursive: true });
-      } else {
-        fs.mkdirSync(fixturePath, { recursive: true });
-      }
-      // Collect warnings for the fixture file
-      const warnings: string[] = [];
-      if (isEmptyMatch) {
-        warnings.push("Empty match criteria — this fixture will not match any request");
-      }
-      if (collapsed?.truncated) {
-        warnings.push("Stream response was truncated — fixture may be incomplete");
-      }
-
-      // Auth headers are forwarded to upstream but excluded from saved fixtures for security.
-      // NOTE: the persisted fixture is always the real upstream response, even when chaos
-      // later mutates the relay (e.g. malformed via beforeWriteResponse). Chaos is a live-traffic
-      // decoration; the recorded artifact must stay truthful so replay sees what upstream said.
-      let fileContent: { fixtures: unknown[]; _warning?: string };
-
-      if (mergeExisting && fs.existsSync(filepath)) {
-        try {
-          const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-          fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
-        } catch (mergeErr) {
-          const msg = mergeErr instanceof Error ? mergeErr.message : "unknown";
-          defaults.logger.warn(
-            `Could not read existing fixture file ${filepath} (${msg}) — overwriting`,
-          );
-          fileContent = { fixtures: [fixture] };
-        }
-      } else {
-        fileContent = { fixtures: [fixture] };
-      }
-
-      if (warnings.length > 0) {
-        fileContent._warning = warnings.join("; ");
-      }
-
-      // Atomic write: write to temp file then rename to avoid read-modify-write races
-      // Keep synchronous — for streamed responses the HTTP response is already on the
-      // wire, so async writes would race with callers checking the filesystem.
-      const tmpPath = filepath + ".tmp." + process.pid;
-      fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), "utf-8");
-      fs.renameSync(tmpPath, filepath);
-      writtenToDisk = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown filesystem error";
-      defaults.logger.error(`Failed to save fixture to disk: ${msg}`);
-      if (!res.headersSent) {
-        res.setHeader("X-AIMock-Record-Error", msg);
-      } else {
-        defaults.logger.warn(`Cannot set X-AIMock-Record-Error header — headers already sent`);
-      }
-    }
-
-    if (writtenToDisk) {
-      // Register in memory so subsequent identical requests match (skip if empty match)
-      if (!isEmptyMatch) {
-        fixtures.push(fixture);
-      }
-      defaults.logger.warn(`Response recorded → ${filepath}`);
+  const persistResult = persistFixture({
+    record,
+    providerKey,
+    testId: getTestId(req),
+    fixture,
+    fixtures,
+    warnings: persistWarnings,
+    logger: defaults.logger,
+  });
+  if (persistResult.kind === "failed") {
+    if (!res.headersSent) {
+      res.setHeader("X-AIMock-Record-Error", persistResult.error);
     } else {
-      defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
+      defaults.logger.warn(`Cannot set X-AIMock-Record-Error header — headers already sent`);
     }
-  } else {
-    defaults.logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
+    defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
   }
 
   // Relay upstream response to client (skip when the response was already
@@ -1166,7 +1186,7 @@ type EndpointType =
   | "realtime-transcription"
   | "realtime-translation";
 
-function buildFixtureMatch(
+export function buildFixtureMatch(
   request: ChatCompletionRequest,
   recordConfig?: RecordConfig,
 ): {

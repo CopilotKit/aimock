@@ -1,9 +1,16 @@
 import type http from "node:http";
 import crypto from "node:crypto";
-import type { AudioResponse, ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js";
+import type {
+  AudioResponse,
+  ChatCompletionRequest,
+  Fixture,
+  HandlerDefaults,
+  RawJSONResponse,
+} from "./types.js";
 import {
   isAudioResponse,
   isErrorResponse,
+  isJSONResponse,
   serializeErrorResponse,
   flattenHeaders,
   FORMAT_TO_CONTENT_TYPE,
@@ -14,7 +21,8 @@ import {
 } from "./helpers.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixture } from "./router.js";
-import { proxyAndRecord } from "./recorder.js";
+import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
+import { buildFalForwardHeaders, walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 
@@ -344,27 +352,19 @@ async function handleQueueSubmit(
       return;
     }
     if (defaults.record) {
-      const outcome = await proxyAndRecord(
+      const handled = await tryRecordAudioQueueWalk({
         req,
         res,
         syntheticReq,
-        "fal",
+        modelId,
         pathname,
+        body,
         fixtures,
         defaults,
-        body,
-      );
-      if (outcome === "handled_by_hook") return;
-      if (outcome !== "not_configured") {
-        journal.add({
-          method: req.method ?? "POST",
-          path: pathname,
-          headers: flattenHeaders(req.headers),
-          body: syntheticReq,
-          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
-        });
-        return;
-      }
+        testId,
+        journal,
+      });
+      if (handled) return;
     }
 
     journal.add({
@@ -407,7 +407,37 @@ async function handleQueueSubmit(
     return;
   }
 
-  if (!isAudioResponse(response)) {
+  // Two valid recorded shapes for fal audio queues:
+  //  - AudioResponse: legacy authored fixtures with raw base64 audio that we
+  //    wrap into the fal `{ audio: { url, ... } }` envelope on demand.
+  //  - RawJSONResponse: queue-walk recordings that stored the final envelope
+  //    upstream returned (already in fal's `{ audio: { url, ... } }` shape).
+  let result: Record<string, unknown>;
+  if (isAudioResponse(response)) {
+    result = audioToFalFile(response);
+  } else if (isJSONResponse(response)) {
+    const json = (response as RawJSONResponse).json;
+    if (!json || typeof json !== "object") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: {},
+        body: syntheticReq,
+        response: { status: 500, fixture },
+      });
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Recorded fal audio fixture has non-object json",
+            type: "server_error",
+          },
+        }),
+      );
+      return;
+    }
+    result = json as Record<string, unknown>;
+  } else {
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
@@ -425,7 +455,6 @@ async function handleQueueSubmit(
   }
 
   const requestId = crypto.randomUUID();
-  const result = audioToFalFile(response);
 
   const job: FalJob = {
     requestId,
@@ -454,6 +483,163 @@ async function handleQueueSubmit(
       queue_position: 0,
     }),
   );
+}
+
+/**
+ * Walk the upstream queue (submit → poll status → get result), persist the
+ * FINAL result body as a fal-audio fixture, then synthesise the local envelope
+ * and seed `falJobs` so the same recording run's status/result polls work. The
+ * legacy `proxyAndRecord` shortcut wrote the IN_QUEUE envelope as the fixture,
+ * which broke replay (the SDK polls until COMPLETED then expects the result
+ * body, not the envelope).
+ *
+ * Returns `true` if the request has been handled (response written and
+ * journaled); `false` if recording wasn't configured for this provider and the
+ * caller should fall through to strict/404.
+ */
+async function tryRecordAudioQueueWalk(args: {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  syntheticReq: ChatCompletionRequest;
+  modelId: string;
+  pathname: string;
+  body: string;
+  fixtures: Fixture[];
+  defaults: HandlerDefaults;
+  testId: string;
+  journal: Journal;
+}): Promise<boolean> {
+  const { req, res, syntheticReq, modelId, pathname, body, fixtures, defaults, testId, journal } =
+    args;
+
+  const record = defaults.record;
+  if (!record) return false;
+  const upstreamBase = record.providers.fal;
+  if (!upstreamBase) {
+    // Fall back to the generic proxy so non-queue-shaped audio endpoints (e.g.
+    // direct audio bytes, when someone misconfigures) still get a chance to
+    // record, mirroring prior behavior.
+    const outcome = await proxyAndRecord(
+      req,
+      res,
+      syntheticReq,
+      "fal",
+      pathname,
+      fixtures,
+      defaults,
+      body,
+    );
+    if (outcome === "handled_by_hook") return true;
+    if (outcome === "relayed") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: {},
+        body: syntheticReq,
+        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+      });
+      return true;
+    }
+    return false;
+  }
+
+  defaults.logger.warn(
+    `NO FIXTURE MATCH — walking legacy fal audio queue at ${upstreamBase}${pathname}`,
+  );
+
+  let finalBody: unknown;
+  try {
+    finalBody = await walkFalQueue({
+      upstreamBase,
+      submitPath: pathname,
+      body,
+      headers: buildFalForwardHeaders(req),
+      pollIntervalMs: record.fal?.pollIntervalMs,
+      timeoutMs: record.fal?.timeoutMs,
+      // Legacy aimock-style paths, not the model-prefixed fal.ai layout.
+      fallbackStatusPath: (id) => `/fal/queue/requests/${id}/status`,
+      fallbackResultPath: (id) => `/fal/queue/requests/${id}`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown queue-walk error";
+    defaults.logger.error(`fal-audio queue-walk proxy failed: ${msg}`);
+    journal.add({
+      method: req.method ?? "POST",
+      path: pathname,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 502, fixture: null, source: "proxy" },
+    });
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: { message: `Proxy to upstream failed: ${msg}`, type: "proxy_error" },
+      }),
+    );
+    return true;
+  }
+
+  if (!finalBody || typeof finalBody !== "object") {
+    defaults.logger.error("fal-audio queue-walk produced non-object result");
+    journal.add({
+      method: req.method ?? "POST",
+      path: pathname,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 502, fixture: null, source: "proxy" },
+    });
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: { message: "Upstream result body was not a JSON object", type: "proxy_error" },
+      }),
+    );
+    return true;
+  }
+
+  const matchRequest = defaults.requestTransform
+    ? defaults.requestTransform(syntheticReq)
+    : syntheticReq;
+  const fixture: Fixture = {
+    match: buildFixtureMatch(matchRequest, record),
+    response: { json: finalBody, status: 200 },
+  };
+  persistFixture({
+    record,
+    providerKey: "fal",
+    testId,
+    fixture,
+    fixtures,
+    logger: defaults.logger,
+  });
+
+  const requestId = crypto.randomUUID();
+  const job: FalJob = {
+    requestId,
+    modelId,
+    status: "COMPLETED",
+    result: finalBody as Record<string, unknown>,
+  };
+  falJobs.set(`${testId}:${requestId}`, job);
+
+  journal.add({
+    method: req.method ?? "POST",
+    path: pathname,
+    headers: flattenHeaders(req.headers),
+    body: syntheticReq,
+    response: { status: 200, fixture: null, source: "proxy" },
+  });
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      request_id: requestId,
+      response_url: `https://queue.fal.run/${modelId}/requests/${requestId}/response`,
+      status_url: `https://queue.fal.run/${modelId}/requests/${requestId}/status`,
+      cancel_url: `https://queue.fal.run/${modelId}/requests/${requestId}/cancel`,
+      queue_position: 0,
+    }),
+  );
+  return true;
 }
 
 function handleQueueStatus(

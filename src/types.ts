@@ -514,6 +514,20 @@ export interface RecordConfig {
    * canonical alias (e.g. "gpt-4o"). Default: false.
    */
   recordFullModelVersion?: boolean;
+  /**
+   * fal-specific recording knobs for the queue-walk recorder. During recording
+   * the queue handler POSTs submit, polls `status_url` until COMPLETED, then
+   * GETs `response_url` for the final job body — saved as the fixture. Tune
+   * the poll cadence and timeout here if upstream is unusually slow or fast.
+   */
+  fal?: FalRecordConfig;
+}
+
+export interface FalRecordConfig {
+  /** Interval between status polls upstream during recording. Default: 1000ms. */
+  pollIntervalMs?: number;
+  /** Total budget for an upstream queue walk before aborting. Default: 900000ms (15 min) to accommodate video generation. */
+  timeoutMs?: number;
 }
 
 export interface MockServerOptions {
@@ -564,6 +578,34 @@ export interface MockServerOptions {
    * positives from shortened keys.
    */
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  /**
+   * Configure fal.ai queue polling progression. By default a job completes
+   * on submit (preserves the legacy `COMPLETED`-on-submit shape). Opt into a
+   * realistic `IN_QUEUE → IN_PROGRESS → COMPLETED` progression by setting
+   * positive poll thresholds — useful for exercising client code that polls
+   * `/status` and reacts to intermediate states.
+   *
+   * Applies to the general fal handler (`x-fal-target-host`-routed); the
+   * legacy `/fal/queue/...` audio handler is unaffected.
+   */
+  falQueue?: FalQueueConfig;
+}
+
+export interface FalQueueConfig {
+  /**
+   * Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Default: 0.
+   * When `pollsBeforeCompleted` is also unset, the job completes synchronously
+   * on submit (no IN_QUEUE / IN_PROGRESS polls emitted).
+   */
+  pollsBeforeInProgress?: number;
+  /**
+   * Status polls before transitioning to `COMPLETED`. Default: 0 when
+   * `pollsBeforeInProgress` is also unset (no progression), otherwise
+   * `pollsBeforeInProgress + 1` so the job spends one poll in IN_PROGRESS.
+   * An explicit value lower than `pollsBeforeInProgress` is clamped up so
+   * IN_PROGRESS is never skipped.
+   */
+  pollsBeforeCompleted?: number;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler
@@ -579,4 +621,5 @@ export interface HandlerDefaults {
   record?: RecordConfig;
   strict?: boolean;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  falQueue?: FalQueueConfig;
 }
