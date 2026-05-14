@@ -114,6 +114,37 @@
 });</code></pre>
         </div>
 
+        <h2>Typed Helpers: <code>onFalImage</code> / <code>onFalVideo</code></h2>
+        <p>
+          <code>onFalQueue</code> takes a raw JSON payload — the exact bytes that come out of fal.
+          When you want stronger types and don't want to hand-write the envelope, use the typed
+          helpers: they accept the same <code>ImageResponse</code> /
+          <code>VideoResponse</code> shapes you use with <code>onImage</code> / <code>onVideo</code>
+          and translate them into fal's wire shape before storing.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">typed.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="cm">// Equivalent to onFalQueue(..., { images: [...], timings, seed, has_nsfw_concepts, prompt })</span>
+<span class="op">mock</span>.<span class="fn">onFalImage</span>(<span class="str">/flux/</span>, {
+  <span class="prop">images</span>: [{ <span class="prop">url</span>: <span class="str">"https://mock.fal.media/x.png"</span> }],
+});
+
+<span class="cm">// Equivalent to onFalQueue(..., { video: { url, content_type, file_name, file_size }, seed })</span>
+<span class="op">mock</span>.<span class="fn">onFalVideo</span>(<span class="str">/kling/</span>, {
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"v1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">url</span>: <span class="str">"https://mock.fal.media/clip.mp4"</span> },
+});</code></pre>
+        </div>
+
+        <p>
+          Defaults filled in for image: <code>width: 1024</code>, <code>height: 1024</code>,
+          <code>content_type</code> inferred from URL extension,
+          <code>has_nsfw_concepts: [false, &hellip;]</code> (one per image),
+          <code>timings.inference: 0</code>, <code>seed: 0</code>. For video:
+          <code>content_type</code> + <code>file_name</code> inferred from URL,
+          <code>file_size: 0</code>, <code>seed: 0</code>.
+        </p>
+
         <h2>Client Configuration</h2>
         <p>
           Point the <code>@fal-ai/client</code> at aimock using <code>requestMiddleware</code> to
@@ -169,22 +200,88 @@
               <td>Status</td>
               <td>GET</td>
               <td><code>/fal/{owner}/{model}/requests/{id}/status</code></td>
-              <td><code>{ status: "COMPLETED" }</code></td>
+              <td>
+                <code>{ status, request_id, response_url, logs[] }</code> &mdash;
+                <code>queue_position</code> while pending, <code>metrics.inference_time</code> once
+                <code>COMPLETED</code>
+              </td>
             </tr>
             <tr>
               <td>Result</td>
               <td>GET</td>
               <td><code>/fal/{owner}/{model}/requests/{id}</code></td>
-              <td>The matched fixture payload</td>
+              <td>
+                The matched fixture payload (200) once <code>COMPLETED</code>; the status body (202)
+                before
+              </td>
             </tr>
             <tr>
               <td>Cancel</td>
               <td>PUT</td>
               <td><code>/fal/{owner}/{model}/requests/{id}/cancel</code></td>
-              <td><code>{ status: "ALREADY_COMPLETED" }</code> (400)</td>
+              <td>
+                <code>{ status: "CANCELLED" }</code> (200) before completion;
+                <code>{ status: "ALREADY_COMPLETED" }</code> (400) after
+              </td>
+            </tr>
+            <tr>
+              <td>Submit (bad body)</td>
+              <td>POST</td>
+              <td><code>/fal/{owner}/{model}</code></td>
+              <td>
+                400 with
+                <code
+                  >{ error: { code: "invalid_json", type: "invalid_request_error", message } }</code
+                >
+                when the request body is not valid JSON
+              </td>
             </tr>
           </tbody>
         </table>
+
+        <h2>Polling Realism</h2>
+        <p>
+          By default a queued job completes on submit &mdash; status polls return
+          <code>COMPLETED</code> immediately and tests stay fast. To exercise client code that
+          reacts to <code>IN_QUEUE</code> / <code>IN_PROGRESS</code> (queue position decay, log
+          accumulation, latency metrics), pass <code>falQueue</code> with positive poll thresholds.
+          The job advances through the state machine over the configured number of
+          <code>/status</code> calls.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">polling.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">port</span>: <span class="num">0</span>,
+  <span class="prop">falQueue</span>: { <span class="prop">pollsBeforeInProgress</span>: <span class="num">1</span>, <span class="prop">pollsBeforeCompleted</span>: <span class="num">2</span> },
+});
+<span class="op">mock</span>.<span class="fn">onFalImage</span>(<span class="str">/flux/</span>, { <span class="prop">images</span>: [{ <span class="prop">url</span>: <span class="str">"..."</span> }] });
+
+<span class="cm">// Submit  → IN_QUEUE,    queue_position: 1</span>
+<span class="cm">// status1 → IN_PROGRESS, queue_position: 0, logs[2]</span>
+<span class="cm">// status2 → COMPLETED,   metrics.inference_time set</span>
+<span class="cm">// result  → 200 with the matched payload</span></code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            When only <code>pollsBeforeInProgress</code> is set,
+            <code>pollsBeforeCompleted</code> defaults to <code>pollsBeforeInProgress + 1</code> so
+            the job always spends at least one poll in <code>IN_PROGRESS</code>. Set both explicitly
+            for full control.
+          </p>
+        </div>
+
+        <p>
+          If <code>pollsBeforeCompleted</code> is set lower than <code>pollsBeforeInProgress</code>,
+          it is clamped up so <code>IN_PROGRESS</code> is never skipped.
+        </p>
+
+        <p>
+          <code>logs</code> always contains at least one entry (job enqueued); a transition entry is
+          appended for each state change. Cancelling a job before completion sets status to
+          <code>CANCELLED</code> and subsequent polls keep reporting that state.
+        </p>
 
         <h2>JSON Fixture File</h2>
 
