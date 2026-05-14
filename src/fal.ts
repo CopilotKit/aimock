@@ -687,7 +687,10 @@ function parseBody(raw: string): Record<string, unknown> | null {
 // then synthesise the local envelope the same way the replay path does.
 
 const DEFAULT_FAL_POLL_INTERVAL_MS = 1000;
-const DEFAULT_FAL_TIMEOUT_MS = 120_000;
+// Video generations (kling, veo, runway, etc.) routinely take 5–10 minutes
+// on the upstream queue; 15 min gives headroom without trapping a genuinely
+// hung job indefinitely.
+const DEFAULT_FAL_TIMEOUT_MS = 900_000;
 
 // Hop-by-hop and client-set headers excluded from upstream forwarding.
 // Mirrors STRIP_HEADERS in recorder.ts.

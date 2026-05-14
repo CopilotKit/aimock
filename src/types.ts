@@ -526,7 +526,7 @@ export interface RecordConfig {
 export interface FalRecordConfig {
   /** Interval between status polls upstream during recording. Default: 1000ms. */
   pollIntervalMs?: number;
-  /** Total budget for an upstream queue walk before aborting. Default: 120000ms. */
+  /** Total budget for an upstream queue walk before aborting. Default: 900000ms (15 min) to accommodate video generation. */
   timeoutMs?: number;
 }
 
