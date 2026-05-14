@@ -379,6 +379,50 @@ describe("geminiToCompletionRequest", () => {
     expect(result.messages[0].tool_call_id).not.toBe(result.messages[1].tool_call_id);
   });
 
+  it("preserves functionCall.id from Gemini conversation history", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [
+          { role: "user", parts: [{ text: "weather in Tokyo" }] },
+          {
+            role: "model",
+            parts: [
+              {
+                functionCall: {
+                  name: "get_weather",
+                  args: { location: "Tokyo" },
+                  id: "call_fp_get_weather_001",
+                },
+              },
+            ],
+          },
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: "get_weather",
+                  response: { temperature: 72 },
+                },
+              },
+            ],
+          },
+          { role: "user", parts: [{ text: "thanks" }] },
+        ],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+
+    const assistantMsg = result.messages.find((m) => m.role === "assistant" && m.tool_calls);
+    expect(assistantMsg).toBeDefined();
+    expect(assistantMsg!.tool_calls![0].id).toBe("call_fp_get_weather_001");
+
+    const toolMsg = result.messages.find((m) => m.role === "tool");
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.tool_call_id).toBe("call_fp_get_weather_001");
+  });
+
   it("aligns functionCall and functionResponse IDs across a round trip", () => {
     // Model turn: two functionCall parts
     const modelTurn = geminiToCompletionRequest(

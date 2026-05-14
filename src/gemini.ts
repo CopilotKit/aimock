@@ -46,8 +46,8 @@ import { proxyAndRecord } from "./recorder.js";
 interface GeminiPart {
   text?: string;
   thought?: boolean;
-  functionCall?: { name: string; args: Record<string, unknown> };
-  functionResponse?: { name: string; response: unknown };
+  functionCall?: { name: string; args: Record<string, unknown>; id?: string };
+  functionResponse?: { name: string; response: unknown; id?: string };
   inlineData?: { mimeType: string; data: string };
 }
 
@@ -154,7 +154,7 @@ export function geminiToCompletionRequest(
             role: "assistant",
             content: text || null,
             tool_calls: funcCalls.map((fc, i) => ({
-              id: `call_gemini_${fc.functionCall!.name}_${i}`,
+              id: fc.functionCall!.id ?? `call_gemini_${fc.functionCall!.name}_${i}`,
               type: "function" as const,
               function: {
                 name: fc.functionCall!.name,
