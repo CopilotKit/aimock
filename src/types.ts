@@ -594,7 +594,11 @@ export interface MockServerOptions {
 export interface FalQueueConfig {
   /** Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Default: 0 (complete on submit). */
   pollsBeforeInProgress?: number;
-  /** Status polls before transitioning to `COMPLETED`. Must be >= pollsBeforeInProgress. Default: 0. */
+  /**
+   * Status polls before transitioning to `COMPLETED`. Default: 0 when
+   * pollsBeforeInProgress is also unset (no progression), otherwise
+   * `pollsBeforeInProgress + 1` so the job spends one poll in IN_PROGRESS.
+   */
   pollsBeforeCompleted?: number;
 }
 

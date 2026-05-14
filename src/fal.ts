@@ -104,9 +104,17 @@ export const falQueueStates = new FalQueueStateMap();
 
 // ─── Typed-response → fal envelope converters ───────────────────────────
 
+function extractExtension(url: string, fallback: string): { fileName: string; ext: string } {
+  const segment = url.split("?")[0].split("#")[0].split("/").pop() ?? "";
+  const fileName = segment.length > 0 ? segment : "";
+  const dotIdx = fileName.lastIndexOf(".");
+  const ext = dotIdx >= 0 ? fileName.slice(dotIdx + 1).toLowerCase() : fallback;
+  return { fileName, ext };
+}
+
 function imageItemToFalImage(item: ImageItem, index: number): Record<string, unknown> {
   const url = item.url ?? `https://mock.fal.media/files/generated_image_${index}.png`;
-  const ext = url.split(".").pop()?.split("?")[0]?.toLowerCase() ?? "png";
+  const { ext } = extractExtension(url, "png");
   const contentType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
   return {
     url,
@@ -139,13 +147,12 @@ export function imageResponseToFalJson(response: ImageResponse): Record<string, 
  */
 export function videoResponseToFalJson(response: VideoResponse): Record<string, unknown> {
   const url = response.video.url ?? "https://mock.fal.media/files/generated_video.mp4";
-  const fileName = url.split("/").pop()?.split("?")[0] ?? "generated_video.mp4";
-  const ext = fileName.split(".").pop()?.toLowerCase() ?? "mp4";
+  const { fileName, ext } = extractExtension(url, "mp4");
   return {
     video: {
       url,
       content_type: `video/${ext}`,
-      file_name: fileName,
+      file_name: fileName || "generated_video.mp4",
       file_size: 0,
     },
     seed: 0,
@@ -159,7 +166,12 @@ function resolveProgression(config: FalQueueConfig | undefined): {
   pollsBeforeCompleted: number;
 } {
   const pollsBeforeInProgress = config?.pollsBeforeInProgress ?? 0;
-  const pollsBeforeCompleted = Math.max(pollsBeforeInProgress, config?.pollsBeforeCompleted ?? 0);
+  // When only pollsBeforeInProgress is set, default pollsBeforeCompleted to one
+  // poll later so the job actually passes through IN_PROGRESS. When neither is
+  // configured, both stay 0 (no progression — completes on submit).
+  const pollsBeforeCompleted =
+    config?.pollsBeforeCompleted ??
+    (config?.pollsBeforeInProgress != null ? pollsBeforeInProgress + 1 : 0);
   return { pollsBeforeInProgress, pollsBeforeCompleted };
 }
 
@@ -172,20 +184,23 @@ function advanceJob(job: FalQueueJob): void {
   if (job.status === "COMPLETED" || job.status === "CANCELLED") return;
 
   job.pollCount += 1;
-  if (job.pollCount >= job.pollsBeforeCompleted) {
+  // Check IN_PROGRESS before COMPLETED so a job whose thresholds are equal
+  // still spends one poll in IN_PROGRESS instead of jumping straight to
+  // COMPLETED.
+  if (job.status === "IN_QUEUE" && job.pollCount >= job.pollsBeforeInProgress) {
+    job.status = "IN_PROGRESS";
+    job.logs.push({
+      timestamp: new Date().toISOString(),
+      level: "INFO",
+      message: "Job started processing.",
+    });
+  } else if (job.pollCount >= job.pollsBeforeCompleted) {
     job.status = "COMPLETED";
     job.completedAt = Date.now();
     job.logs.push({
       timestamp: new Date().toISOString(),
       level: "INFO",
       message: "Job completed.",
-    });
-  } else if (job.pollCount >= job.pollsBeforeInProgress && job.status === "IN_QUEUE") {
-    job.status = "IN_PROGRESS";
-    job.logs.push({
-      timestamp: new Date().toISOString(),
-      level: "INFO",
-      message: "Job started processing.",
     });
   }
 }
@@ -418,6 +433,18 @@ export async function handleFal(
         res.end(JSON.stringify({ status: "ALREADY_COMPLETED" }));
         return "handled";
       }
+      if (job.status === "CANCELLED") {
+        journal.add({
+          method: req.method ?? "PUT",
+          path: pathname,
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 200, fixture: null },
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "CANCELLED" }));
+        return "handled";
+      }
       job.status = "CANCELLED";
       job.logs.push({
         timestamp: new Date().toISOString(),
@@ -457,7 +484,30 @@ export async function handleFal(
     case "queue-submit":
     case "sync-run": {
       const modelId = route.modelId!;
-      const parsedBody = parseBody(body);
+      let parsedBody: Record<string, unknown> | null;
+      try {
+        parsedBody = parseBody(body);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "Invalid JSON body";
+        journal.add({
+          method: req.method ?? "POST",
+          path: pathname,
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 400, fixture: null },
+        });
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: detail,
+              type: "invalid_request_error",
+              code: "invalid_json",
+            },
+          }),
+        );
+        return "handled";
+      }
       const prompt = extractPromptFromBody(parsedBody);
       const syntheticReq: ChatCompletionRequest = {
         model: modelId,
@@ -670,8 +720,9 @@ function parseBody(raw: string): Record<string, unknown> | null {
   if (!raw.trim()) return null;
   try {
     return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "unknown";
+    throw new Error(`Malformed JSON: ${detail}`);
   }
 }
 
