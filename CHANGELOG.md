@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.23.1] - 2026-05-14
+
+### Fixed
+
+- **Gemini functionCall.id preservation** — the Gemini conversation history converter generated new tool call IDs (`call_gemini_*`) instead of preserving the original IDs from `functionCall.id`. This broke `toolCallId`-based fixture matching on follow-up turns: the follow-up fixture couldn't match because the ID was overwritten, so the request fell through to `userMessage` fixtures which returned another tool call — creating an infinite loop for all Gemini/ADK showcase integrations. LangGraph-python (OpenAI format) was unaffected because it preserves IDs natively. ([#196](https://github.com/CopilotKit/aimock/pull/196))
+
 ## [1.23.0] - 2026-05-13
 
 ### Added
