@@ -119,9 +119,7 @@ const multiToolFixture: Fixture = {
 const toolFixtureWithId: Fixture = {
   match: { userMessage: "pinned-id" },
   response: {
-    toolCalls: [
-      { id: "call_test_pinned_001", name: "get_weather", arguments: '{"city":"Tokyo"}' },
-    ],
+    toolCalls: [{ id: "call_test_pinned_001", name: "get_weather", arguments: '{"city":"Tokyo"}' }],
   },
 };
 
