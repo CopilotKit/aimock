@@ -7,14 +7,19 @@ on:
       - "src/agui-types.ts"
       - "src/__tests__/drift/agui-schema.drift.ts"
   workflow_dispatch: # Manual trigger
+
+permissions:
+  contents: read
+
 jobs:
   agui-schema-drift:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
@@ -31,9 +36,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
@@ -41,6 +47,10 @@ jobs:
 
       - name: Run drift tests
         id: drift
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set +e
           npx tsx scripts/drift-report-collector.ts
@@ -53,14 +63,10 @@ jobs:
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit $EXIT_CODE
           fi
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 
       - name: Upload drift report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drift-report
           path: drift-report.json
@@ -76,22 +82,29 @@ jobs:
     needs: [drift, agui-schema-drift]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check previous run status
         id: prev
-        run: |
-          PREV=$(gh run list --workflow="Drift Tests" --repo="${{ github.repository }}" --branch=main --limit=2 --json conclusion --jq '.[1].conclusion // "unknown"')
-          echo "conclusion=$PREV" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          PREV=$(gh run list --workflow="Drift Tests" --repo="${REPO}" --branch=main --limit=2 --json conclusion --jq '.[1].conclusion // "unknown"')
+          echo "conclusion=$PREV" >> $GITHUB_OUTPUT
 
       - name: Notify Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          PREV: ${{ steps.prev.outputs.conclusion }}
+          DRIFT_RESULT: ${{ needs.drift.result }}
+          AGUI_RESULT: ${{ needs.agui-schema-drift.result }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-
-          PREV="${{ steps.prev.outputs.conclusion }}"
-          DRIFT_RESULT="${{ needs.drift.result }}"
-          AGUI_RESULT="${{ needs.agui-schema-drift.result }}"
 
           HTTP_DRIFT=false
           AGUI_DRIFT=false
@@ -110,7 +123,7 @@ jobs:
             INFRA_ERROR=true
           fi
 
-          RUN_URL="<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+          RUN_URL="<https://github.com/${REPO}/actions/runs/${RUN_ID}|View run>"
 
           # Both types of drift
           if [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
@@ -141,5 +154,3 @@ jobs:
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

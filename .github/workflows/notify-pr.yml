@@ -2,6 +2,9 @@ name: PR Notification
 on:
   pull_request_target:
     types: [opened]
+
+permissions: {}
+
 jobs:
   notify:
     runs-on: ubuntu-latest

@@ -40,7 +40,7 @@
     "type": "git",
     "url": "git+https://github.com/CopilotKit/aimock.git"
   },
-  "packageManager": "pnpm@10.28.2",
+  "packageManager": "pnpm@11.1.2",
   "engines": {
     "node": ">=24.0.0"
   },

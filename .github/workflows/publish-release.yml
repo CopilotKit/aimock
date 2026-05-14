@@ -3,6 +3,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -12,10 +16,10 @@ jobs:
       id-token: write
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { fetch-depth: 0 }
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
@@ -57,11 +61,15 @@ jobs:
       - name: Build and publish
         if: steps.check.outputs.published == 'false'
         run: pnpm build && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Ensure git tag exists
         if: steps.check.outputs.published == 'false'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
         run: |
-          TAG="v${{ steps.check.outputs.version }}"
+          TAG="v${VERSION}"
           if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
             git tag "${TAG}"
             git push origin "${TAG}"
@@ -69,37 +77,45 @@ jobs:
 
       - name: Update major version tag for GitHub Action
         if: steps.check.outputs.published == 'false'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
         run: |
-          MAJOR="v$(echo "${{ steps.check.outputs.version }}" | cut -d. -f1)"
+          MAJOR="v$(echo "${VERSION}" | cut -d. -f1)"
           git tag -f "${MAJOR}"
           git push origin "${MAJOR}" --force
 
       - name: Create GitHub Release
         if: steps.check.outputs.published == 'false'
-        run: |
-          TAG="v${{ steps.check.outputs.version }}"
-          gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag --latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag --latest
 
       - name: Trigger Docker publish workflow
         # GitHub's anti-recursion rule: tags pushed by GITHUB_TOKEN do NOT
         # trigger downstream workflows. Explicitly dispatch publish-docker.yml
         # so the GHCR image actually gets built on every release.
         if: steps.check.outputs.published == 'false'
-        run: |
-          TAG="v${{ steps.check.outputs.version }}"
-          gh workflow run publish-docker.yml --ref "${TAG}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          gh workflow run publish-docker.yml --ref "${TAG}"
 
       - name: Notify Slack
         if: steps.check.outputs.published == 'false'
-        run: |
-          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          VERSION="v${{ steps.check.outputs.version }}"
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"text\":\"📦 *@copilotkit/aimock ${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${{ steps.check.outputs.version }}\nRelease: https://github.com/${{ github.repository }}/releases/tag/${VERSION}\"}"
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          VERSION: ${{ steps.check.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
+          PAYLOAD=$(jq -n \
+            --arg text "📦 *@copilotkit/aimock v${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${VERSION}\nRelease: https://github.com/${REPO}/releases/tag/v${VERSION}" \
+            '{text: $text}')
+          curl -s -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"

@@ -5,15 +5,21 @@ on:
     paths:
       - "packages/aimock-pytest/**"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -37,6 +43,6 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.check.outputs.published == 'false'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           packages-dir: packages/aimock-pytest/dist/

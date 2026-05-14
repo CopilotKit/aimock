@@ -9,6 +9,9 @@ concurrency:
   group: competitive-matrix
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   update-matrix:
     runs-on: ubuntu-latest
@@ -16,18 +19,18 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
       - name: Update competitive matrix
-        run: npx tsx scripts/update-competitive-matrix.ts --summary /tmp/matrix-summary.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx tsx scripts/update-competitive-matrix.ts --summary /tmp/matrix-summary.md
 
       - name: Check for changes
         id: changes
@@ -40,6 +43,8 @@ jobs:
 
       - name: Create PR
         if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -52,25 +57,27 @@ jobs:
             --title "Update competitive matrix and migration pages" \
             --body-file /tmp/matrix-summary.md \
             --base main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify Slack
         if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          CHANGED: ${{ steps.changes.outputs.changed }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          if [ "${{ steps.changes.outputs.changed }}" = "true" ]; then
+          if [ "$CHANGED" = "true" ]; then
             EMOJI="📊"
-            MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
-          elif [ "${{ job.status }}" = "success" ]; then
+            MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
+          elif [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             MSG="Competitive matrix check — no changes detected."
           else
             EMOJI="❌"
-            MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${{ github.run_id }}|View run>"
+            MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           fi
+          PAYLOAD=$(jq -n --arg text "${EMOJI} ${MSG}" '{text: $text}')
           curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "{\"text\": \"${EMOJI} ${MSG}\"}"
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+            -d "$PAYLOAD"

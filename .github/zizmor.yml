@@ -1,0 +1,32 @@
+# Zizmor static analysis config — see https://docs.zizmor.sh/configuration/
+#
+# Each ignore below is an intentional pattern that zizmor flags conservatively.
+# Adding a rule here REQUIRES a comment explaining why it is safe.
+
+rules:
+  # ─── artipacked ────────────────────────────────────────────────────────
+  # These three workflows push back to the repo (commits / tags / branches)
+  # using the default `GITHUB_TOKEN`, so `persist-credentials: false` is not
+  # an option. The token is scoped per-job and the workflows only run on the
+  # `main` branch or via `workflow_dispatch`, never on untrusted PR HEADs.
+  artipacked:
+    ignore:
+      - fix-drift.yml
+      - publish-release.yml
+      - update-competitive-matrix.yml
+
+  # ─── dangerous-triggers ────────────────────────────────────────────────
+  # `notify-pr.yml` uses `pull_request_target` intentionally: it needs
+  # `secrets.SLACK_WEBHOOK` to fire on PRs from forks. It does NOT check out
+  # PR HEAD, runs nothing from the PR, and the top-level `permissions: {}`
+  # zero-scopes `GITHUB_TOKEN`. Only `pull_request.{title,html_url,user.login,number}`
+  # is exposed, and all three are passed via `env:` so shell interpolation is
+  # not possible.
+  #
+  # `fix-drift.yml` uses `workflow_run` triggered by the Drift Tests workflow
+  # which is restricted to `branches: [main]`. The trigger payload cannot be
+  # forged from a PR; the workflow runs against `main` HEAD only.
+  dangerous-triggers:
+    ignore:
+      - notify-pr.yml
+      - fix-drift.yml

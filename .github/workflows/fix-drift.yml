@@ -10,6 +10,9 @@ concurrency:
   group: drift-fix
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   fix:
     if: >-
@@ -22,9 +25,9 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
@@ -36,14 +39,20 @@ jobs:
 
       # Step 0b: Configure git identity and create fix branch
       - name: Configure git
+        env:
+          RUN_ID: ${{ github.run_id }}
         run: |
           git config user.name "aimock-drift-bot"
           git config user.email "drift-bot@copilotkit.ai"
-          git checkout -B fix/drift-$(date +%Y-%m-%d)-${{ github.run_id }}
+          git checkout -B "fix/drift-$(date +%Y-%m-%d)-${RUN_ID}"
 
       # Step 1: Detect drift and produce report
       - name: Collect drift report
         id: detect
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set +e
           npx tsx scripts/drift-report-collector.ts
@@ -56,15 +65,11 @@ jobs:
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit $EXIT_CODE
           fi
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
 
       # Always upload the report as an artifact
       - name: Upload drift report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: drift-report
           path: drift-report.json
@@ -90,85 +95,93 @@ jobs:
         id: autofix
         if: steps.check.outputs.skip != 'true'
         continue-on-error: true
-        run: npx tsx scripts/fix-drift.ts
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: npx tsx scripts/fix-drift.ts
 
       # Upload Claude Code output for debugging
       - name: Upload Claude Code logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: claude-code-output
           path: claude-code-output.log
           if-no-files-found: warn
           retention-days: 30
 
-      # Step 4: Verify fix independently
+      # Step 4: Verify fix independently — only when autofix actually succeeded.
+      # `autofix` has `continue-on-error: true`, so without these explicit guards
+      # `success()` would remain true on autofix failure and we'd verify+ship a
+      # broken state.
       - name: Verify conformance
-        if: steps.check.outputs.skip != 'true'
+        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
         run: pnpm test
 
       - name: Verify drift resolved
-        if: steps.check.outputs.skip != 'true'
-        run: pnpm test:drift
+        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: pnpm test:drift
 
       # Step 5: Create PR on success
       - name: Create PR
         id: pr
-        if: success() && steps.check.outputs.skip != 'true'
+        if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           npx tsx scripts/fix-drift.ts --create-pr
           PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url')
           if [ -z "$PR_URL" ]; then echo "No PR URL found"; exit 1; fi
           echo "url=$PR_URL" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 5.5: Auto-merge the drift fix PR
       - name: Auto-merge PR
         if: success() && steps.pr.outputs.url != ''
-        run: |
-          PR_URL="${{ steps.pr.outputs.url }}"
-          gh pr merge "$PR_URL" --merge --auto
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: gh pr merge "$PR_URL" --merge --auto
 
-      # Step 6: Open issue on failure
+      # Step 6: Open issue on failure (including the autofix-step failing
+      # despite continue-on-error: true, which would otherwise be silent).
       - name: Create issue on failure
-        if: failure() && steps.check.outputs.skip != 'true'
-        run: npx tsx scripts/fix-drift.ts --create-issue
+        if: (failure() || steps.autofix.outcome == 'failure') && steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx tsx scripts/fix-drift.ts --create-issue
 
       # Step 7: Slack notification on successful fix
       - name: Notify Slack on fix success
         if: success() && steps.pr.outputs.url != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          MSG="✅ *Drift auto-fix PR created with auto-merge enabled*\nPR: ${{ steps.pr.outputs.url }}\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="✅ *Drift auto-fix PR created with auto-merge enabled*\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
       # Step 8: Slack notification on fix failure
       - name: Notify Slack on fix failure
         if: failure() && steps.check.outputs.skip != 'true'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          MSG="❌ *Drift auto-fix failed* — issue created\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="❌ *Drift auto-fix failed* — issue created\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

@@ -14,6 +14,9 @@ env:
   PRIMARY_IMAGE: ghcr.io/copilotkit/aimock
   COMPAT_IMAGE: ghcr.io/copilotkit/llmock
 
+permissions:
+  contents: read
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -23,17 +26,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with: { persist-credentials: false }
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -41,7 +45,7 @@ jobs:
 
       - name: Extract metadata (primary — aimock)
         id: meta-primary
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.PRIMARY_IMAGE }}
           tags: |
@@ -50,7 +54,7 @@ jobs:
 
       - name: Extract metadata (compat — llmock)
         id: meta-compat
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.COMPAT_IMAGE }}
           tags: |
@@ -58,7 +62,7 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -67,5 +71,7 @@ jobs:
             ${{ steps.meta-primary.outputs.tags }}
             ${{ steps.meta-compat.outputs.tags }}
           labels: ${{ steps.meta-primary.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scope the GHA cache by event so PR builds cannot poison the
+          # release-tag cache namespace (cache-poisoning hardening).
+          cache-from: type=gha,scope=${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'release' }}
+          cache-to: type=gha,mode=max,scope=${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'release' }}
