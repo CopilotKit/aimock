@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-05-14
+
+### Added
+
+- **`onFalImage(pattern, ImageResponse)`** — typed helper that wraps ImageResponse into fal's image envelope
+- **`onFalVideo(pattern, VideoResponse)`** — typed helper that wraps VideoResponse into fal's video envelope
+- **`MockServerOptions.falQueue`** — opt into realistic `IN_QUEUE → IN_PROGRESS → COMPLETED` polling progression with configurable thresholds
+- Queue status responses include `logs[]` (state-transition entries) and `metrics.inference_time` (once COMPLETED)
+- Cancel-before-completion returns `200 { status: "CANCELLED" }`; cancel-after returns `400 { status: "ALREADY_COMPLETED" }`
+- Result fetch before completion returns `202` with current status body
+- Queue-walk recording: recorder now walks the upstream fal queue (submit → poll → result) and persists the FINAL job body, not the submit envelope
+- **`RecordConfig.fal.pollIntervalMs`** / **`fal.timeoutMs`** for tuning upstream queue-walk recording cadence
+- Malformed JSON request bodies now return `400 invalid_json` (consistent with all other handlers)
+
+### Fixed
+
+- `pollsBeforeCompleted` auto-defaults to `pollsBeforeInProgress + 1` when only the in-progress threshold is set
+- URL extension extraction no longer produces invalid MIME types for URLs with query strings, fragments, or no extension
+- Double-cancel no longer pushes duplicate log entries
+- Legacy fal audio queue recording now uses the same queue-walk approach
+
+### Changed
+
+- Default fal queue-walk timeout bumped from 2 min to 15 min (video generations routinely take 5–10 min)
+- `persistFixture` and `buildFixtureMatch` extracted from recorder internals and exported for reuse
+
 ## [1.23.1] - 2026-05-14
 
 ### Fixed
