@@ -139,9 +139,10 @@
         <p>
           Defaults filled in for image: <code>width: 1024</code>, <code>height: 1024</code>,
           <code>content_type</code> inferred from URL extension,
-          <code>has_nsfw_concepts: [false, &hellip;]</code> (one per image), <code>timings.inference: 0</code>,
-          <code>seed: 0</code>. For video: <code>content_type</code> +
-          <code>file_name</code> inferred from URL, <code>file_size: 0</code>, <code>seed: 0</code>.
+          <code>has_nsfw_concepts: [false, &hellip;]</code> (one per image),
+          <code>timings.inference: 0</code>, <code>seed: 0</code>. For video:
+          <code>content_type</code> + <code>file_name</code> inferred from URL,
+          <code>file_size: 0</code>, <code>seed: 0</code>.
         </p>
 
         <h2>Client Configuration</h2>
@@ -229,7 +230,9 @@
               <td><code>/fal/{owner}/{model}</code></td>
               <td>
                 400 with
-                <code>{ error: { code: "invalid_json", type: "invalid_request_error", message } }</code>
+                <code
+                  >{ error: { code: "invalid_json", type: "invalid_request_error", message } }</code
+                >
                 when the request body is not valid JSON
               </td>
             </tr>
@@ -263,16 +266,15 @@
         <div class="info-box">
           <p>
             When only <code>pollsBeforeInProgress</code> is set,
-            <code>pollsBeforeCompleted</code> defaults to
-            <code>pollsBeforeInProgress + 1</code> so the job always spends at least one poll
-            in <code>IN_PROGRESS</code>. Set both explicitly for full control.
+            <code>pollsBeforeCompleted</code> defaults to <code>pollsBeforeInProgress + 1</code> so
+            the job always spends at least one poll in <code>IN_PROGRESS</code>. Set both explicitly
+            for full control.
           </p>
         </div>
 
         <p>
-          If <code>pollsBeforeCompleted</code> is set lower than
-          <code>pollsBeforeInProgress</code>, it is clamped up so
-          <code>IN_PROGRESS</code> is never skipped.
+          If <code>pollsBeforeCompleted</code> is set lower than <code>pollsBeforeInProgress</code>,
+          it is clamped up so <code>IN_PROGRESS</code> is never skipped.
         </p>
 
         <p>
