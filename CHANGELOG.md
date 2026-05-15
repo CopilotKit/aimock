@@ -1,5 +1,131 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Added
+
+- **Configurable proxy timeouts** — `RecordConfig` now accepts `upstreamTimeoutMs` (default 30s) and `bodyTimeoutMs` (default 30s). The body-idle timeout is the Node socket inactivity timer that fires `req.destroy()` mid-stream; under concurrent load against reasoning models (e.g. Grok 4.3 + structured output), token-emission gaps can routinely exceed 30s during the thinking phase, causing record-mode runs to truncate SSE responses mid-stream with no `[DONE]` and no `finish_reason`. Lift to e.g. `bodyTimeoutMs: 180_000` to record cleanly under that workload.
+
+## [1.24.1] - 2026-05-14
+
+### Fixed
+
+- **Gemini tool-call response serializer dropped fixture-pinned `tool_call.id`** — `parseToolCallPart` emitted `{ functionCall: { name, args } }` and omitted the id even when the fixture pinned one. Pairs with v1.23.1's INGEST-direction fix ([#196](https://github.com/CopilotKit/aimock/pull/196)) which preserves `functionCall.id` when aimock parses an _incoming_ Gemini request — that fix only helps when the id is already in the response body. Without this EGRESS-direction fix, aimock never emits one for clients to preserve in the first place, so the round-trip silently breaks for any client that depends on `functionCall.id` to correlate follow-up `functionResponse` parts back to the originating call
+
+## [1.24.0] - 2026-05-14
+
+### Added
+
+- **`onFalImage(pattern, ImageResponse)`** — typed helper that wraps ImageResponse into fal's image envelope
+- **`onFalVideo(pattern, VideoResponse)`** — typed helper that wraps VideoResponse into fal's video envelope
+- **`MockServerOptions.falQueue`** — opt into realistic `IN_QUEUE → IN_PROGRESS → COMPLETED` polling progression with configurable thresholds
+- Queue status responses include `logs[]` (state-transition entries) and `metrics.inference_time` (once COMPLETED)
+- Cancel-before-completion returns `200 { status: "CANCELLED" }`; cancel-after returns `400 { status: "ALREADY_COMPLETED" }`
+- Result fetch before completion returns `202` with current status body
+- Queue-walk recording: recorder now walks the upstream fal queue (submit → poll → result) and persists the FINAL job body, not the submit envelope
+- **`RecordConfig.fal.pollIntervalMs`** / **`fal.timeoutMs`** for tuning upstream queue-walk recording cadence
+- Malformed JSON request bodies now return `400 invalid_json` (consistent with all other handlers)
+
+### Fixed
+
+- `pollsBeforeCompleted` auto-defaults to `pollsBeforeInProgress + 1` when only the in-progress threshold is set
+- URL extension extraction no longer produces invalid MIME types for URLs with query strings, fragments, or no extension
+- Double-cancel no longer pushes duplicate log entries
+- Legacy fal audio queue recording now uses the same queue-walk approach
+
+### Changed
+
+- Default fal queue-walk timeout bumped from 2 min to 15 min (video generations routinely take 5–10 min)
+- `persistFixture` and `buildFixtureMatch` extracted from recorder internals and exported for reuse
+
+## [1.23.1] - 2026-05-14
+
+### Fixed
+
+- **Gemini functionCall.id preservation** — the Gemini conversation history converter generated new tool call IDs (`call_gemini_*`) instead of preserving the original IDs from `functionCall.id`. This broke `toolCallId`-based fixture matching on follow-up turns: the follow-up fixture couldn't match because the ID was overwritten, so the request fell through to `userMessage` fixtures which returned another tool call — creating an infinite loop for all Gemini/ADK showcase integrations. LangGraph-python (OpenAI format) was unaffected because it preserves IDs natively. ([#196](https://github.com/CopilotKit/aimock/pull/196))
+
+## [1.23.0] - 2026-05-13
+
+### Added
+
+- **Model-aware fixture recording** — recorded fixtures now include the model name in match criteria, preventing collisions when an app makes multiple LLM calls with the same user message but different models. Model names are normalized by stripping date/version suffixes (e.g., `claude-opus-4-20250514` → `claude-opus-4`) so fixtures survive version bumps. Disable with `recordFullModelVersion: true`. ([#185](https://github.com/CopilotKit/aimock/issues/185))
+- **Drift detection metadata** — recorded fixtures include `systemHash` and `toolsHash` in a `metadata` block for detecting system prompt or tool definition changes since recording.
+- **Prefix model matching** — fixture router uses `startsWith` for string model matching, so `model: "claude-opus-4"` matches any `claude-opus-4-*` version.
+- **GA Realtime protocol migration with Beta compatibility shim** — handler emits GA event names natively; `sendEvent()` wrapper translates back for Beta clients detected via `OpenAI-Beta` header. Default model changed to `gpt-realtime-2`.
+- **GA Realtime models** — `gpt-realtime`, `gpt-realtime-2`, `gpt-realtime-1.5`, `gpt-realtime-mini` (and dated snapshots). Transcription/translation sessions use `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, or `whisper-1`.
+- **Transcription and translation session types** — dedicated session configurations for translation and transcription workloads on the Realtime API.
+- **Image input support** — Realtime sessions accept image content parts alongside text and audio.
+- **Commentary phase** — Realtime handler supports the GA commentary phase for model-generated annotations.
+- **`conversation.item.done` and `response.cancel` events** — new GA Realtime event types for item completion tracking and response cancellation.
+- **Endpoint type routing for Realtime** — router distinguishes GA vs Beta Realtime endpoints for fixture matching.
+- **Drift detection for GA Realtime** — drift test suite extended with GA protocol shapes, Beta conformance shapes, and three-way triangulation.
+
+### Tests
+
+- **73 GA Realtime integration tests** — comprehensive test coverage for all GA event types, Beta compatibility, session management, model routing, image input, translate/whisper, commentary, and cancellation.
+- **GA and Beta Realtime conformance suites** — API conformance tests validating event shapes against both GA and Beta protocol specs.
+- **GA Realtime drift detection** — SDK shape tests and provider triangulation for the GA Realtime protocol.
+
+## [1.22.1] - 2026-05-12
+
+### Fixed
+
+- **Strict mode checked before proxy attempt** — in `--proxy-only` mode, the `X-AIMock-Strict` header had no effect because `proxyAndRecord()` returned before the strict check. Now all 17 handlers check strict mode first: when strict + no fixture → 503 immediately, no proxy attempt
+- **Helper utilities and error serialization** — hardened helper functions and error serialization paths for correctness and robustness
+- **Journal and fixture-loader correctness** — fixed journal entry handling and fixture-loader edge cases
+- **WebSocket handler consistency and strict-mode journal** — aligned WebSocket handler behavior and ensured strict-mode journal entries are recorded correctly
+- **Provider handler consistency and proxy outcomes** — unified provider handler error paths and proxy outcome reporting
+- **Media handler hardening and chaos injection** — strengthened media handler validation and chaos injection reliability
+
+### Tests
+
+- **Bedrock mock consistency and CLI help text** — corrected Bedrock mock test assertions and CLI `--help` output coverage
+
+## [1.22.0] - 2026-05-11
+
+### Added
+
+- **Per-request strict mode via `X-AIMock-Strict` header** — overrides the server-wide `--strict` flag per request (`true`/`1` = strict, `false`/`0` = lenient). When strict: fixture miss returns 503; when lenient: fixture miss proxies to real provider. Follows the `X-AIMock-Chaos-*` precedence pattern. Journal entries record `strictOverride` when the header overrides the server default. Enables the same aimock instance to serve both deterministic test probes and live demo traffic simultaneously.
+
+### Fixed
+
+- **Progressive relay for NDJSON and Bedrock binary event streams** — Ollama NDJSON and Bedrock binary event streams were fully buffered before relay, triggering downstream idle timeouts; now relayed progressively as chunks arrive
+- **JSON.parse error detail in bare catch blocks** — capture and surface parse-error detail in all bare catch blocks across 25+ provider/WebSocket/stream-collapse handlers instead of swallowing context
+- **Unguarded stream write/end calls** — wrap stream write/end in try/catch (recorder.ts, agui-recorder.ts) to prevent unhandled exceptions on client disconnect
+- **Response termination for headers-already-sent paths** — add response termination in error paths where headers were already sent (server.ts, a2a-mock.ts, mcp-mock.ts), preventing connection hangs
+- **Vector-mock double body consumption** — fix route passthrough consuming the request body twice, causing empty-body forwarding
+- **Drift detection compared only first event per type** — `compareSSESequences` now compares ALL events per type, not just the first, catching previously invisible divergences
+- **Ollama drift tests used broken async describe.skipIf** — replaced with synchronous env-var gate so tests are correctly skipped or executed
+- **12 unrestored spy/mock leaks and misleading assertions** — fix spy/mock leaks across test files and correct assertions that passed for the wrong reasons
+- Proxy relay hardcoded POST method — now forwards the original HTTP method
+- Response timeout timer leak — cleared after successful upstream completion
+- Client disconnect handler race — checks `writableFinished` before destroying upstream request
+- `onHookBypassed` and `beforeWriteResponse` callbacks not wrapped in try/catch
+- Audio error relay sent non-2xx responses with audio content-type instead of application/json
+- Snapshot-mode fixture writes not atomic — concurrent requests could corrupt the file
+- Undefined `toolCall` name/arguments silently dropped during fixture save
+- Video detection heuristic false-positives on LLM provider responses with `{id, status}` shape
+- One-shot error fixture splice during iteration (deferred via microtask)
+- Azure model injection catch swallowed non-SyntaxError exceptions
+- fal request body lost on passthrough (double `readBody` consumption)
+- fal queue handler dropped PUT request body
+- Recorder test: tmpDir leak on strict-mode reassignment, global fetch dependency, fragile fixturePath cleanup, duplicate helpers, spy leak on assertion failure
+
+### Added
+
+- Fixture-level chaos evaluation for non-completions endpoints (ElevenLabs, fal)
+
+### Changed
+
+- **Anti-buffering headers on all progressive stream relay paths** — standard headers (Cache-Control, Connection, X-Accel-Buffering) added to all progressive stream relay paths to prevent intermediate proxy buffering
+- **Stream-collapse returns firstDroppedSample** — stream-collapse functions now return the first dropped sample for forensic debugging of collapsed streams
+
+## [1.21.0] - 2026-05-11
+
+### Added
+
+- **`match.systemMessage` accepts `string[]`** — array form requires ALL substrings to be present in the joined system-message text (AND semantics). Use this when the gate must combine multiple non-adjacent tokens that may appear in any order — e.g., a host that serialises agent-context entries into a system message whose entry order is not stable, but where a fixture should only match when every default value is present (`["\"value\": \"Atai\"", "[\"Viewed the pricing page\",\"Watched the product demo video\"]"]`). Single-string and `RegExp` forms continue to work unchanged. JSON form accepts `string | string[]`; programmatic form accepts `string | string[] | RegExp`.
+
 ## [1.20.0] - 2026-05-11
 
 ### Fixed

@@ -874,6 +874,10 @@ describe("MCPMock", () => {
   // ---- Lifecycle edge cases ----
 
   describe("lifecycle", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it("start() when already started throws", async () => {
       mcp = new MCPMock();
       await mcp.start();

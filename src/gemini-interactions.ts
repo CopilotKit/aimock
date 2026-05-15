@@ -28,6 +28,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -640,7 +642,8 @@ export async function handleGeminiInteractions(
   let interactionsReq: InteractionsRequest;
   try {
     interactionsReq = JSON.parse(raw) as InteractionsRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -651,7 +654,9 @@ export async function handleGeminiInteractions(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify(buildInteractionsErrorResponse("Malformed JSON", "INVALID_ARGUMENT")),
+      JSON.stringify(
+        buildInteractionsErrorResponse(`Malformed JSON body: ${detail}`, "INVALID_ARGUMENT"),
+      ),
     );
     return;
   }
@@ -696,6 +701,29 @@ export async function handleGeminiInteractions(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify(buildInteractionsErrorResponse(strictMessage, "UNAVAILABLE")),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -708,7 +736,7 @@ export async function handleGeminiInteractions(
         raw,
       );
       if (outcome === "handled_by_hook") return;
-      if (outcome === "relayed") {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: urlPath,
@@ -723,29 +751,21 @@ export async function handleGeminiInteractions(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
-      JSON.stringify(
-        buildInteractionsErrorResponse(
-          strictMessage,
-          defaults.strict ? "UNAVAILABLE" : "NOT_FOUND",
-        ),
-      ),
+      404,
+      JSON.stringify(buildInteractionsErrorResponse("No fixture matched", "NOT_FOUND")),
     );
     return;
   }

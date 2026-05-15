@@ -371,6 +371,97 @@ describe("matchFixture — systemMessage (string)", () => {
   });
 });
 
+describe("matchFixture — systemMessage (string[] AND)", () => {
+  it("matches when every substring is present in the system text", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "tz=PST"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "ctx: name=Atai\nctx: tz=PST\nctx: misc" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when any substring is missing", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "tz=PST"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "ctx: name=Atai\nctx: tz=EST" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches across multiple system messages (any substring may live in any of them)", () => {
+    const fixture = makeFixture({ systemMessage: ["name=Atai", "default-activities"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "Persona: helpful." },
+        { role: "system", content: "Context: name=Atai" },
+        { role: "system", content: "Context: default-activities" },
+        { role: "user", content: "Who am I?" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when there are no system messages", () => {
+    const fixture = makeFixture({ systemMessage: ["anything"] });
+    const req = makeReq({ messages: [{ role: "user", content: "hi" }] });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("treats single-element array same as a string substring", () => {
+    const fixture = makeFixture({ systemMessage: ["Atai"] });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("combines with userMessage — both gate plus all substrings must match", () => {
+    const fixture = makeFixture({
+      userMessage: "Plan my morning",
+      systemMessage: ["name=Atai", "tz=PST"],
+    });
+    const matching = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai\ntz=PST" },
+        { role: "user", content: "Plan my morning please" },
+      ],
+    });
+    expect(matchFixture([fixture], matching)).toBe(fixture);
+
+    const partial = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai" }, // tz missing
+        { role: "user", content: "Plan my morning please" },
+      ],
+    });
+    expect(matchFixture([fixture], partial)).toBeNull();
+  });
+
+  it("falls through to the next fixture when one substring is missing", () => {
+    const specific = makeFixture(
+      { userMessage: "hi", systemMessage: ["Atai", "PST"] },
+      { content: "exact-defaults" },
+    );
+    const fallback = makeFixture({ userMessage: "hi" }, { content: "generic" });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "name=Atai\ntz=EST" }, // tz mismatch
+        { role: "user", content: "hi" },
+      ],
+    });
+    expect(matchFixture([specific, fallback], req)).toBe(fallback);
+  });
+});
+
 describe("matchFixture — systemMessage (RegExp)", () => {
   it("matches when the joined system text satisfies the regexp", () => {
     const fixture = makeFixture({ systemMessage: /name=Atai/ });
@@ -533,10 +624,66 @@ describe("matchFixture — model (string)", () => {
     expect(matchFixture([fixture], req)).toBe(fixture);
   });
 
-  it("does not match when the model string differs", () => {
+  it("does not match gpt-4o fixture against gpt-4o-mini (dash + letter, not date suffix)", () => {
     const fixture = makeFixture({ model: "gpt-4o" });
     const req = makeReq({ model: "gpt-4o-mini" });
     expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches when the request model has a date suffix (dash + digit)", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: "gpt-4o-2024-08-06" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when the request model does not start with the fixture model", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: "gpt-3.5-turbo" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match gpt-4 fixture against gpt-4o request (no dash boundary)", () => {
+    const fixture = makeFixture({ model: "gpt-4" });
+    const req = makeReq({ model: "gpt-4o" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when request model is undefined", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: undefined });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+});
+
+describe("matchFixture — model (startsWith)", () => {
+  it("matches when request model starts with fixture model", () => {
+    const fixture = makeFixture({ model: "claude-opus-4" });
+    const req = makeReq({ model: "claude-opus-4-20250514" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("matches exact model strings", () => {
+    const fixture = makeFixture({ model: "gpt-4o" });
+    const req = makeReq({ model: "gpt-4o" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when models diverge", () => {
+    const fixture = makeFixture({ model: "claude-opus-4" });
+    const req = makeReq({ model: "claude-haiku-4" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when fixture model is longer than request model", () => {
+    const fixture = makeFixture({ model: "claude-opus-4-20250514" });
+    const req = makeReq({ model: "claude-opus-4" });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("still supports regexp model matching", () => {
+    const fixture = makeFixture({ model: /^claude-opus/ });
+    const req = makeReq({ model: "claude-opus-4-20250514" });
+    expect(matchFixture([fixture], req)).toBe(fixture);
   });
 });
 

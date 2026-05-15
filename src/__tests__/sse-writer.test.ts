@@ -63,6 +63,10 @@ function makeChunk(id: string, content: string): SSEChunk {
 }
 
 describe("writeSSEStream", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("sets correct SSE headers", async () => {
     const { res, headers } = makeMockResponse();
     await writeSSEStream(res, []);

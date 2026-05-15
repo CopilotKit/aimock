@@ -472,6 +472,7 @@ describe("MetricsRegistry: status label in counter output", () => {
 let instance: ServerInstance | null = null;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (instance) {
     await new Promise<void>((resolve) => instance!.server.close(() => resolve()));
     instance = null;

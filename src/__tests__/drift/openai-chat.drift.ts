@@ -321,7 +321,7 @@ describe("OpenAI Chat Completions error shapes", () => {
 
       const body = JSON.parse(res.body);
       expect(body.error).toBeDefined();
-      expect(body.error.message).toBe("Malformed JSON");
+      expect(body.error.message).toMatch(/^Malformed JSON/);
       expect(body.error.type).toBe("invalid_request_error");
       expect(body.error.code).toBe("invalid_json");
 

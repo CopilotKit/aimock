@@ -12,11 +12,13 @@ import type {
   ToolCall,
 } from "./types.js";
 import { getLastMessageByRole, getTextContent } from "./router.js";
+import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
 import { collapseStreamingResponse } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { getTestId, slugifyTestId } from "./helpers.js";
+import { DEFAULT_TEST_ID } from "./constants.js";
 
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
 const STRIP_HEADERS = new Set([
@@ -61,7 +63,8 @@ export interface ProxyOptions {
    * unwritten.
    *
    * NOT invoked when the upstream response was streamed progressively to the
-   * client (SSE) — the bytes are already on the wire and can't be mutated.
+   * client (SSE, NDJSON, or binary event streams) — the bytes are already on
+   * the wire and can't be mutated.
    * Callers that need to observe the bypass should pass `onHookBypassed`.
    */
   beforeWriteResponse?: (response: ProxyCapturedResponse) => boolean | Promise<boolean>;
@@ -72,7 +75,7 @@ export interface ProxyOptions {
    * Intended for observability (log/metric/journal annotation) — proxyAndRecord
    * still returns `"relayed"`.
    */
-  onHookBypassed?: (reason: "sse_streamed") => void;
+  onHookBypassed?: (reason: "sse_streamed" | "ndjson_streamed" | "binary_streamed") => void;
 }
 
 /**
@@ -88,6 +91,129 @@ export interface ProxyOptions {
  *    should not double-journal.
  */
 export type ProxyOutcome = "not_configured" | "relayed" | "handled_by_hook";
+
+/**
+ * Result of `persistFixture`:
+ * - `"skipped"` — proxy-only mode; the caller has nothing else to do.
+ * - `"written"` — fixture saved to `filepath` and (unless the match was empty)
+ *    registered into the in-memory cache so the next identical request matches.
+ * - `"failed"` — filesystem write failed. Caller decides how to surface it
+ *    (e.g. setting `X-AIMock-Record-Error` on a relay response).
+ */
+export type PersistFixtureResult =
+  | { kind: "skipped" }
+  | { kind: "written"; filepath: string }
+  | { kind: "failed"; error: string };
+
+/**
+ * Write a built fixture to disk (snapshot vs. timestamp file layout) and, when
+ * the match is non-empty, register it in the in-memory cache so subsequent
+ * identical requests match. Extracted from `proxyAndRecord` so the fal
+ * queue-walk recorder (which makes multiple upstream calls before knowing the
+ * final body) can share the same persistence behavior without re-implementing
+ * snapshot-mode merging and warnings.
+ */
+export function persistFixture(opts: {
+  record: RecordConfig;
+  providerKey: RecordProviderKey;
+  testId: string;
+  fixture: Fixture;
+  fixtures: Fixture[];
+  warnings?: string[];
+  logger: Logger;
+}): PersistFixtureResult {
+  const { record, providerKey, testId, fixture, fixtures, warnings = [], logger } = opts;
+
+  // Match criteria with no userMessage / inputText / endpoint will not match
+  // any future request — warn, then save to disk for inspection but skip the
+  // in-memory registration so a defective fixture doesn't shadow real ones.
+  // turnIndex/hasToolResult are pure multi-turn disambiguators on their own.
+  const m = fixture.match;
+  const isEmptyMatch =
+    m.userMessage === undefined && m.inputText === undefined && m.endpoint === undefined;
+  if (isEmptyMatch) {
+    logger.warn("Recorded fixture has empty match criteria — skipping in-memory registration");
+  }
+
+  if (record.proxyOnly) {
+    logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
+    return { kind: "skipped" };
+  }
+
+  const fixturePath = record.fixturePath ?? "./fixtures/recorded";
+  let isSnapshotMode = testId !== DEFAULT_TEST_ID;
+  let filepath: string;
+  let mergeExisting = false;
+
+  if (isSnapshotMode) {
+    const slug = slugifyTestId(testId);
+    if (!slug) {
+      // Slug resolved to empty (e.g. testId was all punctuation) — fall back
+      // to timestamp-based recording so we still capture the fixture.
+      isSnapshotMode = false;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      filepath = path.join(
+        fixturePath,
+        `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
+      );
+    } else {
+      filepath = path.join(fixturePath, slug, `${providerKey}.json`);
+      mergeExisting = true;
+    }
+  } else {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    filepath = path.join(
+      fixturePath,
+      `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`,
+    );
+  }
+
+  const fileWarnings = [
+    ...(isEmptyMatch ? ["Empty match criteria — this fixture will not match any request"] : []),
+    ...warnings,
+  ];
+
+  try {
+    fs.mkdirSync(isSnapshotMode ? path.dirname(filepath) : fixturePath, { recursive: true });
+
+    // Auth headers are forwarded to upstream but excluded from saved fixtures.
+    // The persisted fixture is always the real upstream response, even when
+    // chaos later mutates the relay; replay must see what upstream said.
+    let fileContent: { fixtures: unknown[]; _warning?: string };
+    if (mergeExisting && fs.existsSync(filepath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
+        fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
+      } catch (mergeErr) {
+        const msg = mergeErr instanceof Error ? mergeErr.message : "unknown";
+        logger.warn(`Could not read existing fixture file ${filepath} (${msg}) — overwriting`);
+        fileContent = { fixtures: [fixture] };
+      }
+    } else {
+      fileContent = { fixtures: [fixture] };
+    }
+    if (fileWarnings.length > 0) {
+      fileContent._warning = fileWarnings.join("; ");
+    }
+    // Atomic write: write to temp file then rename to avoid read-modify-write
+    // races. Keep synchronous — for streamed responses the HTTP reply is
+    // already on the wire, so async writes would race with callers checking
+    // the filesystem before the fixture has landed.
+    const tmpPath = filepath + ".tmp." + process.pid;
+    fs.writeFileSync(tmpPath, JSON.stringify(fileContent, null, 2), "utf-8");
+    fs.renameSync(tmpPath, filepath);
+
+    if (!isEmptyMatch) {
+      fixtures.push(fixture);
+    }
+    logger.warn(`Response recorded → ${filepath}`);
+    return { kind: "written", filepath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+    logger.error(`Failed to save fixture to disk: ${msg}`);
+    return { kind: "failed", error: msg };
+  }
+}
 
 /**
  * Proxy an unmatched request to the real upstream provider, record the
@@ -122,12 +248,14 @@ export async function proxyAndRecord(
     return "not_configured";
   }
 
-  const fixturePath = record.fixturePath ?? "./fixtures/recorded";
   let target: URL;
   try {
     target = resolveUpstreamUrl(upstreamUrl, pathname);
-  } catch {
-    defaults.logger.error(`Invalid upstream URL for provider "${providerKey}": ${upstreamUrl}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    defaults.logger.error(
+      `Invalid upstream URL for provider "${providerKey}": ${upstreamUrl} (${msg})`,
+    );
     writeErrorResponse(
       res,
       502,
@@ -161,7 +289,15 @@ export async function proxyAndRecord(
   let streamedToClient = false;
   let clientDisconnected = false;
   try {
-    const result = await makeUpstreamRequest(target, forwardHeaders, requestBody, res);
+    const result = await makeUpstreamRequest(
+      target,
+      forwardHeaders,
+      requestBody,
+      res,
+      req.method,
+      defaults.logger,
+      { upstreamTimeoutMs: record.upstreamTimeoutMs, bodyTimeoutMs: record.bodyTimeoutMs },
+    );
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
     upstreamBody = result.body;
@@ -243,15 +379,20 @@ export async function proxyAndRecord(
     } else {
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
+        const sanitizedToolCalls = collapsed.toolCalls.map((tc) => ({
+          ...tc,
+          name: tc.name ?? "",
+          arguments: tc.arguments ?? "{}",
+        }));
         if (collapsed.content) {
           // Both content and toolCalls present — save as ContentWithToolCallsResponse
           fixtureResponse = {
             content: collapsed.content,
-            toolCalls: collapsed.toolCalls,
+            toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
           };
         } else {
-          fixtureResponse = { toolCalls: collapsed.toolCalls, ...reasoningSpread };
+          fixtureResponse = { toolCalls: sanitizedToolCalls, ...reasoningSpread };
         }
       } else {
         fixtureResponse = { content: collapsed.content ?? "", ...reasoningSpread };
@@ -262,9 +403,11 @@ export async function proxyAndRecord(
     let parsedResponse: unknown = null;
     try {
       parsedResponse = JSON.parse(upstreamBody);
-    } catch {
-      // Not JSON — could be an unknown format
-      defaults.logger.warn("Upstream response is not valid JSON — saving as error fixture");
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : "unknown";
+      defaults.logger.warn(
+        `Upstream response is not valid JSON (${msg}) — saving as error fixture`,
+      );
     }
     // fal.ai returns arbitrary, model-specific JSON shapes (images, video URLs,
     // audio file objects, etc.). Round-trip the payload verbatim instead of
@@ -311,156 +454,93 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
-  // Build the match criteria from the (optionally transformed) request
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
-  const fixtureMatch = buildFixtureMatch(matchRequest);
-
-  // Build and save the fixture
+  const metadata = buildFixtureMetadata(request);
   const fixture: Fixture = {
-    match: fixtureMatch,
+    match: buildFixtureMatch(matchRequest, defaults.record),
     response: fixtureResponse,
+    ...(metadata && { metadata }),
   };
 
-  // Check if the match is empty — warn but still save to disk.
-  // Note: turnIndex/hasToolResult are pure multi-turn disambiguators and don't,
-  // by themselves, constitute a meaningful match key. A "real" match needs at
-  // least one of userMessage / inputText / endpoint to be useful.
-  const isEmptyMatch =
-    fixtureMatch.userMessage === undefined &&
-    fixtureMatch.inputText === undefined &&
-    fixtureMatch.endpoint === undefined;
-  if (isEmptyMatch) {
-    defaults.logger.warn(
-      "Recorded fixture has empty match criteria — skipping in-memory registration",
-    );
+  const persistWarnings: string[] = [];
+  if (collapsed?.truncated) {
+    persistWarnings.push("Stream response was truncated — fixture may be incomplete");
   }
-
-  // In proxy-only mode, skip recording to disk and in-memory caching
-  if (!defaults.record?.proxyOnly) {
-    // Determine file path: snapshot-style (by testId) or legacy timestamp
-    const testId = getTestId(req);
-    let isSnapshotMode = testId !== "__default__";
-
-    let filepath!: string;
-    let mergeExisting = false;
-
-    if (isSnapshotMode) {
-      const slug = slugifyTestId(testId);
-      if (!slug) {
-        // Slug resolved to empty (e.g. testId was all punctuation) — fall back
-        // to timestamp-based recording so we still capture the fixture.
-        isSnapshotMode = false;
-      } else {
-        const dir = path.join(fixturePath, slug);
-        filepath = path.join(dir, `${providerKey}.json`);
-        mergeExisting = true;
-      }
-    }
-
-    if (!isSnapshotMode) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `${providerKey}-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
-      filepath = path.join(fixturePath, filename);
-    }
-
-    let writtenToDisk = false;
-    try {
-      // Create the target directory (must be inside try/catch so filesystem
-      // errors don't prevent the upstream response from being relayed).
-      if (isSnapshotMode) {
-        fs.mkdirSync(path.dirname(filepath), { recursive: true });
-      } else {
-        fs.mkdirSync(fixturePath, { recursive: true });
-      }
-      // Collect warnings for the fixture file
-      const warnings: string[] = [];
-      if (isEmptyMatch) {
-        warnings.push("Empty match criteria — this fixture will not match any request");
-      }
-      if (collapsed?.truncated) {
-        warnings.push("Stream response was truncated — fixture may be incomplete");
-      }
-
-      // Auth headers are forwarded to upstream but excluded from saved fixtures for security.
-      // NOTE: the persisted fixture is always the real upstream response, even when chaos
-      // later mutates the relay (e.g. malformed via beforeWriteResponse). Chaos is a live-traffic
-      // decoration; the recorded artifact must stay truthful so replay sees what upstream said.
-      let fileContent: { fixtures: unknown[]; _warning?: string };
-
-      if (mergeExisting && fs.existsSync(filepath)) {
-        try {
-          const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-          fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
-        } catch {
-          // Corrupted file — overwrite
-          fileContent = { fixtures: [fixture] };
-        }
-      } else {
-        fileContent = { fixtures: [fixture] };
-      }
-
-      if (warnings.length > 0) {
-        fileContent._warning = warnings.join("; ");
-      }
-
-      fs.writeFileSync(filepath, JSON.stringify(fileContent, null, 2), "utf-8");
-      writtenToDisk = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown filesystem error";
-      defaults.logger.error(`Failed to save fixture to disk: ${msg}`);
-      if (!res.headersSent) {
-        res.setHeader("X-LLMock-Record-Error", msg);
-      } else {
-        defaults.logger.warn(`Cannot set X-LLMock-Record-Error header — headers already sent`);
-      }
-    }
-
-    if (writtenToDisk) {
-      // Register in memory so subsequent identical requests match (skip if empty match)
-      if (!isEmptyMatch) {
-        fixtures.push(fixture);
-      }
-      defaults.logger.warn(`Response recorded → ${filepath}`);
+  const persistResult = persistFixture({
+    record,
+    providerKey,
+    testId: getTestId(req),
+    fixture,
+    fixtures,
+    warnings: persistWarnings,
+    logger: defaults.logger,
+  });
+  if (persistResult.kind === "failed") {
+    if (!res.headersSent) {
+      res.setHeader("X-AIMock-Record-Error", persistResult.error);
     } else {
-      defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
+      defaults.logger.warn(`Cannot set X-AIMock-Record-Error header — headers already sent`);
     }
-  } else {
-    defaults.logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
+    defaults.logger.warn(`Response relayed but NOT saved to disk — see error above`);
   }
 
-  // Relay upstream response to client (skip when SSE was already streamed
-  // progressively by makeUpstreamRequest — headers and body are already on
-  // the wire).
+  // Relay upstream response to client (skip when the response was already
+  // streamed progressively by makeUpstreamRequest — headers and body are
+  // already on the wire).
   if (streamedToClient) {
-    // SSE: the hook can't run because the body is already on the wire. Surface
+    // The hook can't run because the body is already on the wire. Surface
     // the bypass so the caller (typically the chaos layer) can record it —
-    // otherwise a configured chaos action silently no-ops on SSE traffic.
+    // otherwise a configured chaos action silently no-ops on streamed traffic.
     if (options?.beforeWriteResponse && options.onHookBypassed) {
-      options.onHookBypassed("sse_streamed");
+      const bypassReason: "sse_streamed" | "ndjson_streamed" | "binary_streamed" = isBinaryStream
+        ? "binary_streamed"
+        : ctString.toLowerCase().includes("application/x-ndjson")
+          ? "ndjson_streamed"
+          : "sse_streamed";
+      try {
+        options.onHookBypassed(bypassReason);
+      } catch (err) {
+        defaults.logger.warn(
+          `onHookBypassed callback threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   } else {
     // Give the caller a chance to mutate or replace the response before relay.
     // Used by the chaos layer to turn a successful proxy into a malformed body.
     // `body` is the raw upstream bytes so binary payloads survive round-tripping.
     if (options?.beforeWriteResponse) {
-      const handled = await options.beforeWriteResponse({
-        status: upstreamStatus,
-        contentType: ctString,
-        body: rawBuffer,
-      });
+      let handled: boolean | undefined;
+      try {
+        handled = await options.beforeWriteResponse({
+          status: upstreamStatus,
+          contentType: ctString,
+          body: rawBuffer,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`beforeWriteResponse hook failed for ${providerKey}: ${msg}`);
+      }
       if (handled) return "handled_by_hook";
     }
 
-    const relayHeaders: Record<string, string> = {};
-    if (ctString) {
-      relayHeaders["Content-Type"] = ctString;
-    }
     // Normalize status codes for the client: aimock acts as a gateway, so
     // upstream provider details (429 rate-limits, 503 outages, etc.) should
     // not leak. Successes → 200, errors → 502 (Bad Gateway).
     const clientStatus = upstreamStatus >= 200 && upstreamStatus < 300 ? 200 : 502;
-    res.writeHead(clientStatus, relayHeaders);
     const isAudioRelay = ctString.toLowerCase().startsWith("audio/");
+    // When an upstream error (non-2xx) is relayed for an audio endpoint, the
+    // body is typically a JSON error object — override the content-type so
+    // clients don't try to decode JSON as audio.
+    const relayHeaders: Record<string, string> = {};
+    const clientCt =
+      (clientStatus >= 200 && clientStatus < 300) || !isAudioRelay
+        ? (ctString ?? "application/json")
+        : "application/json";
+    if (clientCt) {
+      relayHeaders["Content-Type"] = clientCt;
+    }
+    res.writeHead(clientStatus, relayHeaders);
     res.end(isBinaryStream || isAudioRelay ? rawBuffer : upstreamBody);
   }
 
@@ -471,11 +551,19 @@ export async function proxyAndRecord(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+function clampTimeout(value: number | undefined, fallback: number): number {
+  if (value == null || !Number.isFinite(value) || value <= 0) return fallback;
+  return value;
+}
+
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
   body: string,
   clientRes?: http.ServerResponse,
+  method: string = "POST",
+  logger?: Logger,
+  timeouts?: Pick<RecordConfig, "upstreamTimeoutMs" | "bodyTimeoutMs">,
 ): Promise<{
   status: number;
   headers: http.IncomingHttpHeaders;
@@ -486,12 +574,12 @@ function makeUpstreamRequest(
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
-    const UPSTREAM_TIMEOUT_MS = 30_000;
-    const BODY_TIMEOUT_MS = 30_000;
+    const UPSTREAM_TIMEOUT_MS = clampTimeout(timeouts?.upstreamTimeoutMs, 30_000);
+    const BODY_TIMEOUT_MS = clampTimeout(timeouts?.bodyTimeoutMs, 30_000);
     const req = transport.request(
       target,
       {
-        method: "POST",
+        method,
         timeout: UPSTREAM_TIMEOUT_MS,
         headers: {
           ...headers,
@@ -502,18 +590,27 @@ function makeUpstreamRequest(
         res.setTimeout(BODY_TIMEOUT_MS, () => {
           req.destroy(new Error(`Upstream response timed out after ${BODY_TIMEOUT_MS / 1000}s`));
         });
-        // Detect Server-Sent Events so we can tee upstream chunks to the
+        // Detect streaming content types so we can tee upstream chunks to the
         // client as they arrive rather than buffering the entire stream and
         // replaying it in a single res.end() at the bottom of proxyAndRecord.
-        // Buffering collapses every SSE frame into one client-visible write,
-        // which defeats progressive rendering in downstream consumers.
+        // Buffering collapses every frame into one client-visible write,
+        // which defeats progressive rendering in downstream consumers and
+        // can trip HTTP idle timeouts on slow calls.
         const ct = res.headers["content-type"];
         const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
-        const isSSE = ctStr.toLowerCase().includes("text/event-stream");
+        const ctLower = ctStr.toLowerCase();
+        const isSSE = ctLower.includes("text/event-stream");
+        const isNDJSON = ctLower.includes("application/x-ndjson");
+        const isBinaryEventStream = ctLower.includes("application/vnd.amazon.eventstream");
+        const isProgressiveStream = isSSE || isNDJSON || isBinaryEventStream;
         let streamedToClient = false;
         let clientDisconnected = false;
-        if (isSSE && clientRes && !clientRes.headersSent) {
-          const relayHeaders: Record<string, string> = {};
+        if (isProgressiveStream && clientRes && !clientRes.headersSent) {
+          const relayHeaders: Record<string, string> = {
+            "Cache-Control": "no-cache, no-transform",
+            Connection: "keep-alive",
+            "X-Accel-Buffering": "no",
+          };
           if (ctStr) relayHeaders["Content-Type"] = ctStr;
           // Normalize status codes for the client: aimock acts as a gateway,
           // so upstream provider details should not leak.
@@ -525,10 +622,14 @@ function makeUpstreamRequest(
           // before the first data chunk arrives.
           if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
           streamedToClient = true;
-          // Stop relaying if the client disconnects mid-stream
+          // Stop relaying if the client disconnects mid-stream.
+          // Check writableFinished to distinguish normal completion (where
+          // "close" also fires) from premature client disconnects.
           clientRes.on("close", () => {
-            clientDisconnected = true;
-            req.destroy();
+            if (!clientRes.writableFinished) {
+              clientDisconnected = true;
+              req.destroy();
+            }
           });
         }
         const chunks: Buffer[] = [];
@@ -541,11 +642,19 @@ function makeUpstreamRequest(
             !clientRes.destroyed &&
             !clientRes.writableEnded
           ) {
-            clientRes.write(chunk);
+            try {
+              clientRes.write(chunk);
+            } catch (writeErr) {
+              logger?.debug(
+                `Failed to relay chunk to client: ${writeErr instanceof Error ? writeErr.message : "unknown"}`,
+              );
+              clientDisconnected = true;
+            }
           }
         });
         res.on("error", reject);
         res.on("end", () => {
+          if (res.socket) res.setTimeout(0);
           const rawBuffer = Buffer.concat(chunks);
           if (
             streamedToClient &&
@@ -554,7 +663,13 @@ function makeUpstreamRequest(
             !clientRes.destroyed &&
             !clientRes.writableEnded
           ) {
-            clientRes.end();
+            try {
+              clientRes.end();
+            } catch (endErr) {
+              logger?.debug(
+                `Failed to end client response: ${endErr instanceof Error ? endErr.message : "unknown"}`,
+              );
+            }
           }
           resolve({
             status: res.statusCode ?? 500,
@@ -629,8 +744,10 @@ function buildFixtureResponse(
         // Malformed embedding — return a zero-dimension embedding fixture
         return { embedding: [] };
       }
-      const aligned = new Uint8Array(buf).buffer; // Always offset 0
-      const floats = new Float32Array(aligned, 0, buf.byteLength / 4);
+      // Uint8Array constructor copies Buffer data to a fresh ArrayBuffer at offset 0,
+      // guaranteeing the alignment Float32Array requires.
+      const copied = new Uint8Array(buf);
+      const floats = new Float32Array(copied.buffer, 0, buf.byteLength / 4);
       return { embedding: Array.from(floats) };
     }
     // OpenAI image generation: { created, data: [{ url, b64_json, revised_prompt }] }
@@ -716,7 +833,12 @@ function buildFixtureResponse(
     !("message" in obj) &&
     !("data" in obj) &&
     !("object" in obj) &&
-    !("outputs" in obj)
+    !("outputs" in obj) &&
+    !("model" in obj) &&
+    !("response" in obj) &&
+    !("done" in obj) &&
+    !("usage" in obj) &&
+    !("error" in obj)
   ) {
     if (obj.status === "completed" && obj.url) {
       return {
@@ -1066,9 +1188,15 @@ type EndpointType =
   | "embedding"
   | "audio-gen"
   | "fal-audio"
-  | "fal";
+  | "fal"
+  | "realtime"
+  | "realtime-transcription"
+  | "realtime-translation";
 
-function buildFixtureMatch(request: ChatCompletionRequest): {
+export function buildFixtureMatch(
+  request: ChatCompletionRequest,
+  recordConfig?: RecordConfig,
+): {
   userMessage?: string;
   inputText?: string;
   model?: string;
@@ -1105,11 +1233,11 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
     }
   }
 
-  // fal.ai fixtures are typically authored against the model id (e.g.
-  // /flux/, /kling/) since the request body is opaque per-model JSON. Persist
-  // the resolved model so replay matches what `onFalQueue(/flux/, ...)` writes.
-  if (request._endpointType === "fal" && request.model) {
-    match.model = request.model;
+  // Record normalized model for all requests so fixtures disambiguate
+  // calls that share the same userMessage but target different models.
+  if (request.model) {
+    match.model =
+      normalizeModelName(request.model, recordConfig?.recordFullModelVersion) ?? request.model;
   }
 
   // Multi-turn disambiguation: writing only `userMessage` lets the recorder's
@@ -1123,4 +1251,34 @@ function buildFixtureMatch(request: ChatCompletionRequest): {
   }
 
   return match;
+}
+
+/**
+ * Build optional metadata for drift detection. Contains 8-char SHA-256
+ * hashes of the system prompt and tool definitions present in the request.
+ * Returns undefined when neither is present.
+ */
+function buildFixtureMetadata(
+  request: ChatCompletionRequest,
+): { systemHash?: string; toolsHash?: string } | undefined {
+  const meta: { systemHash?: string; toolsHash?: string } = {};
+
+  const messages = request.messages ?? [];
+  const systemTexts = messages
+    .filter((m) => m.role === "system")
+    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+    .join("\n");
+  if (systemTexts) {
+    meta.systemHash = crypto.createHash("sha256").update(systemTexts).digest("hex").slice(0, 8);
+  }
+
+  if (request.tools && request.tools.length > 0) {
+    meta.toolsHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(request.tools))
+      .digest("hex")
+      .slice(0, 8);
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }

@@ -30,6 +30,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -44,8 +46,8 @@ import { proxyAndRecord } from "./recorder.js";
 interface GeminiPart {
   text?: string;
   thought?: boolean;
-  functionCall?: { name: string; args: Record<string, unknown> };
-  functionResponse?: { name: string; response: unknown };
+  functionCall?: { name: string; args: Record<string, unknown>; id?: string };
+  functionResponse?: { name: string; response: unknown; id?: string };
   inlineData?: { mimeType: string; data: string };
 }
 
@@ -107,15 +109,26 @@ export function geminiToCompletionRequest(
         const textParts = content.parts.filter((p) => p.text !== undefined && !p.thought);
 
         if (funcResponses.length > 0) {
-          // functionResponse → tool message
+          // functionResponse → tool message; match IDs from the preceding assistant's tool_calls
+          const lastAssistant = [...messages]
+            .reverse()
+            .find((m) => m.role === "assistant" && m.tool_calls);
+          const matchedToolCallIds = new Set<string>();
           for (const part of funcResponses) {
+            const matchingCall = lastAssistant?.tool_calls?.find(
+              (tc) =>
+                tc.function.name === part.functionResponse!.name && !matchedToolCallIds.has(tc.id),
+            );
+            if (matchingCall) matchedToolCallIds.add(matchingCall.id);
+            const toolCallId =
+              matchingCall?.id ?? `call_gemini_${part.functionResponse!.name}_${callCounter++}`;
             messages.push({
               role: "tool",
               content:
                 typeof part.functionResponse!.response === "string"
                   ? part.functionResponse!.response
                   : JSON.stringify(part.functionResponse!.response),
-              tool_call_id: `call_gemini_${part.functionResponse!.name}_${callCounter++}`,
+              tool_call_id: toolCallId,
             });
           }
           // Any text parts alongside → user message
@@ -140,8 +153,8 @@ export function geminiToCompletionRequest(
           messages.push({
             role: "assistant",
             content: text || null,
-            tool_calls: funcCalls.map((fc) => ({
-              id: `call_gemini_${fc.functionCall!.name}_${callCounter++}`,
+            tool_calls: funcCalls.map((fc, i) => ({
+              id: fc.functionCall!.id ?? `call_gemini_${fc.functionCall!.name}_${i}`,
               type: "function" as const,
               function: {
                 name: fc.functionCall!.name,
@@ -207,8 +220,16 @@ function geminiUsageMetadata(overrides?: ResponseOverrides): {
 } {
   if (!overrides?.usage)
     return { promptTokenCount: 0, candidatesTokenCount: 0, totalTokenCount: 0 };
-  const prompt = overrides.usage.promptTokenCount ?? 0;
-  const candidates = overrides.usage.candidatesTokenCount ?? 0;
+  const prompt =
+    overrides.usage.promptTokenCount ??
+    overrides.usage.prompt_tokens ??
+    overrides.usage.input_tokens ??
+    0;
+  const candidates =
+    overrides.usage.candidatesTokenCount ??
+    overrides.usage.completion_tokens ??
+    overrides.usage.output_tokens ??
+    0;
   const total = overrides.usage.totalTokenCount ?? prompt + candidates;
   return {
     promptTokenCount: prompt,
@@ -297,7 +318,25 @@ function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
     logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
     argsObj = {};
   }
-  return { functionCall: { name: tc.name, args: argsObj } };
+  // Surface the fixture's tool_call.id on the Gemini functionCall response
+  // so clients can preserve it across the round-trip and any
+  // toolCallId-keyed follow-up fixtures match. Pairs with v1.23.1's
+  // INGEST-direction fix (#196) which preserves the id when aimock parses
+  // an incoming Gemini request — that fix only helps if the id was in the
+  // response body to begin with. Without this egress fix, aimock emits
+  // `{ functionCall: { name, args } }` (no id), so even clients that
+  // diligently preserve `functionCall.id` across the round-trip never see
+  // an id to preserve. Backward-compatible: fixtures that don't pin a
+  // tc.id continue to serialize without one (the ingest path's fallback
+  // generator handles those).
+  const functionCall: GeminiPart["functionCall"] = {
+    name: tc.name,
+    args: argsObj,
+  };
+  if (tc.id) {
+    functionCall.id = tc.id;
+  }
+  return { functionCall };
 }
 
 function buildGeminiToolCallStreamChunks(
@@ -563,7 +602,8 @@ export async function handleGemini(
   let geminiReq: GeminiRequest;
   try {
     geminiReq = JSON.parse(raw) as GeminiRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? `/v1beta/models/${model}:generateContent`,
@@ -576,7 +616,7 @@ export async function handleGemini(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON body: ${detail}`,
           code: 400,
           status: "INVALID_ARGUMENT",
         },
@@ -629,6 +669,34 @@ export async function handleGemini(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            code: 503,
+            status: "UNAVAILABLE",
+          },
+        }),
+      );
+      return;
+    }
+
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -640,6 +708,7 @@ export async function handleGemini(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -651,28 +720,25 @@ export async function handleGemini(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
-          code: strictStatus,
-          status: defaults.strict ? "UNAVAILABLE" : "NOT_FOUND",
+          message: "No fixture matched",
+          code: 404,
+          status: "NOT_FOUND",
         },
       }),
     );
@@ -829,6 +895,9 @@ export async function handleGemini(
 
   // Tool call response
   if (isToolCallResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
+    }
     const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",

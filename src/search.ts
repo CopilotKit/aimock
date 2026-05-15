@@ -42,7 +42,8 @@ export async function handleSearch(
   let body: { query?: string; max_results?: number };
   try {
     body = JSON.parse(raw) as { query?: string; max_results?: number };
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/search",
@@ -55,7 +56,7 @@ export async function handleSearch(
     res.end(
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
           code: "invalid_json",
         },

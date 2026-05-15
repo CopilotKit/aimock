@@ -198,6 +198,8 @@ export class A2AMock implements Mountable {
           if (!res.headersSent) {
             res.writeHead(500);
             res.end("Internal server error");
+          } else if (!res.writableEnded) {
+            res.end();
           }
         });
       });

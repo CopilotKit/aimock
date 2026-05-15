@@ -22,12 +22,13 @@ Options:
   -l, --latency <ms>        Latency in ms between SSE chunks (default: 0)
   -c, --chunk-size <chars>  Chunk size in characters (default: 20)
   -w, --watch               Watch fixture path for changes and reload
-      --log-level <level>   Log verbosity: silent, info, debug (default: info)
+      --log-level <level>   Log verbosity: silent, warn, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
       --metrics             Enable Prometheus metrics at GET /metrics
       --record              Record mode: proxy unmatched requests and save fixtures
+      --record-full-model-version  Record exact model version without date stripping (default: false)
       --proxy-only          Proxy mode: forward unmatched requests without saving
-      --strict              Strict mode: fail on unmatched requests
+      --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
@@ -38,6 +39,8 @@ Options:
       --provider-azure <url>      Upstream URL for Azure OpenAI
       --provider-ollama <url>     Upstream URL for Ollama
       --provider-cohere <url>     Upstream URL for Cohere
+      --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
+      --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
@@ -59,6 +62,7 @@ const { values } = parseArgs({
     "validate-on-load": { type: "boolean", default: false },
     metrics: { type: "boolean", default: false },
     record: { type: "boolean", default: false },
+    "record-full-model-version": { type: "boolean", default: false },
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "provider-openai": { type: "string" },
@@ -69,6 +73,8 @@ const { values } = parseArgs({
     "provider-azure": { type: "string" },
     "provider-ollama": { type: "string" },
     "provider-cohere": { type: "string" },
+    "upstream-timeout-ms": { type: "string" },
+    "body-timeout-ms": { type: "string" },
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
@@ -133,6 +139,30 @@ if (Number.isNaN(fixtureCountsMax) || !Number.isInteger(fixtureCountsMax) || fix
     `Invalid fixture-counts-max: ${fixtureCountsMaxStr} (must be a non-negative integer; 0 = unbounded)`,
   );
   process.exit(1);
+}
+
+const upstreamTimeoutMsStr = values["upstream-timeout-ms"];
+let upstreamTimeoutMs: number | undefined;
+if (upstreamTimeoutMsStr !== undefined) {
+  upstreamTimeoutMs = Number(upstreamTimeoutMsStr);
+  if (!Number.isFinite(upstreamTimeoutMs) || upstreamTimeoutMs <= 0) {
+    console.error(
+      `Invalid upstream-timeout-ms: ${upstreamTimeoutMsStr} (must be a positive finite number)`,
+    );
+    process.exit(1);
+  }
+}
+
+const bodyTimeoutMsStr = values["body-timeout-ms"];
+let bodyTimeoutMs: number | undefined;
+if (bodyTimeoutMsStr !== undefined) {
+  bodyTimeoutMs = Number(bodyTimeoutMsStr);
+  if (!Number.isFinite(bodyTimeoutMs) || bodyTimeoutMs <= 0) {
+    console.error(
+      `Invalid body-timeout-ms: ${bodyTimeoutMsStr} (must be a positive finite number)`,
+    );
+    process.exit(1);
+  }
 }
 
 const logger = new Logger(logLevel);
@@ -212,6 +242,9 @@ if (values.record || values["proxy-only"]) {
     // rather than resolving a URL string as a filesystem path.
     fixturePath: recordBaseIsUrl ? undefined : resolve(recordBase, "recorded"),
     proxyOnly: values["proxy-only"],
+    recordFullModelVersion: values["record-full-model-version"],
+    upstreamTimeoutMs,
+    bodyTimeoutMs,
   };
 }
 

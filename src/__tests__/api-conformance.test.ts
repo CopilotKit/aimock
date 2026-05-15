@@ -1037,7 +1037,7 @@ describe("OpenAI Embeddings API conformance", () => {
       );
       expect(res.status).toBe(400);
       const json = JSON.parse(res.body);
-      expect(json.error.message).toBe("Malformed JSON");
+      expect(json.error.message).toMatch(/^Malformed JSON body: /);
     });
 
     it("Content-Type is application/json", async () => {

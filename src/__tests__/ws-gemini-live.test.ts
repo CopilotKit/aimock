@@ -496,7 +496,7 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
     const msg = JSON.parse(raw[1]);
     expect(msg.error).toBeDefined();
     expect(msg.error.code).toBe(3); // gRPC INVALID_ARGUMENT
-    expect(msg.error.message).toBe("Malformed JSON");
+    expect(msg.error.message).toMatch(/^Malformed JSON:/);
     expect(msg.error.status).toBe("INVALID_ARGUMENT");
 
     ws.close();

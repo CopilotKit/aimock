@@ -243,7 +243,7 @@ describe("POST /model/{modelId}/invoke (error handling)", () => {
 
     expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON: /);
   });
 });
 
@@ -751,8 +751,8 @@ describe("bedrockToCompletionRequest (edge cases)", () => {
       },
       "model",
     );
-    // Empty array → no tool_use blocks, textContent is "" → preserved as "" (not coerced to null via ??)
-    expect(result.messages[0]).toEqual({ role: "assistant", content: "" });
+    // Empty array → no tool_use blocks, textContent is "" → coerced to null via ||
+    expect(result.messages[0]).toEqual({ role: "assistant", content: null });
   });
 
   it("handles user message with content blocks but no tool_results (text extraction)", () => {
@@ -1650,31 +1650,8 @@ describe("Bedrock webSearches warning", () => {
       response: { content: "Result.", webSearches: ["test"] },
     };
     const journal = new Journal();
-    const req = {
-      method: undefined,
-      url: undefined,
-      headers: {},
-    } as unknown as http.IncomingMessage;
-    const res = {
-      _written: "",
-      writableEnded: false,
-      statusCode: 0,
-      writeHead(s: number) {
-        this.statusCode = s;
-      },
-      setHeader() {},
-      write(d: string) {
-        this._written += d;
-        return true;
-      },
-      end(d?: string) {
-        if (d) this._written += d;
-        this.writableEnded = true;
-      },
-      destroy() {
-        this.writableEnded = true;
-      },
-    } as unknown as http.ServerResponse;
+    const req = createMockReq();
+    const res = createMockRes();
 
     await handleBedrock(
       req,

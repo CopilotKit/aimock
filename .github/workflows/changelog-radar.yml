@@ -1,0 +1,71 @@
+name: Changelog Radar
+
+on:
+  schedule:
+    - cron: "0 8 * * *" # Daily 8am UTC (1am PT)
+  workflow_dispatch:
+
+concurrency:
+  group: changelog-radar
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run changelog radar
+        id: radar
+        run: |
+          OUTPUT=$(npx tsx scripts/changelog-radar.ts 2>&1)
+          echo "$OUTPUT"
+
+          # Check if output is valid JSON (means new entries found)
+          if echo "$OUTPUT" | jq -e '.newEntries | length > 0' >/dev/null 2>&1; then
+            echo "found=true" >> $GITHUB_OUTPUT
+
+            COUNT=$(echo "$OUTPUT" | jq -r '.newEntries | length')
+            SINCE=$(echo "$OUTPUT" | jq -r '.since')
+            echo "count=$COUNT" >> $GITHUB_OUTPUT
+            echo "since=$SINCE" >> $GITHUB_OUTPUT
+
+            # Build issue body
+            BODY="The changelog radar detected **${COUNT}** new API changelog entries since ${SINCE} that may affect aimock's provider surface.\n\n"
+            BODY+="| Date | Title | Keywords |\n|------|-------|----------|\n"
+
+            while IFS= read -r line; do
+              DATE=$(echo "$line" | jq -r '.date')
+              TITLE=$(echo "$line" | jq -r '.title')
+              URL=$(echo "$line" | jq -r '.url')
+              KW=$(echo "$line" | jq -r '.keywords | join(", ")')
+              BODY+="| ${DATE} | [${TITLE}](${URL}) | ${KW} |\n"
+            done < <(echo "$OUTPUT" | jq -c '.newEntries[]')
+
+            BODY+="\n\n**Action required:** Review these entries for new models, endpoints, deprecations, or breaking changes that may need aimock updates.\n"
+            BODY+="\nSource: ${CHANGELOG_URL:-https://platform.openai.com/docs/changelog}"
+
+            # Write body to file for gh issue create
+            echo -e "$BODY" > /tmp/radar-issue-body.md
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub issue
+        if: steps.radar.outputs.found == 'true'
+        run: |
+          gh issue create \
+            --title "API changelog: ${{ steps.radar.outputs.count }} new entries since ${{ steps.radar.outputs.since }}" \
+            --body-file /tmp/radar-issue-body.md \
+            --label drift
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

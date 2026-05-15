@@ -109,23 +109,143 @@
         </div>
 
         <h2>OpenAI Realtime</h2>
-        <p>The Realtime API uses a conversational protocol with session management.</p>
+        <p>
+          The Realtime API uses a conversational protocol with session management. aimock implements
+          the
+          <strong>GA (General Availability) protocol</strong> natively &mdash; event names like
+          <code>response.output_text.delta</code>, <code>conversation.item.added</code>, and nested
+          <code>audio</code> session config are the defaults. The Beta protocol is supported via the
+          <code>OpenAI-Beta: realtime=v1</code> header, which activates a translation shim that
+          converts GA events back to Beta names (<code>response.text.delta</code>,
+          <code>conversation.item.created</code>, flat session config).
+        </p>
+
+        <h3>Supported Models</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Session Types</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>gpt-realtime</td>
+              <td>conversation</td>
+              <td>Base alias &mdash; resolves to latest GA model</td>
+            </tr>
+            <tr>
+              <td>gpt-realtime-2</td>
+              <td>conversation</td>
+              <td>Default model &mdash; GA successor to gpt-4o-realtime-preview</td>
+            </tr>
+            <tr>
+              <td>gpt-realtime-1.5</td>
+              <td>conversation</td>
+              <td>Previous generation GA model</td>
+            </tr>
+            <tr>
+              <td>gpt-realtime-mini</td>
+              <td>conversation</td>
+              <td>Smaller, faster GA model</td>
+            </tr>
+            <tr>
+              <td>gpt-4o-transcribe</td>
+              <td>transcription, translation</td>
+              <td>Speech transcription and translation</td>
+            </tr>
+            <tr>
+              <td>gpt-4o-mini-transcribe</td>
+              <td>transcription, translation</td>
+              <td>Smaller transcription and translation model</td>
+            </tr>
+            <tr>
+              <td>whisper-1</td>
+              <td>transcription</td>
+              <td>Legacy Whisper transcription model</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Session Types</h3>
+        <ul>
+          <li>
+            <strong>conversation</strong> (default) &mdash; Standard conversational interaction with
+            text and audio modalities
+          </li>
+          <li>
+            <strong>transcription</strong> &mdash; Audio-to-text transcription (requires
+            <code>gpt-4o-transcribe</code>, <code>gpt-4o-mini-transcribe</code>, or
+            <code>whisper-1</code>)
+          </li>
+          <li>
+            <strong>translation</strong> &mdash; Real-time speech translation (requires
+            <code>gpt-4o-transcribe</code> or <code>gpt-4o-mini-transcribe</code>)
+          </li>
+        </ul>
+
+        <h3>GA Protocol Features</h3>
+        <ul>
+          <li>
+            <strong>GA event names</strong> &mdash; <code>response.output_text.delta</code> (was
+            <code>response.text.delta</code>), <code>conversation.item.added</code> (was
+            <code>conversation.item.created</code>), etc.
+          </li>
+          <li>
+            <strong>Nested audio config</strong> &mdash; Session config uses
+            <code>session.audio.voice</code> instead of flat <code>session.voice</code>
+          </li>
+          <li>
+            <strong>Image input</strong> &mdash; <code>input_image</code> content parts in
+            <code>conversation.item.create</code>
+          </li>
+          <li>
+            <strong>Commentary phase</strong> &mdash; <code>phase</code> field on
+            <code>response.output_item.added/done</code> events (<code>final_answer</code> or
+            <code>commentary</code>)
+          </li>
+          <li>
+            <strong><code>conversation.item.done</code></strong> &mdash; New event emitted after
+            each completed response item
+          </li>
+          <li>
+            <strong><code>response.cancel</code></strong> &mdash; Client message to cancel in-flight
+            responses
+          </li>
+        </ul>
+
+        <h3>Beta Compatibility</h3>
+        <p>
+          Clients that send the <code>OpenAI-Beta: realtime=v1</code> header receive Beta-format
+          events automatically. The shim translates event names, flattens the nested audio config,
+          and suppresses GA-only events like <code>conversation.item.done</code>. No code changes
+          needed in tests that target the Beta protocol.
+        </p>
 
         <div class="code-block">
-          <div class="code-block-header">ws-realtime.test.ts <span class="lang-tag">ts</span></div>
-          <pre><code><span class="kw">const</span> <span class="op">ws</span> = <span class="kw">await</span> <span class="fn">connectWebSocket</span>(<span class="op">instance</span>.<span class="prop">url</span>, <span class="str">"/v1/realtime"</span>);
+          <div class="code-block-header">
+            ws-realtime.test.ts (GA protocol) <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">const</span> <span class="op">ws</span> = <span class="kw">await</span> <span class="fn">connectWebSocket</span>(<span class="op">instance</span>.<span class="prop">url</span>, <span class="str">"/v1/realtime?model=gpt-realtime-2"</span>);
 
 <span class="cm">// Server sends session.created on connect</span>
 <span class="kw">const</span> [<span class="op">sessionMsg</span>] = <span class="kw">await</span> <span class="op">ws</span>.<span class="fn">waitForMessages</span>(<span class="num">1</span>);
-<span class="fn">expect</span>(<span class="type">JSON</span>.<span class="fn">parse</span>(<span class="op">sessionMsg</span>).<span class="prop">type</span>).<span class="fn">toBe</span>(<span class="str">"session.created"</span>);
+<span class="kw">const</span> <span class="op">session</span> = <span class="type">JSON</span>.<span class="fn">parse</span>(<span class="op">sessionMsg</span>);
+<span class="fn">expect</span>(<span class="op">session</span>.<span class="prop">type</span>).<span class="fn">toBe</span>(<span class="str">"session.created"</span>);
+<span class="fn">expect</span>(<span class="op">session</span>.<span class="prop">session</span>.<span class="prop">type</span>).<span class="fn">toBe</span>(<span class="str">"conversation"</span>);
+<span class="fn">expect</span>(<span class="op">session</span>.<span class="prop">session</span>.<span class="prop">audio</span>).<span class="fn">toBeDefined</span>();
 
-<span class="cm">// Configure session</span>
+<span class="cm">// Configure session with nested audio config</span>
 <span class="op">ws</span>.<span class="fn">send</span>(<span class="type">JSON</span>.<span class="fn">stringify</span>({
   <span class="prop">type</span>: <span class="str">"session.update"</span>,
-  <span class="prop">session</span>: { <span class="prop">modalities</span>: [<span class="str">"text"</span>] }
+  <span class="prop">session</span>: {
+    <span class="prop">modalities</span>: [<span class="str">"text"</span>],
+    <span class="prop">audio</span>: { <span class="prop">voice</span>: <span class="str">"alloy"</span> }
+  }
 }));
 
-<span class="cm">// Add a user message</span>
+<span class="cm">// Add a user message (supports input_text + input_image content)</span>
 <span class="op">ws</span>.<span class="fn">send</span>(<span class="type">JSON</span>.<span class="fn">stringify</span>({
   <span class="prop">type</span>: <span class="str">"conversation.item.create"</span>,
   <span class="prop">item</span>: {
@@ -138,10 +258,12 @@
 <span class="cm">// Request a response</span>
 <span class="op">ws</span>.<span class="fn">send</span>(<span class="type">JSON</span>.<span class="fn">stringify</span>({ <span class="prop">type</span>: <span class="str">"response.create"</span> }));
 
-<span class="cm">// Wait for response events</span>
-<span class="kw">const</span> <span class="op">msgs</span> = <span class="kw">await</span> <span class="op">ws</span>.<span class="fn">waitForMessages</span>(<span class="num">8</span>);
+<span class="cm">// GA events: output_text instead of text, item.added instead of item.created</span>
+<span class="kw">const</span> <span class="op">msgs</span> = <span class="kw">await</span> <span class="op">ws</span>.<span class="fn">waitForMessages</span>(<span class="num">10</span>);
 <span class="kw">const</span> <span class="op">events</span> = <span class="op">msgs</span>.<span class="fn">map</span>(<span class="op">m</span> <span class="kw">=&gt;</span> <span class="type">JSON</span>.<span class="fn">parse</span>(<span class="op">m</span>));
-<span class="fn">expect</span>(<span class="op">events</span>.<span class="fn">some</span>(<span class="op">e</span> <span class="kw">=&gt;</span> <span class="op">e</span>.<span class="prop">type</span> === <span class="str">"response.text.delta"</span>)).<span class="fn">toBe</span>(<span class="kw">true</span>);</code></pre>
+<span class="fn">expect</span>(<span class="op">events</span>.<span class="fn">some</span>(<span class="op">e</span> <span class="kw">=&gt;</span> <span class="op">e</span>.<span class="prop">type</span> === <span class="str">"response.output_text.delta"</span>)).<span class="fn">toBe</span>(<span class="kw">true</span>);
+<span class="fn">expect</span>(<span class="op">events</span>.<span class="fn">some</span>(<span class="op">e</span> <span class="kw">=&gt;</span> <span class="op">e</span>.<span class="prop">type</span> === <span class="str">"conversation.item.added"</span>)).<span class="fn">toBe</span>(<span class="kw">true</span>);
+<span class="fn">expect</span>(<span class="op">events</span>.<span class="fn">some</span>(<span class="op">e</span> <span class="kw">=&gt;</span> <span class="op">e</span>.<span class="prop">type</span> === <span class="str">"conversation.item.done"</span>)).<span class="fn">toBe</span>(<span class="kw">true</span>);</code></pre>
         </div>
 
         <h2>Gemini Live</h2>

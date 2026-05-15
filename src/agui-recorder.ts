@@ -31,8 +31,9 @@ export async function proxyAndRecordAGUI(
   let target: URL;
   try {
     target = new URL(config.upstream);
-  } catch {
-    logger.error(`Invalid upstream AG-UI URL: ${config.upstream}`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error(`Invalid upstream AG-UI URL: ${config.upstream} — ${detail}`);
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Invalid upstream AG-UI URL" }));
     return 502;
@@ -77,6 +78,8 @@ export async function proxyAndRecordAGUI(
     if (!res.headersSent) {
       res.writeHead(502, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Upstream AG-UI agent unreachable" }));
+    } else if (!res.writableEnded) {
+      res.end();
     }
     status = 502;
   }
@@ -155,17 +158,31 @@ function teeUpstreamStream(
         });
 
         upstreamRes.on("error", (err) => {
-          if (!clientRes.headersSent) {
-            clientRes.writeHead(502, { "Content-Type": "application/json" });
-            clientRes.end(JSON.stringify({ error: "Upstream AG-UI agent unreachable" }));
-          } else if (!clientRes.writableEnded) {
-            clientRes.end();
+          try {
+            if (!clientRes.headersSent) {
+              clientRes.writeHead(502, { "Content-Type": "application/json" });
+              clientRes.end(JSON.stringify({ error: "Upstream AG-UI agent unreachable" }));
+            } else if (!clientRes.writableEnded) {
+              clientRes.end();
+            }
+          } catch (writeErr) {
+            logger.warn(
+              "Failed to write error response to client:",
+              writeErr instanceof Error ? writeErr.message : String(writeErr),
+            );
           }
           reject(err);
         });
 
         upstreamRes.on("end", () => {
-          if (!clientRes.writableEnded) clientRes.end();
+          try {
+            if (!clientRes.writableEnded) clientRes.end();
+          } catch (writeErr) {
+            logger.warn(
+              "Failed to end client response:",
+              writeErr instanceof Error ? writeErr.message : String(writeErr),
+            );
+          }
 
           // Parse buffered SSE events
           const buffered = Buffer.concat(chunks).toString();
@@ -235,11 +252,18 @@ function teeUpstreamStream(
     });
 
     upstreamReq.on("error", (err) => {
-      if (!clientRes.headersSent) {
-        clientRes.writeHead(502, { "Content-Type": "application/json" });
-        clientRes.end(JSON.stringify({ error: "Upstream AG-UI agent unreachable" }));
-      } else if (!clientRes.writableEnded) {
-        clientRes.end();
+      try {
+        if (!clientRes.headersSent) {
+          clientRes.writeHead(502, { "Content-Type": "application/json" });
+          clientRes.end(JSON.stringify({ error: "Upstream AG-UI agent unreachable" }));
+        } else if (!clientRes.writableEnded) {
+          clientRes.end();
+        }
+      } catch (writeErr) {
+        logger.warn(
+          "Failed to write error response to client:",
+          writeErr instanceof Error ? writeErr.message : String(writeErr),
+        );
       }
       reject(err);
     });

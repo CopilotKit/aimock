@@ -720,7 +720,223 @@ export function openaiRealtimeTextEventShapes(): SSEEventShape[] {
         session: {
           id: "sess_abc123",
           object: "realtime.session",
-          model: "gpt-4o-mini",
+          model: "gpt-realtime-2",
+          modalities: ["text"],
+          instructions: "",
+          tools: [],
+          audio: {
+            voice: null,
+            input_audio_format: null,
+            output_audio_format: null,
+            input_audio_noise_reduction: null,
+            input_audio_transcription: null,
+          },
+          turn_detection: null,
+          temperature: 0.8,
+          expires_at: 1700000000,
+          max_response_output_tokens: "inf",
+          input_audio_transcription: null,
+          tool_choice: "auto",
+          type: "conversation",
+          reasoning: null,
+        },
+      }),
+    },
+    {
+      type: "session.updated",
+      dataShape: extractShape({
+        type: "session.updated",
+        event_id: "event_abc123",
+        session: {
+          object: "realtime.session",
+          model: "gpt-realtime-2",
+          modalities: ["text"],
+          instructions: "",
+          tools: [],
+          audio: {
+            voice: null,
+            input_audio_format: null,
+            output_audio_format: null,
+            input_audio_noise_reduction: null,
+            input_audio_transcription: null,
+          },
+          turn_detection: null,
+          temperature: 0.8,
+          expires_at: 1700000000,
+          max_response_output_tokens: "inf",
+          input_audio_transcription: null,
+          tool_choice: "auto",
+          type: "conversation",
+          reasoning: null,
+        },
+      }),
+    },
+    {
+      type: "conversation.item.added",
+      dataShape: extractShape({
+        type: "conversation.item.added",
+        event_id: "event_abc123",
+        previous_item_id: null,
+        item: {
+          type: "message",
+          id: "item_abc123",
+          role: "user",
+          content: [{ type: "input_text", text: "Say hello" }],
+        },
+      }),
+    },
+    {
+      type: "response.created",
+      dataShape: extractShape({
+        type: "response.created",
+        event_id: "event_abc123",
+        response: {
+          id: "resp_abc123",
+          object: "realtime.response",
+          status: "in_progress",
+          status_details: null,
+          output: [],
+          usage: null,
+        },
+      }),
+    },
+    {
+      type: "response.output_item.added",
+      dataShape: extractShape({
+        type: "response.output_item.added",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "message",
+          role: "assistant",
+          status: "in_progress",
+          content: [],
+          phase: "final_answer",
+        },
+      }),
+    },
+    {
+      type: "response.content_part.added",
+      dataShape: extractShape({
+        type: "response.content_part.added",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        part: { type: "output_text", text: "" },
+      }),
+    },
+    {
+      type: "response.output_text.delta",
+      dataShape: extractShape({
+        type: "response.output_text.delta",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        delta: "Hello",
+      }),
+    },
+    {
+      type: "response.output_text.done",
+      dataShape: extractShape({
+        type: "response.output_text.done",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        text: "Hello!",
+      }),
+    },
+    {
+      type: "response.content_part.done",
+      dataShape: extractShape({
+        type: "response.content_part.done",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        item_id: "item_abc123",
+        output_index: 0,
+        content_index: 0,
+        part: { type: "output_text", text: "Hello!" },
+      }),
+    },
+    {
+      type: "response.output_item.done",
+      dataShape: extractShape({
+        type: "response.output_item.done",
+        event_id: "event_abc123",
+        response_id: "resp_abc123",
+        output_index: 0,
+        item: {
+          id: "item_abc123",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Hello!" }],
+          phase: "final_answer",
+        },
+      }),
+    },
+    {
+      type: "conversation.item.done",
+      dataShape: extractShape({
+        type: "conversation.item.done",
+        event_id: "event_abc123",
+        item: {
+          id: "item_abc123",
+          object: "realtime.item",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Hello!" }],
+        },
+      }),
+    },
+    {
+      type: "response.done",
+      dataShape: extractShape({
+        type: "response.done",
+        event_id: "event_abc123",
+        response: {
+          id: "resp_abc123",
+          object: "realtime.response",
+          status: "completed",
+          output: [
+            {
+              id: "item_abc123",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "Hello!" }],
+            },
+          ],
+          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+        },
+      }),
+    },
+  ];
+}
+
+/**
+ * Beta Realtime event shapes — uses legacy Beta event names.
+ * Useful for three-way comparison when testing Beta compatibility shim.
+ */
+export function openaiRealtimeBetaTextEventShapes(): SSEEventShape[] {
+  return [
+    {
+      type: "session.created",
+      dataShape: extractShape({
+        type: "session.created",
+        event_id: "event_abc123",
+        session: {
+          id: "sess_abc123",
+          object: "realtime.session",
+          model: "gpt-realtime-2",
           modalities: ["text"],
           instructions: "",
           tools: [],
@@ -743,7 +959,7 @@ export function openaiRealtimeTextEventShapes(): SSEEventShape[] {
         event_id: "event_abc123",
         session: {
           object: "realtime.session",
-          model: "gpt-4o-mini",
+          model: "gpt-realtime-2",
           modalities: ["text"],
           instructions: "",
           tools: [],

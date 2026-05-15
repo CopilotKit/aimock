@@ -7,6 +7,9 @@ coverage/
 **/__pycache__/
 packages/.remember/
 packages/.claude/
+# Changelog radar cursor (local state)
+.changelog-radar-cursor
+
 # Internal planning docs — NEVER commit these
 docs/superpowers/
 docs/plans/

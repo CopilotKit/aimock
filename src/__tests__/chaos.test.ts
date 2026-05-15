@@ -590,6 +590,10 @@ describe("fixture-level chaos on non-OpenAI provider", () => {
 // ---------------------------------------------------------------------------
 
 describe("chaos with logLevel silent: invalid header is ignored gracefully", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("proceeds normally and does not throw when x-aimock-chaos-drop is not a number", async () => {
     const fixtures: Fixture[] = [
       { match: { userMessage: "hello" }, response: { content: "Hi there" } },

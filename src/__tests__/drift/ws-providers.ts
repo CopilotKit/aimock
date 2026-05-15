@@ -344,15 +344,19 @@ export async function openaiRealtimeWS(
   config: ProviderConfig,
   text: string,
   tools?: object[],
+  beta = true,
 ): Promise<WSResult> {
   // Realtime API requires a realtime-specific model (gpt-4o-mini doesn't work)
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+  };
+  if (beta) {
+    headers["OpenAI-Beta"] = "realtime=v1";
+  }
   const ws = await connectTLSWebSocket(
     "api.openai.com",
     "/v1/realtime?model=gpt-4o-mini-realtime-preview",
-    {
-      Authorization: `Bearer ${config.apiKey}`,
-      "OpenAI-Beta": "realtime=v1",
-    },
+    headers,
   );
 
   // Step 1: Wait for session.created
@@ -381,8 +385,11 @@ export async function openaiRealtimeWS(
     }),
   );
 
-  // Step 5: Wait for conversation.item.created
-  const itemCreated = await ws.waitUntil((msg: any) => msg?.type === "conversation.item.created");
+  // Step 5: Wait for conversation.item.created (Beta) or conversation.item.added (GA)
+  const itemCreated = await ws.waitUntil(
+    (msg: any) =>
+      msg?.type === "conversation.item.created" || msg?.type === "conversation.item.added",
+  );
 
   // Step 6: Send response.create
   ws.send(JSON.stringify({ type: "response.create" }));

@@ -112,6 +112,27 @@ const multiToolFixture: Fixture = {
   },
 };
 
+// Fixture with `id` pinned on the tool call. Exercises the egress
+// counterpart to #196's ingest fix: aimock must surface tc.id on the
+// Gemini `functionCall` so clients have an id to preserve across the
+// round trip.
+const toolFixtureWithId: Fixture = {
+  match: { userMessage: "pinned-id" },
+  response: {
+    toolCalls: [{ id: "call_test_pinned_001", name: "get_weather", arguments: '{"city":"Tokyo"}' }],
+  },
+};
+
+const multiToolFixtureWithIds: Fixture = {
+  match: { userMessage: "pinned-multi" },
+  response: {
+    toolCalls: [
+      { id: "call_test_a", name: "get_weather", arguments: '{"city":"NYC"}' },
+      { id: "call_test_b", name: "get_time", arguments: '{"tz":"EST"}' },
+    ],
+  },
+};
+
 const errorFixture: Fixture = {
   match: { userMessage: "fail" },
   response: {
@@ -133,6 +154,8 @@ const allFixtures: Fixture[] = [
   textFixture,
   toolFixture,
   multiToolFixture,
+  toolFixtureWithId,
+  multiToolFixtureWithIds,
   errorFixture,
   badResponseFixture,
 ];
@@ -379,6 +402,50 @@ describe("geminiToCompletionRequest", () => {
     expect(result.messages[0].tool_call_id).not.toBe(result.messages[1].tool_call_id);
   });
 
+  it("preserves functionCall.id from Gemini conversation history", () => {
+    const result = geminiToCompletionRequest(
+      {
+        contents: [
+          { role: "user", parts: [{ text: "weather in Tokyo" }] },
+          {
+            role: "model",
+            parts: [
+              {
+                functionCall: {
+                  name: "get_weather",
+                  args: { location: "Tokyo" },
+                  id: "call_fp_get_weather_001",
+                },
+              },
+            ],
+          },
+          {
+            role: "user",
+            parts: [
+              {
+                functionResponse: {
+                  name: "get_weather",
+                  response: { temperature: 72 },
+                },
+              },
+            ],
+          },
+          { role: "user", parts: [{ text: "thanks" }] },
+        ],
+      },
+      "gemini-2.0-flash",
+      false,
+    );
+
+    const assistantMsg = result.messages.find((m) => m.role === "assistant" && m.tool_calls);
+    expect(assistantMsg).toBeDefined();
+    expect(assistantMsg!.tool_calls![0].id).toBe("call_fp_get_weather_001");
+
+    const toolMsg = result.messages.find((m) => m.role === "tool");
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.tool_call_id).toBe("call_fp_get_weather_001");
+  });
+
   it("aligns functionCall and functionResponse IDs across a round trip", () => {
     // Model turn: two functionCall parts
     const modelTurn = geminiToCompletionRequest(
@@ -467,7 +534,11 @@ describe("POST /v1beta/models/{model}:generateContent (non-streaming)", () => {
     expect(body.candidates[0].content.parts[1].functionCall.name).toBe("get_time");
   });
 
-  it("functionCall parts do NOT contain an id field", async () => {
+  it("omits functionCall.id when the fixture does not pin one (backward compatible)", async () => {
+    // Fixtures authored before id-preservation existed didn't set tc.id;
+    // those must continue to serialize without an id field so the
+    // ingest-side fallback generator (`call_gemini_<name>_<i>`) handles
+    // them on the next request. Pre-#196 fixtures rely on this.
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
       contents: [{ role: "user", parts: [{ text: "weather" }] }],
@@ -477,8 +548,43 @@ describe("POST /v1beta/models/{model}:generateContent (non-streaming)", () => {
     const fc = body.candidates[0].content.parts[0].functionCall;
     expect(fc.name).toBe("get_weather");
     expect(fc.args).toEqual({ city: "NYC" });
-    // Gemini FunctionCall schema only has name + args — no id
     expect(fc).not.toHaveProperty("id");
+  });
+
+  it("surfaces functionCall.id when the fixture pins tc.id", async () => {
+    // Egress counterpart to #196's INGEST-direction fix
+    // (v1.23.1 — preserve functionCall.id when aimock PARSES an
+    // incoming Gemini request). That fix only helps if there's an id in
+    // the response body to begin with; without this egress surfacing,
+    // aimock emits `{ functionCall: { name, args } }` and clients have
+    // nothing to round-trip. Any fixture chain that keys a follow-up on
+    // `toolCallId` then falls through to the first-leg `userMessage`
+    // matcher, creating an infinite loop on Gemini/ADK integrations.
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "pinned-id" }] }],
+    });
+
+    const body = JSON.parse(res.body);
+    const fc = body.candidates[0].content.parts[0].functionCall;
+    expect(fc.name).toBe("get_weather");
+    expect(fc.args).toEqual({ city: "Tokyo" });
+    expect(fc.id).toBe("call_test_pinned_001");
+  });
+
+  it("surfaces functionCall.id on every tool call when multiple are pinned", async () => {
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      contents: [{ role: "user", parts: [{ text: "pinned-multi" }] }],
+    });
+
+    const body = JSON.parse(res.body);
+    const parts = body.candidates[0].content.parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0].functionCall.name).toBe("get_weather");
+    expect(parts[0].functionCall.id).toBe("call_test_a");
+    expect(parts[1].functionCall.name).toBe("get_time");
+    expect(parts[1].functionCall.id).toBe("call_test_b");
   });
 });
 
@@ -539,7 +645,7 @@ describe("POST /v1beta/models/{model}:streamGenerateContent (streaming)", () => 
     const chunks = parseGeminiSSEChunks(res.body) as {
       candidates: {
         content: {
-          parts: { functionCall?: { name: string; args: unknown } }[];
+          parts: { functionCall?: { name: string; args: unknown; id?: string } }[];
         };
         finishReason?: string;
       }[];
@@ -552,7 +658,35 @@ describe("POST /v1beta/models/{model}:streamGenerateContent (streaming)", () => 
     expect(chunks[0].candidates[0].content.parts[0].functionCall!.args).toEqual({
       city: "NYC",
     });
+    // Fixture didn't pin an id, so the streamed functionCall should
+    // omit `id` too — same backward-compat contract as the buffered path.
+    expect(chunks[0].candidates[0].content.parts[0].functionCall!).not.toHaveProperty("id");
     expect(chunks[0].candidates[0].finishReason).toBe("FUNCTION_CALL");
+  });
+
+  it("streams functionCall.id when the fixture pins tc.id", async () => {
+    // Streaming and buffered tool-call responses both flow through
+    // `parseToolCallPart`. This test guards against a future regression
+    // where streaming gets its own serializer that drops the id.
+    instance = await createServer(allFixtures);
+    const res = await post(`${instance.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`, {
+      contents: [{ role: "user", parts: [{ text: "pinned-id" }] }],
+    });
+
+    expect(res.status).toBe(200);
+
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: {
+          parts: { functionCall?: { name: string; args: unknown; id?: string } }[];
+        };
+      }[];
+    }[];
+
+    expect(chunks).toHaveLength(1);
+    const fc = chunks[0].candidates[0].content.parts[0].functionCall;
+    expect(fc).toBeDefined();
+    expect(fc!.id).toBe("call_test_pinned_001");
   });
 
   it("uses fixture chunkSize for text streaming", async () => {
@@ -610,7 +744,7 @@ describe("Gemini error handling", () => {
 
     expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON body: /);
   });
 
   it("returns 500 for unknown response type", async () => {

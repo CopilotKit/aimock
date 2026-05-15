@@ -3,10 +3,13 @@ import type { ChatCompletionRequest, Fixture, HandlerDefaults } from "./types.js
 import {
   isAudioResponse,
   isErrorResponse,
+  serializeErrorResponse,
   flattenHeaders,
   getTestId,
   FORMAT_TO_CONTENT_TYPE,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -39,7 +42,8 @@ export async function handleSpeech(
   let speechReq: SpeechRequest;
   try {
     speechReq = JSON.parse(raw) as SpeechRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method,
       path,
@@ -51,7 +55,11 @@ export async function handleSpeech(
       res,
       400,
       JSON.stringify({
-        error: { message: "Malformed JSON", type: "invalid_request_error", code: "invalid_json" },
+        error: {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        },
       }),
     );
     return;
@@ -112,6 +120,32 @@ export async function handleSpeech(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method,
+        path,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -123,6 +157,7 @@ export async function handleSpeech(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method,
@@ -135,22 +170,26 @@ export async function handleSpeech(
       }
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
     journal.add({
       method,
       path,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
-        error: { message: strictMessage, type: "invalid_request_error", code: "no_fixture_match" },
+        error: {
+          message: "No fixture matched",
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        },
       }),
     );
     return;
@@ -167,7 +206,7 @@ export async function handleSpeech(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 

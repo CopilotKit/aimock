@@ -25,9 +25,12 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  serializeErrorResponse,
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -251,12 +254,12 @@ function responsesUsage(overrides?: ResponseOverrides): {
   total_tokens: number;
 } {
   if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  const input = overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0;
+  const output = overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0;
   return {
-    input_tokens: overrides.usage.input_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? 0,
-    total_tokens:
-      overrides.usage.total_tokens ??
-      (overrides.usage.input_tokens ?? 0) + (overrides.usage.output_tokens ?? 0),
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: overrides.usage.total_tokens ?? input + output,
   };
 }
 
@@ -318,49 +321,29 @@ export function buildToolCallStreamEvents(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
+  webSearches?: string[],
   overrides?: ResponseOverrides,
 ): ResponsesSSEEvent[] {
-  const respId = overrides?.id ?? responseId();
-  const created = overrides?.created ?? Math.floor(Date.now() / 1000);
-  const effectiveModel = overrides?.model ?? model;
-  const events: ResponsesSSEEvent[] = [];
+  const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
+    model,
+    chunkSize,
+    undefined,
+    webSearches,
+    overrides,
+  );
 
-  // response.created
-  events.push({
-    type: "response.created",
-    response: {
-      id: respId,
-      object: "response",
-      created_at: created,
-      model: effectiveModel,
-      status: "in_progress",
-      output: [],
-    },
-  });
-
-  events.push({
-    type: "response.in_progress",
-    response: {
-      id: respId,
-      object: "response",
-      created_at: created,
-      model: effectiveModel,
-      status: "in_progress",
-      output: [],
-    },
-  });
-
-  const outputItems: object[] = [];
+  const fcOutputItems: object[] = [];
 
   for (let idx = 0; idx < toolCalls.length; idx++) {
     const tc = toolCalls[idx];
     const callId = tc.id || generateToolCallId();
     const fcId = generateId("fc");
+    const outputIndex = nextOutputIndex + idx;
 
     // output_item.added (function_call)
     events.push({
       type: "response.output_item.added",
-      output_index: idx,
+      output_index: outputIndex,
       item: {
         type: "function_call",
         id: fcId,
@@ -378,7 +361,7 @@ export function buildToolCallStreamEvents(
       events.push({
         type: "response.function_call_arguments.delta",
         item_id: fcId,
-        output_index: idx,
+        output_index: outputIndex,
         delta: slice,
       });
     }
@@ -387,7 +370,7 @@ export function buildToolCallStreamEvents(
     events.push({
       type: "response.function_call_arguments.done",
       item_id: fcId,
-      output_index: idx,
+      output_index: outputIndex,
       arguments: args,
     });
 
@@ -403,11 +386,11 @@ export function buildToolCallStreamEvents(
     // output_item.done
     events.push({
       type: "response.output_item.done",
-      output_index: idx,
+      output_index: outputIndex,
       item: doneItem,
     });
 
-    outputItems.push(doneItem);
+    fcOutputItems.push(doneItem);
   }
 
   // response.completed
@@ -417,9 +400,9 @@ export function buildToolCallStreamEvents(
       id: respId,
       object: "response",
       created_at: created,
-      model: effectiveModel,
+      model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
-      output: outputItems,
+      output: [...prefixOutputItems, ...fcOutputItems],
       usage: responsesUsage(overrides),
     },
   });
@@ -735,20 +718,31 @@ function buildTextResponse(
 function buildToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
+  webSearches?: string[],
   overrides?: ResponseOverrides,
 ): object {
-  return buildResponseEnvelope(
-    model,
-    toolCalls.map((tc) => ({
+  const output: object[] = [];
+  if (webSearches && webSearches.length > 0) {
+    for (const query of webSearches) {
+      output.push({
+        type: "web_search_call",
+        id: generateId("ws"),
+        status: "completed",
+        action: { type: "search", query },
+      });
+    }
+  }
+  for (const tc of toolCalls) {
+    output.push({
       type: "function_call",
       id: generateId("fc"),
       call_id: tc.id || generateToolCallId(),
       name: tc.name,
       arguments: tc.arguments,
       status: "completed",
-    })),
-    overrides,
-  );
+    });
+  }
+  return buildResponseEnvelope(model, output, overrides);
 }
 
 export function buildContentWithToolCallsStreamEvents(
@@ -922,7 +916,8 @@ export async function handleResponses(
   let responsesReq: ResponsesRequest;
   try {
     responsesReq = JSON.parse(raw) as ResponsesRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -934,7 +929,11 @@ export async function handleResponses(
       res,
       400,
       JSON.stringify({
-        error: { message: "Malformed JSON", type: "invalid_request_error", code: "invalid_json" },
+        error: {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        },
       }),
     );
     return;
@@ -984,6 +983,37 @@ export async function handleResponses(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      defaults.logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/responses"}`,
+      );
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/responses",
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -995,6 +1025,7 @@ export async function handleResponses(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -1006,28 +1037,23 @@ export async function handleResponses(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      defaults.logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/responses"}`,
-      );
-    }
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
           code: "no_fixture_match",
         },
@@ -1050,7 +1076,7 @@ export async function handleResponses(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 
@@ -1159,7 +1185,12 @@ export async function handleResponses(
       response: { status: 200, fixture },
     });
     if (responsesReq.stream !== true) {
-      const body = buildToolCallResponse(response.toolCalls, completionReq.model, overrides);
+      const body = buildToolCallResponse(
+        response.toolCalls,
+        completionReq.model,
+        response.webSearches,
+        overrides,
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
@@ -1167,6 +1198,7 @@ export async function handleResponses(
         response.toolCalls,
         completionReq.model,
         chunkSize,
+        response.webSearches,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);

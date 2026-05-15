@@ -77,14 +77,17 @@ export class VectorMock implements Mountable {
     res: http.ServerResponse,
     pathname: string,
   ): Promise<boolean> {
-    const body = await readBody(req);
+    // Only consume the request body for methods that carry a body,
+    // avoiding double-consumption when the route doesn't match.
     let parsed: Record<string, unknown> = {};
-    try {
-      if (body) parsed = JSON.parse(body);
-    } catch {
-      if (req.method !== "GET") {
+    if (req.method !== "GET" && req.method !== "DELETE" && req.method !== "HEAD") {
+      const body = await readBody(req);
+      try {
+        if (body) parsed = JSON.parse(body);
+      } catch (parseErr) {
+        const detail = parseErr instanceof Error ? parseErr.message : "unknown";
         res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Malformed JSON body" }));
+        res.end(JSON.stringify({ error: `Malformed JSON body: ${detail}` }));
         return true;
       }
     }
@@ -146,10 +149,11 @@ export class VectorMock implements Mountable {
           let parsed: Record<string, unknown> = {};
           try {
             if (body) parsed = JSON.parse(body);
-          } catch {
+          } catch (parseErr) {
             if (req.method !== "GET") {
+              const detail = parseErr instanceof Error ? parseErr.message : "unknown";
               res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Malformed JSON body" }));
+              res.end(JSON.stringify({ error: `Malformed JSON body: ${detail}` }));
               return;
             }
           }

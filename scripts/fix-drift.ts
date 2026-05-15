@@ -101,7 +101,7 @@ function formatExecError(cmd: string, err: unknown): Error {
  */
 function exec(cmd: string): string {
   try {
-    return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trimEnd();
   } catch (err: unknown) {
     throw formatExecError(cmd, err);
   }

@@ -12,9 +12,20 @@ import {
   responsesToCompletionRequest,
   buildTextStreamEvents,
   buildToolCallStreamEvents,
+  buildContentWithToolCallsStreamEvents,
   type ResponsesSSEEvent,
 } from "./responses.js";
-import { isTextResponse, isToolCallResponse, isErrorResponse, resolveResponse } from "./helpers.js";
+import {
+  isTextResponse,
+  isToolCallResponse,
+  isContentWithToolCallsResponse,
+  isErrorResponse,
+  extractOverrides,
+  resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
+  flattenHeaders,
+} from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
@@ -65,6 +76,7 @@ export function handleWebSocketResponses(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): void {
   const { logger } = defaults;
@@ -77,8 +89,10 @@ export function handleWebSocketResponses(
         logger.error(`WebSocket responses error: ${msg}`);
         try {
           ws.send(JSON.stringify(buildErrorEvent(msg, "server_error")));
-        } catch {
-          // Connection already gone — original error already logged above
+        } catch (sendErr) {
+          defaults.logger.debug(
+            `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
+          );
         }
       }),
     );
@@ -98,14 +112,18 @@ async function processMessage(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): Promise<void> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     ws.send(
-      JSON.stringify(buildErrorEvent("Malformed JSON", "invalid_request_error", "invalid_json")),
+      JSON.stringify(
+        buildErrorEvent(`Malformed JSON: ${detail}`, "invalid_request_error", "invalid_json"),
+      ),
     );
     return;
   }
@@ -152,6 +170,7 @@ async function processMessage(
   };
 
   const completionReq = responsesToCompletionRequest(responsesReq);
+  completionReq._endpointType = "chat";
   const testId = defaults.testId ?? DEFAULT_TEST_ID;
   const fixture = matchFixture(
     fixtures,
@@ -165,17 +184,32 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (defaults.strict) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      journal.add({
+        method: "WS",
+        path: "/v1/responses",
+        headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+        body: completionReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+        },
+      });
       ws.close(1008, "Strict mode: no fixture matched");
       return;
     }
     journal.add({
       method: "WS",
       path: "/v1/responses",
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+      },
     });
     ws.send(
       JSON.stringify(
@@ -195,7 +229,7 @@ async function processMessage(
     journal.add({
       method: "WS",
       path: "/v1/responses",
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
@@ -207,12 +241,49 @@ async function processMessage(
     return;
   }
 
+  // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
+  if (isContentWithToolCallsResponse(response)) {
+    const journalEntry = journal.add({
+      method: "WS",
+      path: "/v1/responses",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+
+    const events = buildContentWithToolCallsStreamEvents(
+      response.content,
+      response.toolCalls,
+      completionReq.model,
+      chunkSize,
+      response.reasoning,
+      response.webSearches,
+      extractOverrides(response),
+    );
+
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await sendEvents(
+      ws,
+      events,
+      latency,
+      interruption?.signal,
+      interruption?.tick,
+    );
+    if (!completed) {
+      ws.destroy();
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
+    return;
+  }
+
   // Text response
   if (isTextResponse(response)) {
     const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
@@ -223,6 +294,7 @@ async function processMessage(
       chunkSize,
       response.reasoning,
       response.webSearches,
+      extractOverrides(response),
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
@@ -246,11 +318,17 @@ async function processMessage(
     const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const events = buildToolCallStreamEvents(response.toolCalls, completionReq.model, chunkSize);
+    const events = buildToolCallStreamEvents(
+      response.toolCalls,
+      completionReq.model,
+      chunkSize,
+      response.webSearches,
+      extractOverrides(response),
+    );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
       ws,
@@ -272,7 +350,7 @@ async function processMessage(
   journal.add({
     method: "WS",
     path: "/v1/responses",
-    headers: {},
+    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
     body: completionReq,
     response: { status: 500, fixture },
   });
@@ -291,10 +369,10 @@ async function sendEvents(
   onChunkSent?: () => void,
 ): Promise<boolean> {
   for (const event of events) {
-    if (ws.isClosed) return true;
+    if (ws.isClosed) return false;
     if (latency > 0) await delay(latency, signal);
     if (signal?.aborted) return false;
-    if (ws.isClosed) return true;
+    if (ws.isClosed) return false;
     ws.send(JSON.stringify(event));
     onChunkSent?.();
     if (signal?.aborted) return false;

@@ -25,17 +25,25 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  serializeErrorResponse,
   isAudioResponse,
   flattenHeaders,
   getTestId,
+  readBody,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
 import { handleGemini } from "./gemini.js";
 import { handleBedrock, handleBedrockStream } from "./bedrock.js";
 import { handleConverse, handleConverseStream } from "./bedrock-converse.js";
-import { handleGeminiInteractions } from "./gemini-interactions.js";
+import {
+  handleGeminiInteractions,
+  resetInteractionCounter,
+  resetEventIdCounter,
+} from "./gemini-interactions.js";
 import { handleEmbeddings } from "./embeddings.js";
 import { handleImages } from "./images.js";
 import { handleSpeech } from "./speech.js";
@@ -170,26 +178,6 @@ function setCorsHeaders(res: http.ServerResponse): void {
   }
 }
 
-const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
-
-async function readBody(
-  req: http.IncomingMessage,
-  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
-): Promise<string> {
-  const buffers: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of req) {
-    const buf = chunk as Buffer;
-    totalBytes += buf.length;
-    if (totalBytes > maxBytes) {
-      req.destroy();
-      throw new Error(`Request body exceeded size limit of ${maxBytes} bytes`);
-    }
-    buffers.push(buf);
-  }
-  return Buffer.concat(buffers).toString();
-}
-
 function handleOptions(res: http.ServerResponse): void {
   setCorsHeaders(res);
   res.writeHead(204);
@@ -307,6 +295,8 @@ async function handleControlAPI(
     videoStates.clear();
     falJobs.clear();
     falQueueStates.clear();
+    resetInteractionCounter();
+    resetEventIdCounter();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
@@ -354,14 +344,21 @@ async function handleControlAPI(
     };
     // Insert at front so it matches before everything else
     fixtures.unshift(errorFixture);
-    // Remove synchronously on first match to prevent race conditions where
-    // two concurrent requests both match before the removal fires.
+    // One-shot: match once then self-remove.  We use a `consumed` flag to
+    // prevent double-matching from concurrent requests and defer the actual
+    // splice via queueMicrotask so it never mutates the fixtures array while
+    // matchFixture is iterating over it.
+    let consumed = false;
     const original = errorFixture.match.predicate!;
     errorFixture.match.predicate = (req) => {
+      if (consumed) return false;
       const result = original(req);
       if (result) {
-        const idx = fixtures.indexOf(errorFixture);
-        if (idx !== -1) fixtures.splice(idx, 1);
+        consumed = true;
+        queueMicrotask(() => {
+          const idx = fixtures.indexOf(errorFixture);
+          if (idx !== -1) fixtures.splice(idx, 1);
+        });
       }
       return result;
     };
@@ -421,7 +418,8 @@ async function handleCompletions(
     if (modelFallback && !body.model) {
       body.model = modelFallback;
     }
-  } catch {
+  } catch (parseErr: unknown) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown parse error";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -434,7 +432,7 @@ async function handleCompletions(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
           param: null,
           code: "invalid_json",
@@ -536,6 +534,39 @@ async function handleCompletions(
   }
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      defaults.logger.error(
+        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
+      );
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? COMPLETIONS_PATH,
+        headers: flattenHeaders(req.headers),
+        body,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+            param: null,
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
+
     // Try record-and-replay proxy if configured
     if (defaults.record && providerKey) {
       // Hook is only passed when chaos wants to mutate the response. When
@@ -562,13 +593,12 @@ async function handleCompletions(
                 );
                 return true;
               },
-              // SSE can't be mutated post-facto (bytes already on the wire).
-              // Record the bypass so the rolled action isn't invisible in
-              // logs / Prometheus — otherwise malformedRate: 1.0 on SSE
-              // traffic silently means 0%.
-              onHookBypassed: (reason: "sse_streamed") => {
+              // Streaming responses can't be mutated post-facto (bytes already
+              // on the wire). Record the bypass so the rolled action isn't
+              // invisible in logs / Prometheus.
+              onHookBypassed: (reason: "sse_streamed" | "ndjson_streamed" | "binary_streamed") => {
                 defaults.logger.warn(
-                  `[chaos] malformed bypassed on proxy: upstream returned SSE (${reason})`,
+                  `[chaos] malformed bypassed on proxy: upstream returned streaming response (${reason})`,
                 );
                 defaults.registry?.incrementCounter("aimock_chaos_bypassed_total", {
                   action: "malformed",
@@ -591,7 +621,7 @@ async function handleCompletions(
         hookOptions,
       );
       if (outcome === "handled_by_hook") return;
-      if (outcome === "relayed") {
+      if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
           path: req.url ?? COMPLETIONS_PATH,
@@ -601,17 +631,7 @@ async function handleCompletions(
         });
         return;
       }
-      // outcome === "not_configured" — fall through to strict/404
-    }
-
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      defaults.logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
-      );
+      // outcome === "not_configured" — fall through to 404
     }
 
     journal.add({
@@ -619,14 +639,18 @@ async function handleCompletions(
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
           param: null,
           code: "no_fixture_match",
@@ -650,17 +674,7 @@ async function handleCompletions(
       body,
       response: { status, fixture },
     });
-    // Serialize only the error envelope (strip internal-only fields like `status`)
-    // and ensure `param` is present per OpenAI spec
-    const errorBody = {
-      error: {
-        message: response.error.message,
-        type: response.error.type ?? "server_error",
-        param: null,
-        code: response.error.code ?? null,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(errorBody));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 
@@ -789,6 +803,11 @@ async function handleCompletions(
 
   // Tool call response
   if (isToolCallResponse(response)) {
+    if (response.webSearches?.length) {
+      defaults.logger.warn(
+        "webSearches in fixture response are not supported for Chat Completions API — ignoring",
+      );
+    }
     const overrides = extractOverrides(response);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
@@ -877,6 +896,9 @@ export async function createServer(
     get requestTransform() {
       return serverOptions.requestTransform;
     },
+    get falQueue() {
+      return serverOptions.falQueue;
+    },
   };
 
   // Validate chaos config rates
@@ -923,6 +945,8 @@ export async function createServer(
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: { message: msg, type: "server_error" } }));
+      } else if (!res.writableEnded) {
+        res.end();
       }
     });
   });
@@ -1118,10 +1142,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1143,10 +1167,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1168,10 +1192,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`event: error\ndata: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1191,8 +1215,13 @@ export async function createServer(
               parsed.model = deploymentId;
               raw = JSON.stringify(parsed);
             }
-          } catch {
-            // Fall through — let handleEmbeddings report the parse error
+          } catch (err) {
+            if (!(err instanceof SyntaxError)) {
+              defaults.logger.error(
+                `Unexpected error in Azure model injection: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            // Fall through for parse errors — let handleEmbeddings report them
           }
         }
         await handleEmbeddings(
@@ -1365,10 +1394,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1403,10 +1432,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1442,10 +1471,10 @@ export async function createServer(
         } else if (!res.writableEnded) {
           try {
             res.write(`data: ${JSON.stringify({ error: { message: msg } })}\n\n`);
+            res.end();
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
-          res.end();
         }
       }
       return;
@@ -1727,24 +1756,6 @@ export async function createServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "POST",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, "sound-generation");
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -1768,24 +1779,6 @@ export async function createServer(
       const musicSubType = musicMatch[1] ?? "music";
       try {
         const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "POST",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, musicSubType);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -1802,6 +1795,10 @@ export async function createServer(
       return;
     }
 
+    // Body read by the general fal handler; preserved so legacy fal-audio
+    // routes below don't double-consume the stream on passthrough.
+    let falBody: string | undefined;
+
     // /fal/* with `x-fal-target-host` header — general fal.ai routing
     // (queue.fal.run, fal.run, rest.fal.ai, rest.alpha.fal.ai).
     // Matches the requestMiddleware path-mirror convention used by
@@ -1809,7 +1806,8 @@ export async function createServer(
     if (FAL_PREFIX_RE.test(pathname) && req.headers["x-fal-target-host"]) {
       setCorsHeaders(res);
       try {
-        const raw = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+        falBody = req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+        const raw = falBody;
         const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
         if (chaosAction) {
           applyChaosAction(
@@ -1851,25 +1849,7 @@ export async function createServer(
     if (falQueueSubmitMatch && req.method === "POST") {
       setCorsHeaders(res);
       try {
-        const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "POST",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
+        const raw = falBody ?? (await readBody(req));
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -1894,7 +1874,8 @@ export async function createServer(
     ) {
       setCorsHeaders(res);
       try {
-        const raw = req.method === "POST" ? await readBody(req) : "{}";
+        const raw =
+          req.method === "POST" || req.method === "PUT" ? (falBody ?? (await readBody(req))) : "{}";
         const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
         if (chaosAction) {
           applyChaosAction(
@@ -1934,25 +1915,7 @@ export async function createServer(
     if (falRunMatch && req.method === "POST") {
       setCorsHeaders(res);
       try {
-        const raw = await readBody(req);
-        const chaosAction = evaluateChaos(null, defaults.chaos, req.headers, defaults.logger);
-        if (chaosAction) {
-          applyChaosAction(
-            chaosAction,
-            res,
-            null,
-            journal,
-            {
-              method: req.method ?? "POST",
-              path: pathname,
-              headers: flattenHeaders(req.headers),
-              body: { model: "", messages: [] },
-            },
-            "fixture",
-            defaults.registry,
-          );
-          return;
-        }
+        const raw = falBody ?? (await readBody(req));
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -2009,10 +1972,10 @@ export async function createServer(
           res.write(
             `data: ${JSON.stringify({ error: { message: msg, type: "server_error" } })}\n\n`,
           );
+          res.end();
         } catch (writeErr) {
           logger.debug("Failed to write error recovery response:", writeErr);
         }
-        res.end();
       }
     }
   }
@@ -2102,19 +2065,22 @@ export async function createServer(
         ...defaults,
         model: "gpt-4",
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     } else if (pathname === REALTIME_PATH) {
-      const model = parsedUrl.searchParams.get("model") ?? "gpt-4o-realtime";
+      const model = parsedUrl.searchParams.get("model") ?? "gpt-realtime-2";
       handleWebSocketRealtime(ws, fixtures, journal, {
         ...defaults,
         model,
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     } else if (pathname === GEMINI_LIVE_PATH) {
       handleWebSocketGeminiLive(ws, fixtures, journal, {
         ...defaults,
         model: "gemini-2.0-flash",
         testId: wsTestId,
+        upgradeHeaders: req.headers,
       });
     }
   }

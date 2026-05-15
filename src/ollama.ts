@@ -26,9 +26,12 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  serializeErrorResponse,
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -487,7 +490,8 @@ export async function handleOllama(
   let ollamaReq: OllamaRequest;
   try {
     ollamaReq = JSON.parse(raw) as OllamaRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -500,7 +504,7 @@ export async function handleOllama(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON body: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -569,6 +573,34 @@ export async function handleOllama(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -580,6 +612,7 @@ export async function handleOllama(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -591,26 +624,23 @@ export async function handleOllama(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -635,12 +665,15 @@ export async function handleOllama(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
   if (isContentWithToolCallsResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Ollama API -- ignoring");
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -684,6 +717,9 @@ export async function handleOllama(
 
   // Text response
   if (isTextResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Ollama API -- ignoring");
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -725,6 +761,9 @@ export async function handleOllama(
 
   // Tool call response
   if (isToolCallResponse(response)) {
+    if (response.webSearches?.length) {
+      logger.warn("webSearches in fixture response are not supported for Ollama API — ignoring");
+    }
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -793,7 +832,8 @@ export async function handleOllamaGenerate(
   let generateReq: OllamaGenerateRequest;
   try {
     generateReq = JSON.parse(raw) as OllamaGenerateRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -806,7 +846,7 @@ export async function handleOllamaGenerate(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON body: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -875,6 +915,34 @@ export async function handleOllamaGenerate(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      defaults.logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -886,6 +954,7 @@ export async function handleOllamaGenerate(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -897,26 +966,23 @@ export async function handleOllamaGenerate(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      defaults.logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -941,7 +1007,7 @@ export async function handleOllamaGenerate(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 

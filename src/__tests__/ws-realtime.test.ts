@@ -18,6 +18,14 @@ const toolFixture: Fixture = {
   },
 };
 
+const contentWithToolCallsFixture: Fixture = {
+  match: { userMessage: "commentary-phase" },
+  response: {
+    content: "Let me check the weather for you.",
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+  },
+};
+
 const errorFixture: Fixture = {
   match: { userMessage: "fail" },
   response: {
@@ -26,7 +34,12 @@ const errorFixture: Fixture = {
   },
 };
 
-const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture];
+const allFixtures: Fixture[] = [
+  textFixture,
+  toolFixture,
+  contentWithToolCallsFixture,
+  errorFixture,
+];
 
 // --- helpers ---
 
@@ -129,12 +142,20 @@ describe("WebSocket /v1/realtime", () => {
     expect(session.modalities).toEqual(["text"]);
     expect(session.instructions).toBe("");
     expect(session.tools).toEqual([]);
-    expect(session.voice).toBeNull();
     expect(session.temperature).toBe(0.8);
     expect(typeof session.expires_at).toBe("number");
     expect(session.max_response_output_tokens).toBe("inf");
-    expect(session.input_audio_transcription).toBeNull();
     expect(session.tool_choice).toBe("auto");
+    expect(session.type).toBe("conversation");
+    expect(session.reasoning).toBeNull();
+    // GA nested audio config
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio).toBeDefined();
+    expect(audio.voice).toBeNull();
+    expect(audio.input_audio_format).toBeNull();
+    expect(audio.output_audio_format).toBeNull();
+    expect(audio.input_audio_noise_reduction).toBeNull();
+    expect(audio.input_audio_transcription).toBeNull();
 
     ws.close();
   });
@@ -163,8 +184,12 @@ describe("WebSocket /v1/realtime", () => {
     expect(session.object).toBe("realtime.session");
     expect(typeof session.expires_at).toBe("number");
     expect(session.max_response_output_tokens).toBe("inf");
-    expect(session.input_audio_transcription).toBeNull();
     expect(session.tool_choice).toBe("auto");
+    expect(session.type).toBe("conversation");
+    // GA nested audio config
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio).toBeDefined();
+    expect(audio.voice).toBeNull();
 
     ws.close();
   });
@@ -178,32 +203,33 @@ describe("WebSocket /v1/realtime", () => {
 
     ws.send(conversationItemCreate("user", "hello"));
 
-    // Wait for conversation.item.created ack
+    // Wait for conversation.item.added ack (GA name)
     const ackRaw = await ws.waitForMessages(2);
     const ackEvent = JSON.parse(ackRaw[1]) as WSEvent;
-    expect(ackEvent.type).toBe("conversation.item.created");
+    expect(ackEvent.type).toBe("conversation.item.added");
 
     ws.send(responseCreate());
 
     // Text stream: response.created + output_item.added + content_part.added
-    // + text.delta(s) + text.done + content_part.done + output_item.done + response.done
-    // = 8 minimum events (1 delta for small text with default chunkSize=20)
-    // Total messages: 2 (session.created + item.created) + 8 = 10
-    const allRaw = await ws.waitForMessages(10);
+    // + output_text.delta(s) + output_text.done + content_part.done + output_item.done
+    // + conversation.item.done + response.done
+    // = 9 minimum events (1 delta for small text with default chunkSize=20)
+    // Total messages: 2 (session.created + item.added) + 9 = 11
+    const allRaw = await ws.waitForMessages(11);
     const responseEvents = parseEvents(allRaw.slice(2));
 
     const types = responseEvents.map((e) => e.type);
     expect(types[0]).toBe("response.created");
     expect(types).toContain("response.output_item.added");
     expect(types).toContain("response.content_part.added");
-    expect(types).toContain("response.text.delta");
-    expect(types).toContain("response.text.done");
+    expect(types).toContain("response.output_text.delta");
+    expect(types).toContain("response.output_text.done");
     expect(types).toContain("response.content_part.done");
     expect(types).toContain("response.output_item.done");
     expect(types[types.length - 1]).toBe("response.done");
 
     // Verify text deltas reconstruct to "Hi there!"
-    const deltas = responseEvents.filter((e) => e.type === "response.text.delta");
+    const deltas = responseEvents.filter((e) => e.type === "response.output_text.delta");
     const fullText = deltas.map((d) => d.delta).join("");
     expect(fullText).toBe("Hi there!");
 
@@ -234,10 +260,10 @@ describe("WebSocket /v1/realtime", () => {
     expect(resp.usage).toEqual({ total_tokens: 0, input_tokens: 0, output_tokens: 0 });
     expect(Array.isArray(resp.output)).toBe(true);
 
-    // Verify conversation.item.created has previous_item_id (null for first item)
-    const itemCreatedEvent = parseEvents(allRaw.slice(1, 2))[0];
-    expect(itemCreatedEvent.type).toBe("conversation.item.created");
-    expect(itemCreatedEvent.previous_item_id).toBeNull();
+    // Verify conversation.item.added has previous_item_id (null for first item)
+    const itemAddedEvent = parseEvents(allRaw.slice(1, 2))[0];
+    expect(itemAddedEvent.type).toBe("conversation.item.added");
+    expect(itemAddedEvent.previous_item_id).toBeNull();
 
     // Send a second item and verify previous_item_id points to the last conversation item
     // (the assistant response item pushed during handleResponseCreate)
@@ -245,7 +271,7 @@ describe("WebSocket /v1/realtime", () => {
     ws.send(conversationItemCreate("user", "how are you?"));
     const secondAckRaw = await ws.waitForMessages(allRaw.length + 1);
     const secondAckEvent = JSON.parse(secondAckRaw[secondAckRaw.length - 1]) as WSEvent;
-    expect(secondAckEvent.type).toBe("conversation.item.created");
+    expect(secondAckEvent.type).toBe("conversation.item.added");
     expect(secondAckEvent.previous_item_id).toBe(assistantItemId);
 
     ws.close();
@@ -258,15 +284,15 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "weather"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
     // Tool call stream: response.created + output_item.added
     // + function_call_arguments.delta(s) + function_call_arguments.done
-    // + output_item.done + response.done = 6 min events
-    // Total: 2 + 6 = 8
-    const allRaw = await ws.waitForMessages(8);
+    // + output_item.done + conversation.item.done + response.done = 7 min events
+    // Total: 2 + 7 = 9
+    const allRaw = await ws.waitForMessages(9);
     const responseEvents = parseEvents(allRaw.slice(2));
 
     const types = responseEvents.map((e) => e.type);
@@ -317,7 +343,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "unknown-message-that-matches-nothing"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -353,7 +379,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "fail"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -388,12 +414,12 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "hello"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
-    // Wait for full text response sequence
-    await ws.waitForMessages(10);
+    // Wait for full text response sequence (9 response events + 2 initial = 11)
+    await ws.waitForMessages(11);
     // Small pause to ensure the journal write has completed
     await new Promise((r) => setTimeout(r, 50));
 
@@ -425,23 +451,23 @@ describe("WebSocket /v1/realtime", () => {
 
     // Add both conversation items
     ws.send(conversationItemCreate("user", "ser-a"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     // Now send two response.create messages rapidly without waiting
     // The realtime handler adds "ser-a" to conversation, so the second one
     // also sees it. To make the second match "ser-b", add it to conversation first.
     ws.send(conversationItemCreate("user", "ser-b"));
-    await ws.waitForMessages(3); // + second conversation.item.created
+    await ws.waitForMessages(3); // + second conversation.item.added
 
     // Fire two response.create messages back-to-back
     ws.send(responseCreate());
     ws.send(responseCreate());
 
     // Each text response: response.created + output_item.added + content_part.added
-    // + delta(s) + text.done + content_part.done + output_item.done + response.done
+    // + delta(s) + text.done + content_part.done + output_item.done + conversation.item.done + response.done
     // "Alpha response" / 5 = 3 deltas, "Bravo response" / 5 = 3 deltas
-    // So 10 events per response = 20 total, plus the 3 initial messages = 23
-    const allRaw = await ws.waitForMessages(23);
+    // So 11 events per response = 22 total, plus the 3 initial messages = 25
+    const allRaw = await ws.waitForMessages(25);
     const responseEvents = parseEvents(allRaw.slice(3));
 
     // Find response.done boundaries
@@ -461,11 +487,11 @@ describe("WebSocket /v1/realtime", () => {
 
     // Verify no interleaving: deltas in each batch should form a complete string
     const firstDeltas = firstBatch
-      .filter((e) => e.type === "response.text.delta")
+      .filter((e) => e.type === "response.output_text.delta")
       .map((e) => e.delta)
       .join("");
     const secondDeltas = secondBatch
-      .filter((e) => e.type === "response.text.delta")
+      .filter((e) => e.type === "response.output_text.delta")
       .map((e) => e.delta)
       .join("");
 
@@ -496,15 +522,15 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "multi-tool-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
     // 2 tool calls: response.created
-    // + (output_item.added + 1 delta + arguments.done + output_item.done) * 2
-    // + response.done = 1 + 8 + 1 = 10 events
-    // Total: 2 (session.created + item.created) + 10 = 12
-    const allRaw = await ws.waitForMessages(12);
+    // + (output_item.added + 1 delta + arguments.done + output_item.done + conversation.item.done) * 2
+    // + response.done = 1 + 10 + 1 = 12 events
+    // Total: 2 (session.created + item.created) + 12 = 14
+    const allRaw = await ws.waitForMessages(14);
     const responseEvents = parseEvents(allRaw.slice(2));
 
     const types = responseEvents.map((e) => e.type);
@@ -546,7 +572,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "truncate-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -557,7 +583,7 @@ describe("WebSocket /v1/realtime", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // The connection was destroyed, so whatever messages arrived should NOT include response.done
-    // We got at least session.created + conversation.item.created = 2 before the response
+    // We got at least session.created + conversation.item.added = 2 before the response
     const raw = await ws.waitForMessages(2).catch(() => [] as string[]);
     if (raw.length > 2) {
       const responseEvents = parseEvents(raw.slice(2));
@@ -580,7 +606,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "truncate-journal-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -612,7 +638,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "truncate-tool-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -642,7 +668,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "disconnect-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -666,7 +692,7 @@ describe("WebSocket /v1/realtime", () => {
     const raw = await ws.waitForMessages(2);
     const event = JSON.parse(raw[1]) as WSEvent;
     expect(event.type).toBe("error");
-    expect((event.error as Record<string, unknown>).message).toBe("Malformed JSON");
+    expect((event.error as Record<string, unknown>).message).toMatch(/^Malformed JSON:/);
 
     ws.close();
   });
@@ -709,7 +735,7 @@ describe("WebSocket /v1/realtime", () => {
 
     const raw = await ws.waitForMessages(2);
     const event = JSON.parse(raw[1]) as WSEvent;
-    expect(event.type).toBe("conversation.item.created");
+    expect(event.type).toBe("conversation.item.added");
     const item = event.item as Record<string, unknown>;
     expect(item.id).toBeDefined();
     expect((item.id as string).startsWith("item_")).toBe(true);
@@ -741,8 +767,11 @@ describe("WebSocket /v1/realtime", () => {
     expect(session.object).toBe("realtime.session");
     expect(typeof session.expires_at).toBe("number");
     expect(session.max_response_output_tokens).toBe("inf");
-    expect(session.input_audio_transcription).toBeNull();
     expect(session.tool_choice).toBe("auto");
+    expect(session.type).toBe("conversation");
+    // GA nested audio config
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio).toBeDefined();
 
     ws.close();
   });
@@ -762,7 +791,7 @@ describe("WebSocket /v1/realtime", () => {
     const raw = await ws.waitForMessages(2);
     const event = JSON.parse(raw[1]) as WSEvent;
     // The unknown message is silently ignored, so next message is the item.created
-    expect(event.type).toBe("conversation.item.created");
+    expect(event.type).toBe("conversation.item.added");
 
     ws.close();
   });
@@ -780,26 +809,26 @@ describe("WebSocket /v1/realtime", () => {
 
     // Add function_call item
     ws.send(functionCallItem("get_weather", "call_123", '{"city":"NYC"}'));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     // Add function_call_output item
     ws.send(functionCallOutputItem("call_123", "Sunny, 72F"));
-    await ws.waitForMessages(3); // + conversation.item.created
+    await ws.waitForMessages(3); // + conversation.item.added
 
     ws.send(responseCreate());
 
     // Text response: response.created + output_item.added + content_part.added
-    // + text.delta(s) + text.done + content_part.done + output_item.done + response.done
-    // "Tool result processed" = 21 chars / chunkSize 20 = 2 deltas = 9 events
-    // Total: 3 + 9 = 12
-    const allRaw = await ws.waitForMessages(12);
+    // + text.delta(s) + text.done + content_part.done + output_item.done + conversation.item.done + response.done
+    // "Tool result processed" = 21 chars / chunkSize 20 = 2 deltas = 10 events
+    // Total: 3 + 10 = 13
+    const allRaw = await ws.waitForMessages(13);
     const responseEvents = parseEvents(allRaw.slice(3));
     const types = responseEvents.map((e) => e.type);
     expect(types[0]).toBe("response.created");
     expect(types[types.length - 1]).toBe("response.done");
 
     // Verify text deltas reconstruct correctly
-    const deltas = responseEvents.filter((e) => e.type === "response.text.delta");
+    const deltas = responseEvents.filter((e) => e.type === "response.output_text.delta");
     const fullText = deltas.map((d) => d.delta).join("");
     expect(fullText).toBe("Tool result processed");
 
@@ -814,16 +843,16 @@ describe("WebSocket /v1/realtime", () => {
 
     // Add system message item
     ws.send(systemMessageItem("You are a helpful assistant"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     // Add user message
     ws.send(conversationItemCreate("user", "hello"));
-    await ws.waitForMessages(3); // + conversation.item.created
+    await ws.waitForMessages(3); // + conversation.item.added
 
     ws.send(responseCreate());
 
-    // Wait for text response
-    const allRaw = await ws.waitForMessages(11);
+    // Wait for text response (9 response events + 3 initial = 12)
+    const allRaw = await ws.waitForMessages(12);
     const responseEvents = parseEvents(allRaw.slice(3));
     expect(responseEvents[0].type).toBe("response.created");
     expect(responseEvents[responseEvents.length - 1].type).toBe("response.done");
@@ -838,7 +867,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "unknown-no-match"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -857,12 +886,12 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(2); // + session.updated
 
     ws.send(conversationItemCreate("user", "hello"));
-    await ws.waitForMessages(3); // + conversation.item.created
+    await ws.waitForMessages(3); // + conversation.item.added
 
     ws.send(responseCreate());
 
-    // Wait for text response
-    const allRaw = await ws.waitForMessages(11);
+    // Wait for text response (9 response events + 3 initial = 12)
+    const allRaw = await ws.waitForMessages(12);
     const responseEvents = parseEvents(allRaw.slice(3));
     expect(responseEvents[0].type).toBe("response.created");
     expect(responseEvents[responseEvents.length - 1].type).toBe("response.done");
@@ -878,24 +907,24 @@ describe("WebSocket /v1/realtime", () => {
 
     // First conversation turn
     ws.send(conversationItemCreate("user", "hello"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
-    // Wait for full text response (8 events) => total 10
-    await ws.waitForMessages(10);
+    // Wait for full text response (9 events) => total 11
+    await ws.waitForMessages(11);
 
     // Second conversation turn — add another user message
     ws.send(conversationItemCreate("user", "weather"));
 
-    // + conversation.item.created => total 11
-    await ws.waitForMessages(11);
+    // + conversation.item.added => total 12
+    await ws.waitForMessages(12);
 
     ws.send(responseCreate());
 
-    // Tool call response (6 events) => total 17
-    const allRaw = await ws.waitForMessages(17);
-    const secondResponseEvents = parseEvents(allRaw.slice(11));
+    // Tool call response (7 events) => total 19
+    const allRaw = await ws.waitForMessages(19);
+    const secondResponseEvents = parseEvents(allRaw.slice(12));
 
     const types = secondResponseEvents.map((e) => e.type);
     expect(types[0]).toBe("response.created");
@@ -922,7 +951,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "error-no-status-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -947,7 +976,7 @@ describe("WebSocket /v1/realtime", () => {
     await ws.waitForMessages(1); // session.created
 
     ws.send(conversationItemCreate("user", "weird-response-rt"));
-    await ws.waitForMessages(2); // + conversation.item.created
+    await ws.waitForMessages(2); // + conversation.item.added
 
     ws.send(responseCreate());
 
@@ -957,6 +986,942 @@ describe("WebSocket /v1/realtime", () => {
     expect((event.error as Record<string, unknown>).message).toBe(
       "Fixture response did not match any known type",
     );
+
+    ws.close();
+  });
+
+  // ── GA session config tests ───────────────────────────────────────────
+  it("session.update accepts reasoning.effort", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { reasoning: { effort: "high" } },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("session.updated");
+    const session = event.session as Record<string, unknown>;
+    expect(session.reasoning).toEqual({ effort: "high" });
+
+    ws.close();
+  });
+
+  it("session.update accepts input_audio_noise_reduction via nested audio config", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          audio: { input_audio_noise_reduction: { type: "near_field" } },
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("session.updated");
+    const session = event.session as Record<string, unknown>;
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio.input_audio_noise_reduction).toEqual({ type: "near_field" });
+
+    ws.close();
+  });
+
+  it("session.update accepts input_audio_transcription via nested audio config", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          audio: { input_audio_transcription: { model: "whisper-1" } },
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("session.updated");
+    const session = event.session as Record<string, unknown>;
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio.input_audio_transcription).toEqual({ model: "whisper-1" });
+
+    ws.close();
+  });
+
+  it("session.update accepts GA nested audio config (voice, formats)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          audio: {
+            voice: "alloy",
+            input_audio_format: "pcm16",
+            output_audio_format: "pcm16",
+          },
+          modalities: ["text", "audio"],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = JSON.parse(raw[1]) as WSEvent;
+    expect(event.type).toBe("session.updated");
+    const session = event.session as Record<string, unknown>;
+    const audio = session.audio as Record<string, unknown>;
+    expect(audio.voice).toBe("alloy");
+    expect(audio.input_audio_format).toBe("pcm16");
+    expect(audio.output_audio_format).toBe("pcm16");
+    expect(session.modalities).toEqual(["text", "audio"]);
+
+    ws.close();
+  });
+
+  it("reasoning persists across session.update calls", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    // First update: set reasoning
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { reasoning: { effort: "high" } },
+      }),
+    );
+
+    const raw1 = await ws.waitForMessages(2);
+    const event1 = JSON.parse(raw1[1]) as WSEvent;
+    expect((event1.session as Record<string, unknown>).reasoning).toEqual({ effort: "high" });
+
+    // Second update: change something else, reasoning should persist
+    ws.send(sessionUpdate({ instructions: "Be helpful" }));
+
+    const raw2 = await ws.waitForMessages(3);
+    const event2 = JSON.parse(raw2[2]) as WSEvent;
+    expect(event2.type).toBe("session.updated");
+    const session2 = event2.session as Record<string, unknown>;
+    expect(session2.reasoning).toEqual({ effort: "high" });
+    expect(session2.instructions).toBe("Be helpful");
+
+    // Third update: clear reasoning
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { reasoning: null },
+      }),
+    );
+
+    const raw3 = await ws.waitForMessages(4);
+    const event3 = JSON.parse(raw3[3]) as WSEvent;
+    expect((event3.session as Record<string, unknown>).reasoning).toBeNull();
+
+    ws.close();
+  });
+
+  // ── Image input tests ────────────────────────────────────────────────
+  it("accepts input_image content in conversation.item.create", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "What is in this image?" },
+            { type: "input_image", url: "https://example.com/photo.jpg" },
+          ],
+        },
+      }),
+    );
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("conversation.item.added");
+    const item = event.item as Record<string, unknown>;
+    const content = item.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(2);
+    expect(content[0].type).toBe("input_text");
+    expect(content[0].text).toBe("What is in this image?");
+    expect(content[1].type).toBe("input_image");
+    expect(content[1].url).toBe("https://example.com/photo.jpg");
+
+    ws.close();
+  });
+
+  it("maps input_image to ChatMessage image_url format for fixture matching", async () => {
+    // Use a predicate to verify the ChatMessage structure produced by realtimeItemsToMessages
+    let capturedMessages: unknown[] | null = null;
+    const imageFixture: Fixture = {
+      match: {
+        predicate: (req) => {
+          capturedMessages = req.messages;
+          // Match any request so we get a response
+          const lastUser = req.messages.filter((m) => m.role === "user").pop();
+          return !!lastUser;
+        },
+      },
+      response: { content: "I see a cat." },
+    };
+    instance = await createServer([imageFixture]);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "What is in this image?" },
+            { type: "input_image", url: "https://example.com/photo.jpg" },
+          ],
+        },
+      }),
+    );
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Text response: response.created + output_item.added + content_part.added
+    // + output_text.delta + output_text.done + content_part.done + output_item.done + response.done
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+    const textDelta = responseEvents.find((e) => e.type === "response.output_text.delta");
+    expect(textDelta).toBeDefined();
+    expect(textDelta!.delta).toContain("I see a cat.");
+
+    // Verify the ChatMessage structure passed to fixture matching
+    expect(capturedMessages).not.toBeNull();
+    const userMsg = (capturedMessages as Record<string, unknown>[]).find((m) => m.role === "user");
+    expect(userMsg).toBeDefined();
+    // After mapping, content should be an array with text + image_url parts
+    const content = userMsg!.content as Array<Record<string, unknown>>;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content).toHaveLength(2);
+    expect(content[0]).toEqual({ type: "text", text: "What is in this image?" });
+    expect(content[1]).toEqual({
+      type: "image_url",
+      image_url: { url: "https://example.com/photo.jpg" },
+    });
+
+    ws.close();
+  });
+
+  // ── Beta shim tests ──────────────────────────────────────────────────
+  it("emits Beta event names when OpenAI-Beta header is present", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+
+    // First message: session.created
+    const raw = await ws.waitForMessages(1);
+    const session = parseEvents(raw)[0];
+    expect(session.type).toBe("session.created");
+
+    // Beta: flat session config (no nested audio)
+    const sess = session.session as Record<string, unknown>;
+    expect(sess.voice).toBeDefined();
+    expect(sess.audio).toBeUndefined();
+    expect(sess.type).toBeUndefined();
+    expect(sess.reasoning).toBeUndefined();
+
+    // Send conversation item and response
+    ws.send(conversationItemCreate("user", "hello"));
+
+    const ackRaw = await ws.waitForMessages(2);
+    const ackEvent = parseEvents(ackRaw.slice(1))[0];
+    // Beta: conversation.item.created (not .added)
+    expect(ackEvent.type).toBe("conversation.item.created");
+
+    ws.send(responseCreate());
+
+    // Wait for full text response
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+    const types = responseEvents.map((e) => e.type);
+
+    // Beta event names
+    expect(types).toContain("response.text.delta"); // not output_text
+    expect(types).toContain("response.text.done"); // not output_text
+    expect(types).not.toContain("response.output_text.delta");
+    expect(types).not.toContain("response.output_text.done");
+
+    // Beta content type: "text" not "output_text"
+    const contentPartAdded = responseEvents.find((e) => e.type === "response.content_part.added");
+    expect((contentPartAdded!.part as Record<string, unknown>).type).toBe("text");
+
+    ws.close();
+  });
+
+  // ── Translate/Whisper session types + audio buffer ─────────────────────
+  it("accepts transcription session type and acknowledges audio buffer commit", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    // Skip session.created
+    await ws.waitForMessages(1);
+
+    // Update session to transcription mode with transcribe model
+    ws.send(sessionUpdate({ type: "transcription", model: "gpt-4o-transcribe" }));
+
+    const updateRaw = await ws.waitForMessages(2);
+    const updateEvent = parseEvents(updateRaw.slice(1))[0];
+    expect(updateEvent.type).toBe("session.updated");
+    expect((updateEvent.session as Record<string, unknown>).type).toBe("transcription");
+    expect((updateEvent.session as Record<string, unknown>).model).toBe("gpt-4o-transcribe");
+
+    // Send audio buffer messages
+    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: "base64data" }));
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+
+    // Should get input_audio_buffer.committed + conversation.item.added (placeholder)
+    const audioRaw = await ws.waitForMessages(4);
+    const audioEvents = parseEvents(audioRaw.slice(2));
+    const types = audioEvents.map((e) => e.type);
+    expect(types).toContain("input_audio_buffer.committed");
+    expect(types).toContain("conversation.item.added");
+
+    // The placeholder item should have input_audio content
+    const itemAdded = audioEvents.find((e) => e.type === "conversation.item.added");
+    const item = itemAdded!.item as Record<string, unknown>;
+    expect(item.role).toBe("user");
+    const content = item.content as Array<Record<string, unknown>>;
+    expect(content[0].type).toBe("input_audio");
+    expect(content[0].transcript).toBeNull();
+
+    ws.close();
+  });
+
+  it("input_audio_buffer.append is silently accepted", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Send append — should be silently accepted (no event emitted)
+    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: "base64data" }));
+
+    // Send a known message to verify processing continues
+    ws.send(conversationItemCreate("user", "hello"));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    // The append was silent, so next event is from the conversation.item.create
+    expect(event.type).toBe("conversation.item.added");
+
+    ws.close();
+  });
+
+  it("input_audio_buffer.clear emits cleared event", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("input_audio_buffer.cleared");
+
+    ws.close();
+  });
+
+  it("input_audio_buffer.commit in conversation mode does not add placeholder item", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // In default conversation mode, commit should only emit committed, no item
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("input_audio_buffer.committed");
+
+    // Send another message to verify no extra events were emitted
+    ws.send(conversationItemCreate("user", "hello"));
+    const raw2 = await ws.waitForMessages(3);
+    const event2 = parseEvents(raw2.slice(2))[0];
+    expect(event2.type).toBe("conversation.item.added");
+
+    ws.close();
+  });
+
+  it("accepts translation session type", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(sessionUpdate({ type: "translation", model: "gpt-4o-transcribe" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("session.updated");
+    expect((event.session as Record<string, unknown>).type).toBe("translation");
+    expect((event.session as Record<string, unknown>).model).toBe("gpt-4o-transcribe");
+
+    ws.close();
+  });
+
+  it("rejects invalid session type + model combination (transcription with wrong model)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(sessionUpdate({ type: "transcription", model: "gpt-realtime-2" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("error");
+    const error = event.error as Record<string, unknown>;
+    expect(error.type).toBe("invalid_request_error");
+    expect(error.code).toBe("invalid_session_config");
+    expect(error.message).toContain("transcription");
+
+    ws.close();
+  });
+
+  it("rejects invalid session type + model combination (translation with wrong model)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(sessionUpdate({ type: "translation", model: "gpt-realtime-mini" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("error");
+    const error = event.error as Record<string, unknown>;
+    expect(error.type).toBe("invalid_request_error");
+    expect(error.code).toBe("invalid_session_config");
+    expect(error.message).toContain("translation");
+
+    ws.close();
+  });
+
+  it("audio buffer commit in translation mode adds placeholder conversation item", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(sessionUpdate({ type: "translation", model: "gpt-4o-transcribe" }));
+    await ws.waitForMessages(2); // session.updated
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+
+    // Should get committed + conversation.item.added (placeholder)
+    const raw = await ws.waitForMessages(4);
+    const events = parseEvents(raw.slice(2));
+    const types = events.map((e) => e.type);
+    expect(types).toContain("input_audio_buffer.committed");
+    expect(types).toContain("conversation.item.added");
+
+    ws.close();
+  });
+
+  // ── conversation.item.done tests ────────────────────────────────────
+  it("emits conversation.item.done after response completes", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Text response events + conversation.item.done = 9 events after item.added
+    // response.created + output_item.added + content_part.added + delta(s) + output_text.done
+    // + content_part.done + output_item.done + conversation.item.done + response.done
+    const allRaw = await ws.waitForMessages(11);
+    const responseEvents = parseEvents(allRaw.slice(2));
+    const types = responseEvents.map((e) => e.type);
+
+    // conversation.item.done should appear after response.output_item.done
+    const outputItemDoneIdx = types.lastIndexOf("response.output_item.done");
+    const itemDoneIdx = types.indexOf("conversation.item.done");
+    expect(itemDoneIdx).toBeGreaterThan(-1);
+    expect(itemDoneIdx).toBeGreaterThan(outputItemDoneIdx);
+
+    const itemDone = responseEvents[itemDoneIdx];
+    const item = itemDone.item as Record<string, unknown>;
+    expect(item.id).toBeDefined();
+    expect((item.id as string).startsWith("item_")).toBe(true);
+    expect(item.type).toBe("message");
+    expect(item.role).toBe("assistant");
+    expect(item.status).toBe("completed");
+    expect(Array.isArray(item.content)).toBe(true);
+
+    ws.close();
+  });
+
+  // ── response.cancel tests ───────────────────────────────────────────
+  it("handles response.cancel by emitting response.cancelled", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Send response.cancel (no active response needed — aimock just acknowledges)
+    ws.send(JSON.stringify({ type: "response.cancel" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("response.cancelled");
+
+    ws.close();
+  });
+
+  // ── Beta suppression of conversation.item.done ──────────────────────
+  it("suppresses conversation.item.done in Beta mode", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.created (Beta name)
+
+    ws.send(responseCreate());
+
+    // Wait for response events — Beta does not include conversation.item.done
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+    const types = responseEvents.map((e) => e.type);
+
+    expect(types).not.toContain("conversation.item.done");
+
+    ws.close();
+  });
+
+  // ── GA model acceptance tests ───────────────────────────────────────────
+  it.each([
+    "gpt-realtime",
+    "gpt-realtime-2",
+    "gpt-realtime-2025-08-28",
+    "gpt-realtime-1.5",
+    "gpt-realtime-mini",
+    "gpt-realtime-mini-2025-10-06",
+    "gpt-realtime-mini-2025-12-15",
+  ])("accepts GA model %s via query parameter", async (model) => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, `/v1/realtime?model=${model}`);
+
+    const raw = await ws.waitForMessages(1);
+    const event = parseEvents(raw)[0];
+    expect(event.type).toBe("session.created");
+    const session = event.session as Record<string, unknown>;
+    expect(session.model).toBe(model);
+
+    ws.close();
+  });
+
+  it.each(["gpt-4o-realtime-preview", "gpt-4o-mini-realtime-preview"])(
+    "accepts legacy model %s via query parameter",
+    async (model) => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, `/v1/realtime?model=${model}`);
+
+      const raw = await ws.waitForMessages(1);
+      const event = parseEvents(raw)[0];
+      expect(event.type).toBe("session.created");
+      const session = event.session as Record<string, unknown>;
+      expect(session.model).toBe(model);
+
+      ws.close();
+    },
+  );
+
+  // ── endpointType routing tests ──────────────────────────────────────────
+  it("sets _endpointType to realtime for default conversation sessions", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Wait for full text response
+    await ws.waitForMessages(10);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.body._endpointType).toBe("realtime");
+
+    ws.close();
+  });
+
+  it("sets _endpointType to realtime-transcription for transcription sessions", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-4o-transcribe");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Update session to transcription type
+    ws.send(sessionUpdate({ type: "transcription" }));
+    await ws.waitForMessages(2); // + session.updated
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(3); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Response events (no match in non-strict = 2 events: response.created + response.done)
+    await ws.waitForMessages(5);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.body._endpointType).toBe("realtime-transcription");
+
+    ws.close();
+  });
+
+  it("sets _endpointType to realtime-translation for translation sessions", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-4o-transcribe");
+
+    await ws.waitForMessages(1); // session.created
+
+    // Update session to translation type
+    ws.send(sessionUpdate({ type: "translation" }));
+    await ws.waitForMessages(2); // + session.updated
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(3); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Response events
+    await ws.waitForMessages(5);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const entry = instance.journal.getLast();
+    expect(entry).not.toBeNull();
+    expect(entry!.body._endpointType).toBe("realtime-translation");
+
+    ws.close();
+  });
+
+  // ── Commentary phase tests ──────────────────────────────────────────────
+  it("emits phase: final_answer on output_item.added and output_item.done for text response", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Text response: 9 events after item.added
+    const allRaw = await ws.waitForMessages(11);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    const outputItemAdded = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.added" &&
+        (e.item as Record<string, unknown>).type === "message",
+    );
+    expect(outputItemAdded).toBeDefined();
+    expect((outputItemAdded!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    const outputItemDone = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as Record<string, unknown>).type === "message",
+    );
+    expect(outputItemDone).toBeDefined();
+    expect((outputItemDone!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    ws.close();
+  });
+
+  it("emits phase: final_answer on output_item.added and output_item.done for tool call response", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "weather"));
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // Tool call response: 7 events after item.added
+    const allRaw = await ws.waitForMessages(9);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    const outputItemAdded = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.added" &&
+        (e.item as Record<string, unknown>).type === "function_call",
+    );
+    expect(outputItemAdded).toBeDefined();
+    expect((outputItemAdded!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    const outputItemDone = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as Record<string, unknown>).type === "function_call",
+    );
+    expect(outputItemDone).toBeDefined();
+    expect((outputItemDone!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    ws.close();
+  });
+
+  it("emits phase: commentary on text output_item and phase: final_answer on tool call when both present", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "commentary-phase"));
+    await ws.waitForMessages(2); // + conversation.item.added
+
+    ws.send(responseCreate());
+
+    // ContentWithToolCalls: text part + tool call part + all their events
+    // response.created + output_item.added(text) + content_part.added + delta(s) + output_text.done
+    // + content_part.done + output_item.done(text) + conversation.item.done(text)
+    // + output_item.added(tool) + delta(s) + arguments.done + output_item.done(tool)
+    // + conversation.item.done(tool) + response.done
+    // Text "Let me check the weather for you." = 34 chars / chunkSize 20 = 2 deltas
+    // Tool args '{"city":"NYC"}' = 14 chars / chunkSize 20 = 1 delta
+    // Total response events = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 = 15
+    // Total messages = 2 (session.created + item.added) + 15 = 17
+    const allRaw = await ws.waitForMessages(17);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    // Find text output_item.added
+    const textItemAdded = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.added" &&
+        (e.item as Record<string, unknown>).type === "message",
+    );
+    expect(textItemAdded).toBeDefined();
+    expect((textItemAdded!.item as Record<string, unknown>).phase).toBe("commentary");
+
+    // Find text output_item.done
+    const textItemDone = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as Record<string, unknown>).type === "message",
+    );
+    expect(textItemDone).toBeDefined();
+    expect((textItemDone!.item as Record<string, unknown>).phase).toBe("commentary");
+
+    // Find tool call output_item.added
+    const toolItemAdded = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.added" &&
+        (e.item as Record<string, unknown>).type === "function_call",
+    );
+    expect(toolItemAdded).toBeDefined();
+    expect((toolItemAdded!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    // Find tool call output_item.done
+    const toolItemDone = responseEvents.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as Record<string, unknown>).type === "function_call",
+    );
+    expect(toolItemDone).toBeDefined();
+    expect((toolItemDone!.item as Record<string, unknown>).phase).toBe("final_answer");
+
+    ws.close();
+  });
+
+  // ── Beta content type translation conformance ──────────────────────────
+  it("Beta mode: response.output_item.done translates item.content[].type output_text -> text", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.created (Beta name)
+
+    ws.send(responseCreate());
+
+    // Beta text response: session.created + item.created + response.created + output_item.added
+    // + content_part.added + text.delta + text.done + content_part.done + output_item.done + response.done
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    // Find response.output_item.done
+    const outputItemDone = responseEvents.find((e) => e.type === "response.output_item.done");
+    expect(outputItemDone).toBeDefined();
+    const item = outputItemDone!.item as Record<string, unknown>;
+    const content = item.content as Array<Record<string, unknown>>;
+    expect(content).toBeDefined();
+    expect(content[0].type).toBe("text"); // not "output_text"
+
+    ws.close();
+  });
+
+  it("Beta mode: response.done translates response.output[].content[].type output_text -> text", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    // Find response.done
+    const responseDone = responseEvents.find((e) => e.type === "response.done");
+    expect(responseDone).toBeDefined();
+    const resp = responseDone!.response as Record<string, unknown>;
+    const output = resp.output as Array<Record<string, unknown>>;
+    expect(output).toBeDefined();
+    expect(output.length).toBeGreaterThan(0);
+    const outputContent = output[0].content as Array<Record<string, unknown>>;
+    expect(outputContent).toBeDefined();
+    expect(outputContent[0].type).toBe("text"); // not "output_text"
+
+    ws.close();
+  });
+
+  it("Beta mode: output_item events do NOT have phase field", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(conversationItemCreate("user", "hello"));
+    await ws.waitForMessages(2); // + conversation.item.created
+
+    ws.send(responseCreate());
+
+    const allRaw = await ws.waitForMessages(10);
+    const responseEvents = parseEvents(allRaw.slice(2));
+
+    // Check output_item.added
+    const outputItemAdded = responseEvents.find((e) => e.type === "response.output_item.added");
+    expect(outputItemAdded).toBeDefined();
+    const addedItem = outputItemAdded!.item as Record<string, unknown>;
+    expect(addedItem.phase).toBeUndefined();
+
+    // Check output_item.done
+    const outputItemDone = responseEvents.find((e) => e.type === "response.output_item.done");
+    expect(outputItemDone).toBeDefined();
+    const doneItem = outputItemDone!.item as Record<string, unknown>;
+    expect(doneItem.phase).toBeUndefined();
+
+    ws.close();
+  });
+
+  // ── Session type validation tests ──────────────────────────────────────
+  it("rejects invalid session.type value", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    ws.send(sessionUpdate({ type: "invalid_type" }));
+
+    const raw = await ws.waitForMessages(2);
+    const event = parseEvents(raw.slice(1))[0];
+    expect(event.type).toBe("error");
+    const error = event.error as Record<string, unknown>;
+    expect(error.type).toBe("invalid_request_error");
+    expect(error.code).toBe("invalid_session_config");
+    expect(error.message).toContain("Invalid session type");
+    expect(error.message).toContain("invalid_type");
+
+    ws.close();
+  });
+
+  it("rejected session.update does not corrupt session state", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime");
+
+    await ws.waitForMessages(1); // session.created
+
+    // First, set a known valid state
+    ws.send(sessionUpdate({ instructions: "Be helpful", model: "gpt-realtime-2" }));
+    const raw1 = await ws.waitForMessages(2);
+    const event1 = parseEvents(raw1.slice(1))[0];
+    expect(event1.type).toBe("session.updated");
+    expect((event1.session as Record<string, unknown>).model).toBe("gpt-realtime-2");
+
+    // Now send an invalid model+type combination that should be rejected
+    ws.send(sessionUpdate({ type: "transcription", model: "gpt-realtime-2" }));
+    const raw2 = await ws.waitForMessages(3);
+    const event2 = parseEvents(raw2.slice(2))[0];
+    expect(event2.type).toBe("error");
+
+    // Verify state was rolled back by sending another valid update and checking the echoed state
+    ws.send(sessionUpdate({ instructions: "Updated instructions" }));
+    const raw3 = await ws.waitForMessages(4);
+    const event3 = parseEvents(raw3.slice(3))[0];
+    expect(event3.type).toBe("session.updated");
+    const session = event3.session as Record<string, unknown>;
+    // Model and type should still be the pre-rejection values
+    expect(session.model).toBe("gpt-realtime-2");
+    expect(session.type).toBe("conversation");
+    expect(session.instructions).toBe("Updated instructions");
 
     ws.close();
   });
@@ -1046,6 +2011,93 @@ describe("realtimeItemsToMessages", () => {
     expect(messages[0].role).toBe("tool");
     expect(messages[0].content).toBe("");
     expect(messages[0].tool_call_id).toBe("call_456");
+  });
+
+  it("maps input_text content parts to text format", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        content: [{ type: "input_text", text: "hello world" }],
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages).toEqual([{ role: "user", content: [{ type: "text", text: "hello world" }] }]);
+  });
+
+  it("maps input_image content parts to image_url format", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        content: [
+          { type: "input_text", text: "What is in this image?" },
+          { type: "input_image", url: "https://example.com/photo.jpg" },
+        ],
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          { type: "image_url", image_url: { url: "https://example.com/photo.jpg" } },
+        ],
+      },
+    ]);
+  });
+
+  it("maps input_audio content parts to placeholder text", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        content: [{ type: "input_audio", transcript: null }],
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "[audio input]" }] },
+    ]);
+  });
+
+  it("maps mixed multimodal content (input_text + input_image + input_audio)", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        content: [
+          { type: "input_text", text: "Describe this" },
+          { type: "input_image", url: "https://example.com/img.png" },
+          { type: "input_audio", transcript: null },
+        ],
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    expect(messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this" },
+          { type: "image_url", image_url: { url: "https://example.com/img.png" } },
+          { type: "text", text: "[audio input]" },
+        ],
+      },
+    ]);
+  });
+
+  it("preserves existing text content format (backward compat)", () => {
+    const items = [
+      {
+        type: "message" as const,
+        role: "user" as const,
+        content: [{ type: "text", text: "hello" }],
+      },
+    ];
+    const messages = realtimeItemsToMessages(items);
+    // Existing format should still extract simple text
+    expect(messages).toEqual([{ role: "user", content: "hello" }]);
   });
 
   it("handles message items with missing content", () => {

@@ -4,14 +4,19 @@ import {
   isAudioResponse,
   isTextResponse,
   isErrorResponse,
+  serializeErrorResponse,
+  flattenHeaders,
   FORMAT_TO_CONTENT_TYPE,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { proxyAndRecord } from "./recorder.js";
 import type { Journal } from "./journal.js";
+import { applyChaos } from "./chaos.js";
 
 export async function handleElevenLabsAudio(
   req: http.IncomingMessage,
@@ -29,11 +34,12 @@ export async function handleElevenLabsAudio(
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(body) as Record<string, unknown>;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: null,
       response: { status: 400, fixture: null },
     });
@@ -41,7 +47,11 @@ export async function handleElevenLabsAudio(
       res,
       400,
       JSON.stringify({
-        error: { message: "Malformed JSON", type: "invalid_request_error", code: "invalid_json" },
+        error: {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        },
       }),
     );
     return;
@@ -80,7 +90,7 @@ export async function handleElevenLabsAudio(
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status: 400, fixture: null },
     });
@@ -106,8 +116,49 @@ export async function handleElevenLabsAudio(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
   }
 
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
   // No fixture match
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method,
+        path,
+        headers: {},
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -120,11 +171,11 @@ export async function handleElevenLabsAudio(
         body,
       );
       if (outcome === "handled_by_hook") return;
-      if (outcome === "relayed") {
+      if (outcome !== "not_configured") {
         journal.add({
           method,
           path,
-          headers: {},
+          headers: flattenHeaders(req.headers),
           body: syntheticReq,
           response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
         });
@@ -132,22 +183,26 @@ export async function handleElevenLabsAudio(
       }
     }
 
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
-        error: { message: strictMessage, type: "invalid_request_error", code: "no_fixture_match" },
+        error: {
+          message: "No fixture matched",
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        },
       }),
     );
     return;
@@ -161,11 +216,11 @@ export async function handleElevenLabsAudio(
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, JSON.stringify(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response));
     return;
   }
 
@@ -175,7 +230,7 @@ export async function handleElevenLabsAudio(
       journal.add({
         method,
         path,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status: 500, fixture },
       });
@@ -194,7 +249,7 @@ export async function handleElevenLabsAudio(
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status: 200, fixture },
     });
@@ -208,7 +263,7 @@ export async function handleElevenLabsAudio(
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status: 500, fixture },
     });
@@ -245,7 +300,7 @@ export async function handleElevenLabsAudio(
     journal.add({
       method,
       path,
-      headers: {},
+      headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status: 200, fixture },
     });
@@ -261,7 +316,7 @@ export async function handleElevenLabsAudio(
   journal.add({
     method,
     path,
-    headers: {},
+    headers: flattenHeaders(req.headers),
     body: syntheticReq,
     response: { status: 200, fixture },
   });

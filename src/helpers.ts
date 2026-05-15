@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
+import { DEFAULT_TEST_ID } from "./constants.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -23,6 +25,45 @@ import type {
 
 const REDACTED_HEADERS = new Set(["authorization", "x-api-key", "api-key"]);
 
+/**
+ * Resolve effective strict mode from per-request header and server default.
+ * Header values override the server default — same precedence pattern as chaos
+ * config headers (see resolveChaosConfig in chaos.ts).
+ *
+ * Header: `X-AIMock-Strict` — "true"/"1" → strict on, "false"/"0" → strict off.
+ * When absent or unrecognised, falls back to the server-level default.
+ */
+export function resolveStrictMode(
+  serverDefault: boolean | undefined,
+  rawHeaders?: IncomingHttpHeaders,
+): boolean {
+  if (rawHeaders) {
+    const header = rawHeaders["x-aimock-strict"];
+    const val = typeof header === "string" ? header : Array.isArray(header) ? header[0] : undefined;
+    if (val === "true" || val === "1") return true;
+    if (val === "false" || val === "0") return false;
+  }
+  return serverDefault ?? false;
+}
+
+/**
+ * Returns `true` or `false` when the X-AIMock-Strict header overrides the
+ * server default, or `undefined` when it doesn't. Designed to be spread
+ * directly into a journal entry's `response` object:
+ *
+ *   response: { status, fixture, ...strictOverrideField(defaults.strict, req.headers) }
+ */
+export function strictOverrideField(
+  serverDefault: boolean | undefined,
+  rawHeaders?: IncomingHttpHeaders,
+): { strictOverride?: boolean } {
+  const effective = resolveStrictMode(serverDefault, rawHeaders);
+  if (effective !== (serverDefault ?? false)) {
+    return { strictOverride: effective };
+  }
+  return {};
+}
+
 export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
   const flat: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -45,8 +86,13 @@ export async function resolveResponse(
   request: ChatCompletionRequest,
 ): Promise<FixtureResponse> {
   if (typeof fixture.response === "function") {
-    const raw = await fixture.response(request);
-    return normalizeFactoryResponse(raw);
+    try {
+      const raw = await fixture.response(request);
+      return normalizeFactoryResponse(raw);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Response factory threw: ${msg}`);
+    }
   }
   return fixture.response;
 }
@@ -61,7 +107,7 @@ function normalizeFactoryResponse(raw: FixtureResponse): FixtureResponse {
       if (typeof tc.arguments === "object" && tc.arguments !== null) {
         return { ...tc, arguments: JSON.stringify(tc.arguments) };
       }
-      return tc;
+      return { ...tc };
     });
   }
   return r as unknown as FixtureResponse;
@@ -110,8 +156,26 @@ export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {
   return (
     "error" in r &&
     (r as ErrorResponse).error !== null &&
-    typeof (r as ErrorResponse).error === "object"
+    typeof (r as ErrorResponse).error === "object" &&
+    "message" in ((r as ErrorResponse).error as Record<string, unknown>) &&
+    typeof ((r as ErrorResponse).error as Record<string, unknown>).message === "string"
   );
+}
+
+/**
+ * Serialize an ErrorResponse to JSON, stripping the internal-only `status`
+ * field that controls the HTTP status code but should never appear in the
+ * response body.  Real LLM APIs don't include it.
+ */
+export function serializeErrorResponse(response: ErrorResponse): string {
+  return JSON.stringify({
+    error: {
+      message: response.error.message,
+      type: response.error.type ?? "server_error",
+      param: response.error.param ?? null,
+      code: response.error.code ?? null,
+    },
+  });
 }
 
 export function isEmbeddingResponse(r: FixtureResponse): r is EmbeddingResponse {
@@ -635,12 +699,39 @@ export function buildContentWithToolCallsCompletion(
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
-export function readBody(req: http.IncomingMessage): Promise<string> {
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+export function readBody(
+  req: http.IncomingMessage,
+  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
-    req.on("error", reject);
+    let totalBytes = 0;
+    let settled = false;
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        settled = true;
+        req.destroy();
+        reject(new Error(`Request body exceeded size limit of ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks).toString());
+      }
+    });
+    req.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -659,6 +750,7 @@ export function matchesPattern(text: string, pattern: string | RegExp): boolean 
   if (typeof pattern === "string") {
     return text.toLowerCase().includes(pattern.toLowerCase());
   }
+  pattern.lastIndex = 0;
   return pattern.test(text);
 }
 
@@ -678,9 +770,7 @@ export function getTestId(req: http.IncomingMessage): string {
     if (queryValue) return queryValue;
   }
 
-  // Duplicated from journal.ts DEFAULT_TEST_ID — importing it here would create
-  // a circular dependency (journal.ts imports from helpers.ts).
-  return "__default__";
+  return DEFAULT_TEST_ID;
 }
 
 // ─── Snapshot recording helpers ──────────────────────────────────────────────

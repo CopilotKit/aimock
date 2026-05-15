@@ -80,6 +80,44 @@ const FEATURE_RULES: FeatureRule[] = [
     rowLabel: "Structured output / JSON mode",
     keywords: ["json_object", "json_schema", "structured output", "response_format"],
   },
+  {
+    rowLabel: "Realtime GA protocol",
+    keywords: [
+      "gpt-realtime-2",
+      "realtime.*ga",
+      "ga.*protocol",
+      "output_text\\.delta",
+      "conversation\\.item\\.added",
+    ],
+  },
+  {
+    rowLabel: "Realtime Beta compatibility",
+    keywords: [
+      "openai-beta.*realtime",
+      "realtime=v1",
+      "beta.*shim",
+      "beta.*compat",
+      "response\\.text\\.delta",
+    ],
+  },
+  {
+    rowLabel: "Realtime transcription/translation",
+    keywords: [
+      "gpt-4o-transcribe",
+      "gpt-4o-mini-transcribe",
+      "whisper-1",
+      "realtime.*transcription",
+      "realtime.*translation",
+    ],
+  },
+  {
+    rowLabel: "Realtime image input",
+    keywords: ["input_image.*realtime", "realtime.*image", "realtime.*vision"],
+  },
+  {
+    rowLabel: "Realtime commentary phase",
+    keywords: ["commentary.*phase", "phase.*commentary", "final_answer.*commentary"],
+  },
 ];
 
 function extractFeatures(text: string): Record<string, boolean> {
@@ -117,6 +155,11 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Error injection (one-shot)": ["Error injection"],
     "Request journal": ["Request journal"],
     "Drift detection": ["Drift detection"],
+    "Realtime GA protocol": ["Realtime GA protocol", "GA Realtime"],
+    "Realtime Beta compatibility": ["Realtime Beta compatibility", "Beta Realtime"],
+    "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
+    "Realtime image input": ["Realtime image input"],
+    "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
   };
   if (variants[rowLabel]) {
     patterns.push(...variants[rowLabel]);

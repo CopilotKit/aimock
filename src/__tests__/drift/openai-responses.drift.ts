@@ -304,7 +304,7 @@ describe("OpenAI Responses API error shapes", () => {
     ).toEqual([]);
 
     // Verify concrete values
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON/);
     expect(body.error.type).toBe("invalid_request_error");
     expect(body.error.code).toBe("invalid_json");
   });

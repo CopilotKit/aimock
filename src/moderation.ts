@@ -77,7 +77,8 @@ export async function handleModeration(
   let body: { input?: string | string[] };
   try {
     body = JSON.parse(raw) as { input?: string | string[] };
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/moderations",
@@ -90,7 +91,7 @@ export async function handleModeration(
     res.end(
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
           code: "invalid_json",
         },

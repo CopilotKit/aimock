@@ -8,22 +8,18 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
-    environment: npm
     permissions:
-      contents: write
-      id-token: write
-      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      # No cache — release builds must be hermetic
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: pnpm
-          registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
 
       - name: Check if version is already published
@@ -58,16 +54,57 @@ jobs:
         if: steps.check.outputs.published == 'false'
         run: sed -i '/^https:\/\/github.com\/user-attachments\//d' README.md
 
-      - name: Build and publish
+      - name: Build
         if: steps.check.outputs.published == 'false'
-        run: pnpm build && npm publish --access public
+        run: pnpm build
+
+      - name: Upload workspace
+        if: steps.check.outputs.published == 'false'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workspace
+          path: .
+          include-hidden-files: true
+          retention-days: 1
+
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      published: ${{ steps.check.outputs.published }}
+
+  publish:
+    needs: build
+    if: needs.build.outputs.published == 'false'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+      actions: write
+    steps:
+      - name: Download workspace
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          name: workspace
+
+      - name: Configure git credentials
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git config --local url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Ensure git tag exists
-        if: steps.check.outputs.published == 'false'
         env:
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           TAG="v${VERSION}"
           if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
@@ -76,19 +113,17 @@ jobs:
           fi
 
       - name: Update major version tag for GitHub Action
-        if: steps.check.outputs.published == 'false'
         env:
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           MAJOR="v$(echo "${VERSION}" | cut -d. -f1)"
           git tag -f "${MAJOR}"
           git push origin "${MAJOR}" --force
 
       - name: Create GitHub Release
-        if: steps.check.outputs.published == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           TAG="v${VERSION}"
           gh release create "${TAG}" --generate-notes --title "${TAG}" --verify-tag --latest
@@ -97,19 +132,17 @@ jobs:
         # GitHub's anti-recursion rule: tags pushed by GITHUB_TOKEN do NOT
         # trigger downstream workflows. Explicitly dispatch publish-docker.yml
         # so the GHCR image actually gets built on every release.
-        if: steps.check.outputs.published == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           TAG="v${VERSION}"
           gh workflow run publish-docker.yml --ref "${TAG}"
 
       - name: Notify Slack
-        if: steps.check.outputs.published == 'false'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          VERSION: ${{ steps.check.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi

@@ -27,6 +27,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -178,8 +180,12 @@ function buildBedrockStreamContentWithToolCallsEvents(
 ): Array<{ eventType: string; payload: object }> {
   const events = buildBedrockStreamTextEvents(content, chunkSize, reasoning, overrides);
   // Remove trailing metadata + messageStop events — we re-emit them after tool blocks
-  events.pop(); // metadata
-  events.pop(); // messageStop
+  for (let i = events.length - 1; i >= 0; i--) {
+    const et = (events[i] as { eventType: string }).eventType;
+    if (et === "metadata" || et === "messageStop") {
+      events.splice(i, 1);
+    }
+  }
   let blockIndex = reasoning ? 2 : 1;
 
   for (const tc of toolCalls) {
@@ -334,7 +340,7 @@ export function converseToCompletionRequest(
       if (toolUseBlocks.length > 0) {
         messages.push({
           role: "assistant",
-          content: textContent ?? null,
+          content: textContent || null,
           tool_calls: toolUseBlocks.map((b) => ({
             id: b.toolUse!.toolUseId,
             type: "function" as const,
@@ -345,7 +351,7 @@ export function converseToCompletionRequest(
           })),
         });
       } else {
-        messages.push({ role: "assistant", content: textContent ?? null });
+        messages.push({ role: "assistant", content: textContent || null });
       }
     } else {
       const warnMsg = `Unexpected message role "${msg.role}" in Converse request — skipping`;
@@ -509,7 +515,8 @@ export async function handleConverse(
   let converseReq: ConverseRequest;
   try {
     converseReq = JSON.parse(raw) as ConverseRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -522,7 +529,7 @@ export async function handleConverse(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -593,6 +600,34 @@ export async function handleConverse(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -604,6 +639,7 @@ export async function handleConverse(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -615,26 +651,23 @@ export async function handleConverse(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -715,7 +748,7 @@ export async function handleConverse(
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    if ("webSearches" in response) {
+    if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
       );
@@ -772,7 +805,8 @@ export async function handleConverseStream(
   let converseReq: ConverseRequest;
   try {
     converseReq = JSON.parse(raw) as ConverseRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -785,7 +819,7 @@ export async function handleConverseStream(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -857,6 +891,34 @@ export async function handleConverseStream(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -868,6 +930,7 @@ export async function handleConverseStream(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -879,26 +942,23 @@ export async function handleConverseStream(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -1009,7 +1069,7 @@ export async function handleConverseStream(
 
   // Tool call response — stream as Event Stream
   if (isToolCallResponse(response)) {
-    if ("webSearches" in response) {
+    if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
       );

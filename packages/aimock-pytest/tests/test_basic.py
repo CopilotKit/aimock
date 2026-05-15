@@ -67,3 +67,75 @@ def test_reset_clears_fixtures(aimock):
     # aimock returns 404 when no fixture matches the request, confirming
     # that the previously-registered fixture was cleared by reset().
     assert r.status_code == 404
+
+
+def test_on_system_message_string(aimock):
+    """on_system_message with a single-substring pattern gates on the system text."""
+    aimock.on_system_message(
+        "name=Atai",
+        {"content": "default-state response"},
+        user_message="who am I",
+    )
+
+    # Matching system + user → fixture hit.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "ctx: name=Atai"},
+                {"role": "user", "content": "who am I"},
+            ],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "default-state response"
+
+    # System mismatch → fixture misses, no other fixture registered → 404.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "ctx: name=Alem"},
+                {"role": "user", "content": "who am I"},
+            ],
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_on_system_message_array_requires_all(aimock):
+    """on_system_message with a list[str] pattern AND-combines substrings."""
+    aimock.on_system_message(
+        ["name=Atai", "tz=PST"],
+        {"content": "exact-defaults"},
+        user_message="plan my morning",
+    )
+
+    # Both substrings present → fixture hits.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "name=Atai\ntz=PST"},
+                {"role": "user", "content": "plan my morning"},
+            ],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "exact-defaults"
+
+    # Only one substring present → fixture misses → 404.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "name=Atai\ntz=EST"},
+                {"role": "user", "content": "plan my morning"},
+            ],
+        },
+    )
+    assert r.status_code == 404

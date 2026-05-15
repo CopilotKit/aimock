@@ -40,7 +40,8 @@ export async function handleRerank(
   let body: { query?: string; model?: string };
   try {
     body = JSON.parse(raw) as { query?: string; model?: string };
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/rerank",
@@ -53,7 +54,7 @@ export async function handleRerank(
     res.end(
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
           code: "invalid_json",
         },

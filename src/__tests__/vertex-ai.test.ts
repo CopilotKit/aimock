@@ -480,7 +480,7 @@ describe("Vertex AI: malformed JSON body", () => {
 
     expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON body: /);
   });
 });
 

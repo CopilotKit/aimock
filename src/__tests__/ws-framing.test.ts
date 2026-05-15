@@ -175,6 +175,7 @@ function trackCleanup(server: http.Server, ...sockets: net.Socket[]) {
     for (const s of sockets) {
       if (!s.destroyed) s.destroy();
     }
+    server.closeAllConnections();
     server.close();
   });
 }
@@ -547,8 +548,8 @@ describe("connection lifecycle", () => {
       const port = (srv.address() as net.AddressInfo).port;
       const client = net.connect({ port, host: "127.0.0.1" });
       cleanupFns.push(() => {
-        srv.close();
         if (!client.destroyed) client.destroy();
+        srv.close();
       });
     });
 

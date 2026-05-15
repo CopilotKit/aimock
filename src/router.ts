@@ -74,7 +74,12 @@ export function matchFixture(
     const reqEndpoint = effective._endpointType as string | undefined;
     if (match.endpoint !== undefined) {
       if (match.endpoint !== reqEndpoint) continue;
-    } else if (reqEndpoint && reqEndpoint !== "chat" && reqEndpoint !== "embedding") {
+    } else if (
+      reqEndpoint &&
+      reqEndpoint !== "chat" &&
+      reqEndpoint !== "embedding" &&
+      !reqEndpoint.startsWith("realtime")
+    ) {
       // Fixture has no endpoint restriction but request is multimedia —
       // only match if the response type is compatible.
       // Function responses cannot be checked statically, so treat them as compatible.
@@ -113,23 +118,50 @@ export function matchFixture(
       }
     }
 
-    // systemMessage — case-sensitive substring (or regexp) match against the
-    // joined text of every system message in the request. Use to gate a
-    // fixture on host-supplied context (e.g. agent-context entries) so that
-    // when the calling app changes that context the fixture stops matching
-    // and the request falls through to the next fixture or upstream proxy.
+    // systemMessage — case-sensitive substring, regexp, or array-of-substrings
+    // match against the joined text of every system message in the request.
+    // Use to gate a fixture on host-supplied context (e.g. agent-context
+    // entries) so that when the calling app changes that context the fixture
+    // stops matching and the request falls through to the next fixture or
+    // upstream proxy.
+    //
+    // Array form (string[]) requires ALL substrings to be present — useful
+    // when the gate must combine multiple non-adjacent tokens (e.g. a default
+    // name AND a default activity list whose positions in the serialised
+    // context JSON aren't stable).
     if (match.systemMessage !== undefined) {
       const text = getSystemText(effective.messages);
       if (!text) continue;
-      if (typeof match.systemMessage === "string") {
+      const sm = match.systemMessage;
+      if (Array.isArray(sm)) {
+        // Empty array is treated as "no constraint" → effectively matches
+        // unconditionally. Validation rejects this at load time for JSON
+        // fixtures; programmatic callers that pass [] get the same
+        // permissive behaviour as not setting systemMessage at all.
+        let allPresent = true;
+        for (const needle of sm) {
+          if (useExactMatch) {
+            if (text !== needle) {
+              allPresent = false;
+              break;
+            }
+          } else {
+            if (!text.includes(needle)) {
+              allPresent = false;
+              break;
+            }
+          }
+        }
+        if (!allPresent) continue;
+      } else if (typeof sm === "string") {
         if (useExactMatch) {
-          if (text !== match.systemMessage) continue;
+          if (text !== sm) continue;
         } else {
-          if (!text.includes(match.systemMessage)) continue;
+          if (!text.includes(sm)) continue;
         }
       } else {
-        match.systemMessage.lastIndex = 0;
-        if (!match.systemMessage.test(text)) continue;
+        sm.lastIndex = 0;
+        if (!sm.test(text)) continue;
       }
     }
 
@@ -172,13 +204,19 @@ export function matchFixture(
       if (reqType !== match.responseFormat) continue;
     }
 
-    // model — exact string or regexp
+    // model — exact match or prefix + dash-digit boundary for strings (so that
+    // "claude-opus-4" matches "claude-opus-4-20250514" but "gpt-4" does NOT
+    // match "gpt-4o" and "gpt-4o" does NOT match "gpt-4o-mini"), regexp unchanged
     if (match.model !== undefined) {
       if (typeof match.model === "string") {
-        if (effective.model !== match.model) continue;
+        if (effective.model !== match.model) {
+          if (!effective.model?.startsWith(match.model)) continue;
+          const rest = effective.model.slice(match.model.length);
+          if (!/^-\d/.test(rest)) continue;
+        }
       } else {
         match.model.lastIndex = 0;
-        if (!match.model.test(effective.model)) continue;
+        if (!match.model.test(effective.model ?? "")) continue;
       }
     }
 

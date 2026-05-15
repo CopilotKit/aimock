@@ -65,15 +65,20 @@ export interface ToolDefinition {
 export interface FixtureMatch {
   userMessage?: string | RegExp;
   /**
-   * Substring or regexp matched against the concatenated text content of every
-   * `system` role message in the request. Gates fixture activation on values
-   * the host plumbs in via system messages (agent context, persona, dynamic
-   * config) instead of the user-typed prompt — so changing context state in
-   * the calling app causes stale fixtures to fall through to a real upstream
-   * instead of silently returning a baked response that no longer reflects
-   * reality.
+   * Substring, regexp, or array of substrings matched against the concatenated
+   * text content of every `system` role message in the request. Gates fixture
+   * activation on values the host plumbs in via system messages (agent
+   * context, persona, dynamic config) instead of the user-typed prompt — so
+   * changing context state in the calling app causes stale fixtures to fall
+   * through to a real upstream instead of silently returning a baked response
+   * that no longer reflects reality.
+   *
+   * When given an array of strings, ALL substrings must be present (AND
+   * semantics). Useful when the gate must combine multiple non-adjacent
+   * tokens — e.g., a default name AND a default activity list whose JSON
+   * positions vary across requests.
    */
-  systemMessage?: string | RegExp;
+  systemMessage?: string | string[] | RegExp;
   inputText?: string | RegExp;
   toolCallId?: string;
   toolName?: string;
@@ -93,7 +98,10 @@ export interface FixtureMatch {
     | "embedding"
     | "audio-gen"
     | "fal-audio"
-    | "fal";
+    | "fal"
+    | "realtime"
+    | "realtime-transcription"
+    | "realtime-translation";
 }
 
 // Fixture response types
@@ -146,6 +154,7 @@ export interface ToolCall {
 
 export interface ToolCallResponse extends ResponseOverrides {
   toolCalls: ToolCall[];
+  webSearches?: string[];
 }
 
 export interface ContentWithToolCallsResponse extends ResponseOverrides {
@@ -156,7 +165,7 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
 }
 
 export interface ErrorResponse {
-  error: { message: string; type?: string; code?: string };
+  error: { message: string; type?: string; param?: string | null; code?: string };
   status?: number;
 }
 
@@ -220,6 +229,32 @@ export type FixtureResponse =
   | VideoResponse
   | RawJSONResponse;
 
+// GA Realtime session types
+
+export type RealtimePhase = "final_answer" | "commentary";
+
+export interface GASessionAudioConfig {
+  voice: string | null;
+  input_audio_format: string | null;
+  output_audio_format: string | null;
+  input_audio_noise_reduction: { type: string } | null;
+  input_audio_transcription: { model: string } | null;
+}
+
+export interface GASessionConfig {
+  model: string;
+  modalities: string[];
+  instructions: string;
+  tools: unknown[];
+  temperature: number;
+  max_response_output_tokens: number | "inf";
+  audio: GASessionAudioConfig;
+  turn_detection: unknown | null;
+  input_audio_transcription: { model: string } | null;
+  type: "conversation" | "transcription" | "translation";
+  reasoning: { effort: string } | null;
+}
+
 // Streaming physics
 
 export interface StreamingProfile {
@@ -262,6 +297,10 @@ export interface Fixture {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 export type FixtureOpts = Omit<Fixture, "match" | "response">;
@@ -283,6 +322,7 @@ export interface FixtureFileToolCall {
 
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
+  webSearches?: string[];
 }
 
 export interface FixtureFileTextResponse extends ResponseOverrides {
@@ -319,7 +359,12 @@ export interface FixtureFile {
 export interface FixtureFileEntry {
   match: {
     userMessage?: string;
-    systemMessage?: string;
+    /**
+     * String (single substring) or array of strings (all must be present).
+     * Mirrors the runtime FixtureMatch.systemMessage but without the RegExp
+     * form, which JSON cannot express.
+     */
+    systemMessage?: string | string[];
     inputText?: string;
     toolCallId?: string;
     toolName?: string;
@@ -337,7 +382,10 @@ export interface FixtureFileEntry {
       | "embedding"
       | "audio-gen"
       | "fal-audio"
-      | "fal";
+      | "fal"
+      | "realtime"
+      | "realtime-transcription"
+      | "realtime-translation";
     // predicate not supported in JSON files
   };
   response: FixtureFileResponse;
@@ -347,6 +395,10 @@ export interface FixtureFileEntry {
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
   chaos?: ChaosConfig;
+  metadata?: {
+    systemHash?: string;
+    toolsHash?: string;
+  };
 }
 
 // Request journal
@@ -372,6 +424,8 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     chaosAction?: ChaosAction;
+    /** When the X-AIMock-Strict header overrode the server default. */
+    strictOverride?: boolean;
   };
 }
 
@@ -454,6 +508,41 @@ export interface RecordConfig {
   fixturePath?: string;
   /** Proxy unmatched requests without saving fixtures or caching in memory. */
   proxyOnly?: boolean;
+  /**
+   * When true, record the exact model version string returned by the provider
+   * (e.g. "gpt-4o-2024-08-06") instead of stripping the date suffix to a
+   * canonical alias (e.g. "gpt-4o"). Default: false.
+   */
+  recordFullModelVersion?: boolean;
+  /**
+   * fal-specific recording knobs for the queue-walk recorder. During recording
+   * the queue handler POSTs submit, polls `status_url` until COMPLETED, then
+   * GETs `response_url` for the final job body — saved as the fixture. Tune
+   * the poll cadence and timeout here if upstream is unusually slow or fast.
+   */
+  fal?: FalRecordConfig;
+  /**
+   * Connection idle timeout (ms) on the upstream request socket — fires if the
+   * socket is inactive for this duration at any point before the response body
+   * begins. Default: 30_000 (30s). Increase for upstreams with slow initial
+   * responses (reasoning models, queue-backed providers).
+   */
+  upstreamTimeoutMs?: number;
+  /**
+   * Idle timeout (ms) on the upstream response body — fires if the upstream
+   * goes silent (no bytes) for this long after the response has started.
+   * Default: 30_000 (30s). Reasoning models under concurrent load can leave
+   * 30s+ gaps between streaming chunks while the model is thinking; lift this
+   * to e.g. 180_000 in those setups.
+   */
+  bodyTimeoutMs?: number;
+}
+
+export interface FalRecordConfig {
+  /** Interval between status polls upstream during recording. Default: 1000ms. */
+  pollIntervalMs?: number;
+  /** Total budget for an upstream queue walk before aborting. Default: 900000ms (15 min) to accommodate video generation. */
+  timeoutMs?: number;
 }
 
 export interface MockServerOptions {
@@ -504,6 +593,34 @@ export interface MockServerOptions {
    * positives from shortened keys.
    */
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  /**
+   * Configure fal.ai queue polling progression. By default a job completes
+   * on submit (preserves the legacy `COMPLETED`-on-submit shape). Opt into a
+   * realistic `IN_QUEUE → IN_PROGRESS → COMPLETED` progression by setting
+   * positive poll thresholds — useful for exercising client code that polls
+   * `/status` and reacts to intermediate states.
+   *
+   * Applies to the general fal handler (`x-fal-target-host`-routed); the
+   * legacy `/fal/queue/...` audio handler is unaffected.
+   */
+  falQueue?: FalQueueConfig;
+}
+
+export interface FalQueueConfig {
+  /**
+   * Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Default: 0.
+   * When `pollsBeforeCompleted` is also unset, the job completes synchronously
+   * on submit (no IN_QUEUE / IN_PROGRESS polls emitted).
+   */
+  pollsBeforeInProgress?: number;
+  /**
+   * Status polls before transitioning to `COMPLETED`. Default: 0 when
+   * `pollsBeforeInProgress` is also unset (no progression), otherwise
+   * `pollsBeforeInProgress + 1` so the job spends one poll in IN_PROGRESS.
+   * An explicit value lower than `pollsBeforeInProgress` is clamped up so
+   * IN_PROGRESS is never skipped.
+   */
+  pollsBeforeCompleted?: number;
 }
 
 // Handler defaults — the common shape passed from server.ts to every handler
@@ -519,4 +636,5 @@ export interface HandlerDefaults {
   record?: RecordConfig;
   strict?: boolean;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+  falQueue?: FalQueueConfig;
 }

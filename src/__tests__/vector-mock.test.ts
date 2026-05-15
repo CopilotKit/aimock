@@ -420,7 +420,7 @@ describe("VectorMock", () => {
       });
       expect(result.status).toBe(400);
       const data = JSON.parse(result.body);
-      expect(data.error).toBe("Malformed JSON body");
+      expect(data.error).toMatch(/^Malformed JSON body:/);
     });
 
     it("malformed JSON body returns 400 for POST (mounted mode)", async () => {
@@ -457,7 +457,7 @@ describe("VectorMock", () => {
       });
       expect(result.status).toBe(400);
       const data = JSON.parse(result.body);
-      expect(data.error).toBe("Malformed JSON body");
+      expect(data.error).toMatch(/^Malformed JSON body:/);
     });
 
     it("malformed JSON body is ignored for GET requests", async () => {

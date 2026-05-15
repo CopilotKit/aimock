@@ -161,7 +161,7 @@ describe("WebSocket /v1/responses", () => {
     const raw = await ws.waitForMessages(1);
     const event = JSON.parse(raw[0]) as WSEvent;
     expect(event.type).toBe("error");
-    expect((event.error as { message: string }).message).toBe("Malformed JSON");
+    expect((event.error as { message: string }).message).toMatch(/^Malformed JSON:/);
 
     ws.close();
   });

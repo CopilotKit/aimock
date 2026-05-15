@@ -20,9 +20,12 @@ import {
   isContentWithToolCallsResponse,
   isErrorResponse,
   isAudioResponse,
+  flattenHeaders,
   formatToMime,
   generateToolCallId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay } from "./sse-writer.js";
@@ -163,15 +166,16 @@ function geminiTurnsToMessages(turns: GeminiLiveTurn[]): ChatMessage[] {
       const textParts = turn.parts.filter((p) => p.text !== undefined && !p.thought);
 
       if (funcCalls.length > 0) {
+        const text = textParts.map((p) => p.text!).join("");
         messages.push({
           role: "assistant",
-          content: null,
+          content: text || null,
           tool_calls: funcCalls.map((p, i) => ({
             id: `call_gemini_${p.functionCall!.name}_${i}`,
             type: "function" as const,
             function: {
               name: p.functionCall!.name,
-              arguments: JSON.stringify(p.functionCall!.args),
+              arguments: JSON.stringify(p.functionCall!.args ?? {}),
             },
           })),
         });
@@ -226,6 +230,7 @@ export function handleWebSocketGeminiLive(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
 ): void {
   const { logger } = defaults;
@@ -248,8 +253,10 @@ export function handleWebSocketGeminiLive(
               error: { code: 13, message: msg, status: "INTERNAL" },
             }),
           );
-        } catch {
-          // Connection already gone — original error already logged above
+        } catch (sendErr) {
+          defaults.logger.debug(
+            `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
+          );
         }
       }),
     );
@@ -269,16 +276,18 @@ async function processMessage(
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
   },
   session: SessionState,
 ): Promise<void> {
   let parsed: GeminiLiveMessage;
   try {
     parsed = JSON.parse(raw) as GeminiLiveMessage;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     ws.send(
       JSON.stringify({
-        error: { code: 3, message: "Malformed JSON", status: "INVALID_ARGUMENT" },
+        error: { code: 3, message: `Malformed JSON: ${detail}`, status: "INVALID_ARGUMENT" },
       }),
     );
     return;
@@ -357,6 +366,7 @@ async function processMessage(
     messages: [...session.conversationHistory, ...newMessages],
     stream: true,
     tools: session.tools.length > 0 ? session.tools : undefined,
+    _endpointType: "chat",
   };
 
   const testId = defaults.testId ?? DEFAULT_TEST_ID;
@@ -373,14 +383,18 @@ async function processMessage(
   }
 
   if (!fixture) {
-    if (defaults.strict) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
       journal.add({
         method: "WS",
         path,
-        headers: {},
+        headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
         body: completionReq,
-        response: { status: 404, fixture: null },
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+        },
       });
       ws.close(1008, "Strict mode: no fixture matched");
       return;
@@ -388,9 +402,13 @@ async function processMessage(
     journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
-      response: { status: 404, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+      },
     });
     ws.send(
       JSON.stringify({
@@ -413,7 +431,7 @@ async function processMessage(
     journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
@@ -434,7 +452,7 @@ async function processMessage(
     journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
@@ -474,7 +492,7 @@ async function processMessage(
     const journalEntry = journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
@@ -610,7 +628,7 @@ async function processMessage(
     const journalEntry = journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
@@ -697,7 +715,7 @@ async function processMessage(
     const journalEntry = journal.add({
       method: "WS",
       path,
-      headers: {},
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status: 200, fixture },
     });
@@ -780,7 +798,7 @@ async function processMessage(
   journal.add({
     method: "WS",
     path,
-    headers: {},
+    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
     body: completionReq,
     response: { status: 500, fixture },
   });

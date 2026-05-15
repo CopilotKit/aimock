@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: write
+      # issues: write  # removed — no longer creating issues on drift failure
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -147,14 +147,6 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
         run: gh pr merge "$PR_URL" --merge --auto
 
-      # Step 6: Open issue on failure (including the autofix-step failing
-      # despite continue-on-error: true, which would otherwise be silent).
-      - name: Create issue on failure
-        if: (failure() || steps.autofix.outcome == 'failure') && steps.check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx tsx scripts/fix-drift.ts --create-issue
-
       # Step 7: Slack notification on successful fix
       - name: Notify Slack on fix success
         if: success() && steps.pr.outputs.url != ''
@@ -180,7 +172,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          MSG="❌ *Drift auto-fix failed* — issue created\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="❌ *Drift auto-fix failed* — manual intervention needed\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \

@@ -244,7 +244,7 @@ describe("POST /search — edge cases", () => {
 
     expect(status).toBe(400);
     const data = json as { error: { message: string; type: string; code: string } };
-    expect(data.error.message).toBe("Malformed JSON");
+    expect(data.error.message).toMatch(/^Malformed JSON:/);
     expect(data.error.type).toBe("invalid_request_error");
     expect(data.error.code).toBe("invalid_json");
   });
@@ -318,7 +318,7 @@ describe("POST /v2/rerank — edge cases", () => {
 
     expect(status).toBe(400);
     const data = json as { error: { message: string; type: string; code: string } };
-    expect(data.error.message).toBe("Malformed JSON");
+    expect(data.error.message).toMatch(/^Malformed JSON:/);
     expect(data.error.type).toBe("invalid_request_error");
     expect(data.error.code).toBe("invalid_json");
   });
@@ -402,7 +402,7 @@ describe("POST /v1/moderations — edge cases", () => {
 
     expect(status).toBe(400);
     const data = json as { error: { message: string; type: string; code: string } };
-    expect(data.error.message).toBe("Malformed JSON");
+    expect(data.error.message).toMatch(/^Malformed JSON:/);
     expect(data.error.type).toBe("invalid_request_error");
     expect(data.error.code).toBe("invalid_json");
   });

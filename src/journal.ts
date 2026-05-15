@@ -1,8 +1,7 @@
 import { generateId } from "./helpers.js";
 import type { Fixture, FixtureMatch, JournalEntry } from "./types.js";
-
-/** Sentinel testId used when no explicit test scope is provided. */
-export const DEFAULT_TEST_ID = "__default__";
+import { DEFAULT_TEST_ID } from "./constants.js";
+export { DEFAULT_TEST_ID } from "./constants.js";
 
 /**
  * Compare two field values, handling RegExp by source+flags rather than reference.
@@ -14,12 +13,31 @@ function fieldEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * Compare two systemMessage values. Handles string, string[], and RegExp.
+ * Both-undefined is treated as equal.
+ */
+function systemMessageEqual(
+  a: string | string[] | RegExp | undefined,
+  b: string | string[] | RegExp | undefined,
+): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  if (typeof a === "string" && typeof b === "string") return a === b;
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  if (a instanceof RegExp && b instanceof RegExp)
+    return a.source === b.source && a.flags === b.flags;
+  return false;
+}
+
+/**
  * Check whether two fixture match objects have the same criteria
  * (ignoring sequenceIndex). Used to group sequenced fixtures.
  */
 function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
   return (
     fieldEqual(a.userMessage, b.userMessage) &&
+    systemMessageEqual(a.systemMessage, b.systemMessage) &&
     fieldEqual(a.inputText, b.inputText) &&
     fieldEqual(a.toolCallId, b.toolCallId) &&
     fieldEqual(a.toolName, b.toolName) &&

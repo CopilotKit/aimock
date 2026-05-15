@@ -38,6 +38,8 @@ import {
   flattenHeaders,
   getTestId,
   resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -205,7 +207,7 @@ export function bedrockToCompletionRequest(
         if (toolUseBlocks.length > 0) {
           messages.push({
             role: "assistant",
-            content: textContent ?? null,
+            content: textContent || null,
             tool_calls: toolUseBlocks.map((b, index) => {
               if (!b.id && logger) {
                 logger.warn(
@@ -223,7 +225,7 @@ export function bedrockToCompletionRequest(
             }),
           });
         } else {
-          messages.push({ role: "assistant", content: textContent ?? null });
+          messages.push({ role: "assistant", content: textContent || null });
         }
       } else {
         messages.push({ role: "assistant", content: null });
@@ -255,6 +257,7 @@ export function bedrockToCompletionRequest(
     messages,
     stream: false,
     temperature: req.temperature,
+    max_tokens: req.max_tokens,
     tools,
   };
 }
@@ -339,7 +342,8 @@ export async function handleBedrock(
   let bedrockReq: BedrockRequest;
   try {
     bedrockReq = JSON.parse(raw) as BedrockRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -352,7 +356,7 @@ export async function handleBedrock(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -424,6 +428,34 @@ export async function handleBedrock(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -435,6 +467,7 @@ export async function handleBedrock(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -446,26 +479,23 @@ export async function handleBedrock(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -563,7 +593,7 @@ export async function handleBedrock(
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    if ("webSearches" in response) {
+    if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
@@ -953,7 +983,8 @@ export async function handleBedrockStream(
   let bedrockReq: BedrockRequest;
   try {
     bedrockReq = JSON.parse(raw) as BedrockRequest;
-  } catch {
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -966,7 +997,7 @@ export async function handleBedrockStream(
       400,
       JSON.stringify({
         error: {
-          message: "Malformed JSON",
+          message: `Malformed JSON: ${detail}`,
           type: "invalid_request_error",
         },
       }),
@@ -1038,6 +1069,34 @@ export async function handleBedrockStream(
     return;
 
   if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictStatus = 503;
+      const strictMessage = "Strict mode: no fixture matched";
+      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: {
+          status: strictStatus,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        strictStatus,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+          },
+        }),
+      );
+      return;
+    }
     if (defaults.record) {
       const outcome = await proxyAndRecord(
         req,
@@ -1049,6 +1108,7 @@ export async function handleBedrockStream(
         defaults,
         raw,
       );
+      if (outcome === "handled_by_hook") return;
       if (outcome !== "not_configured") {
         journal.add({
           method: req.method ?? "POST",
@@ -1060,26 +1120,23 @@ export async function handleBedrockStream(
         return;
       }
     }
-    const strictStatus = defaults.strict ? 503 : 404;
-    const strictMessage = defaults.strict
-      ? "Strict mode: no fixture matched"
-      : "No fixture matched";
-    if (defaults.strict) {
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
-    }
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
-      response: { status: strictStatus, fixture: null },
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
     });
     writeErrorResponse(
       res,
-      strictStatus,
+      404,
       JSON.stringify({
         error: {
-          message: strictMessage,
+          message: "No fixture matched",
           type: "invalid_request_error",
         },
       }),
@@ -1190,7 +1247,7 @@ export async function handleBedrockStream(
 
   // Tool call response — stream as Event Stream
   if (isToolCallResponse(response)) {
-    if ("webSearches" in response) {
+    if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);

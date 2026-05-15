@@ -187,9 +187,6 @@ function postPartialBinary(
         res.on("error", () => {
           aborted = true;
         });
-        res.on("aborted", () => {
-          aborted = true;
-        });
         res.on("close", () => {
           safeResolve({ body: Buffer.concat(chunks), aborted });
         });
@@ -1442,7 +1439,7 @@ describe("POST /model/{modelId}/converse (malformed JSON)", () => {
 
     expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON: /);
   });
 });
 
@@ -1569,7 +1566,7 @@ describe("POST /model/{modelId}/converse-stream (malformed JSON)", () => {
 
     expect(res.status).toBe(400);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toBe("Malformed JSON");
+    expect(body.error.message).toMatch(/^Malformed JSON: /);
   });
 });
 
@@ -1747,7 +1744,7 @@ describe("converseToCompletionRequest (edge cases)", () => {
       },
       "model",
     );
-    expect(result.messages[0]).toEqual({ role: "assistant", content: "" });
+    expect(result.messages[0]).toEqual({ role: "assistant", content: null });
   });
 
   it("handles user tool result with missing text in content items (text ?? '' fallback)", () => {
@@ -1859,8 +1856,8 @@ describe("converseToCompletionRequest (edge cases)", () => {
       "model",
     );
     expect(result.messages[0].tool_calls).toHaveLength(1);
-    // Empty text → content is "" (nullish coalescing preserves empty string)
-    expect(result.messages[0].content).toBe("");
+    // Empty text → content is null (|| coerces empty string to null)
+    expect(result.messages[0].content).toBe(null);
   });
 });
 

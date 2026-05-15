@@ -21,6 +21,7 @@ export interface CollapseResult {
   webSearches?: string[];
   toolCalls?: ToolCall[];
   droppedChunks?: number;
+  firstDroppedSample?: string;
   truncated?: boolean;
   audioB64?: string;
   audioMimeType?: string;
@@ -43,6 +44,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
   let reasoning = "";
   const webSearchQueries: string[] = [];
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
   for (const line of lines) {
@@ -55,8 +57,12 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -147,6 +153,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       })),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
@@ -155,6 +162,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     ...(reasoning ? { reasoning } : {}),
     ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
 }
 
@@ -174,6 +182,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
   for (const block of blocks) {
@@ -188,8 +197,12 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -238,6 +251,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       })),
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
@@ -245,6 +259,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
 }
 
@@ -263,6 +278,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   let audioB64 = "";
   let audioMimeType: string | undefined;
   const toolCalls: ToolCall[] = [];
@@ -276,8 +292,12 @@ export function collapseGeminiSSE(body: string): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -324,6 +344,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
       audioB64,
       audioMimeType,
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
@@ -333,6 +354,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
       toolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
@@ -340,6 +362,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
 }
 
@@ -360,14 +383,19 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
   const lines = body.split("\n").filter((l) => l.trim().length > 0);
   let content = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(line.trim()) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${line.trim().slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -404,10 +432,15 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
       ...(content ? { content } : {}),
       toolCalls,
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
-  return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
+  return {
+    content,
+    ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +457,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
   const blocks = body.split("\n\n").filter((b) => b.trim().length > 0);
   let content = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
   for (const block of blocks) {
@@ -438,8 +472,12 @@ export function collapseCohereSSE(body: string): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -494,10 +532,15 @@ export function collapseCohereSSE(body: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       })),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
-  return { content, ...(droppedChunks > 0 ? { droppedChunks } : {}) };
+  return {
+    content,
+    ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -589,14 +632,20 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   const { frames, truncated } = decodeEventStreamFrames(body);
   let content = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
 
   for (const frame of frames) {
+    const frameStr = frame.payload.toString("utf8");
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(frame.payload.toString("utf8")) as Record<string, unknown>;
-    } catch {
+      parsed = JSON.parse(frameStr) as Record<string, unknown>;
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${frameStr.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -682,6 +731,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       })),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(truncated ? { truncated } : {}),
     };
   }
@@ -689,6 +739,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   return {
     content,
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(truncated ? { truncated } : {}),
   };
 }
@@ -709,6 +760,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
+  let firstDroppedSample: string | undefined;
   const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
@@ -720,8 +772,12 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(payload) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
       droppedChunks++;
+      if (droppedChunks === 1) {
+        const msg = err instanceof Error ? err.message : "unknown";
+        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+      }
       continue;
     }
 
@@ -755,6 +811,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
       toolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
+      ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
@@ -762,6 +819,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
+    ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
 }
 
