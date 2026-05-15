@@ -5,6 +5,9 @@ on:
     - cron: "0 8 * * *" # Daily 8am UTC (1am PT)
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: changelog-radar
   cancel-in-progress: true
