@@ -7,9 +7,6 @@ rules:
   # ─── artipacked ────────────────────────────────────────────────────────
   artipacked:
     ignore:
-      # fix-drift.yml pushes commits back using GITHUB_TOKEN; persist-credentials:
-      # false would break the push. Token scoped per-job, main-only trigger.
-      - fix-drift.yml
       # Dependabot auto-merge: uses pull_request_target for write token.
       # Does NOT checkout PR code. Actor-gated to dependabot[bot].
       - dependabot-auto-merge.yml

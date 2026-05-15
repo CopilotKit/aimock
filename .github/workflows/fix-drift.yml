@@ -26,6 +26,8 @@ jobs:
       # issues: write  # removed — no longer creating issues on drift failure
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -126,6 +128,13 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: pnpm test:drift
+
+      # Inject git credentials only when needed for push (persist-credentials: false above)
+      - name: Configure git for push
+        if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
+        run: git config --local url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 5: Create PR on success
       - name: Create PR
