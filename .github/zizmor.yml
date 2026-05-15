@@ -5,12 +5,10 @@
 
 rules:
   # ─── artipacked ────────────────────────────────────────────────────────
-  # These three workflows push back to the repo (commits / tags / branches)
-  # using the default `GITHUB_TOKEN`, so `persist-credentials: false` is not
-  # an option. The token is scoped per-job and the workflows only run on the
-  # `main` branch or via `workflow_dispatch`, never on untrusted PR HEADs.
   artipacked:
     ignore:
+      # fix-drift.yml pushes commits back using GITHUB_TOKEN; persist-credentials:
+      # false would break the push. Token scoped per-job, main-only trigger.
       - fix-drift.yml
       # Dependabot auto-merge: uses pull_request_target for write token.
       # Does NOT checkout PR code. Actor-gated to dependabot[bot].
@@ -18,8 +16,6 @@ rules:
       # Dependabot major analysis: uses pull_request_target for PR comments.
       # Does NOT checkout PR code. Actor-gated to dependabot[bot].
       - dependabot-major-analysis.yml
-      - publish-release.yml
-      - update-competitive-matrix.yml
 
   # ─── dangerous-triggers ────────────────────────────────────────────────
   # `notify-pr.yml` uses `pull_request_target` intentionally: it needs
