@@ -1,9 +1,0 @@
-# pnpm 11+ lifecycle-script allowlist.
-# All three are dev-only tooling that needs platform-specific binaries:
-#   esbuild         — bundler used by tsdown
-#   protobufjs      — required by @google/genai
-#   unrs-resolver   — native module resolver used by typescript-eslint
-allowBuilds:
-  esbuild: true
-  protobufjs: true
-  unrs-resolver: true
