@@ -43,25 +43,33 @@ runs:
   steps:
     - name: Install aimock
       shell: bash
-      run: npm install -g @copilotkit/aimock@${{ inputs.version }}
+      env:
+        AIMOCK_VERSION: ${{ inputs.version }}
+      run: npm install -g "@copilotkit/aimock@${AIMOCK_VERSION}"
 
     - name: Start aimock
       id: start
       shell: bash
+      env:
+        AIMOCK_HOST: ${{ inputs.host }}
+        AIMOCK_PORT: ${{ inputs.port }}
+        AIMOCK_CONFIG: ${{ inputs.config }}
+        AIMOCK_FIXTURES: ${{ inputs.fixtures }}
+        AIMOCK_ARGS: ${{ inputs.args }}
       run: |
-        URL="http://${{ inputs.host }}:${{ inputs.port }}"
+        URL="http://${AIMOCK_HOST}:${AIMOCK_PORT}"
         echo "url=${URL}" >> $GITHUB_OUTPUT
 
-        if [ -n "${{ inputs.config }}" ]; then
-          aimock --config "${{ inputs.config }}" \
-            --port ${{ inputs.port }} \
-            --host ${{ inputs.host }} \
-            ${{ inputs.args }} &
+        if [ -n "${AIMOCK_CONFIG}" ]; then
+          aimock --config "${AIMOCK_CONFIG}" \
+            --port "${AIMOCK_PORT}" \
+            --host "${AIMOCK_HOST}" \
+            ${AIMOCK_ARGS} &
         else
-          aimock --fixtures "${{ inputs.fixtures }}" \
-            --port ${{ inputs.port }} \
-            --host ${{ inputs.host }} \
-            ${{ inputs.args }} &
+          aimock --fixtures "${AIMOCK_FIXTURES}" \
+            --port "${AIMOCK_PORT}" \
+            --host "${AIMOCK_HOST}" \
+            ${AIMOCK_ARGS} &
         fi
 
         echo $! > /tmp/aimock.pid
@@ -69,15 +77,19 @@ runs:
 
     - name: Wait for health check
       shell: bash
+      env:
+        AIMOCK_HOST: ${{ inputs.host }}
+        AIMOCK_PORT: ${{ inputs.port }}
+        AIMOCK_TIMEOUT: ${{ inputs.wait-timeout }}
       run: |
-        URL="http://${{ inputs.host }}:${{ inputs.port }}/health"
-        TIMEOUT=${{ inputs.wait-timeout }}
+        URL="http://${AIMOCK_HOST}:${AIMOCK_PORT}/health"
+        TIMEOUT="${AIMOCK_TIMEOUT}"
         ELAPSED=0
 
         echo "Waiting for ${URL} ..."
         while [ $ELAPSED -lt $TIMEOUT ]; do
           if curl -sf "$URL" > /dev/null 2>&1; then
-            echo "aimock is ready at http://${{ inputs.host }}:${{ inputs.port }}"
+            echo "aimock is ready at http://${AIMOCK_HOST}:${AIMOCK_PORT}"
             exit 0
           fi
           sleep 1
