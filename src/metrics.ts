@@ -219,6 +219,7 @@ const BEDROCK_RE =
   /^\/model\/([^/]+)\/(invoke|invoke-with-response-stream|converse|converse-stream)$/;
 const GEMINI_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
 const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
+const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
 const VERTEX_RE =
   /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
 
@@ -249,6 +250,11 @@ export function normalizePathLabel(pathname: string): string {
   const vertexMatch = pathname.match(VERTEX_RE);
   if (vertexMatch) {
     return `/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:${vertexMatch[4]}`;
+  }
+
+  // ElevenLabs TTS: /v1/text-to-speech/{voice_id}
+  if (ELEVENLABS_TTS_RE.test(pathname)) {
+    return "/v1/text-to-speech/{voice_id}";
   }
 
   // Static path — return as-is

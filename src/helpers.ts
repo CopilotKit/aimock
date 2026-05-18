@@ -251,6 +251,83 @@ export function extractOverrides(
   };
 }
 
+// ─── Token estimation ────────────────────────────────────────────────────
+
+/**
+ * Rough token count estimation based on character length.
+ * Uses the ~4 characters per token heuristic common for English text.
+ */
+export function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/**
+ * Estimate prompt tokens from a request's messages array.
+ */
+export function estimatePromptTokens(messages: ChatCompletionRequest["messages"]): number {
+  let totalChars = 0;
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      totalChars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part.text) totalChars += part.text.length;
+      }
+    }
+  }
+  return Math.max(1, Math.ceil(totalChars / 4));
+}
+
+/**
+ * Build usage object: use explicit overrides if provided, otherwise estimate.
+ */
+function resolveUsage(
+  overrides: ResponseOverrides | undefined,
+  promptText: string,
+  completionText: string,
+): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+  if (overrides?.usage) {
+    const u = overrides.usage;
+    const prompt = u.prompt_tokens ?? 0;
+    const completion = u.completion_tokens ?? 0;
+    return {
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      total_tokens: u.total_tokens ?? prompt + completion,
+    };
+  }
+  const prompt = estimateTokens(promptText || "x");
+  const completion = estimateTokens(completionText || "x");
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: prompt + completion,
+  };
+}
+
+/**
+ * Build an SSE usage chunk for streaming responses.
+ * OpenAI emits this as the final chunk before [DONE] when
+ * stream_options.include_usage is true. It has an empty choices array.
+ */
+export function buildUsageChunk(
+  id: string,
+  model: string,
+  created: number,
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+  fingerprint?: string,
+): SSEChunk {
+  return {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [],
+    usage,
+    ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+  };
+}
+
 export function buildTextChunks(
   content: string,
   model: string,
@@ -437,8 +514,19 @@ export function buildTextCompletion(
   model: string,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
-  const defaultUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const promptText = requestMessages
+    ? requestMessages
+        .map((m) =>
+          typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((p) => p.text ?? "").join("")
+              : "",
+        )
+        .join("")
+    : "";
   return {
     id: overrides?.id ?? generateId(),
     object: "chat.completion",
@@ -457,15 +545,7 @@ export function buildTextCompletion(
         finish_reason: overrides?.finishReason ?? "stop",
       },
     ],
-    usage: overrides?.usage
-      ? {
-          prompt_tokens: overrides.usage.prompt_tokens ?? defaultUsage.prompt_tokens,
-          completion_tokens: overrides.usage.completion_tokens ?? defaultUsage.completion_tokens,
-          total_tokens:
-            overrides.usage.total_tokens ??
-            (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
-        }
-      : defaultUsage,
+    usage: resolveUsage(overrides, promptText, content),
     ...(overrides?.systemFingerprint !== undefined && {
       system_fingerprint: overrides.systemFingerprint,
     }),
@@ -476,8 +556,20 @@ export function buildToolCallCompletion(
   toolCalls: ToolCall[],
   model: string,
   overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
-  const defaultUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const promptText = requestMessages
+    ? requestMessages
+        .map((m) =>
+          typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((p) => p.text ?? "").join("")
+              : "",
+        )
+        .join("")
+    : "";
+  const completionText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
   return {
     id: overrides?.id ?? generateId(),
     object: "chat.completion",
@@ -500,15 +592,7 @@ export function buildToolCallCompletion(
         finish_reason: overrides?.finishReason ?? "tool_calls",
       },
     ],
-    usage: overrides?.usage
-      ? {
-          prompt_tokens: overrides.usage.prompt_tokens ?? defaultUsage.prompt_tokens,
-          completion_tokens: overrides.usage.completion_tokens ?? defaultUsage.completion_tokens,
-          total_tokens:
-            overrides.usage.total_tokens ??
-            (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
-        }
-      : defaultUsage,
+    usage: resolveUsage(overrides, promptText, completionText),
     ...(overrides?.systemFingerprint !== undefined && {
       system_fingerprint: overrides.systemFingerprint,
     }),
@@ -657,8 +741,20 @@ export function buildContentWithToolCallsCompletion(
   model: string,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
-  const defaultUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const promptText = requestMessages
+    ? requestMessages
+        .map((m) =>
+          typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((p) => p.text ?? "").join("")
+              : "",
+        )
+        .join("")
+    : "";
+  const completionText = content + toolCalls.map((tc) => tc.name + tc.arguments).join("");
   return {
     id: overrides?.id ?? generateId(),
     object: "chat.completion",
@@ -682,15 +778,7 @@ export function buildContentWithToolCallsCompletion(
         finish_reason: overrides?.finishReason ?? "tool_calls",
       },
     ],
-    usage: overrides?.usage
-      ? {
-          prompt_tokens: overrides.usage.prompt_tokens ?? defaultUsage.prompt_tokens,
-          completion_tokens: overrides.usage.completion_tokens ?? defaultUsage.completion_tokens,
-          total_tokens:
-            overrides.usage.total_tokens ??
-            (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
-        }
-      : defaultUsage,
+    usage: resolveUsage(overrides, promptText, completionText),
     ...(overrides?.systemFingerprint !== undefined && {
       system_fingerprint: overrides.systemFingerprint,
     }),

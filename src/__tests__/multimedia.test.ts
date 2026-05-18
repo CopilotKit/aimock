@@ -144,6 +144,111 @@ describe("audio transcription", () => {
   });
 });
 
+describe("audio translation", () => {
+  test("translation returns text", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "translation" },
+      response: { transcription: { text: "Hello world", language: "english", duration: 3.0 } },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "whisper-1");
+
+    const res = await fetch(`${mock.url}/v1/audio/translations`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.text).toBe("Hello world");
+    await mock.stop();
+  });
+
+  test("verbose translation includes task=translate", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "translation" },
+      response: {
+        transcription: {
+          text: "Hello world",
+          language: "english",
+          duration: 3.0,
+          words: [{ word: "Hello", start: 0.0, end: 0.3 }],
+          segments: [{ id: 0, text: "Hello world", start: 0.0, end: 3.0 }],
+        },
+      },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"]), "test.wav");
+    formData.append("model", "whisper-1");
+    formData.append("response_format", "verbose_json");
+
+    const res = await fetch(`${mock.url}/v1/audio/translations`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+    const data = await res.json();
+    expect(data.task).toBe("translate");
+    expect(data.words).toHaveLength(1);
+    expect(data.segments).toHaveLength(1);
+    await mock.stop();
+  });
+
+  test("onTranslation creates fixture with correct endpoint", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.onTranslation({ transcription: { text: "translated text" } });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["audio"]), "test.wav");
+    formData.append("model", "whisper-1");
+    const res = await fetch(`${mock.url}/v1/audio/translations`, {
+      method: "POST",
+      headers: { Authorization: "Bearer t" },
+      body: formData,
+    });
+    expect((await res.json()).text).toBe("translated text");
+    await mock.stop();
+  });
+
+  test("translation and transcription fixtures do not cross-match", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.onTranscription({ transcription: { text: "transcribed" } });
+    mock.onTranslation({ transcription: { text: "translated" } });
+    await mock.start();
+
+    const makeForm = () => {
+      const formData = new FormData();
+      formData.append("file", new Blob(["audio"]), "test.wav");
+      formData.append("model", "whisper-1");
+      return formData;
+    };
+
+    const transcriptionRes = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer t" },
+      body: makeForm(),
+    });
+    expect((await transcriptionRes.json()).text).toBe("transcribed");
+
+    const translationRes = await fetch(`${mock.url}/v1/audio/translations`, {
+      method: "POST",
+      headers: { Authorization: "Bearer t" },
+      body: makeForm(),
+    });
+    expect((await translationRes.json()).text).toBe("translated");
+
+    await mock.stop();
+  });
+});
+
 describe("video generation", () => {
   test("video creation and status check", async () => {
     const mock = new LLMock({ port: 0 });

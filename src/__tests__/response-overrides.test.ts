@@ -244,7 +244,8 @@ describe("response overrides: OpenAI Chat Completions (non-streaming)", () => {
     expect(json.model).toBe("gpt-4");
     expect(json.choices[0].message.role).toBe("assistant");
     expect(json.choices[0].finish_reason).toBe("stop");
-    expect(json.usage.prompt_tokens).toBe(0);
+    // "hello" → 5 chars → ceil(5/4) = 2 estimated prompt tokens
+    expect(json.usage.prompt_tokens).toBeGreaterThan(0);
     expect(json.system_fingerprint).toBeUndefined();
   });
 });

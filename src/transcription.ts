@@ -19,7 +19,7 @@ import { proxyAndRecord } from "./recorder.js";
 /**
  * Extract the multipart boundary string from a Content-Type header.
  */
-function extractBoundary(contentType: string | undefined): string | undefined {
+export function extractBoundary(contentType: string | undefined): string | undefined {
   if (!contentType) return undefined;
   const match = contentType.match(/boundary=([^\s;]+)/i);
   return match?.[1];
@@ -32,7 +32,7 @@ function extractBoundary(contentType: string | undefined): string | undefined {
  * This avoids false matches from binary audio data that might contain
  * header-like byte sequences.
  */
-function extractFormField(
+export function extractFormField(
   raw: string,
   fieldName: string,
   boundary: string | undefined,
@@ -80,9 +80,12 @@ export async function handleTranscription(
   journal: Journal,
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
+  endpointType: "transcription" | "translation" = "transcription",
 ): Promise<void> {
   setCorsHeaders(res);
-  const path = req.url ?? "/v1/audio/transcriptions";
+  const defaultPath =
+    endpointType === "translation" ? "/v1/audio/translations" : "/v1/audio/transcriptions";
+  const path = req.url ?? defaultPath;
   const method = req.method ?? "POST";
 
   const contentType = Array.isArray(req.headers["content-type"])
@@ -96,7 +99,7 @@ export async function handleTranscription(
   const syntheticReq: ChatCompletionRequest = {
     model,
     messages: [],
-    _endpointType: "transcription",
+    _endpointType: endpointType,
   };
 
   const testId = getTestId(req);
@@ -162,7 +165,7 @@ export async function handleTranscription(
         res,
         syntheticReq,
         "openai",
-        req.url ?? "/v1/audio/transcriptions",
+        req.url ?? defaultPath,
         fixtures,
         defaults,
         raw,
@@ -216,7 +219,9 @@ export async function handleTranscription(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -254,7 +259,7 @@ export async function handleTranscription(
 
   if (useVerbose) {
     const verboseBody: Record<string, unknown> = {
-      task: "transcribe",
+      task: endpointType === "translation" ? "translate" : "transcribe",
       language: t.language ?? "english",
       duration: t.duration ?? 0,
       text: t.text,

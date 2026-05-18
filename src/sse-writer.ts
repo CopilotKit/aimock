@@ -21,6 +21,8 @@ export interface StreamOptions {
   streamingProfile?: StreamingProfile;
   signal?: AbortSignal;
   onChunkSent?: () => void;
+  /** When set, emitted as the final chunk before [DONE] (OpenAI stream_options.include_usage). */
+  usageChunk?: SSEChunk;
 }
 
 export function calculateDelay(
@@ -78,13 +80,44 @@ export async function writeSSEStream(
   }
 
   if (!res.writableEnded) {
+    if (opts.usageChunk) {
+      res.write(`data: ${JSON.stringify(opts.usageChunk)}\n\n`);
+    }
     res.write("data: [DONE]\n\n");
     res.end();
   }
   return true;
 }
 
-export function writeErrorResponse(res: http.ServerResponse, status: number, body: string): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
+/**
+ * Default rate-limit response headers matching OpenAI's format.
+ * Values are static — aimock doesn't track actual request counts.
+ */
+const RATE_LIMIT_HEADERS: Record<string, string> = {
+  "x-ratelimit-limit-requests": "60",
+  "x-ratelimit-limit-tokens": "150000",
+  "x-ratelimit-remaining-requests": "0",
+  "x-ratelimit-remaining-tokens": "0",
+  "x-ratelimit-reset-requests": "1s",
+  "x-ratelimit-reset-tokens": "6m0s",
+};
+
+export interface ErrorResponseOptions {
+  /** Override the Retry-After header value (seconds). Default: 1. Only applied on 429. */
+  retryAfter?: number;
+}
+
+export function writeErrorResponse(
+  res: http.ServerResponse,
+  status: number,
+  body: string,
+  options?: ErrorResponseOptions,
+): void {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (status === 429) {
+    headers["Retry-After"] = String(options?.retryAfter ?? 1);
+    Object.assign(headers, RATE_LIMIT_HEADERS);
+  }
+  res.writeHead(status, headers);
   res.end(body);
 }

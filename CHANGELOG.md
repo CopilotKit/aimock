@@ -4,6 +4,31 @@
 
 ### Added
 
+- **Gemini `embedContent` endpoint** — `POST /v1beta/models/{model}:embedContent`
+  with deterministic fallback embeddings and fixture matching
+- **`/v1/images/edit` and `/v1/images/variations` endpoints** — multipart
+  form-data, same response format as generations. Closes #221
+- **`/v1/audio/translations` endpoint** — reuses transcription handler with
+  `endpoint: "translation"` and `task: "translate"` in verbose mode
+- **Ollama `/api/embeddings` endpoint** — single-embedding response, supports
+  both `prompt` and `input` (string or array) fields
+- **Cohere `/v2/embed` endpoint** — multi-text embedding with configurable
+  `embedding_types` (float, int8, etc.)
+- **ElevenLabs `/v1/text-to-speech/{voice_id}` endpoint** — binary audio
+  response with voice routing and `onElevenLabsTTS` helper
+- **Streaming usage chunks** — when `stream_options.include_usage` is set,
+  emits a final SSE chunk with token usage before `[DONE]`
+- **Automatic token usage estimation** — responses without explicit fixture
+  `usage` overrides now return estimated token counts (~4 chars/token)
+  instead of zeros
+- **Rate limiting headers on 429 responses** — `Retry-After`,
+  `x-ratelimit-limit-*`, `x-ratelimit-remaining-*`,
+  `x-ratelimit-reset-*` headers on all error fixtures with status 429.
+  Custom `retryAfter` override via fixture field
+- **`onTranslation` convenience method** — register translation fixtures
+  with endpoint discrimination
+- **`onElevenLabsTTS` convenience method** — register ElevenLabs TTS
+  fixtures
 - **Configurable proxy timeouts** — `RecordConfig` now accepts `upstreamTimeoutMs` (default 30s) and `bodyTimeoutMs` (default 30s). The body-idle timeout is the Node socket inactivity timer that fires `req.destroy()` mid-stream; under concurrent load against reasoning models (e.g. Grok 4.3 + structured output), token-emission gaps can routinely exceed 30s during the thinking phase, causing record-mode runs to truncate SSE responses mid-stream with no `[DONE]` and no `finish_reason`. Lift to e.g. `bodyTimeoutMs: 180_000` to record cleanly under that workload.
 
 ## [1.24.1] - 2026-05-14

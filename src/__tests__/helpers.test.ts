@@ -311,13 +311,13 @@ describe("buildTextCompletion", () => {
     expect(result.choices[0].finish_reason).toBe("stop");
   });
 
-  it("includes usage object", () => {
+  it("includes estimated usage when no requestMessages provided", () => {
     const result = buildTextCompletion("Hello!", "gpt-4");
-    expect(result.usage).toEqual({
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    });
+    // No requestMessages → prompt estimates from empty string fallback ("x" → 1 token)
+    // "Hello!" is 6 chars → ceil(6/4) = 2 tokens
+    expect(result.usage.prompt_tokens).toBe(1);
+    expect(result.usage.completion_tokens).toBe(2);
+    expect(result.usage.total_tokens).toBe(3);
   });
 });
 

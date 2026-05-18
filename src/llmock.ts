@@ -179,6 +179,13 @@ export class LLMock {
     });
   }
 
+  onTranslation(response: TranscriptionResponse): this {
+    return this.addFixture({
+      match: { endpoint: "translation" },
+      response,
+    });
+  }
+
   onVideo(prompt: string | RegExp, response: VideoResponse): this {
     return this.addFixture({
       match: { userMessage: prompt, endpoint: "video" },
@@ -200,6 +207,13 @@ export class LLMock {
   onMusic(prompt: string | RegExp, response: AudioResponse): this {
     return this.addFixture({
       match: { userMessage: prompt, endpoint: "audio-gen" },
+      response,
+    });
+  }
+
+  onElevenLabsTTS(text: string | RegExp, response: AudioResponse): this {
+    return this.addFixture({
+      match: { userMessage: text, endpoint: "elevenlabs-tts" },
       response,
     });
   }

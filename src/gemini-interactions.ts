@@ -790,6 +790,7 @@ export async function handleGeminiInteractions(
       JSON.stringify(
         buildInteractionsErrorResponse(response.error.message, response.error.type ?? "ERROR"),
       ),
+      { retryAfter: response.retryAfter },
     );
     return;
   }

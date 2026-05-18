@@ -1,9 +1,13 @@
 /**
- * OpenAI Embeddings API support for aimock.
+ * Google Gemini embedContent API support.
  *
- * Handles POST /v1/embeddings requests. Matches fixtures using the `inputText`
- * field, and falls back to generating a deterministic embedding from the input
- * text hash when no fixture matches.
+ * Handles POST /v1beta/models/{model}:embedContent requests. Translates
+ * incoming Gemini embedding requests into the ChatCompletionRequest format
+ * used by the fixture router (with _endpointType: "embedding"), and converts
+ * fixture responses back into the Gemini embedContent response format.
+ *
+ * Falls back to generating a deterministic embedding from the input text hash
+ * when no fixture matches — same strategy as the OpenAI embeddings handler.
  */
 
 import type * as http from "node:http";
@@ -16,9 +20,7 @@ import type {
 import {
   isEmbeddingResponse,
   isErrorResponse,
-  serializeErrorResponse,
   generateDeterministicEmbedding,
-  buildEmbeddingResponse,
   flattenHeaders,
   getTestId,
   resolveResponse,
@@ -31,39 +33,57 @@ import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
-// ─── Embeddings API request types ──────────────────────────────────────────
+// ─── Gemini embedContent request types ────────────────────────────────────
 
-interface EmbeddingRequest {
-  input: string | string[];
-  model: string;
-  encoding_format?: "float" | "base64";
-  dimensions?: number;
+interface GeminiEmbedContentPart {
+  text?: string;
+}
+
+interface GeminiEmbedContentRequest {
+  content?: { parts?: GeminiEmbedContentPart[] };
+  model?: string;
+  taskType?: string;
+  title?: string;
+  outputDimensionality?: number;
   [key: string]: unknown;
 }
 
+// ─── Gemini embedContent response type ────────────────────────────────────
+
+interface GeminiEmbedContentResponse {
+  embedding: {
+    values: number[];
+  };
+}
+
+// ─── Default embedding dimensions for Gemini ──────────────────────────────
+
+const DEFAULT_GEMINI_EMBEDDING_DIMENSIONS = 768;
+
 // ─── Request handler ───────────────────────────────────────────────────────
 
-export async function handleEmbeddings(
+export async function handleGeminiEmbedContent(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   raw: string,
+  model: string,
   fixtures: Fixture[],
   journal: Journal,
   defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
-  providerKey: RecordProviderKey = "openai",
+  providerKey: RecordProviderKey = "gemini",
 ): Promise<void> {
   const { logger } = defaults;
   setCorsHeaders(res);
 
-  let embeddingReq: EmbeddingRequest;
+  let embedReq: GeminiEmbedContentRequest;
   try {
-    embeddingReq = JSON.parse(raw) as EmbeddingRequest;
+    embedReq = JSON.parse(raw) as GeminiEmbedContentRequest;
   } catch (parseErr) {
     const detail = parseErr instanceof Error ? parseErr.message : "unknown";
     journal.add({
       method: req.method ?? "POST",
-      path: req.url ?? "/v1/embeddings",
+      path: req.url ?? `/v1beta/models/${model}:embedContent`,
       headers: flattenHeaders(req.headers),
       body: null,
       response: { status: 400, fixture: null },
@@ -74,50 +94,28 @@ export async function handleEmbeddings(
       JSON.stringify({
         error: {
           message: `Malformed JSON body: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
+          code: 400,
+          status: "INVALID_ARGUMENT",
         },
       }),
     );
     return;
   }
 
-  // Validate required input parameter
-  if (embeddingReq.input === undefined || embeddingReq.input === null) {
-    journal.add({
-      method: req.method ?? "POST",
-      path: req.url ?? "/v1/embeddings",
-      headers: flattenHeaders(req.headers),
-      body: null,
-      response: { status: 400, fixture: null },
-    });
-    writeErrorResponse(
-      res,
-      400,
-      JSON.stringify({
-        error: {
-          message: "Missing required parameter: 'input'",
-          type: "invalid_request_error",
-        },
-      }),
-    );
-    return;
-  }
-
-  // Normalize input to array of strings
-  const inputs: string[] = Array.isArray(embeddingReq.input)
-    ? embeddingReq.input
-    : [embeddingReq.input];
-
-  // Concatenate all inputs for matching purposes
-  const combinedInput = inputs.join(" ");
+  // Extract text from content.parts
+  const parts = embedReq.content?.parts ?? [];
+  const inputText = parts
+    .filter((p) => p.text !== undefined)
+    .map((p) => p.text!)
+    .join(" ");
 
   // Build a synthetic ChatCompletionRequest for the fixture router.
-  // We attach `embeddingInput` so the router's inputText matching can use it.
+  // Uses _endpointType: "embedding" and embeddingInput to share fixtures
+  // with OpenAI embeddings.
   const syntheticReq: ChatCompletionRequest = {
-    model: embeddingReq.model,
+    model: embedReq.model ?? model,
     messages: [],
-    embeddingInput: combinedInput,
+    embeddingInput: inputText,
     _endpointType: "embedding",
   };
 
@@ -128,6 +126,7 @@ export async function handleEmbeddings(
     journal.getFixtureMatchCountsForTest(testId),
     defaults.requestTransform,
   );
+  const path = req.url ?? `/v1beta/models/${model}:embedContent`;
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
@@ -145,7 +144,7 @@ export async function handleEmbeddings(
       journal,
       {
         method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
+        path,
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
       },
@@ -164,28 +163,38 @@ export async function handleEmbeddings(
       const status = response.status ?? 500;
       journal.add({
         method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
+        path,
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status, fixture },
       });
-      writeErrorResponse(res, status, serializeErrorResponse(response), {
+      const geminiError = {
+        error: {
+          code: status,
+          message: response.error.message,
+          status: response.error.type ?? "ERROR",
+        },
+      };
+      writeErrorResponse(res, status, JSON.stringify(geminiError), {
         retryAfter: response.retryAfter,
       });
       return;
     }
 
-    // Embedding response — use the fixture's embedding for each input
+    // Embedding response — use the fixture's embedding values
     if (isEmbeddingResponse(response)) {
       journal.add({
         method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
+        path,
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status: 200, fixture },
       });
-      const embeddings = inputs.map(() => [...response.embedding]);
-      const body = buildEmbeddingResponse(embeddings, embeddingReq.model);
+      const body: GeminiEmbedContentResponse = {
+        embedding: {
+          values: [...response.embedding],
+        },
+      };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
       return;
@@ -194,7 +203,7 @@ export async function handleEmbeddings(
     // Fixture matched but response type is not compatible with embeddings
     journal.add({
       method: req.method ?? "POST",
-      path: req.url ?? "/v1/embeddings",
+      path,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: { status: 500, fixture },
@@ -206,7 +215,8 @@ export async function handleEmbeddings(
         error: {
           message:
             "Fixture response did not match any known embedding type (must have embedding or error)",
-          type: "server_error",
+          code: 500,
+          status: "INTERNAL",
         },
       }),
     );
@@ -214,13 +224,12 @@ export async function handleEmbeddings(
   }
 
   // No fixture match — check strict mode first, then try proxy
-  if (resolveStrictMode(defaults.strict, req.headers)) {
-    logger.error(
-      `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/embeddings"}`,
-    );
+  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  if (effectiveStrict) {
+    logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${path}`);
     journal.add({
       method: req.method ?? "POST",
-      path: req.url ?? "/v1/embeddings",
+      path,
       headers: flattenHeaders(req.headers),
       body: syntheticReq,
       response: {
@@ -235,8 +244,8 @@ export async function handleEmbeddings(
       JSON.stringify({
         error: {
           message: "Strict mode: no fixture matched",
-          type: "invalid_request_error",
-          code: "no_fixture_match",
+          code: 503,
+          status: "UNAVAILABLE",
         },
       }),
     );
@@ -249,7 +258,7 @@ export async function handleEmbeddings(
       res,
       syntheticReq,
       providerKey,
-      req.url ?? "/v1/embeddings",
+      path,
       fixtures,
       defaults,
       raw,
@@ -258,7 +267,7 @@ export async function handleEmbeddings(
     if (outcome !== "not_configured") {
       journal.add({
         method: req.method ?? "POST",
-        path: req.url ?? "/v1/embeddings",
+        path,
         headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
@@ -267,22 +276,27 @@ export async function handleEmbeddings(
     }
   }
 
-  // No fixture match — generate deterministic embeddings from input text
+  // No fixture match — generate deterministic embedding from input text
+  const dimensions = embedReq.outputDimensionality ?? DEFAULT_GEMINI_EMBEDDING_DIMENSIONS;
+  const embedding = generateDeterministicEmbedding(inputText, dimensions);
+
   logger.warn(
-    `No embedding fixture matched for "${combinedInput.slice(0, 80)}" — returning deterministic fallback`,
+    `No embedding fixture matched for "${inputText.slice(0, 80)}" — returning deterministic fallback`,
   );
-  const dimensions = embeddingReq.dimensions ?? 1536;
-  const embeddings = inputs.map((input) => generateDeterministicEmbedding(input, dimensions));
 
   journal.add({
     method: req.method ?? "POST",
-    path: req.url ?? "/v1/embeddings",
+    path,
     headers: flattenHeaders(req.headers),
     body: syntheticReq,
     response: { status: 200, fixture: null },
   });
 
-  const body = buildEmbeddingResponse(embeddings, embeddingReq.model);
+  const body: GeminiEmbedContentResponse = {
+    embedding: {
+      values: embedding,
+    },
+  };
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }

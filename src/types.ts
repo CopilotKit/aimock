@@ -43,6 +43,7 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean; [key: string]: unknown };
   temperature?: number;
   max_tokens?: number;
   tools?: ToolDefinition[];
@@ -94,9 +95,11 @@ export interface FixtureMatch {
     | "image"
     | "speech"
     | "transcription"
+    | "translation"
     | "video"
     | "embedding"
     | "audio-gen"
+    | "elevenlabs-tts"
     | "fal-audio"
     | "fal"
     | "realtime"
@@ -167,6 +170,8 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
 export interface ErrorResponse {
   error: { message: string; type?: string; param?: string | null; code?: string };
   status?: number;
+  /** Override the Retry-After header value on 429 responses. Default: 1. */
+  retryAfter?: number;
 }
 
 export interface EmbeddingResponse {
@@ -378,9 +383,11 @@ export interface FixtureFileEntry {
       | "image"
       | "speech"
       | "transcription"
+      | "translation"
       | "video"
       | "embedding"
       | "audio-gen"
+      | "elevenlabs-tts"
       | "fal-audio"
       | "fal"
       | "realtime"
@@ -438,6 +445,7 @@ export interface SSEChunk {
   model: string;
   choices: SSEChoice[];
   system_fingerprint?: string;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
 export interface SSEChoice {

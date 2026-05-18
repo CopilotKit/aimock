@@ -20,6 +20,7 @@ const PROVIDER_GROUPS: string[][] = [
   ["groq"],
   ["together"],
   ["llama"],
+  ["elevenlabs"],
 ];
 
 function countProviders(text: string): number {
@@ -55,6 +56,10 @@ const FEATURE_RULES: FeatureRule[] = [
   {
     rowLabel: "Image generation",
     keywords: ["dall-e", "dalle", "/v1/images", "image generation", "imagen", "generate.*image"],
+  },
+  {
+    rowLabel: "Image editing",
+    keywords: ["/v1/images/edit", "image edit", "image editing", "inpainting", "edit.*image"],
   },
   {
     rowLabel: "Non-speech audio",
@@ -118,6 +123,29 @@ const FEATURE_RULES: FeatureRule[] = [
     rowLabel: "Realtime commentary phase",
     keywords: ["commentary.*phase", "phase.*commentary", "final_answer.*commentary"],
   },
+  {
+    rowLabel: "Audio translation",
+    keywords: [
+      "/v1/audio/translations",
+      "audio translation",
+      "translate.*audio",
+      "audio.*translate",
+    ],
+  },
+  {
+    rowLabel: "Streaming usage chunks",
+    keywords: [
+      "stream_options",
+      "include_usage",
+      "streaming.*usage",
+      "usage.*chunk",
+      "usage.*stream",
+    ],
+  },
+  {
+    rowLabel: "Rate limiting headers",
+    keywords: ["x-ratelimit", "rate.limit.*header", "retry-after", "429.*retry", "rate.limiting"],
+  },
 ];
 
 function extractFeatures(text: string): Record<string, boolean> {
@@ -160,6 +188,10 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
     "Realtime image input": ["Realtime image input"],
     "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
+    "Image editing": ["Image editing", "Image edit"],
+    "Audio translation": ["Audio translation", "Audio translations"],
+    "Streaming usage chunks": ["Streaming usage chunks", "Streaming usage"],
+    "Rate limiting headers": ["Rate limiting headers", "Rate limiting"],
   };
   if (variants[rowLabel]) {
     patterns.push(...variants[rowLabel]);
@@ -468,12 +500,12 @@ describe("provider count extraction from README text", () => {
     expect(countProviders("This is a generic testing library.")).toBe(0);
   });
 
-  it("counts all 13 provider groups when all are mentioned", () => {
+  it("counts all 14 provider groups when all are mentioned", () => {
     const readme = `
       OpenAI, Claude, Gemini, Gemini Interactions, Bedrock, Azure, Vertex AI,
-      Ollama, Cohere, Mistral, Groq, Together AI, Llama
+      Ollama, Cohere, Mistral, Groq, Together AI, Llama, ElevenLabs
     `;
-    expect(countProviders(readme)).toBe(13);
+    expect(countProviders(readme)).toBe(14);
   });
 
   it("is case-insensitive", () => {

@@ -18,6 +18,240 @@ import { proxyAndRecord } from "./recorder.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 
+export async function handleElevenLabsTTS(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  body: string,
+  fixtures: Fixture[],
+  defaults: HandlerDefaults,
+  journal: Journal,
+  voiceId: string,
+): Promise<void> {
+  const path = req.url ?? `/v1/text-to-speech/${voiceId}`;
+  const method = req.method ?? "POST";
+
+  // Parse JSON body
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body) as Record<string, unknown>;
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Extract text from request body
+  const promptText = typeof parsed.text === "string" && parsed.text ? parsed.text : undefined;
+
+  // Build synthetic ChatCompletionRequest for fixture matching
+  const syntheticReq: ChatCompletionRequest = {
+    model: (parsed.model_id as string) ?? "eleven_multilingual_v2",
+    messages: [{ role: "user", content: promptText ?? "" }],
+    _endpointType: "elevenlabs-tts",
+  };
+
+  // Validate required field
+  if (!promptText) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Missing required parameter: 'text'",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Match fixture
+  const testId = getTestId(req);
+  const matchCounts = journal.getFixtureMatchCountsForTest(testId);
+  const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+
+  if (fixture) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+  }
+
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  // No fixture match
+  if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      journal.add({
+        method,
+        path,
+        headers: {},
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: "Strict mode: no fixture matched",
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
+    if (defaults.record) {
+      const outcome = await proxyAndRecord(
+        req,
+        res,
+        syntheticReq,
+        "elevenlabs",
+        req.url ?? `/v1/text-to-speech/${voiceId}`,
+        fixtures,
+        defaults,
+        body,
+      );
+      if (outcome === "handled_by_hook") return;
+      if (outcome !== "not_configured") {
+        journal.add({
+          method,
+          path,
+          headers: flattenHeaders(req.headers),
+          body: syntheticReq,
+          response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+        });
+        return;
+      }
+    }
+
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
+    });
+    writeErrorResponse(
+      res,
+      404,
+      JSON.stringify({
+        error: {
+          message: "No fixture matched",
+          type: "invalid_request_error",
+          code: "no_fixture_match",
+        },
+      }),
+    );
+    return;
+  }
+
+  const response = await resolveResponse(fixture, syntheticReq);
+
+  // Error fixture
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status, fixture },
+    });
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
+    return;
+  }
+
+  // Expect audio response
+  if (!isAudioResponse(response)) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 500, fixture },
+    });
+    writeErrorResponse(
+      res,
+      500,
+      JSON.stringify({
+        error: { message: "Fixture response is not an audio type", type: "server_error" },
+      }),
+    );
+    return;
+  }
+
+  // Decode audio bytes and determine content type
+  let audioBytes: Buffer;
+  let contentType: string;
+
+  if (typeof response.audio === "string") {
+    audioBytes = Buffer.from(response.audio, "base64");
+    const format = response.format ?? "mp3";
+    contentType = FORMAT_TO_CONTENT_TYPE[format] ?? "audio/mpeg";
+  } else {
+    audioBytes = Buffer.from(response.audio.b64Json, "base64");
+    contentType = response.audio.contentType ?? "audio/mpeg";
+  }
+
+  // Standard binary response
+  journal.add({
+    method,
+    path,
+    headers: flattenHeaders(req.headers),
+    body: syntheticReq,
+    response: { status: 200, fixture },
+  });
+  res.writeHead(200, { "Content-Type": contentType });
+  res.end(audioBytes);
+}
+
 export async function handleElevenLabsAudio(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -220,7 +454,9 @@ export async function handleElevenLabsAudio(
       body: syntheticReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 

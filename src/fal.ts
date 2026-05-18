@@ -21,6 +21,7 @@ import {
   resolveStrictMode,
   strictOverrideField,
 } from "./helpers.js";
+import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixture } from "./router.js";
 import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
 import { resolveUpstreamUrl } from "./url.js";
@@ -635,8 +636,9 @@ export async function handleFal(
           body: syntheticReq,
           response: { status, fixture },
         });
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(serializeErrorResponse(response));
+        writeErrorResponse(res, status, serializeErrorResponse(response), {
+          retryAfter: response.retryAfter,
+        });
         return "handled";
       }
 

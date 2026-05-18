@@ -694,7 +694,9 @@ export async function handleConverse(
         message: response.error.message,
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(errBody));
+    writeErrorResponse(res, status, JSON.stringify(errBody), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -987,7 +989,9 @@ export async function handleConverseStream(
         message: response.error.message,
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(errBody));
+    writeErrorResponse(res, status, JSON.stringify(errBody), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 

@@ -1983,3 +1983,158 @@ describe("POST /api/generate (system field)", () => {
     expect(body.response).toBe("Hi there!");
   });
 });
+
+// ─── POST /api/embeddings ──────────────────────────────────────────────────
+
+describe("POST /api/embeddings — Ollama Embeddings API", () => {
+  it("returns a deterministic embedding when no fixture matches (prompt field)", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "hello world",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.model).toBe("nomic-embed-text");
+    expect(Array.isArray(body.embedding)).toBe(true);
+    expect(body.embedding.length).toBe(1536);
+    // All values should be numbers between -1 and 1
+    for (const val of body.embedding) {
+      expect(typeof val).toBe("number");
+      expect(val).toBeGreaterThanOrEqual(-1);
+      expect(val).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("returns a deterministic embedding when no fixture matches (input field)", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      input: "hello world",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.model).toBe("nomic-embed-text");
+    expect(Array.isArray(body.embedding)).toBe(true);
+    expect(body.embedding.length).toBe(1536);
+  });
+
+  it("is deterministic — same input produces same embedding", async () => {
+    instance = await createServer([]);
+    const res1 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "deterministic test",
+    });
+    const res2 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "deterministic test",
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.embedding).toEqual(body2.embedding);
+  });
+
+  it("different inputs produce different embeddings", async () => {
+    instance = await createServer([]);
+    const res1 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "hello",
+    });
+    const res2 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "goodbye",
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.embedding).not.toEqual(body2.embedding);
+  });
+
+  it("returns Ollama-format response (single embedding, not array of objects)", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "test",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    // Ollama format: { model, embedding: [...] }
+    // NOT OpenAI format: { object, data: [{ embedding: [...] }] }
+    expect(body.model).toBe("nomic-embed-text");
+    expect(Array.isArray(body.embedding)).toBe(true);
+    expect(body.object).toBeUndefined();
+    expect(body.data).toBeUndefined();
+  });
+
+  it("matches fixture with embedding response", async () => {
+    const embFixture: Fixture = {
+      match: { inputText: "test embedding" },
+      response: { embedding: [0.1, 0.2, 0.3, 0.4] },
+    };
+    instance = await createServer([embFixture]);
+    const res = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "test embedding",
+    });
+
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.model).toBe("nomic-embed-text");
+    expect(body.embedding).toEqual([0.1, 0.2, 0.3, 0.4]);
+  });
+
+  it("returns 400 for malformed JSON", async () => {
+    instance = await createServer([]);
+    const res = await postRaw(`${instance.url}/api/embeddings`, "not json");
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/Malformed JSON/);
+  });
+
+  it("returns 400 when neither prompt nor input is provided", async () => {
+    instance = await createServer([]);
+    const res = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+    });
+
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/prompt or input field is required/);
+  });
+
+  it("prefers prompt over input when both are provided", async () => {
+    instance = await createServer([]);
+    const res1 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "use this",
+      input: "not this",
+    });
+    const res2 = await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "use this",
+    });
+
+    const body1 = JSON.parse(res1.body);
+    const body2 = JSON.parse(res2.body);
+    expect(body1.embedding).toEqual(body2.embedding);
+  });
+
+  it("journals embedding requests", async () => {
+    instance = await createServer([]);
+    await post(`${instance.url}/api/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: "test journal",
+    });
+
+    const entries = instance.journal.getAll();
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    const entry = entries[entries.length - 1];
+    expect(entry.path).toBe("/api/embeddings");
+    expect(entry.response.status).toBe(200);
+  });
+});
