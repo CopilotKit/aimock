@@ -44,6 +44,7 @@ Options:
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
+      --replay-speed <n>    Replay speed multiplier (default: 1.0, 2.0 = 2x faster)
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
@@ -78,6 +79,7 @@ const { values } = parseArgs({
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
+    "replay-speed": { type: "string", default: "1.0" },
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
@@ -121,6 +123,12 @@ if (Number.isNaN(latency) || latency < 0) {
 
 if (Number.isNaN(chunkSize) || chunkSize < 1) {
   console.error(`Invalid chunk-size: ${values["chunk-size"]}`);
+  process.exit(1);
+}
+
+const replaySpeed = Number(values["replay-speed"]);
+if (Number.isNaN(replaySpeed) || replaySpeed <= 0) {
+  console.error("--replay-speed must be a positive number");
   process.exit(1);
 }
 
@@ -370,6 +378,7 @@ async function main() {
       host,
       latency,
       chunkSize,
+      replaySpeed,
       logLevel,
       chaos,
       metrics: values.metrics,

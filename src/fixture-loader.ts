@@ -49,8 +49,8 @@ export function normalizeResponse(raw: FixtureFileResponse): FixtureResponse {
   return response as unknown as FixtureResponse;
 }
 
-export function entryToFixture(entry: FixtureFileEntry): Fixture {
-  return {
+export function entryToFixture(entry: FixtureFileEntry, logger?: Logger): Fixture {
+  const fixture: Fixture = {
     match: {
       userMessage: entry.match.userMessage,
       systemMessage: entry.match.systemMessage,
@@ -76,9 +76,27 @@ export function entryToFixture(entry: FixtureFileEntry): Fixture {
     }),
     ...(entry.disconnectAfterMs !== undefined && { disconnectAfterMs: entry.disconnectAfterMs }),
     ...(entry.streamingProfile !== undefined && { streamingProfile: entry.streamingProfile }),
+    ...(entry.recordedTimings !== undefined && { recordedTimings: entry.recordedTimings }),
+    ...(entry.replaySpeed != null && { replaySpeed: entry.replaySpeed }),
     ...(entry.chaos !== undefined && { chaos: entry.chaos }),
     ...(entry.metadata !== undefined && { metadata: entry.metadata }),
   };
+
+  // Sanitize recordedTimings to guard against NaN or negative values that
+  // would silently degrade replay timing calculations.
+  if (fixture.recordedTimings) {
+    const rt = fixture.recordedTimings;
+    if (!Number.isFinite(rt.ttftMs) || rt.ttftMs < 0) rt.ttftMs = 0;
+    rt.interChunkDelaysMs = rt.interChunkDelaysMs.filter((d) => Number.isFinite(d) && d >= 0);
+    if (!Number.isFinite(rt.totalDurationMs) || rt.totalDurationMs < 0) rt.totalDurationMs = 0;
+  }
+
+  if (fixture.replaySpeed != null && fixture.replaySpeed <= 0) {
+    logger?.warn(`Fixture replaySpeed must be positive, got ${fixture.replaySpeed}. Ignoring.`);
+    delete fixture.replaySpeed;
+  }
+
+  return fixture;
 }
 
 // Logging helper — uses logger if provided, falls back to console.warn.
@@ -116,7 +134,7 @@ export function loadFixtureFile(filePath: string, logger?: Logger): Fixture[] {
     return [];
   }
 
-  return (parsed as FixtureFile).fixtures.map(entryToFixture);
+  return (parsed as FixtureFile).fixtures.map((e) => entryToFixture(e, logger));
 }
 
 export function loadFixturesFromDir(dirPath: string, logger?: Logger): Fixture[] {

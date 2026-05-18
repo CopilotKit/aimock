@@ -8,6 +8,7 @@ import type {
   Fixture,
   FixtureResponse,
   RecordConfig,
+  RecordedTimings,
   RecordProviderKey,
   ToolCall,
 } from "./types.js";
@@ -288,6 +289,8 @@ export async function proxyAndRecord(
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
   let streamedToClient = false;
   let clientDisconnected = false;
+  let frameTimestamps: number[] = [];
+  let streamStartTime = 0;
   try {
     const result = await makeUpstreamRequest(
       target,
@@ -304,6 +307,8 @@ export async function proxyAndRecord(
     rawBuffer = result.rawBuffer;
     streamedToClient = result.streamedToClient;
     clientDisconnected = result.clientDisconnected;
+    frameTimestamps = result.frameTimestamps;
+    streamStartTime = result.streamStartTime;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -454,11 +459,25 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
+  // Build RecordedTimings from frame timestamps captured during streaming.
+  // Requires at least 2 timestamps (first frame + at least one more) to
+  // produce meaningful timing data.
+  let recordedTimings: RecordedTimings | undefined;
+  if (frameTimestamps.length > 1) {
+    const ts = frameTimestamps;
+    recordedTimings = {
+      ttftMs: ts[0] - streamStartTime,
+      interChunkDelaysMs: ts.slice(1).map((t, i) => t - ts[i]),
+      totalDurationMs: ts[ts.length - 1] - streamStartTime,
+    };
+  }
+
   const matchRequest = defaults.requestTransform ? defaults.requestTransform(request) : request;
   const metadata = buildFixtureMetadata(request);
   const fixture: Fixture = {
     match: buildFixtureMatch(matchRequest, defaults.record),
     response: fixtureResponse,
+    ...(recordedTimings && { recordedTimings }),
     ...(metadata && { metadata }),
   };
 
@@ -571,6 +590,8 @@ function makeUpstreamRequest(
   rawBuffer: Buffer;
   streamedToClient: boolean;
   clientDisconnected: boolean;
+  frameTimestamps: number[];
+  streamStartTime: number;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -603,6 +624,13 @@ function makeUpstreamRequest(
         const isNDJSON = ctLower.includes("application/x-ndjson");
         const isBinaryEventStream = ctLower.includes("application/vnd.amazon.eventstream");
         const isProgressiveStream = isSSE || isNDJSON || isBinaryEventStream;
+        // SSE/NDJSON frame timing capture — timestamps each complete frame
+        // so proxyAndRecord can build RecordedTimings for the fixture.
+        const frameTimestamps: number[] = [];
+        const streamStartTime = Date.now();
+        let frameBuffer = "";
+        let binaryFrameBuffer = Buffer.alloc(0);
+
         let streamedToClient = false;
         let clientDisconnected = false;
         if (isProgressiveStream && clientRes && !clientRes.headersSent) {
@@ -635,6 +663,38 @@ function makeUpstreamRequest(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
           chunks.push(chunk);
+
+          // Capture per-frame timestamps for SSE/NDJSON streams.
+          // TCP data events don't align with SSE frames — buffer and
+          // split on the protocol delimiter to timestamp each complete frame.
+          if (isSSE || isNDJSON) {
+            frameBuffer += chunk.toString();
+            const delimiter = isNDJSON ? "\n" : "\n\n";
+            const parts = frameBuffer.split(delimiter);
+            // All complete frames (everything except the last part which
+            // may be incomplete).
+            for (let fi = 0; fi < parts.length - 1; fi++) {
+              if (parts[fi].trim().length > 0) {
+                frameTimestamps.push(Date.now());
+              }
+            }
+            // Last part stays in buffer (may be incomplete)
+            frameBuffer = parts[parts.length - 1];
+          }
+
+          // Binary EventStream frame boundary detection — parse the 4-byte
+          // total-length prefix to detect complete frames without decoding
+          // frame contents (CRC validation happens in stream-collapse).
+          if (isBinaryEventStream) {
+            binaryFrameBuffer = Buffer.concat([binaryFrameBuffer, chunk]);
+            while (binaryFrameBuffer.length >= 4) {
+              const totalLen = binaryFrameBuffer.readUInt32BE(0);
+              if (totalLen < 12 || binaryFrameBuffer.length < totalLen) break;
+              frameTimestamps.push(Date.now());
+              binaryFrameBuffer = binaryFrameBuffer.subarray(totalLen);
+            }
+          }
+
           if (
             streamedToClient &&
             clientRes &&
@@ -655,6 +715,13 @@ function makeUpstreamRequest(
         res.on("error", reject);
         res.on("end", () => {
           if (res.socket) res.setTimeout(0);
+          // Flush remaining text frame buffer — captures the last frame if
+          // the stream ended without a trailing delimiter. Binary EventStream
+          // frames are length-prefixed so partial frames at end-of-stream are
+          // genuinely incomplete and should not be timestamped.
+          if ((isSSE || isNDJSON) && frameBuffer.trim().length > 0) {
+            frameTimestamps.push(Date.now());
+          }
           const rawBuffer = Buffer.concat(chunks);
           if (
             streamedToClient &&
@@ -678,6 +745,8 @@ function makeUpstreamRequest(
             rawBuffer,
             streamedToClient,
             clientDisconnected,
+            frameTimestamps,
+            streamStartTime,
           });
         });
       },

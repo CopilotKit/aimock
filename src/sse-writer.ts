@@ -1,5 +1,5 @@
 import type * as http from "node:http";
-import type { SSEChunk, StreamingProfile } from "./types.js";
+import type { SSEChunk, StreamingProfile, RecordedTimings } from "./types.js";
 
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0 || signal?.aborted) return Promise.resolve();
@@ -19,6 +19,8 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
 export interface StreamOptions {
   latency?: number;
   streamingProfile?: StreamingProfile;
+  recordedTimings?: RecordedTimings;
+  replaySpeed?: number;
   signal?: AbortSignal;
   onChunkSent?: () => void;
   /** When set, emitted as the final chunk before [DONE] (OpenAI stream_options.include_usage). */
@@ -29,23 +31,51 @@ export function calculateDelay(
   chunkIndex: number,
   profile?: StreamingProfile,
   fallbackLatency?: number,
+  recordedTimings?: RecordedTimings,
+  replaySpeed?: number,
 ): number {
-  if (!profile) return fallbackLatency ?? 0;
-
+  const speed = replaySpeed ?? 1.0;
   let delayMs: number;
-  if (chunkIndex === 0 && profile.ttft !== undefined) {
-    delayMs = profile.ttft;
-  } else if (profile.tps !== undefined && profile.tps > 0) {
-    delayMs = 1000 / profile.tps;
+
+  if (profile) {
+    // StreamingProfile has highest precedence
+    let fromProfile = true;
+    if (chunkIndex === 0 && profile.ttft !== undefined) {
+      delayMs = profile.ttft;
+    } else if (profile.tps !== undefined && profile.tps > 0) {
+      delayMs = 1000 / profile.tps;
+    } else {
+      delayMs = fallbackLatency ?? 0;
+      fromProfile = false;
+    }
+    // Jitter only applies when the delay came from ttft/tps, not fallback
+    if (fromProfile && profile.jitter && profile.jitter > 0) {
+      delayMs *= 1 + (Math.random() * 2 - 1) * profile.jitter;
+      if (delayMs < 0) delayMs = 0;
+    }
+  } else if (recordedTimings) {
+    // Recorded timings (second precedence)
+    if (chunkIndex === 0) {
+      delayMs = recordedTimings.ttftMs;
+    } else {
+      const idx = chunkIndex - 1;
+      if (idx < recordedTimings.interChunkDelaysMs.length) {
+        delayMs = recordedTimings.interChunkDelaysMs[idx];
+      } else {
+        // Excess chunks: derive average from recorded inter-chunk delays
+        const totalInterChunk = recordedTimings.interChunkDelaysMs.reduce((a, b) => a + b, 0);
+        delayMs =
+          recordedTimings.interChunkDelaysMs.length > 0
+            ? totalInterChunk / recordedTimings.interChunkDelaysMs.length
+            : 0;
+      }
+    }
   } else {
-    return fallbackLatency ?? 0;
+    delayMs = fallbackLatency ?? 0;
   }
 
-  if (profile.jitter && profile.jitter > 0) {
-    delayMs *= 1 + (Math.random() * 2 - 1) * profile.jitter;
-  }
-
-  return Math.max(0, delayMs);
+  delayMs = Math.max(0, delayMs);
+  return speed > 0 ? delayMs / speed : delayMs;
 }
 
 export async function writeSSEStream(
@@ -57,6 +87,7 @@ export async function writeSSEStream(
     typeof optionsOrLatency === "number" ? { latency: optionsOrLatency } : (optionsOrLatency ?? {});
   const latency = opts.latency ?? 0;
   const profile = opts.streamingProfile;
+  const { recordedTimings, replaySpeed } = opts;
   const signal = opts.signal;
   const onChunkSent = opts.onChunkSent;
 
@@ -67,7 +98,7 @@ export async function writeSSEStream(
 
   let chunkIndex = 0;
   for (const chunk of chunks) {
-    const chunkDelay = calculateDelay(chunkIndex, profile, latency);
+    const chunkDelay = calculateDelay(chunkIndex, profile, latency, recordedTimings, replaySpeed);
     if (chunkDelay > 0) {
       await delay(chunkDelay, signal);
     }

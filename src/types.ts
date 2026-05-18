@@ -269,6 +269,17 @@ export interface StreamingProfile {
 }
 
 /**
+ * Per-frame arrival timestamps captured during proxy recording.
+ * Used during replay to reproduce real-world streaming timing instead of
+ * the synthetic model (StreamingProfile / flat latency).
+ */
+export interface RecordedTimings {
+  ttftMs: number;
+  interChunkDelaysMs: number[];
+  totalDurationMs: number;
+}
+
+/**
  * Probabilistic chaos injection rates.
  *
  * Rates are evaluated sequentially per request — drop → malformed → disconnect
@@ -301,6 +312,8 @@ export interface Fixture {
   truncateAfterChunks?: number;
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
+  recordedTimings?: RecordedTimings;
+  replaySpeed?: number;
   chaos?: ChaosConfig;
   metadata?: {
     systemHash?: string;
@@ -401,6 +414,8 @@ export interface FixtureFileEntry {
   truncateAfterChunks?: number;
   disconnectAfterMs?: number;
   streamingProfile?: StreamingProfile;
+  recordedTimings?: RecordedTimings;
+  replaySpeed?: number;
   chaos?: ChaosConfig;
   metadata?: {
     systemHash?: string;
@@ -558,6 +573,7 @@ export interface MockServerOptions {
   host?: string;
   latency?: number;
   chunkSize?: number;
+  replaySpeed?: number;
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "warn" | "info" | "debug";
   chaos?: ChaosConfig;
@@ -638,6 +654,7 @@ export interface FalQueueConfig {
 export interface HandlerDefaults {
   latency: number;
   chunkSize: number;
+  replaySpeed: number;
   logger: Logger;
   chaos?: ChaosConfig;
   registry?: MetricsRegistry;
