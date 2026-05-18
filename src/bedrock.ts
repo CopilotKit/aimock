@@ -524,7 +524,9 @@ export async function handleBedrock(
         message: response.error.message,
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError));
+    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -1167,7 +1169,9 @@ export async function handleBedrockStream(
         message: response.error.message,
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError));
+    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 

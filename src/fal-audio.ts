@@ -402,8 +402,9 @@ async function handleQueueSubmit(
       body: syntheticReq,
       response: { status, fixture },
     });
-    res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -936,8 +937,9 @@ async function handleSyncRun(
       body: syntheticReq,
       response: { status, fixture },
     });
-    res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 

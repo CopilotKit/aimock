@@ -767,7 +767,9 @@ export async function handleGemini(
         status: response.error.type ?? "ERROR",
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(geminiError));
+    writeErrorResponse(res, status, JSON.stringify(geminiError), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 

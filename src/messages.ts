@@ -884,7 +884,9 @@ export async function handleMessages(
         message: response.error.message,
       },
     };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError));
+    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
