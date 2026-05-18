@@ -23,10 +23,12 @@ import type {
 import {
   generateMessageId,
   generateToolCallId,
+  generateDeterministicEmbedding,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
+  isEmbeddingResponse,
   isErrorResponse,
   serializeErrorResponse,
   flattenHeaders,
@@ -955,7 +957,9 @@ export async function handleCohere(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -1114,4 +1118,304 @@ export async function handleCohere(
       },
     }),
   );
+}
+
+// ─── Cohere v2 Embed API types ────────────────────────────────────────────
+
+interface CohereEmbedRequest {
+  texts: string[];
+  model: string;
+  input_type?: string;
+  embedding_types?: string[];
+  truncate?: string;
+}
+
+interface CohereEmbedResponse {
+  id: string;
+  texts: string[];
+  embeddings: Record<string, number[][]>;
+  meta: { api_version: { version: string } };
+}
+
+// ─── Cohere Embed handler ─────────────────────────────────────────────────
+
+export async function handleCohereEmbed(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  raw: string,
+  fixtures: Fixture[],
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+): Promise<void> {
+  const { logger } = defaults;
+  setCorsHeaders(res);
+
+  let embedReq: CohereEmbedRequest;
+  try {
+    embedReq = JSON.parse(raw) as CohereEmbedRequest;
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: `Malformed JSON body: ${detail}`,
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Validate required fields
+  if (!embedReq.model) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "model is required",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (!embedReq.texts || !Array.isArray(embedReq.texts)) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Invalid request: texts array is required",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Concatenate all texts for fixture matching
+  const combinedInput = embedReq.texts.join(" ");
+
+  // Build a synthetic ChatCompletionRequest for the fixture router
+  const syntheticReq: ChatCompletionRequest = {
+    model: embedReq.model,
+    messages: [],
+    embeddingInput: combinedInput,
+    _endpointType: "embedding",
+  };
+
+  const testId = getTestId(req);
+  const fixture = matchFixture(
+    fixtures,
+    syntheticReq,
+    journal.getFixtureMatchCountsForTest(testId),
+    defaults.requestTransform,
+  );
+
+  if (fixture) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+    logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
+  } else {
+    logger.debug(`No fixture matched for request`);
+  }
+
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/embed",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  // Determine requested embedding types (default to float)
+  const embeddingTypes =
+    embedReq.embedding_types && embedReq.embedding_types.length > 0
+      ? embedReq.embedding_types
+      : ["float"];
+
+  if (fixture) {
+    const response = await resolveResponse(fixture, syntheticReq);
+
+    // Error response
+    if (isErrorResponse(response)) {
+      const status = response.status ?? 500;
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/embed",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status, fixture },
+      });
+      writeErrorResponse(res, status, serializeErrorResponse(response), {
+        retryAfter: response.retryAfter,
+      });
+      return;
+    }
+
+    // Embedding response — use the fixture's embedding for each input text
+    if (isEmbeddingResponse(response)) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/embed",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: 200, fixture },
+      });
+      const vectors = embedReq.texts.map(() => [...response.embedding]);
+      const embeddings: Record<string, number[][]> = {};
+      for (const t of embeddingTypes) {
+        embeddings[t] = vectors;
+      }
+      const body: CohereEmbedResponse = {
+        id: generateMessageId(),
+        texts: embedReq.texts,
+        embeddings,
+        meta: { api_version: { version: "2" } },
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+
+    // Fixture matched but response type is not compatible with embeddings
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 500, fixture },
+    });
+    writeErrorResponse(
+      res,
+      500,
+      JSON.stringify({
+        error: {
+          message:
+            "Fixture response did not match any known embedding type (must have embedding or error)",
+          type: "server_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // No fixture match — check strict mode
+  if (resolveStrictMode(defaults.strict, req.headers)) {
+    logger.error(
+      `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v2/embed"}`,
+    );
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/embed",
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: {
+        status: 503,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
+    });
+    writeErrorResponse(
+      res,
+      503,
+      JSON.stringify({
+        error: {
+          message: "Strict mode: no fixture matched",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Try record-and-replay proxy
+  if (defaults.record) {
+    const outcome = await proxyAndRecord(
+      req,
+      res,
+      syntheticReq,
+      "cohere",
+      req.url ?? "/v2/embed",
+      fixtures,
+      defaults,
+      raw,
+    );
+    if (outcome === "handled_by_hook") return;
+    if (outcome !== "not_configured") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v2/embed",
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+      });
+      return;
+    }
+  }
+
+  // No fixture match — generate deterministic embeddings from input texts
+  logger.warn(
+    `No embedding fixture matched for "${combinedInput.slice(0, 80)}" — returning deterministic fallback`,
+  );
+  const dimensions = 1024; // Cohere embed-v4.0 default
+  const vectors = embedReq.texts.map((text) => generateDeterministicEmbedding(text, dimensions));
+  const embeddings: Record<string, number[][]> = {};
+  for (const t of embeddingTypes) {
+    embeddings[t] = vectors;
+  }
+
+  journal.add({
+    method: req.method ?? "POST",
+    path: req.url ?? "/v2/embed",
+    headers: flattenHeaders(req.headers),
+    body: syntheticReq,
+    response: { status: 200, fixture: null },
+  });
+
+  const body: CohereEmbedResponse = {
+    id: generateMessageId(),
+    texts: embedReq.texts,
+    embeddings,
+    meta: { api_version: { version: "2" } },
+  };
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
 }

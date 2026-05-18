@@ -1,8 +1,8 @@
 /**
  * Ollama API endpoint support.
  *
- * Translates incoming /api/chat and /api/generate requests into the
- * ChatCompletionRequest format used by the fixture router, and converts
+ * Translates incoming /api/chat, /api/generate, and /api/embeddings requests
+ * into the ChatCompletionRequest format used by the fixture router, and converts
  * fixture responses back into Ollama's NDJSON streaming or non-streaming format.
  *
  * Key differences from OpenAI:
@@ -10,6 +10,7 @@
  * - Streaming uses NDJSON, not SSE
  * - Tool call arguments are objects, not JSON strings
  * - Tool calls have no id field
+ * - Embeddings return a single `embedding` array, not an array of objects
  */
 
 import type * as http from "node:http";
@@ -26,7 +27,9 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  isEmbeddingResponse,
   serializeErrorResponse,
+  generateDeterministicEmbedding,
   flattenHeaders,
   getTestId,
   resolveResponse,
@@ -665,7 +668,9 @@ export async function handleOllama(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -1007,7 +1012,9 @@ export async function handleOllamaGenerate(
       body: completionReq,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -1092,4 +1099,277 @@ export async function handleOllamaGenerate(
       },
     }),
   );
+}
+
+// ─── Ollama embeddings request type ─────────────────────────────────────────
+
+interface OllamaEmbeddingsRequest {
+  model: string;
+  prompt?: string;
+  input?: string | string[];
+}
+
+// ─── Request handler: /api/embeddings ───────────────────────────────────────
+
+export async function handleOllamaEmbeddings(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  raw: string,
+  fixtures: Fixture[],
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+): Promise<void> {
+  const { logger } = defaults;
+  setCorsHeaders(res);
+
+  const urlPath = req.url ?? "/api/embeddings";
+
+  let embReq: OllamaEmbeddingsRequest;
+  try {
+    embReq = JSON.parse(raw) as OllamaEmbeddingsRequest;
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: `Malformed JSON body: ${detail}`,
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Ollama accepts either "prompt" or "input" for the text to embed
+  const inputText =
+    embReq.prompt ??
+    (typeof embReq.input === "string" ? embReq.input : undefined) ??
+    (Array.isArray(embReq.input) ? embReq.input.join(" ") : undefined);
+
+  if (!embReq.model) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Invalid request: model field is required",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (!inputText) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Invalid request: prompt or input field is required",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // Build synthetic ChatCompletionRequest for the fixture router
+  const syntheticReq: ChatCompletionRequest = {
+    model: embReq.model,
+    messages: [],
+    embeddingInput: inputText,
+    _endpointType: "embedding",
+  };
+
+  const testId = getTestId(req);
+  const fixture = matchFixture(
+    fixtures,
+    syntheticReq,
+    journal.getFixtureMatchCountsForTest(testId),
+    defaults.requestTransform,
+  );
+
+  if (fixture) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+    logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
+  } else {
+    logger.debug(`No fixture matched for request`);
+  }
+
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      {
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+      },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  if (fixture) {
+    const response = await resolveResponse(fixture, syntheticReq);
+
+    // Error response
+    if (isErrorResponse(response)) {
+      const status = response.status ?? 500;
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status, fixture },
+      });
+      writeErrorResponse(res, status, serializeErrorResponse(response), {
+        retryAfter: response.retryAfter,
+      });
+      return;
+    }
+
+    // Embedding response — use the fixture's embedding
+    if (isEmbeddingResponse(response)) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: 200, fixture },
+      });
+      const body = {
+        model: embReq.model,
+        embedding: [...response.embedding],
+      };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+
+    // Fixture matched but response type is not compatible with embeddings
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 500, fixture },
+    });
+    writeErrorResponse(
+      res,
+      500,
+      JSON.stringify({
+        error: {
+          message:
+            "Fixture response did not match any known embedding type (must have embedding or error)",
+          type: "server_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  // No fixture match — check strict mode first, then try proxy
+  const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+  if (effectiveStrict) {
+    logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: {
+        status: 503,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
+    });
+    writeErrorResponse(
+      res,
+      503,
+      JSON.stringify({
+        error: {
+          message: "Strict mode: no fixture matched",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (defaults.record) {
+    const outcome = await proxyAndRecord(
+      req,
+      res,
+      syntheticReq,
+      "ollama",
+      urlPath,
+      fixtures,
+      defaults,
+      raw,
+    );
+    if (outcome === "handled_by_hook") return;
+    if (outcome !== "not_configured") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
+      });
+      return;
+    }
+  }
+
+  // No fixture match — generate deterministic embedding from input text
+  logger.warn(
+    `No embedding fixture matched for "${inputText.slice(0, 80)}" — returning deterministic fallback`,
+  );
+  const embedding = generateDeterministicEmbedding(inputText);
+
+  journal.add({
+    method: req.method ?? "POST",
+    path: urlPath,
+    headers: flattenHeaders(req.headers),
+    body: syntheticReq,
+    response: { status: 200, fixture: null },
+  });
+
+  const body = {
+    model: embReq.model,
+    embedding,
+  };
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
 }

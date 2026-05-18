@@ -20,6 +20,9 @@ import {
   buildToolCallCompletion,
   buildContentWithToolCallsChunks,
   buildContentWithToolCallsCompletion,
+  buildUsageChunk,
+  estimateTokens,
+  estimatePromptTokens,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
@@ -37,6 +40,7 @@ import {
 import { handleResponses } from "./responses.js";
 import { handleMessages } from "./messages.js";
 import { handleGemini } from "./gemini.js";
+import { handleGeminiEmbedContent } from "./gemini-embeddings.js";
 import { handleBedrock, handleBedrockStream } from "./bedrock.js";
 import { handleConverse, handleConverseStream } from "./bedrock-converse.js";
 import {
@@ -45,15 +49,15 @@ import {
   resetEventIdCounter,
 } from "./gemini-interactions.js";
 import { handleEmbeddings } from "./embeddings.js";
-import { handleImages } from "./images.js";
+import { handleImages, handleImageEdit, handleImageVariations } from "./images.js";
 import { handleSpeech } from "./speech.js";
 import { handleTranscription } from "./transcription.js";
 import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
-import { handleElevenLabsAudio } from "./elevenlabs-audio.js";
+import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
 import { handleFal, falQueueStates } from "./fal.js";
-import { handleOllama, handleOllamaGenerate } from "./ollama.js";
-import { handleCohere } from "./cohere.js";
+import { handleOllama, handleOllamaGenerate, handleOllamaEmbeddings } from "./ollama.js";
+import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
@@ -82,16 +86,21 @@ const GEMINI_LIVE_PATH =
 const MESSAGES_PATH = "/v1/messages";
 const EMBEDDINGS_PATH = "/v1/embeddings";
 const COHERE_CHAT_PATH = "/v2/chat";
+const COHERE_EMBED_PATH = "/v2/embed";
 const SEARCH_PATH = "/search";
 const RERANK_PATH = "/v2/rerank";
 const MODERATIONS_PATH = "/v1/moderations";
 const IMAGES_PATH = "/v1/images/generations";
+const IMAGES_EDIT_PATH = "/v1/images/edit";
+const IMAGES_VARIATIONS_PATH = "/v1/images/variations";
 const SPEECH_PATH = "/v1/audio/speech";
 const TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions";
+const TRANSLATIONS_PATH = "/v1/audio/translations";
 const VIDEOS_PATH = "/v1/videos";
 const VIDEOS_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
 const GEMINI_PREDICT_RE = /^\/v1beta\/models\/([^:]+):predict$/;
 const ELEVENLABS_SOUND_GENERATION_PATH = "/v1/sound-generation";
+const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
 const ELEVENLABS_MUSIC_RE = /^\/v1\/music(?:\/(.+))?$/;
 const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/(.+)$/;
 const FAL_QUEUE_REQUESTS_RE = /^\/fal\/queue\/requests\/(.+)$/;
@@ -111,7 +120,10 @@ const COMPAT_SUFFIXES = [
   "/responses",
   "/audio/speech",
   "/audio/transcriptions",
+  "/audio/translations",
   "/images/generations",
+  "/images/edit",
+  "/images/variations",
 ];
 
 /**
@@ -141,6 +153,7 @@ function normalizeCompatPath(pathname: string, logger?: Logger): string {
 
 const GEMINI_INTERACTIONS_PATH = "/v1beta/interactions";
 const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
+const GEMINI_EMBED_RE = /^\/v1beta\/models\/([^:]+):embedContent$/;
 const AZURE_DEPLOYMENT_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
 const BEDROCK_INVOKE_RE = /^\/model\/([^/]+)\/invoke$/;
 const BEDROCK_STREAM_RE = /^\/model\/([^/]+)\/invoke-with-response-stream$/;
@@ -151,6 +164,7 @@ const VERTEX_AI_RE =
 
 const OLLAMA_CHAT_PATH = "/api/chat";
 const OLLAMA_GENERATE_PATH = "/api/generate";
+const OLLAMA_EMBEDDINGS_PATH = "/api/embeddings";
 const OLLAMA_TAGS_PATH = "/api/tags";
 
 const HEALTH_PATH = "/health";
@@ -663,6 +677,7 @@ async function handleCompletions(
   const response = await resolveResponse(fixture, body);
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const includeUsage = body.stream === true && body.stream_options?.include_usage === true;
 
   // Error response
   if (isErrorResponse(response)) {
@@ -674,7 +689,9 @@ async function handleCompletions(
       body,
       response: { status, fixture },
     });
-    writeErrorResponse(res, status, serializeErrorResponse(response));
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
     return;
   }
 
@@ -723,6 +740,7 @@ async function handleCompletions(
         body.model,
         response.reasoning,
         overrides,
+        body.messages,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));
@@ -735,12 +753,38 @@ async function handleCompletions(
         response.reasoning,
         overrides,
       );
+      // Build usage chunk for stream_options.include_usage
+      const completionText =
+        response.content + response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      const usageChunk = includeUsage
+        ? buildUsageChunk(
+            chunks[0]?.id ?? "chatcmpl-unknown",
+            overrides?.model ?? body.model,
+            chunks[0]?.created ?? Math.floor(Date.now() / 1000),
+            overrides?.usage
+              ? {
+                  prompt_tokens: overrides.usage.prompt_tokens ?? 0,
+                  completion_tokens: overrides.usage.completion_tokens ?? 0,
+                  total_tokens:
+                    overrides.usage.total_tokens ??
+                    (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
+                }
+              : {
+                  prompt_tokens: estimatePromptTokens(body.messages),
+                  completion_tokens: estimateTokens(completionText),
+                  total_tokens:
+                    estimatePromptTokens(body.messages) + estimateTokens(completionText),
+                },
+            overrides?.systemFingerprint,
+          )
+        : undefined;
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
+        usageChunk,
       });
       if (!completed) {
         if (!res.writableEnded) res.destroy();
@@ -773,6 +817,7 @@ async function handleCompletions(
         body.model,
         response.reasoning,
         overrides,
+        body.messages,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));
@@ -784,12 +829,35 @@ async function handleCompletions(
         response.reasoning,
         overrides,
       );
+      const usageChunk = includeUsage
+        ? buildUsageChunk(
+            chunks[0]?.id ?? "chatcmpl-unknown",
+            overrides?.model ?? body.model,
+            chunks[0]?.created ?? Math.floor(Date.now() / 1000),
+            overrides?.usage
+              ? {
+                  prompt_tokens: overrides.usage.prompt_tokens ?? 0,
+                  completion_tokens: overrides.usage.completion_tokens ?? 0,
+                  total_tokens:
+                    overrides.usage.total_tokens ??
+                    (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
+                }
+              : {
+                  prompt_tokens: estimatePromptTokens(body.messages),
+                  completion_tokens: estimateTokens(response.content),
+                  total_tokens:
+                    estimatePromptTokens(body.messages) + estimateTokens(response.content),
+                },
+            overrides?.systemFingerprint,
+          )
+        : undefined;
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
+        usageChunk,
       });
       if (!completed) {
         if (!res.writableEnded) res.destroy();
@@ -817,17 +885,46 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     if (body.stream !== true) {
-      const completion = buildToolCallCompletion(response.toolCalls, body.model, overrides);
+      const completion = buildToolCallCompletion(
+        response.toolCalls,
+        body.model,
+        overrides,
+        body.messages,
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));
     } else {
       const chunks = buildToolCallChunks(response.toolCalls, body.model, chunkSize, overrides);
+      const completionText = response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      const usageChunk = includeUsage
+        ? buildUsageChunk(
+            chunks[0]?.id ?? "chatcmpl-unknown",
+            overrides?.model ?? body.model,
+            chunks[0]?.created ?? Math.floor(Date.now() / 1000),
+            overrides?.usage
+              ? {
+                  prompt_tokens: overrides.usage.prompt_tokens ?? 0,
+                  completion_tokens: overrides.usage.completion_tokens ?? 0,
+                  total_tokens:
+                    overrides.usage.total_tokens ??
+                    (overrides.usage.prompt_tokens ?? 0) + (overrides.usage.completion_tokens ?? 0),
+                }
+              : {
+                  prompt_tokens: estimatePromptTokens(body.messages),
+                  completion_tokens: estimateTokens(completionText),
+                  total_tokens:
+                    estimatePromptTokens(body.messages) + estimateTokens(completionText),
+                },
+            overrides?.systemFingerprint,
+          )
+        : undefined;
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeSSEStream(res, chunks, {
         latency,
         streamingProfile: fixture.streamingProfile,
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
+        usageChunk,
       });
       if (!completed) {
         if (!res.writableEnded) res.destroy();
@@ -1009,6 +1106,89 @@ export async function createServer(
           if (handled) return;
         }
       }
+    }
+
+    // Ollama /api/* routes must be dispatched BEFORE normalizeCompatPath, which
+    // rewrites any path ending in /embeddings to /v1/embeddings.  The /api/chat
+    // and /api/generate paths are unaffected (their suffixes aren't in
+    // COMPAT_SUFFIXES), but /api/embeddings would collide with the OpenAI handler.
+    if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    if (pathname === OLLAMA_EMBEDDINGS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleOllamaEmbeddings(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
+      setCorsHeaders(res);
+      const modelIds = new Set<string>();
+      for (const f of fixtures) {
+        if (f.match.model && typeof f.match.model === "string") {
+          modelIds.add(f.match.model);
+        }
+      }
+      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
+      const models = ids.map((name) => ({
+        name,
+        model: name,
+        modified_at: new Date().toISOString(),
+        size: 0,
+        digest: "",
+        details: {},
+      }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ models }));
+      return;
     }
 
     // Azure OpenAI: /openai/deployments/{id}/{operation} → /v1/{operation} (chat/completions, embeddings)
@@ -1201,6 +1381,26 @@ export async function createServer(
       return;
     }
 
+    // POST /v2/embed — Cohere v2 Embed API
+    if (pathname === COHERE_EMBED_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleCohereEmbed(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
     // POST /v1/embeddings — OpenAI Embeddings API
     if (pathname === EMBEDDINGS_PATH && req.method === "POST") {
       try {
@@ -1269,6 +1469,46 @@ export async function createServer(
       return;
     }
 
+    // POST /v1/images/edit — OpenAI Image Edit API (multipart/form-data)
+    if (pathname === IMAGES_EDIT_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleImageEdit(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    // POST /v1/images/variations — OpenAI Image Variations API (multipart/form-data)
+    if (pathname === IMAGES_VARIATIONS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleImageVariations(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
     // POST /v1/audio/speech — OpenAI TTS API
     if (pathname === SPEECH_PATH && req.method === "POST") {
       try {
@@ -1294,6 +1534,35 @@ export async function createServer(
       try {
         const raw = await readBody(req);
         await handleTranscription(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    // POST /v1/audio/translations — OpenAI Translation API
+    if (pathname === TRANSLATIONS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleTranscription(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          "translation",
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         if (!res.headersSent) {
@@ -1398,6 +1667,37 @@ export async function createServer(
           } catch (writeErr) {
             logger.debug("Failed to write error recovery response:", writeErr);
           }
+        }
+      }
+      return;
+    }
+
+    // POST /v1beta/models/{model}:embedContent — Google Gemini Embedding
+    const geminiEmbedMatch = pathname.match(GEMINI_EMBED_RE);
+    if (geminiEmbedMatch && req.method === "POST") {
+      const embedModel = geminiEmbedMatch[1];
+      try {
+        const raw = await readBody(req);
+        await handleGeminiEmbedContent(
+          req,
+          res,
+          raw,
+          embedModel,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
         }
       }
       return;
@@ -1604,69 +1904,6 @@ export async function createServer(
       return;
     }
 
-    // POST /api/chat — Ollama Chat API
-    if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
-      try {
-        const raw = await readBody(req);
-        await handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
-      }
-      return;
-    }
-
-    // POST /api/generate — Ollama Generate API
-    if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
-      try {
-        const raw = await readBody(req);
-        await handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Internal error";
-        if (!res.headersSent) {
-          writeErrorResponse(
-            res,
-            500,
-            JSON.stringify({ error: { message: msg, type: "server_error" } }),
-          );
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
-      }
-      return;
-    }
-
-    // GET /api/tags — Ollama Models listing
-    if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
-      setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
-      }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const models = ids.map((name) => ({
-        name,
-        model: name,
-        modified_at: new Date().toISOString(),
-        size: 0,
-        digest: "",
-        details: {},
-      }));
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ models }));
-      return;
-    }
-
     // POST /search — Web Search API (Tavily-compatible)
     if (pathname === SEARCH_PATH && req.method === "POST") {
       try {
@@ -1757,6 +1994,29 @@ export async function createServer(
       try {
         const raw = await readBody(req);
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, "sound-generation");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    // POST /v1/text-to-speech/{voice_id} — ElevenLabs TTS API
+    const elevenLabsTTSMatch = pathname.match(ELEVENLABS_TTS_RE);
+    if (elevenLabsTTSMatch && req.method === "POST") {
+      setCorsHeaders(res);
+      const voiceId = elevenLabsTTSMatch[1];
+      try {
+        const raw = await readBody(req);
+        await handleElevenLabsTTS(req, res, raw, fixtures, defaults, journal, voiceId);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         if (!res.headersSent) {

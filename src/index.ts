@@ -130,7 +130,7 @@ export type { InterruptionControl } from "./interruption.js";
 
 // SSE
 export { writeSSEStream, writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
-export type { StreamOptions } from "./sse-writer.js";
+export type { StreamOptions, ErrorResponseOptions } from "./sse-writer.js";
 
 // Chaos
 export { evaluateChaos, applyChaos } from "./chaos.js";
