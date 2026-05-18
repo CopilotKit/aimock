@@ -149,9 +149,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          PAYLOAD=$(jq -n \
-            --arg text "📦 *@copilotkit/aimock v${VERSION} published*\nnpm: https://www.npmjs.com/package/@copilotkit/aimock/v/${VERSION}\nRelease: https://github.com/${REPO}/releases/tag/v${VERSION}" \
-            '{text: $text}')
+          NL=$'\n'
+          TEXT="📦 *@copilotkit/aimock v${VERSION} published*${NL}npm: https://www.npmjs.com/package/@copilotkit/aimock/v/${VERSION}${NL}Release: https://github.com/${REPO}/releases/tag/v${VERSION}"
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
           curl -s -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
