@@ -116,6 +116,10 @@ const FEATURE_RULES: FeatureRule[] = [
     keywords: ["dall-e", "dalle", "/v1/images", "image generation", "imagen", "generate.*image"],
   },
   {
+    rowLabel: "Image editing",
+    keywords: ["/v1/images/edit", "image edit", "image editing", "inpainting", "edit.*image"],
+  },
+  {
     rowLabel: "Text-to-Speech",
     keywords: ["text-to-speech", "/v1/audio/speech", "audio generation", "tts endpoint", "tts api"],
   },
@@ -127,6 +131,15 @@ const FEATURE_RULES: FeatureRule[] = [
       "speech-to-text",
       "audio transcription",
       "transcription api",
+    ],
+  },
+  {
+    rowLabel: "Audio translation",
+    keywords: [
+      "/v1/audio/translations",
+      "audio translation",
+      "translate.*audio",
+      "audio.*translate",
     ],
   },
   {
@@ -217,6 +230,20 @@ const FEATURE_RULES: FeatureRule[] = [
       "test.*framework.*integrat",
     ],
   },
+  {
+    rowLabel: "Streaming usage chunks",
+    keywords: [
+      "stream_options",
+      "include_usage",
+      "streaming.*usage",
+      "usage.*chunk",
+      "usage.*stream",
+    ],
+  },
+  {
+    rowLabel: "Rate limiting headers",
+    keywords: ["x-ratelimit", "rate.limit.*header", "retry-after", "429.*retry", "rate.limiting"],
+  },
 ];
 
 /** Maps competitor display names to their migration page paths (relative to docs/) */
@@ -302,6 +329,7 @@ function countProviders(text: string): number {
     ["groq"],
     ["together"],
     ["llama"],
+    ["elevenlabs"],
   ];
 
   let count = 0;
@@ -399,6 +427,10 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
     "Realtime image input": ["Realtime image input"],
     "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
+    "Image editing": ["Image editing", "Image edit"],
+    "Audio translation": ["Audio translation", "Audio translations"],
+    "Streaming usage chunks": ["Streaming usage chunks", "Streaming usage"],
+    "Rate limiting headers": ["Rate limiting headers", "Rate limiting"],
   };
 
   if (variants[rowLabel]) {
