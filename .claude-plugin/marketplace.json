@@ -9,7 +9,7 @@
       "source": {
         "source": "npm",
         "package": "@copilotkit/aimock",
-        "version": "^1.26.0"
+        "version": "^1.26.1"
       },
       "description": "Fixture authoring skill for @copilotkit/aimock — LLM, multimedia (image/TTS/transcription/video), MCP, A2A, AG-UI, vector, embeddings, structured output, sequential responses, streaming physics, record/replay, agent loop patterns, and debugging"
     }

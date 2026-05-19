@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-05-19
+
+### Added
+
+- **Context-based fixture routing** — `X-AIMock-Context` header scopes fixtures per integration. Fixtures with `match.context` only match requests carrying that context; fixtures without `context` remain shared. Recorder auto-captures context and routes recorded fixtures into context subdirectories.
+
 ## [1.26.0] - 2026-05-18
 
 ### Added
@@ -15,7 +21,6 @@
   sources (recorded timings, streaming profiles, global latency). Per-fixture
   `replaySpeed` override. Covers SSE, NDJSON, Bedrock EventStream, and
   WebSocket protocols.
-- **Context-based fixture routing** — `X-AIMock-Context` header scopes fixtures per integration. Fixtures with `match.context` only match requests carrying that context; fixtures without `context` remain shared. Recorder auto-captures context and routes recorded fixtures into context subdirectories.
 
 ## [1.25.0] - 2026-05-18
 

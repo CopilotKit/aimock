@@ -1,6 +1,6 @@
 {
   "name": "aimock",
-  "version": "1.26.0",
+  "version": "1.26.1",
   "description": "Fixture authoring guidance for @copilotkit/aimock — LLM, multimedia, MCP, A2A, AG-UI, vector, and service mocking",
   "author": {
     "name": "CopilotKit"
