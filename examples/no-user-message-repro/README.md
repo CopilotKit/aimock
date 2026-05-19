@@ -1,10 +1,8 @@
 # aimock AG-UI repro: `__NO_USER_MESSAGE__` on file attachments
 
-A minimal Next.js + CopilotKit project that reproduces a bug in `@copilotkit/aimock`'s AG-UI recorder:
+A minimal Next.js + CopilotKit project that reproduces a bug that existed in `@copilotkit/aimock@1.26.1` and earlier: when a CopilotKit chat user message included a file attachment alongside text, the AG-UI client sent `content` as a structured array (`[{ type: "text", text: "..." }, { type: "document", source: ... }]`) instead of a plain string. `aimock`'s `extractLastUserMessage` only handled `typeof content === "string"`, returned `""`, and the recorder wrote `match.message: "__NO_USER_MESSAGE__"` to disk. The resulting fixture was unmatchable on replay.
 
-When a CopilotKit chat user message includes a file attachment alongside text, the AG-UI client sends `content` as a structured array (`[{ type: "text", text: "..." }, { type: "file", ... }]`) instead of a plain string. `aimock`'s `extractLastUserMessage` only handles `typeof content === "string"`, so it returns `""`, and the recorder writes `match.message: "__NO_USER_MESSAGE__"` to disk. The resulting fixture is effectively unmatchable on replay.
-
-See `recorded-sample/before-fix.json` and `recorded-sample/input-messages-dump.json` for a pre-captured exhibit.
+The bug was fixed by widening `AGUIMessage.content` and teaching `extractLastUserMessage` to walk structured content arrays. `recorded-sample/before-fix.json` (sentinel) and `recorded-sample/after-fix.json` (real user text) are pre-captured exhibits of the same request before and after the fix.
 
 ## Architecture
 
@@ -21,9 +19,9 @@ aimock (:4010)                AGUIMock recording proxy
 upstream-agent (:4001)        Tiny SSE stub that returns a canned assistant reply
 ```
 
-## Run
+## Run against the fixed local aimock
 
-This example consumes the local aimock checkout via a `link:` dependency in `package.json` (`"@copilotkit/aimock": "link:../.."`). Build aimock first, then install + run this example:
+This example consumes the local aimock checkout via a `link:` dependency in `package.json` (`"@copilotkit/aimock": "link:../.."`), so by default it runs the _fixed_ code.
 
 From the **repo root** (`@copilotkit/aimock`):
 
@@ -45,28 +43,32 @@ pnpm dev
 - `aimock` on `:4010` — the recording proxy
 - `next` on `:3000` — the Next.js dev server
 
-## Reproduce
+Open <http://localhost:3000>, attach any small file (e.g. a `.txt`), send `summarize this`, and inspect `fixtures/agui-recorded/agui-*.json` — `match.message` will be `"summarize this"`.
 
-1. Open <http://localhost:3000>.
-2. In the chat, click the paperclip icon and attach any small file (a `.txt` works fine).
-3. Type a message like `summarize this` and send.
-4. Wait for the assistant reply ("Got it — recorded by aimock.").
-5. Look in `fixtures/agui-recorded/`. You will find a file named `agui-<timestamp>-<id>.json`:
+## Run against the buggy published aimock (1.26.1)
+
+To reproduce the original failure mode, swap the local link for the published 1.26.1 release. From this directory:
+
+1. Edit `package.json` and change:
    ```json
-   {
-     "fixtures": [
-       {
-         "match": { "message": "__NO_USER_MESSAGE__" },
-         "events": [ ... ]
-       }
-     ]
-   }
+   "@copilotkit/aimock": "link:../.."
    ```
-   `match.message` is the sentinel rather than the user's actual text.
+   to:
+   ```json
+   "@copilotkit/aimock": "1.26.1"
+   ```
+2. Reinstall and run:
+   ```sh
+   pnpm install
+   pnpm dev
+   ```
+3. Repeat the chat reproduction above. The recorded fixture's `match.message` will be `"__NO_USER_MESSAGE__"` — the bug.
+
+Revert the dep back to `"link:../.."` and `pnpm install` again to switch back to the fixed local code.
 
 ## Headless repro (no browser)
 
-If you want to verify the bug without spinning up Next.js, start just `upstream` and `aimock`, then POST the bundled synthetic payload directly:
+Skip Next.js by starting just `upstream` and `aimock`, then POSTing the bundled synthetic payload directly:
 
 ```sh
 pnpm upstream &
@@ -77,14 +79,14 @@ curl -X POST http://localhost:4010/ \
 cat fixtures/agui-recorded/agui-*.json
 ```
 
-`structured-input.json` is a hand-crafted `RunAgentInput` whose user message uses the canonical AG-UI multimodal schema (`text` + `document` parts). The resulting fixture on disk shows `match.message: "__NO_USER_MESSAGE__"` — same bug, no UI required.
+`structured-input.json` is a hand-crafted `RunAgentInput` whose user message uses the canonical AG-UI multimodal schema (`text` + `document` parts). Against fixed aimock, `match.message` is `"summarize this"`; against 1.26.1, it is `"__NO_USER_MESSAGE__"`.
 
 ## Compare to a text-only message
 
-Send a plain text message (no attachment) from the chat and look at the resulting fixture — `match.message` contains the actual user text. The bug only manifests when `content` is structured (which currently means: when there's an attachment).
+Sending a plain text message (no attachment) from the chat always produced the correct `match.message` — even on 1.26.1. The bug only manifested when `content` was structured (which in practice meant: when the user attached a file).
 
 ## Notes
 
-- This example is not part of the aimock test suite — it's a manual reproduction for the upstream issue.
+- This example is not part of the aimock test suite — it's a manual reproduction kept around as a self-contained demonstration of the bug and its fix.
 - `concurrently` shuts down all three processes when you Ctrl-C the parent.
 - Recorded fixtures land under `fixtures/agui-recorded/` and are gitignored.
