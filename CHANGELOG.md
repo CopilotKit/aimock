@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Router** — systemMessage array exact-match logic was unsatisfiable for 2+ needles; collapsed to substring matching. Added `elevenlabs-tts` and `translation` to endpoint compatibility filter.
+- **Recorder** — Content-Type empty-string fallback (`??` → `||`), derived `EndpointType` from `FixtureMatch` instead of duplicate union, negative guards on Gemini Interactions outputs detection, scoped `turnIndex`/`hasToolResult` to chat endpoints only.
+- **WS-Realtime** — session.update rollback now captures full snapshot instead of just model/type. Added Beta flat fields for noise reduction, transcription, and turn_detection. Joined all text content parts in `realtimeItemsToMessages`. Added try-catch with debug logging around `sendEvent` for WebSocket close race safety.
+- **WS-Gemini-Live** — replaced deterministic `call_gemini_${name}_${i}` tool call IDs with random `generateToolCallId()` to prevent cross-turn collisions. Pre-computed `resolvedToolCalls` for wire/history ID consistency. Added unrecognized-role warning and ws.send try-catch with debug logging.
+- **Gemini Interactions** — `interactionsUsage` honors Gemini-native field names (`promptTokenCount`/`candidatesTokenCount`/`totalTokenCount`). `truncateAfterChunks` only counts `content.delta` events. Added `webSearches` warning on tool-call branch.
+- **fal-audio + ElevenLabs** — all journal entries now use `flattenHeaders(req.headers)` instead of `{}`. `handleSyncRun` accepts `RawJSONResponse` fixtures from queue-walk recordings.
+- **Helpers** — extended `resolveUsage` with Gemini-native token fields. Preserved error cause in `resolveResponse` factory rethrow. `buildEmbeddingResponse` accepts optional usage. `extractFormField` escapes regex metacharacters.
+- **Drift test infra** — retry logging with body consumption, broadened `redactUrl` to cover `api_key`/`apikey`/`token`/`access_token` patterns, URL threaded into error messages with redaction, `parseDataOnlySSE` [DONE] filter fix, `parseTypedSSE` multi-line data handling with null guards.
+- **Drift collector** — invoke vitest directly via npx to avoid pnpm stdout prefix breaking JSON parse; classify raw stack traces as infrastructure errors instead of crashing.
+
 ## [1.27.0] - 2026-05-20
 
 ### Added
@@ -12,7 +24,6 @@
 
 - **Walk structured content arrays in `extractLastUserMessage`** — handle multimodal user content (`AGUIMessageContentPart[]`) by joining text parts and skipping non-text. Export `NO_USER_MESSAGE_SENTINEL` constant and `AGUIMessageContentPart` type. ([#231](https://github.com/CopilotKit/aimock/pull/231))
 - **Harden recorder against error responses, double-settle, and broken sentinel persistence** — guard against recording fixtures from non-2xx upstream responses, add `settled` flag to prevent error+end race, skip disk write for predicate fixtures (sentinel was semantically broken on reload), include parse error reason in SSE warning log
-
 ## [1.26.1] - 2026-05-19
 
 ### Added
