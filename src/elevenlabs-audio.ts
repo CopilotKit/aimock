@@ -122,7 +122,7 @@ export async function handleElevenLabsTTS(
       journal.add({
         method,
         path,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: {
           status: 503,
@@ -375,7 +375,7 @@ export async function handleElevenLabsAudio(
       journal.add({
         method,
         path,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: {
           status: 503,

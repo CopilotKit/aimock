@@ -333,7 +333,7 @@ async function handleQueueSubmit(
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: {
           status: 503,
@@ -424,7 +424,7 @@ async function handleQueueSubmit(
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status: 500, fixture },
       });
@@ -537,7 +537,7 @@ async function tryRecordAudioQueueWalk(args: {
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: { status: res.statusCode ?? 200, fixture: null, source: "proxy" },
       });
@@ -822,6 +822,10 @@ async function handleSyncRun(
     (typeof parsed.text === "string" ? parsed.text : null) ??
     "";
 
+  // _endpointType is intentionally "fal-audio" — the same value used by
+  // handleQueueSubmit. Both the synchronous /fal/run/ and asynchronous
+  // /fal/queue/submit/ paths serve the same fal audio fixtures, so they
+  // share a single endpoint type for fixture matching purposes.
   const syntheticReq: ChatCompletionRequest = {
     model: modelId,
     messages: [{ role: "user", content: prompt }],
@@ -861,7 +865,7 @@ async function handleSyncRun(
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
-        headers: {},
+        headers: flattenHeaders(req.headers),
         body: syntheticReq,
         response: {
           status: 503,
@@ -946,7 +950,39 @@ async function handleSyncRun(
     return;
   }
 
-  if (!isAudioResponse(response)) {
+  // Two valid recorded shapes for fal audio sync runs:
+  //  - AudioResponse: authored fixtures with raw base64 audio that we wrap into
+  //    the fal `{ audio: { url, ... } }` envelope on demand.
+  //  - RawJSONResponse: queue-walk recordings that stored the final fal envelope
+  //    upstream returned (already in fal's `{ audio: { url, ... } }` shape).
+  let result: Record<string, unknown>;
+  let resultStatus = 200;
+  if (isAudioResponse(response)) {
+    result = audioToFalFile(response);
+  } else if (isJSONResponse(response)) {
+    resultStatus = (response as RawJSONResponse).status ?? 200;
+    const json = (response as RawJSONResponse).json;
+    if (!json || typeof json !== "object") {
+      journal.add({
+        method: req.method ?? "POST",
+        path: pathname,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: { status: 500, fixture },
+      });
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Recorded fal audio fixture has non-object json",
+            type: "server_error",
+          },
+        }),
+      );
+      return;
+    }
+    result = json as Record<string, unknown>;
+  } else {
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
@@ -963,15 +999,13 @@ async function handleSyncRun(
     return;
   }
 
-  const result = audioToFalFile(response);
-
   journal.add({
     method: req.method ?? "POST",
     path: pathname,
     headers: flattenHeaders(req.headers),
     body: syntheticReq,
-    response: { status: 200, fixture },
+    response: { status: resultStatus, fixture },
   });
-  res.writeHead(200, { "Content-Type": "application/json" });
+  res.writeHead(resultStatus, { "Content-Type": "application/json" });
   res.end(JSON.stringify(result));
 }
