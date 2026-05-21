@@ -363,10 +363,14 @@ export interface AGUIToolCall {
   encryptedValue?: string;
 }
 
+export type AGUIMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: string; [key: string]: unknown };
+
 export interface AGUIMessage {
   id: string;
   role: AGUIMessageRole;
-  content?: string;
+  content?: string | AGUIMessageContentPart[];
   name?: string;
   encryptedValue?: string;
   error?: string;

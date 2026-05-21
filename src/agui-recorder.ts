@@ -8,6 +8,13 @@ import { extractLastUserMessage } from "./agui-handler.js";
 import type { Logger } from "./logger.js";
 
 /**
+ * Sentinel `match.message` value written to disk when the request had no
+ * extractable user text. Keeps the on-disk fixture serializable (predicate
+ * matchers aren't) but won't match any real user input on replay.
+ */
+export const NO_USER_MESSAGE_SENTINEL = "__NO_USER_MESSAGE__";
+
+/**
  * Proxy an unmatched AG-UI request to a real upstream agent, record the
  * SSE event stream as a fixture on disk and in memory, and relay the
  * response back to the original client in real time.
@@ -201,7 +208,7 @@ function teeUpstreamStream(
           };
           if (!message) {
             logger.warn(
-              "Recorded AG-UI fixture has no user message — will use __NO_USER_MESSAGE__ sentinel on disk",
+              `Recorded AG-UI fixture has no user message — will use ${NO_USER_MESSAGE_SENTINEL} sentinel on disk`,
             );
           }
 
@@ -212,7 +219,9 @@ function teeUpstreamStream(
             // Write to disk — predicate functions are not serializable,
             // so replace with a sentinel string that won't match real user messages.
             const serializableFixture = {
-              match: fixture.match.predicate ? { message: "__NO_USER_MESSAGE__" } : fixture.match,
+              match: fixture.match.predicate
+                ? { message: NO_USER_MESSAGE_SENTINEL }
+                : fixture.match,
               events: fixture.events,
               ...(fixture.delayMs !== undefined ? { delayMs: fixture.delayMs } : {}),
             };

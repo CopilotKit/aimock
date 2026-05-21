@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **AG-UI recorder** — `extractLastUserMessage` now walks structured `content`
+  arrays (e.g. `[{ type: "text", text: "..." }, { type: "document", source: ... }]`)
+  and joins their text parts. Previously, structured content fell back to the
+  `__NO_USER_MESSAGE__` sentinel, producing fixtures that couldn't replay.
+
+### Changed
+
+- **`AGUIMessage.content` type widened** to `string | AGUIMessageContentPart[]`.
+  New exported type `AGUIMessageContentPart` describes the per-part shape.
+
 ## [1.26.1] - 2026-05-19
 
 ### Added

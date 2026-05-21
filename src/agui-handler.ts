@@ -47,16 +47,36 @@ import type {
 
 /**
  * Extract the content of the last message with role "user" from the input.
+ * Walks structured content arrays (e.g. `[{type:"text", text:"..."}, {type:"document", ...}]`)
+ * and joins their text parts. Returns `""` when no user message is present or has no text.
  */
 export function extractLastUserMessage(input: AGUIRunAgentInput): string {
   if (!input.messages || input.messages.length === 0) return "";
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const msg = input.messages[i];
-    if (msg.role === "user" && typeof msg.content === "string") {
-      return msg.content;
-    }
+    if (msg.role !== "user") continue;
+    const text = extractTextFromContent(msg.content);
+    if (text) return text;
   }
   return "";
+}
+
+function extractTextFromContent(content: AGUIMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const part of content) {
+    if (
+      part &&
+      typeof part === "object" &&
+      part.type === "text" &&
+      typeof part.text === "string" &&
+      part.text
+    ) {
+      parts.push(part.text);
+    }
+  }
+  return parts.join(" ").trim();
 }
 
 /**
