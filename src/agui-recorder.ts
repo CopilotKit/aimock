@@ -170,7 +170,11 @@ function teeUpstreamStream(
           chunks.push(chunk);
         });
 
+        let settled = false;
+
         upstreamRes.on("error", (err) => {
+          if (settled) return;
+          settled = true;
           try {
             if (!clientRes.headersSent) {
               clientRes.writeHead(502, { "Content-Type": "application/json" });
@@ -188,6 +192,22 @@ function teeUpstreamStream(
         });
 
         upstreamRes.on("end", () => {
+          if (settled) return;
+          settled = true;
+
+          // Don't record fixtures for non-2xx upstream responses
+          if (clientStatus !== 200) {
+            try {
+              if (!clientRes.writableEnded) clientRes.end();
+            } catch (writeErr) {
+              logger.warn(
+                "Failed to end client response:",
+                writeErr instanceof Error ? writeErr.message : String(writeErr),
+              );
+            }
+            resolve(clientStatus);
+            return;
+          }
           try {
             if (!clientRes.writableEnded) clientRes.end();
           } catch (writeErr) {
@@ -220,7 +240,7 @@ function teeUpstreamStream(
                   !inp.messages?.length || !inp.messages.some((m) => m.role === "user"),
               };
               logger.warn(
-                `Recorded AG-UI fixture has no user message — will use ${NO_USER_MESSAGE_SENTINEL} sentinel on disk`,
+                "Recorded AG-UI fixture has no user message — available in-memory only (predicate fixtures cannot be persisted to disk)",
               );
             }
           }
@@ -230,34 +250,39 @@ function teeUpstreamStream(
             // Register in memory first (always available even if disk write fails)
             fixtures.push(fixture);
 
-            // Write to disk — predicate functions are not serializable,
-            // so replace with a sentinel string that won't match real user messages.
-            const serializableFixture = {
-              match: fixture.match.predicate
-                ? { message: NO_USER_MESSAGE_SENTINEL }
-                : fixture.match,
-              events: fixture.events,
-              ...(fixture.delayMs !== undefined ? { delayMs: fixture.delayMs } : {}),
-            };
-
-            const fixturePath = config.fixturePath ?? "./fixtures/agui-recorded";
-            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-            const filename = `agui-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
-            const filepath = path.join(fixturePath, filename);
-
-            try {
-              fs.mkdirSync(fixturePath, { recursive: true });
-              fs.writeFileSync(
-                filepath,
-                JSON.stringify({ fixtures: [serializableFixture] }, null, 2),
-                "utf-8",
+            // Predicate fixtures (no user message, no toolCallId) cannot be
+            // meaningfully serialized — the sentinel becomes a literal string
+            // match that never matches real requests. Keep in-memory only.
+            if (fixture.match.predicate) {
+              logger.warn(
+                "Skipping disk write for predicate fixture — in-memory only (cannot be persisted)",
               );
-              logger.warn(`AG-UI response recorded → ${filepath}`);
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : "Unknown filesystem error";
-              logger.error(
-                `Failed to save AG-UI fixture to disk: ${msg} (fixture retained in memory)`,
-              );
+            } else {
+              const serializableFixture = {
+                match: fixture.match,
+                events: fixture.events,
+                ...(fixture.delayMs !== undefined ? { delayMs: fixture.delayMs } : {}),
+              };
+
+              const fixturePath = config.fixturePath ?? "./fixtures/agui-recorded";
+              const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+              const filename = `agui-${timestamp}-${crypto.randomUUID().slice(0, 8)}.json`;
+              const filepath = path.join(fixturePath, filename);
+
+              try {
+                fs.mkdirSync(fixturePath, { recursive: true });
+                fs.writeFileSync(
+                  filepath,
+                  JSON.stringify({ fixtures: [serializableFixture] }, null, 2),
+                  "utf-8",
+                );
+                logger.warn(`AG-UI response recorded → ${filepath}`);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+                logger.error(
+                  `Failed to save AG-UI fixture to disk: ${msg} (fixture retained in memory)`,
+                );
+              }
             }
           } else {
             logger.info("Proxied AG-UI request (proxy-only mode)");
@@ -312,8 +337,9 @@ function parseSSEEvents(text: string, logger?: Logger): AGUIEvent[] {
           events.push(parsed);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (logger) logger.warn(`Skipping unparseable SSE data line: ${payload.slice(0, 200)}`);
-          else console.warn(`Skipping unparseable SSE data line: ${msg}`);
+          const warning = `Skipping unparseable SSE data line (${msg}): ${payload.slice(0, 200)}`;
+          if (logger) logger.warn(warning);
+          else console.warn(warning);
         }
       }
     }
