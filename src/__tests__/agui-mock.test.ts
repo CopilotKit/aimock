@@ -17,7 +17,9 @@ import {
   buildStepWithText,
   buildCompositeResponse,
   buildTextChunkResponse,
+  extractLastUserMessage,
 } from "../agui-handler.js";
+import { NO_USER_MESSAGE_SENTINEL } from "../agui-recorder.js";
 import { LLMock } from "../llmock.js";
 import { Journal } from "../journal.js";
 
@@ -996,5 +998,258 @@ describe("AGUIMock record & replay", () => {
     expect(types).toContain("RUN_STARTED");
     expect(types).toContain("TEXT_MESSAGE_CONTENT");
     expect(types).toContain("RUN_FINISHED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractLastUserMessage — string and structured content
+// ---------------------------------------------------------------------------
+
+describe("extractLastUserMessage", () => {
+  it("returns plain string content verbatim", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [{ id: "1", role: "user", content: "hello" }],
+      }),
+    ).toBe("hello");
+  });
+
+  it("returns text from a single-part array", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [{ id: "1", role: "user", content: [{ type: "text", text: "hello" }] }],
+      }),
+    ).toBe("hello");
+  });
+
+  it("joins multiple text parts with a single space", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            content: [
+              { type: "text", text: "part one" },
+              { type: "text", text: "part two" },
+            ],
+          },
+        ],
+      }),
+    ).toBe("part one part two");
+  });
+
+  it("extracts only text parts when mixed with non-text parts (e.g. file attachments)", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            content: [
+              { type: "text", text: "summarize this" },
+              {
+                type: "document",
+                source: { type: "data", value: "AAA=", mimeType: "text/plain" },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe("summarize this");
+  });
+
+  it("returns empty string when content has no text parts", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            content: [
+              {
+                type: "document",
+                source: { type: "data", value: "AAA=", mimeType: "text/plain" },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe("");
+  });
+
+  it("ignores non-text parts that happen to carry a 'text' field", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          {
+            id: "1",
+            role: "user",
+            content: [{ type: "image", text: "alt text not part of the message" }],
+          },
+        ],
+      }),
+    ).toBe("");
+  });
+
+  it("returns the last user turn's text when multiple user turns exist", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          { id: "1", role: "user", content: "first" },
+          { id: "2", role: "assistant", content: "ack" },
+          { id: "3", role: "user", content: [{ type: "text", text: "second" }] },
+        ],
+      }),
+    ).toBe("second");
+  });
+
+  it("skips non-user roles even when they have text content", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [
+          { id: "1", role: "user", content: "real user message" },
+          { id: "2", role: "assistant", content: "assistant turn" },
+        ],
+      }),
+    ).toBe("real user message");
+  });
+
+  it("returns empty string for empty or missing messages", () => {
+    expect(extractLastUserMessage({ messages: [] })).toBe("");
+    expect(extractLastUserMessage({} as AGUIRunAgentInput)).toBe("");
+  });
+
+  it("returns empty string when user message content is undefined", () => {
+    expect(
+      extractLastUserMessage({
+        messages: [{ id: "1", role: "user" }],
+      }),
+    ).toBe("");
+  });
+
+  it("falls through structured-only user message to find earlier user message with text", () => {
+    expect(
+      extractLastUserMessage({
+        threadId: "t1",
+        runId: "r1",
+        messages: [
+          { id: "m1", role: "user", content: "earlier question" },
+          { id: "m2", role: "assistant", content: "response" },
+          {
+            id: "m3",
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: "https://example.com/photo.jpg" } }],
+          },
+        ],
+      }),
+    ).toBe("earlier question");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recorder regression — structured user content produces a matchable fixture
+// ---------------------------------------------------------------------------
+
+describe("AGUIMock recorder — structured user content", () => {
+  let upstream: AGUIMock | null = null;
+  let tmpDir = "";
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agui-structured-"));
+  });
+
+  afterEach(async () => {
+    if (upstream) {
+      try {
+        await upstream.stop();
+      } catch {
+        /* already stopped */
+      }
+      upstream = null;
+    }
+    if (tmpDir) {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("writes match.message from text parts, not the sentinel, when content is structured", async () => {
+    upstream = new AGUIMock({ port: 0 });
+    upstream.onPredicate(() => true, buildTextResponse("ok"));
+    const upstreamUrl = await upstream.start();
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [
+        {
+          id: "u1",
+          role: "user",
+          content: [
+            { type: "text", text: "summarize this" },
+            {
+              type: "document",
+              source: { type: "data", value: "AAA=", mimeType: "text/plain" },
+            },
+          ],
+        },
+      ],
+    } as AGUIRunAgentInput);
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(1);
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(parsed.fixtures[0].match.message).toBe("summarize this");
+    expect(parsed.fixtures[0].match.message).not.toBe(NO_USER_MESSAGE_SENTINEL);
+  });
+
+  it("still writes the sentinel when no user text is present (e.g. only file parts)", async () => {
+    upstream = new AGUIMock({ port: 0 });
+    upstream.onPredicate(() => true, buildTextResponse("ok"));
+    const upstreamUrl = await upstream.start();
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [
+        {
+          id: "u1",
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: { type: "data", value: "AAA=", mimeType: "text/plain" },
+            },
+          ],
+        },
+      ],
+    } as AGUIRunAgentInput);
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(1);
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(parsed.fixtures[0].match.message).toBe(NO_USER_MESSAGE_SENTINEL);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NO_USER_MESSAGE_SENTINEL — wire-format compatibility guard
+// ---------------------------------------------------------------------------
+
+describe("NO_USER_MESSAGE_SENTINEL", () => {
+  it("preserves the historical on-disk sentinel string", () => {
+    // Locking the literal value: existing recorded fixtures on disk use this
+    // exact string and must continue to round-trip without churn.
+    expect(NO_USER_MESSAGE_SENTINEL).toBe("__NO_USER_MESSAGE__");
   });
 });
