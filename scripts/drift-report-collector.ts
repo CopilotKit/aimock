@@ -300,7 +300,7 @@ function parseVitestOutput(stdout: string, context: string): VitestJsonResult | 
 
 function runDriftTests(): VitestJsonResult {
   try {
-    const stdout = execSync("pnpm test:drift --reporter=json", {
+    const stdout = execSync("npx vitest run --config vitest.config.drift.ts --reporter=json", {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       maxBuffer: 50 * 1024 * 1024,
@@ -409,6 +409,9 @@ function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
       /returned empty body/i,
       /waitUntil timeout/i,
       /AssertionError/i,
+      /^Error:/m,
+      /at\s+\S+\s+\(file:/,
+      /STACK_TRACE_ERROR/,
     ];
     const driftLikeIndicators = [/drift/i, /mismatch/i, /expected.*but/i, /LLMOCK DRIFT/i];
 
