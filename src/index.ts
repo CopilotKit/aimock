@@ -284,6 +284,7 @@ export {
   buildReasoningChunk as buildAGUIReasoningChunk,
   buildReasoningEncryptedValue as buildAGUIReasoningEncryptedValue,
   extractLastUserMessage as extractAGUILastUserMessage,
+  getLastMessageIfToolResult as getAGUILastMessageIfToolResult,
   findFixture as findAGUIFixture,
   writeAGUIEventStream,
 } from "./agui-handler.js";

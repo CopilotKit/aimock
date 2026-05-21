@@ -54,6 +54,7 @@ export type {
 } from "./agui-types.js";
 export {
   extractLastUserMessage,
+  getLastMessageIfToolResult,
   matchesFixture,
   findFixture,
   buildTextResponse,

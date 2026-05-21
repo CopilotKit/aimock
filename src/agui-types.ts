@@ -389,6 +389,7 @@ export interface AGUIToolDefinition {
 
 export interface AGUIFixtureMatch {
   message?: string | RegExp;
+  toolCallId?: string;
   toolName?: string;
   stateKey?: string;
   predicate?: (input: AGUIRunAgentInput) => boolean;

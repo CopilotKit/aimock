@@ -18,6 +18,8 @@ import {
   buildCompositeResponse,
   buildTextChunkResponse,
   extractLastUserMessage,
+  getLastMessageIfToolResult,
+  matchesFixture,
 } from "../agui-handler.js";
 import { NO_USER_MESSAGE_SENTINEL } from "../agui-recorder.js";
 import { LLMock } from "../llmock.js";
@@ -999,6 +1001,470 @@ describe("AGUIMock record & replay", () => {
     expect(types).toContain("TEXT_MESSAGE_CONTENT");
     expect(types).toContain("RUN_FINISHED");
   });
+
+  // ---- Continuation (HITL) recording tests (46-48) ----
+
+  it("46. continuation recording writes toolCallId fixture", async () => {
+    const upstreamUrl = await startUpstreamWithCounter("continuation reply");
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_hitl_001", content: "approved" }],
+      threadId: "t1",
+    });
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(1);
+
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(parsed.fixtures).toHaveLength(1);
+    expect(parsed.fixtures[0].match.toolCallId).toBe("call_hitl_001");
+    expect(parsed.fixtures[0].match.message).toBeUndefined();
+  });
+
+  it("47. continuation replay from recorded fixture", async () => {
+    const upstreamUrl = await startUpstreamWithCounter("replay me");
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    // First request — hits upstream
+    await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_hitl_001", content: "approved" }],
+      threadId: "t1",
+    });
+    expect(requestCount).toBe(1);
+
+    // Second identical request — should match in-memory fixture
+    const resp2 = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_hitl_001", content: "approved" }],
+      threadId: "t1",
+    });
+    expect(resp2.status).toBe(200);
+    expect(requestCount).toBe(1); // upstream NOT hit again
+
+    const events = parseSSEEvents(resp2.body);
+    const content = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(content.delta).toBe("replay me");
+  });
+
+  it("48. normal request still records message fixture", async () => {
+    const upstreamUrl = await startUpstreamWithCounter("normal reply");
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, aguiInput("normal user message"));
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(1);
+
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(parsed.fixtures).toHaveLength(1);
+    expect(parsed.fixtures[0].match.message).toBe("normal user message");
+    expect(parsed.fixtures[0].match.toolCallId).toBeUndefined();
+  });
+
+  it("49. fallback predicate fixture is in-memory only (no disk write)", async () => {
+    const upstreamUrl = await startUpstreamWithCounter("sentinel reply");
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", content: "no-id" }],
+      threadId: "t1",
+    });
+    expect(resp.status).toBe(200);
+
+    // Predicate fixtures should NOT be written to disk — the sentinel
+    // string becomes a literal match that never matches real requests
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(0);
+
+    // But the fixture IS available in memory for same-session replay
+    const resp2 = await post(agui.url, {
+      messages: [{ id: "m2", role: "tool", content: "another-no-id" }],
+      threadId: "t2",
+    });
+    expect(resp2.status).toBe(200);
+  });
+
+  // ---- Recorder priority test (50) ----
+
+  it("50. tool result wins over user message in history", async () => {
+    const upstreamUrl = await startUpstreamWithCounter("priority reply");
+
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [
+        { id: "m1", role: "user", content: "approve the action" },
+        { id: "m2", role: "tool", toolCallId: "call_789", content: "result" },
+      ],
+      threadId: "t1",
+    });
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir);
+    expect(files.length).toBe(1);
+
+    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(parsed.fixtures).toHaveLength(1);
+    expect(parsed.fixtures[0].match.toolCallId).toBe("call_789");
+    expect(parsed.fixtures[0].match.message).toBeUndefined();
+  });
+
+  // ---- Full HITL round-trip integration test (51) ----
+
+  it("51. full round-trip: record two legs then replay without upstream", async () => {
+    // Build upstream with two fixtures routed by predicate.
+    // Continuation (leg 2) must be checked FIRST because leg 2 requests
+    // also contain the original user message in history.
+    upstream = new AGUIMock({ port: 0 });
+    const leg1Events = buildToolCallResponse("confirm_action", '{"action":"delete"}');
+    const leg2Events = buildTextResponse("Action confirmed");
+
+    // Leg 2: continuation — last message is tool result with toolCallId
+    upstream.onPredicate((input) => {
+      const msgs = input.messages ?? [];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "tool" && last?.toolCallId === "call_rt_001") {
+        requestCount++;
+        return true;
+      }
+      return false;
+    }, leg2Events);
+
+    // Leg 1: initial user message (only matches when last message is NOT a tool result)
+    upstream.onPredicate((input) => {
+      const msgs = input.messages ?? [];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "user") {
+        requestCount++;
+        return true;
+      }
+      return false;
+    }, leg1Events);
+
+    const upstreamUrl = await upstream.start();
+
+    // Create recording proxy
+    agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: false, fixturePath: tmpDir });
+    await agui.start();
+
+    // RECORD PHASE — Leg 1: user message
+    const resp1 = await post(agui.url, {
+      messages: [{ id: "m1", role: "user", content: "What should I do?" }],
+      threadId: "t-rt",
+    });
+    expect(resp1.status).toBe(200);
+    const events1 = parseSSEEvents(resp1.body);
+    const types1 = events1.map((e) => e.type);
+    expect(types1).toContain("TOOL_CALL_START");
+    expect(types1).toContain("TOOL_CALL_ARGS");
+
+    // RECORD PHASE — Leg 2: continuation with tool result
+    // Note: only tool result in messages (no user message) so it doesn't
+    // match the leg 1 fixture keyed on user message content.
+    const resp2 = await post(agui.url, {
+      messages: [{ id: "m2", role: "tool", toolCallId: "call_rt_001", content: "confirmed" }],
+      threadId: "t-rt",
+    });
+    expect(resp2.status).toBe(200);
+    const events2 = parseSSEEvents(resp2.body);
+    const content2 = events2.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(content2.delta).toBe("Action confirmed");
+
+    // Verify 2 fixture files on disk: one with match.message, one with match.toolCallId
+    const files = fs.readdirSync(tmpDir).sort();
+    expect(files.length).toBe(2);
+
+    const fixtures = files.map((f) => JSON.parse(fs.readFileSync(path.join(tmpDir, f), "utf-8")));
+    const matchTypes = fixtures.map((f) => f.fixtures[0].match);
+    const hasMessage = matchTypes.some(
+      (m: Record<string, unknown>) => m.message !== undefined && m.toolCallId === undefined,
+    );
+    const hasToolCallId = matchTypes.some(
+      (m: Record<string, unknown>) => m.toolCallId !== undefined,
+    );
+    expect(hasMessage).toBe(true);
+    expect(hasToolCallId).toBe(true);
+
+    // Track how many times upstream was hit during recording
+    const recordingHits = requestCount;
+
+    // REPLAY PHASE — Stop upstream
+    await upstream.stop();
+    upstream = null;
+
+    // Replay leg 1
+    const replay1 = await post(agui.url, {
+      messages: [{ id: "m1", role: "user", content: "What should I do?" }],
+      threadId: "t-rt",
+    });
+    expect(replay1.status).toBe(200);
+    const replayEvents1 = parseSSEEvents(replay1.body);
+    const replayTypes1 = replayEvents1.map((e) => e.type);
+    expect(replayTypes1).toContain("TOOL_CALL_START");
+
+    // Replay leg 2
+    const replay2 = await post(agui.url, {
+      messages: [{ id: "m2", role: "tool", toolCallId: "call_rt_001", content: "confirmed" }],
+      threadId: "t-rt",
+    });
+    expect(replay2.status).toBe(200);
+    const replayEvents2 = parseSSEEvents(replay2.body);
+    const replayContent2 = replayEvents2.find(
+      (e) => e.type === "TEXT_MESSAGE_CONTENT",
+    ) as unknown as Record<string, unknown>;
+    expect(replayContent2.delta).toBe("Action confirmed");
+
+    // Upstream was hit exactly twice during recording, zero during replay
+    expect(requestCount).toBe(recordingHits);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLastMessageIfToolResult unit tests (33-35)
+// ---------------------------------------------------------------------------
+
+describe("getLastMessageIfToolResult", () => {
+  it("33. returns the tool message when last message has role tool with toolCallId", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [
+        { id: "m1", role: "user", content: "do something" },
+        { id: "m2", role: "tool", toolCallId: "call_abc", content: "approved" },
+      ],
+    };
+    const result = getLastMessageIfToolResult(input);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("m2");
+    expect(result!.role).toBe("tool");
+    expect(result!.toolCallId).toBe("call_abc");
+  });
+
+  it("34. returns null when last message is not role tool", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [
+        { id: "m1", role: "tool", toolCallId: "call_abc", content: "result" },
+        { id: "m2", role: "user", content: "follow up" },
+      ],
+    };
+    const result = getLastMessageIfToolResult(input);
+    expect(result).toBeNull();
+  });
+
+  it("35. returns null for empty/undefined messages array", () => {
+    expect(getLastMessageIfToolResult({ threadId: "t1", runId: "r1", messages: [] })).toBeNull();
+    expect(
+      getLastMessageIfToolResult({ threadId: "t1", runId: "r1" } as AGUIRunAgentInput),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchesFixture toolCallId unit tests (36-41)
+// ---------------------------------------------------------------------------
+
+describe("matchesFixture toolCallId", () => {
+  it("36. toolCallId matches when last message is role tool with matching toolCallId", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [
+        { id: "m1", role: "user", content: "hello" },
+        { id: "m2", role: "tool", toolCallId: "call_xyz", content: "done" },
+      ],
+    };
+    expect(matchesFixture(input, { toolCallId: "call_xyz" })).toBe(true);
+  });
+
+  it("37. toolCallId does not match wrong ID", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_xyz", content: "done" }],
+    };
+    expect(matchesFixture(input, { toolCallId: "call_wrong" })).toBe(false);
+  });
+
+  it("38. toolCallId does not match when last message is not role tool", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [
+        { id: "m1", role: "tool", toolCallId: "call_xyz", content: "done" },
+        { id: "m2", role: "user", content: "follow up" },
+      ],
+    };
+    expect(matchesFixture(input, { toolCallId: "call_xyz" })).toBe(false);
+  });
+
+  it("39. toolCallId does not match when toolCallId absent on message", () => {
+    const input: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [{ id: "m1", role: "tool", content: "no toolCallId" }],
+    };
+    expect(matchesFixture(input, { toolCallId: "call_xyz" })).toBe(false);
+  });
+
+  it("40. AND logic — fixture with both message and toolCallId must both match", () => {
+    const inputBothMatch: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [
+        { id: "m1", role: "user", content: "approve this" },
+        { id: "m2", role: "tool", toolCallId: "call_abc", content: "approved" },
+      ],
+    };
+    // Both criteria match
+    expect(matchesFixture(inputBothMatch, { message: "approve", toolCallId: "call_abc" })).toBe(
+      true,
+    );
+
+    // Message matches but toolCallId does not
+    expect(matchesFixture(inputBothMatch, { message: "approve", toolCallId: "call_wrong" })).toBe(
+      false,
+    );
+
+    // toolCallId matches but message does not
+    expect(matchesFixture(inputBothMatch, { message: "reject", toolCallId: "call_abc" })).toBe(
+      false,
+    );
+  });
+
+  it("41. AND logic — fixture with both toolCallId and stateKey must both match", () => {
+    const inputBothMatch: AGUIRunAgentInput = {
+      threadId: "t1",
+      runId: "r1",
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_state", content: "result" }],
+      state: { counter: 10 },
+    };
+    // Both criteria match
+    expect(matchesFixture(inputBothMatch, { toolCallId: "call_state", stateKey: "counter" })).toBe(
+      true,
+    );
+
+    // toolCallId matches but stateKey does not
+    expect(matchesFixture(inputBothMatch, { toolCallId: "call_state", stateKey: "missing" })).toBe(
+      false,
+    );
+
+    // stateKey matches but toolCallId does not
+    expect(matchesFixture(inputBothMatch, { toolCallId: "call_wrong", stateKey: "counter" })).toBe(
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onToolResult fluent API tests (42-43)
+// ---------------------------------------------------------------------------
+
+describe("onToolResult fluent API", () => {
+  it("42. onToolResult registers fixture and matching request returns 200", async () => {
+    agui = new AGUIMock({ port: 0 });
+    agui.onToolResult("call_abc", buildTextResponse("continuation response"));
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_abc", content: "approved" }],
+      threadId: "test",
+    });
+    expect(resp.status).toBe(200);
+
+    const events = parseSSEEvents(resp.body);
+    const content = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(content).toBeDefined();
+    expect(content.delta).toBe("continuation response");
+  });
+
+  it("43. onToolResult with delayMs applies delay", async () => {
+    agui = new AGUIMock({ port: 0 });
+    agui.onToolResult("call_delayed", buildTextResponse("delayed continuation"), 50);
+    await agui.start();
+
+    const start = Date.now();
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_delayed", content: "result" }],
+      threadId: "test",
+    });
+    const elapsed = Date.now() - start;
+
+    expect(resp.status).toBe(200);
+    // 5 events * 50ms = 250ms minimum
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config loader toolCallId pass-through tests (44-45)
+// ---------------------------------------------------------------------------
+
+describe("config loader toolCallId pass-through", () => {
+  it("44. addFixture with toolCallId match returns 200 for matching tool message", async () => {
+    agui = new AGUIMock({ port: 0 });
+    agui.addFixture({
+      match: { toolCallId: "call_config_123" },
+      events: buildTextResponse("config response"),
+    });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "tool", toolCallId: "call_config_123", content: "tool output" }],
+      threadId: "test",
+    });
+    expect(resp.status).toBe(200);
+
+    const events = parseSSEEvents(resp.body);
+    const content = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(content).toBeDefined();
+    expect(content.delta).toBe("config response");
+  });
+
+  it("45. same fixture returns 404 for user message instead of tool result", async () => {
+    agui = new AGUIMock({ port: 0 });
+    agui.addFixture({
+      match: { toolCallId: "call_config_123" },
+      events: buildTextResponse("config response"),
+    });
+    await agui.start();
+
+    const resp = await post(agui.url, {
+      messages: [{ id: "m1", role: "user", content: "hello" }],
+      threadId: "test",
+    });
+    expect(resp.status).toBe(404);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1192,7 +1658,7 @@ describe("AGUIMock recorder — structured user content", () => {
     expect(parsed.fixtures[0].match.message).not.toBe(NO_USER_MESSAGE_SENTINEL);
   });
 
-  it("still writes the sentinel when no user text is present (e.g. only file parts)", async () => {
+  it("skips disk write for no-user-text predicate fixtures (in-memory only)", async () => {
     upstream = new AGUIMock({ port: 0 });
     upstream.onPredicate(() => true, buildTextResponse("ok"));
     const upstreamUrl = await upstream.start();
@@ -1218,9 +1684,23 @@ describe("AGUIMock recorder — structured user content", () => {
     expect(resp.status).toBe(200);
 
     const files = fs.readdirSync(tmpDir);
-    expect(files.length).toBe(1);
-    const parsed = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
-    expect(parsed.fixtures[0].match.message).toBe(NO_USER_MESSAGE_SENTINEL);
+    expect(files.length).toBe(0);
+
+    const resp2 = await post(agui.url, {
+      messages: [
+        {
+          id: "u2",
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: { type: "data", value: "BBB=", mimeType: "text/plain" },
+            },
+          ],
+        },
+      ],
+    } as AGUIRunAgentInput);
+    expect(resp2.status).toBe(200);
   });
 });
 

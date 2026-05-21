@@ -80,6 +80,15 @@ function extractTextFromContent(content: AGUIMessage["content"]): string {
 }
 
 /**
+ * Return the absolute last message if it has role "tool", otherwise null.
+ */
+export function getLastMessageIfToolResult(input: AGUIRunAgentInput): AGUIMessage | null {
+  if (!input.messages || input.messages.length === 0) return null;
+  const last = input.messages[input.messages.length - 1];
+  return last.role === "tool" ? last : null;
+}
+
+/**
  * Check whether an input matches a fixture's match criteria.
  * All specified criteria must pass (AND logic).
  */
@@ -91,6 +100,13 @@ export function matchesFixture(input: AGUIRunAgentInput, match: AGUIFixtureMatch
     } else {
       match.message.lastIndex = 0;
       if (!match.message.test(text)) return false;
+    }
+  }
+
+  if (match.toolCallId !== undefined) {
+    const lastMsg = input.messages?.[input.messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "tool" || lastMsg.toolCallId !== match.toolCallId) {
+      return false;
     }
   }
 

@@ -2,17 +2,16 @@
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-05-20
+
+### Added
+
+- **HITL continuation recording/replay support** — `toolCallId` matching for continuation fixtures. New `toolCallId` field on `AGUIFixtureMatch` and `AGUIConfigFixture`. `getLastMessageIfToolResult` helper and `onToolResult` fluent API. Recorder uses tool-result-first priority for continuation fixtures. ([#233](https://github.com/CopilotKit/aimock/pull/233), closes [#232](https://github.com/CopilotKit/aimock/issues/232))
+
 ### Fixed
 
-- **AG-UI recorder** — `extractLastUserMessage` now walks structured `content`
-  arrays (e.g. `[{ type: "text", text: "..." }, { type: "document", source: ... }]`)
-  and joins their text parts. Previously, structured content fell back to the
-  `__NO_USER_MESSAGE__` sentinel, producing fixtures that couldn't replay.
-
-### Changed
-
-- **`AGUIMessage.content` type widened** to `string | AGUIMessageContentPart[]`.
-  New exported type `AGUIMessageContentPart` describes the per-part shape.
+- **Walk structured content arrays in `extractLastUserMessage`** — handle multimodal user content (`AGUIMessageContentPart[]`) by joining text parts and skipping non-text. Export `NO_USER_MESSAGE_SENTINEL` constant and `AGUIMessageContentPart` type. ([#231](https://github.com/CopilotKit/aimock/pull/231))
+- **Harden recorder against error responses, double-settle, and broken sentinel persistence** — guard against recording fixtures from non-2xx upstream responses, add `settled` flag to prevent error+end race, skip disk write for predicate fixtures (sentinel was semantically broken on reload), include parse error reason in SSE warning log
 
 ## [1.26.1] - 2026-05-19
 

@@ -112,6 +112,15 @@ export class AGUIMock implements Mountable {
     return this;
   }
 
+  onToolResult(toolCallId: string, events: AGUIEvent[], delayMs?: number): this {
+    this.fixtures.push({
+      match: { toolCallId },
+      events,
+      delayMs,
+    });
+    return this;
+  }
+
   enableRecording(config: AGUIRecordConfig): this {
     this.recordConfig = config;
     return this;
