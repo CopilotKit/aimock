@@ -24,6 +24,7 @@
 
 - **Walk structured content arrays in `extractLastUserMessage`** — handle multimodal user content (`AGUIMessageContentPart[]`) by joining text parts and skipping non-text. Export `NO_USER_MESSAGE_SENTINEL` constant and `AGUIMessageContentPart` type. ([#231](https://github.com/CopilotKit/aimock/pull/231))
 - **Harden recorder against error responses, double-settle, and broken sentinel persistence** — guard against recording fixtures from non-2xx upstream responses, add `settled` flag to prevent error+end race, skip disk write for predicate fixtures (sentinel was semantically broken on reload), include parse error reason in SSE warning log
+
 ## [1.26.1] - 2026-05-19
 
 ### Added
