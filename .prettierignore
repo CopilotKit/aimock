@@ -5,3 +5,9 @@ charts/
 coverage/
 .remember/
 docs/pixels.js
+
+# Example projects: build output and locally generated fixtures
+examples/**/.next/
+examples/**/fixtures/agui-recorded/*.json
+examples/**/next-env.d.ts
+examples/**/tsconfig.tsbuildinfo

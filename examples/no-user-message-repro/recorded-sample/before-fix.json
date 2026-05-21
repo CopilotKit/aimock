@@ -1,0 +1,35 @@
+{
+  "fixtures": [
+    {
+      "match": {
+        "message": "__NO_USER_MESSAGE__"
+      },
+      "events": [
+        {
+          "type": "RUN_STARTED",
+          "threadId": "t-stub",
+          "runId": "r-stub"
+        },
+        {
+          "type": "TEXT_MESSAGE_START",
+          "messageId": "m-stub",
+          "role": "assistant"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "m-stub",
+          "delta": "Got it — recorded by aimock."
+        },
+        {
+          "type": "TEXT_MESSAGE_END",
+          "messageId": "m-stub"
+        },
+        {
+          "type": "RUN_FINISHED",
+          "threadId": "t-stub",
+          "runId": "r-stub"
+        }
+      ]
+    }
+  ]
+}

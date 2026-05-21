@@ -42,6 +42,7 @@ export type {
   AGUIRunAgentInput,
   AGUIToolCall,
   AGUIMessage,
+  AGUIMessageContentPart,
   AGUIToolDefinition,
   AGUIInterrupt,
   AGUIResumeEntry,

@@ -1,0 +1,25 @@
+{
+  "threadId": "thread-repro-1",
+  "runId": "run-repro-1",
+  "messages": [
+    {
+      "id": "user-msg-1",
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "summarize this" },
+        {
+          "type": "document",
+          "source": {
+            "type": "data",
+            "value": "VGhpcyBpcyBhIHRpbnkgYXR0YWNobWVudC4=",
+            "mimeType": "text/plain"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [],
+  "context": [],
+  "state": {},
+  "forwardedProps": {}
+}

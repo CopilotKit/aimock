@@ -1,0 +1,35 @@
+{
+  "name": "aimock-no-user-message-repro",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "upstream": "tsx upstream-agent.ts",
+    "aimock": "tsx start-aimock.ts",
+    "next": "next dev",
+    "dev": "concurrently -k -n upstream,aimock,next -c blue,magenta,cyan 'pnpm upstream' 'pnpm aimock' 'pnpm next'"
+  },
+  "dependencies": {
+    "@ag-ui/client": "^0.0.53",
+    "@copilotkit/aimock": "link:../..",
+    "@copilotkit/react-core": "^1.57.2",
+    "@copilotkit/react-ui": "^1.57.2",
+    "@copilotkit/runtime": "^1.57.2",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@copilotkit/core": "1.57.2"
+    }
+  }
+}

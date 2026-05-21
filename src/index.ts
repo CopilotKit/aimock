@@ -204,6 +204,7 @@ export type {
   AGUIMockOptions,
   AGUIRunAgentInput,
   AGUIMessage,
+  AGUIMessageContentPart,
   AGUIMessageRole,
   AGUIToolDefinition,
   AGUIToolCall,

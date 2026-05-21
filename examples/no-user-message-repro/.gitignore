@@ -1,0 +1,9 @@
+node_modules
+.next
+next-env.d.ts
+tsconfig.tsbuildinfo
+*.log
+
+# Recorded fixtures from local runs — keep the directory but ignore generated files
+fixtures/agui-recorded/*.json
+!fixtures/agui-recorded/.gitkeep
