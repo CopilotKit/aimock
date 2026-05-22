@@ -169,6 +169,17 @@ export class AGUIMock implements Mountable {
       return true;
     }
 
+    if (input.messages !== undefined && !Array.isArray(input.messages)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: "Invalid input: 'messages' must be an array when provided",
+        }),
+      );
+      this.journalRequest(req, pathname, 400);
+      return true;
+    }
+
     const fixture = findFixture(input, this.fixtures);
 
     if (fixture) {

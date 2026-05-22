@@ -102,7 +102,9 @@ function postRaw(
 
 function aguiInput(userMessage: string, extra?: Partial<AGUIRunAgentInput>): AGUIRunAgentInput {
   return {
-    messages: [{ role: "user", content: userMessage }],
+    threadId: "test-thread",
+    runId: "test-run",
+    messages: [{ id: "msg-1", role: "user", content: userMessage }],
     ...extra,
   };
 }

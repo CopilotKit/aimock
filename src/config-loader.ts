@@ -8,6 +8,7 @@ import type { ChaosConfig, RecordConfig } from "./types.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
 import type { A2AAgentDefinition, A2APart, A2AArtifact, A2AStreamEvent } from "./a2a-types.js";
 import type { AGUIEvent } from "./agui-types.js";
+import { buildTextResponse } from "./agui-handler.js";
 import { VectorMock } from "./vector-mock.js";
 import type { QueryResult } from "./vector-types.js";
 import { Logger } from "./logger.js";
@@ -226,7 +227,22 @@ export async function startFromConfig(
           );
         }
         if (f.text) {
-          agui.onMessage(f.match.message ?? /.*/, f.text, { delayMs: f.delayMs });
+          if (f.match.message !== undefined) {
+            agui.onMessage(f.match.message, f.text, { delayMs: f.delayMs });
+          } else {
+            // No message pattern — register via addFixture so it only matches
+            // on other criteria (toolCallId, toolName, stateKey) instead of
+            // becoming a catch-all that matches every request.
+            agui.addFixture({
+              match: {
+                toolCallId: f.match.toolCallId,
+                toolName: f.match.toolName,
+                stateKey: f.match.stateKey,
+              },
+              events: buildTextResponse(f.text),
+              delayMs: f.delayMs,
+            });
+          }
         } else if (f.events) {
           agui.addFixture({
             match: {

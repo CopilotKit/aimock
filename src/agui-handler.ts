@@ -5,6 +5,7 @@
 import * as http from "node:http";
 import { randomUUID } from "node:crypto";
 
+import type { Logger } from "./logger.js";
 import type {
   AGUIRunAgentInput,
   AGUIFixtureMatch,
@@ -597,7 +598,7 @@ export function buildReasoningEncryptedValue(
 export async function writeAGUIEventStream(
   res: http.ServerResponse,
   events: AGUIEvent[],
-  opts?: { delayMs?: number; signal?: AbortSignal },
+  opts?: { delayMs?: number; signal?: AbortSignal; logger?: Logger },
 ): Promise<void> {
   const delayMs = opts?.delayMs ?? 0;
 
@@ -616,9 +617,25 @@ export async function writeAGUIEventStream(
       res.write(`data: ${JSON.stringify(stamped)}\n\n`);
     } catch (err) {
       if (err instanceof TypeError || err instanceof RangeError) {
-        console.warn("AG-UI SSE write failed (serialization):", (err as Error).message);
+        const msg = (err as Error).message;
+        if (opts?.logger) {
+          opts.logger.warn("AG-UI SSE write failed (serialization):", msg);
+        } else {
+          console.warn("AG-UI SSE write failed (serialization):", msg);
+        }
       } else if (err instanceof Error) {
-        console.warn("AG-UI SSE write failed:", err.message);
+        if (opts?.logger) {
+          opts.logger.warn("AG-UI SSE write failed:", err.message);
+        } else {
+          console.warn("AG-UI SSE write failed:", err.message);
+        }
+      } else {
+        const msg = String(err);
+        if (opts?.logger) {
+          opts.logger.warn("AG-UI SSE write failed:", msg);
+        } else {
+          console.warn("AG-UI SSE write failed:", msg);
+        }
       }
       break;
     }

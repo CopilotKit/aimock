@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.27.1] - 2026-05-22
+
 ### Fixed
 
 - **Router** — systemMessage array exact-match logic was unsatisfiable for 2+ needles; collapsed to substring matching. Added `elevenlabs-tts` and `translation` to endpoint compatibility filter.
@@ -13,6 +15,10 @@
 - **Helpers** — extended `resolveUsage` with Gemini-native token fields. Preserved error cause in `resolveResponse` factory rethrow. `buildEmbeddingResponse` accepts optional usage. `extractFormField` escapes regex metacharacters.
 - **Drift test infra** — retry logging with body consumption, broadened `redactUrl` to cover `api_key`/`apikey`/`token`/`access_token` patterns, URL threaded into error messages with redaction, `parseDataOnlySSE` [DONE] filter fix, `parseTypedSSE` multi-line data handling with null guards.
 - **Drift collector** — invoke vitest directly via npx to avoid pnpm stdout prefix breaking JSON parse; classify raw stack traces as infrastructure errors instead of crashing.
+- **AG-UI config loader** — removed `/.*/` catch-all regex fallback when `match.message` is absent; fixtures without a message pattern no longer shadow other fixtures.
+- **AG-UI input validation** — runtime check that `input.messages` is an array after JSON parse; returns 400 instead of confusing downstream 404.
+- **AG-UI SSE writer** — `writeAGUIEventStream` uses logger abstraction instead of `console.warn`; handles non-Error throws.
+- **Drift test helpers** — `parseDataOnlySSE` handles multi-line data blocks, aligned with `providers.ts` implementation.
 
 ## [1.27.0] - 2026-05-20
 

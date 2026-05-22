@@ -87,9 +87,17 @@ export async function httpPostRaw(
 /** Parse data-only SSE blocks (OpenAI Chat Completions, Gemini). */
 export function parseDataOnlySSE(body: string): object[] {
   return body
+    .replace(/\r\n/g, "\n")
     .split("\n\n")
-    .filter((block) => block.startsWith("data: ") && !block.includes("[DONE]"))
-    .map((block) => JSON.parse(block.slice(6)));
+    .filter((block) => block.startsWith("data: ") && block.trim() !== "data: [DONE]")
+    .map((block) => {
+      // Rejoin continuation lines (data split across multiple lines)
+      const json = block
+        .split("\n")
+        .map((line) => (line.startsWith("data: ") ? line.slice(6) : line))
+        .join("");
+      return JSON.parse(json);
+    });
 }
 
 /** Parse typed SSE blocks with event: + data: (Anthropic, OpenAI Responses). */
