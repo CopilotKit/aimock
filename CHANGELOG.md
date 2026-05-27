@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.27.3] - 2026-05-27
+
+### Fixed
+
+- correct OpenAI images endpoint path from `/v1/images/edit` to `/v1/images/edits` (closes [#221](https://github.com/CopilotKit/aimock/issues/221))
+- add Ollama `/api/embed` route as alias for `/api/embeddings`; `/api/embed` is the current documented endpoint ([ollama/ollama docs/api.md](https://github.com/ollama/ollama/blob/main/docs/api.md)) used by modern Ollama SDKs, while `/api/embeddings` is retained for backwards-compatibility. Both routes dispatch to the same handler.
+
 ## [1.27.2] - 2026-05-26
 
 ### Fixed
