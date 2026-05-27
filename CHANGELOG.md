@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.27.2] - 2026-05-26
+
+### Fixed
+
+- **Fixture loader** — full recursive directory traversal replaces 2-level cap; supports per-integration showcase layouts like `d6/<integration>/<feature>.json`.
+
+### Changed
+
+- **Docker image** — added `git` binary to production stage for sparse-checkout fixture fetching at boot.
+
 ## [1.27.1] - 2026-05-22
 
 ### Fixed
