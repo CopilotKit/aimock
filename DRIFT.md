@@ -79,7 +79,7 @@ When a `critical` drift is detected:
    - Google Gemini → `src/gemini.ts` (`buildGeminiTextResponse`, `buildGeminiToolCallResponse`, `buildGeminiTextStreamChunks`, `buildGeminiToolCallStreamChunks`)
    - Gemini embedContent → `src/gemini.ts` (embedContent response builder)
    - Gemini Interactions → `src/gemini-interactions.ts` (`buildInteractionsTextResponse`, `buildInteractionsToolCallResponse`, `buildInteractionsTextSSEEvents`, `buildInteractionsToolCallSSEEvents`)
-   - OpenAI Image Edit → `src/images.ts` (multipart `/v1/images/edit` handler)
+   - OpenAI Image Edit → `src/images.ts` (multipart `/v1/images/edits` handler)
    - OpenAI Audio Translation → `src/transcription.ts` (multipart `/v1/audio/translations` handler)
    - Ollama Embeddings → `src/ollama.ts` (`/api/embeddings` response builder)
    - Cohere Embed → `src/cohere.ts` (`/v2/embed` response builder)
@@ -120,7 +120,7 @@ In addition to the 23 existing drift tests (20 HTTP response-shape + 3 model dep
 | Endpoint                                 | Provider      | Type              | Status  |
 | ---------------------------------------- | ------------- | ----------------- | ------- |
 | POST /v1beta/models/{model}:embedContent | Gemini        | HTTP              | Covered |
-| POST /v1/images/edit                     | OpenAI        | HTTP (multipart)  | Covered |
+| POST /v1/images/edits                    | OpenAI        | HTTP (multipart)  | Covered |
 | POST /v1/audio/translations              | OpenAI        | HTTP (multipart)  | Covered |
 | POST /api/embeddings                     | Ollama        | HTTP              | Covered |
 | POST /v2/embed                           | Cohere        | HTTP              | Covered |

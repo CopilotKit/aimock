@@ -301,7 +301,7 @@ function serializeOpenAIImageResponse(
 }
 
 /**
- * Handle POST /v1/images/edit — OpenAI Image Edit API.
+ * Handle POST /v1/images/edits — OpenAI Image Edit API.
  *
  * Request uses multipart/form-data. We extract text fields (`prompt`, `model`,
  * `n`, `size`, `response_format`) and ignore binary fields (`image`, `mask`)
@@ -319,7 +319,7 @@ export async function handleImageEdit(
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): Promise<void> {
   setCorsHeaders(res);
-  const path = req.url ?? "/v1/images/edit";
+  const path = req.url ?? "/v1/images/edits";
   const method = req.method ?? "POST";
 
   const contentType = Array.isArray(req.headers["content-type"])
@@ -412,7 +412,7 @@ export async function handleImageEdit(
         res,
         syntheticReq,
         "openai",
-        req.url ?? "/v1/images/edit",
+        req.url ?? "/v1/images/edits",
         fixtures,
         defaults,
         raw,

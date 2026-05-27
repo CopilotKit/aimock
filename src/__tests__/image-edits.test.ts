@@ -26,7 +26,7 @@ describe("image edit endpoint", () => {
     formData.append("n", "1");
     formData.append("size", "1024x1024");
 
-    const res = await fetch(`${mock.url}/v1/images/edit`, {
+    const res = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -47,7 +47,7 @@ describe("image edit endpoint", () => {
     formData.append("image", new Blob(["fake"]), "image.png");
     formData.append("model", "dall-e-2");
 
-    const res = await fetch(`${mock.url}/v1/images/edit`, {
+    const res = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -72,7 +72,7 @@ describe("image edit endpoint", () => {
     formData.append("prompt", "remove background");
     formData.append("model", "dall-e-2");
 
-    const res = await fetch(`${mock.url}/v1/images/edit`, {
+    const res = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -95,7 +95,7 @@ describe("image edit endpoint", () => {
     formData.append("image", new Blob(["fake"]), "image.png");
     formData.append("prompt", "enhance");
 
-    const res = await fetch(`${mock.url}/v1/images/edit`, {
+    const res = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -124,7 +124,7 @@ describe("image edit endpoint", () => {
     formData.append("image", new Blob(["fake"]), "image.png");
     formData.append("prompt", "test prompt");
 
-    const editRes = await fetch(`${mock.url}/v1/images/edit`, {
+    const editRes = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -146,7 +146,7 @@ describe("image edit endpoint", () => {
     formData.append("image", new Blob(["fake"]), "image.png");
     formData.append("prompt", "no match");
 
-    const res = await fetch(`${mock.url}/v1/images/edit`, {
+    const res = await fetch(`${mock.url}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: "Bearer test" },
       body: formData,
@@ -155,6 +155,40 @@ describe("image edit endpoint", () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error.code).toBe("no_fixture_match");
+  });
+
+  test("route path matches OpenAI: /v1/images/edits responds, /v1/images/edit is 404 (#221)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "path check", endpoint: "image" },
+      response: { image: { url: "https://example.com/ok.png" } },
+    });
+    await mock.start();
+
+    const makeForm = () => {
+      const fd = new FormData();
+      fd.append("image", new Blob(["fake"]), "image.png");
+      fd.append("prompt", "path check");
+      return fd;
+    };
+
+    // Correct OpenAI path (plural) must succeed
+    const okRes = await fetch(`${mock.url}/v1/images/edits`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: makeForm(),
+    });
+    expect(okRes.status).toBe(200);
+
+    // Legacy singular path must NOT be registered
+    const badRes = await fetch(`${mock.url}/v1/images/edit`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: makeForm(),
+    });
+    expect(badRes.status).toBe(404);
+    const badData = await badRes.json();
+    expect(badData.error?.type).toBe("not_found");
   });
 });
 

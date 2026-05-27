@@ -59,7 +59,7 @@ const FEATURE_RULES: FeatureRule[] = [
   },
   {
     rowLabel: "Image editing",
-    keywords: ["/v1/images/edit", "image edit", "image editing", "inpainting", "edit.*image"],
+    keywords: ["/v1/images/edits", "image edit", "image editing", "inpainting", "edit.*image"],
   },
   {
     rowLabel: "Non-speech audio",
