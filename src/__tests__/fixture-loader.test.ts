@@ -518,7 +518,7 @@ describe("loadFixturesFromDir", () => {
     expect(fixtures[1].match.userMessage).toBe("b");
   });
 
-  it("does not recurse deeper than one level", () => {
+  it("recurses into nested subdirectories (full depth)", () => {
     const subDir = join(tmpDir, "level1");
     const deepDir = join(subDir, "level2");
     mkdirSync(subDir);
@@ -531,8 +531,49 @@ describe("loadFixturesFromDir", () => {
     });
 
     const fixtures = loadFixturesFromDir(tmpDir);
-    expect(fixtures).toHaveLength(1);
+    expect(fixtures).toHaveLength(2);
     expect(fixtures[0].match.userMessage).toBe("one");
+    expect(fixtures[1].match.userMessage).toBe("two");
+  });
+
+  it("recurses into deeply nested directories (3+ levels)", () => {
+    // Simulate showcase layout: showcase/aimock/d6/langgraph-python/chat-basic.json
+    const level1 = join(tmpDir, "d6");
+    const level2 = join(level1, "langgraph-python");
+    mkdirSync(level1);
+    mkdirSync(level2);
+    writeJson(tmpDir, "root.json", {
+      fixtures: [{ match: { userMessage: "root" }, response: { content: "R" } }],
+    });
+    writeJson(level1, "mid.json", {
+      fixtures: [{ match: { userMessage: "mid" }, response: { content: "M" } }],
+    });
+    writeJson(level2, "deep.json", {
+      fixtures: [{ match: { userMessage: "deep" }, response: { content: "D" } }],
+    });
+
+    const fixtures = loadFixturesFromDir(tmpDir);
+    expect(fixtures).toHaveLength(3);
+    // Root files first, then subdirectories in sorted order, recursively
+    expect(fixtures[0].match.userMessage).toBe("root");
+    expect(fixtures[1].match.userMessage).toBe("mid");
+    expect(fixtures[2].match.userMessage).toBe("deep");
+  });
+
+  it("recurses 4 levels deep", () => {
+    const l1 = join(tmpDir, "a");
+    const l2 = join(l1, "b");
+    const l3 = join(l2, "c");
+    mkdirSync(l1);
+    mkdirSync(l2);
+    mkdirSync(l3);
+    writeJson(l3, "fixture.json", {
+      fixtures: [{ match: { userMessage: "4-deep" }, response: { content: "found" } }],
+    });
+
+    const fixtures = loadFixturesFromDir(tmpDir);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0].match.userMessage).toBe("4-deep");
   });
 
   it("top-level JSON files come before subdirectory fixtures", () => {

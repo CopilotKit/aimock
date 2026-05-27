@@ -175,42 +175,11 @@ export function loadFixturesFromDir(dirPath: string, logger?: Logger): Fixture[]
     fixtures.push(...loadFixtureFile(filePath, logger));
   }
 
-  // Recurse one level into subdirectories to support snapshot-style layouts
-  // where the recorder writes to <fixturePath>/<testId>/<provider>.json.
+  // Recurse into all subdirectories (full depth) to support nested layouts
+  // like showcase/aimock/d6/<integration>/<feature>.json.
   subdirs.sort();
   for (const sub of subdirs) {
-    const subPath = join(dirPath, sub);
-    let subEntries: string[];
-    try {
-      subEntries = readdirSync(subPath);
-    } catch (err) {
-      warn(logger, `Could not read subdirectory ${subPath}:`, err);
-      continue;
-    }
-    const subJsonFiles: string[] = [];
-    for (const subName of subEntries) {
-      const subFullPath = join(subPath, subName);
-      try {
-        if (statSync(subFullPath).isDirectory()) {
-          // Only one level of recursion — skip deeper nesting
-          continue;
-        }
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") {
-          warn(logger, `Could not stat ${subFullPath}:`, err);
-        }
-        continue;
-      }
-      if (subName.endsWith(".json")) {
-        subJsonFiles.push(subName);
-      }
-    }
-    subJsonFiles.sort();
-    for (const subName of subJsonFiles) {
-      const filePath = join(subPath, subName);
-      fixtures.push(...loadFixtureFile(filePath, logger));
-    }
+    fixtures.push(...loadFixturesFromDir(join(dirPath, sub), logger));
   }
 
   return fixtures;
