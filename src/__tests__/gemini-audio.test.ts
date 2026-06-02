@@ -153,6 +153,108 @@ describe("Gemini audio responses", () => {
     });
   });
 
+  test("non-streaming audio turn replays companion tool call + content + reasoning", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "audio with tool call" },
+      response: {
+        audio: "SGVsbG8=",
+        format: "mp3",
+        content: "Here is the audio you asked for.",
+        reasoning: "User wants audio plus a lookup.",
+        toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"query":"weather"}' }],
+      },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/v1beta/models/lyria-3:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "audio with tool call" }] }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const parts = data.candidates[0].content.parts;
+
+    // Audio (inlineData) must still be present and first.
+    expect(parts[0].inlineData).toEqual({ mimeType: "audio/mpeg", data: "SGVsbG8=" });
+
+    // Coverage pin: a tool-call-bearing turn must finish with FUNCTION_CALL,
+    // never STOP — guards against a regression that emits STOP with a tool call.
+    expect(data.candidates[0].finishReason).toBe("FUNCTION_CALL");
+
+    // Companion modalities must NOT be dropped on replay.
+    const functionCallPart = parts.find((p: { functionCall?: unknown }) => p.functionCall);
+    expect(functionCallPart).toBeDefined();
+    expect(functionCallPart.functionCall.name).toBe("lookup");
+    expect(functionCallPart.functionCall.args).toEqual({ query: "weather" });
+    expect(functionCallPart.functionCall.id).toBe("call_1");
+
+    const textPart = parts.find((p: { text?: string; thought?: boolean }) => p.text && !p.thought);
+    expect(textPart?.text).toBe("Here is the audio you asked for.");
+
+    const thoughtPart = parts.find((p: { text?: string; thought?: boolean }) => p.thought);
+    expect(thoughtPart?.text).toBe("User wants audio plus a lookup.");
+  });
+
+  test("streaming audio turn replays companion tool call + content + reasoning", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "stream audio with tool call" },
+      response: {
+        audio: "SGVsbG8=",
+        format: "mp3",
+        content: "Streamed text.",
+        reasoning: "Streamed thought.",
+        toolCalls: [{ id: "call_2", name: "fetch", arguments: '{"url":"x"}' }],
+      },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/v1beta/models/lyria-3:streamGenerateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "stream audio with tool call" }] }],
+      }),
+    });
+    expect(res.status).toBe(200);
+
+    const text = await res.text();
+    const chunks = text
+      .split("\n\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.replace("data: ", "")));
+
+    const allParts = chunks.flatMap((c) => c.candidates[0].content.parts);
+
+    expect(allParts.some((p: { inlineData?: unknown }) => p.inlineData)).toBe(true);
+
+    // Coverage pin: a tool-call-bearing turn must finish with FUNCTION_CALL,
+    // never STOP — guards against a regression that emits STOP with a tool call.
+    expect(
+      chunks.some(
+        (c: { candidates: Array<{ finishReason?: string }> }) =>
+          c.candidates[0].finishReason === "FUNCTION_CALL",
+      ),
+    ).toBe(true);
+
+    const functionCallPart = allParts.find((p: { functionCall?: unknown }) => p.functionCall);
+    expect(functionCallPart).toBeDefined();
+    expect(functionCallPart.functionCall.name).toBe("fetch");
+    expect(functionCallPart.functionCall.id).toBe("call_2");
+
+    const textPart = allParts.find(
+      (p: { text?: string; thought?: boolean }) => p.text && !p.thought,
+    );
+    expect(textPart?.text).toBe("Streamed text.");
+
+    const thoughtPart = allParts.find((p: { text?: string; thought?: boolean }) => p.thought);
+    expect(thoughtPart?.text).toBe("Streamed thought.");
+  });
+
   test("onAudio() convenience method works via Gemini", async () => {
     mock = new LLMock({ port: 0 });
     mock.onAudio("piano loop", { audio: "SGVsbG8=" });

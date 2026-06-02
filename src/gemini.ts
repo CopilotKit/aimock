@@ -509,13 +509,35 @@ function resolveAudioInlineData(audio: AudioResponse): { mimeType: string; data:
   };
 }
 
-function buildGeminiAudioResponse(audio: AudioResponse): GeminiResponseChunk {
+// Build the ordered Gemini parts for an audio turn: inlineData audio first,
+// then any companion modalities (reasoning/thought, text content, tool calls)
+// the recorder preserved on the AudioResponse. Without this, a recorded turn
+// that interleaves audio with a functionCall and/or text silently drops the
+// companions on replay.
+// NOTE: audio companions are only re-emitted on this Gemini replay path because
+// `audioB64` collapse is currently Gemini-only — a cross-provider audio fixture
+// would not replay its companions.
+function buildGeminiAudioParts(audio: AudioResponse, logger: Logger): GeminiPart[] {
   const inlineData = resolveAudioInlineData(audio);
+  const parts: GeminiPart[] = [{ inlineData }];
+  if (audio.reasoning) {
+    parts.push({ text: audio.reasoning, thought: true });
+  }
+  if (audio.content) {
+    parts.push({ text: audio.content });
+  }
+  if (audio.toolCalls?.length) {
+    parts.push(...audio.toolCalls.map((tc) => parseToolCallPart(tc, logger)));
+  }
+  return parts;
+}
+
+function buildGeminiAudioResponse(audio: AudioResponse, logger: Logger): GeminiResponseChunk {
   return {
     candidates: [
       {
-        content: { role: "model", parts: [{ inlineData }] },
-        finishReason: "STOP",
+        content: { role: "model", parts: buildGeminiAudioParts(audio, logger) },
+        finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
         index: 0,
       },
     ],
@@ -523,14 +545,13 @@ function buildGeminiAudioResponse(audio: AudioResponse): GeminiResponseChunk {
   };
 }
 
-function buildGeminiAudioStreamChunks(audio: AudioResponse): GeminiResponseChunk[] {
-  const inlineData = resolveAudioInlineData(audio);
+function buildGeminiAudioStreamChunks(audio: AudioResponse, logger: Logger): GeminiResponseChunk[] {
   return [
     {
       candidates: [
         {
-          content: { role: "model", parts: [{ inlineData }] },
-          finishReason: "STOP",
+          content: { role: "model", parts: buildGeminiAudioParts(audio, logger) },
+          finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
           index: 0,
         },
       ],
@@ -790,11 +811,11 @@ export async function handleGemini(
       response: { status: 200, fixture },
     });
     if (!streaming) {
-      const body = buildGeminiAudioResponse(response);
+      const body = buildGeminiAudioResponse(response, logger);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildGeminiAudioStreamChunks(response);
+      const chunks = buildGeminiAudioStreamChunks(response, logger);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
