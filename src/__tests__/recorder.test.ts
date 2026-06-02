@@ -5006,9 +5006,8 @@ describe("multi-call fixture disambiguation (issue #185)", () => {
     // The haiku fixture has systemHash metadata (from whichever call won)
     const haikuFixture = fixtures.find((f) => f.match.model === "claude-3-5-haiku")!;
     expect(haikuFixture).toBeDefined();
-    expect((haikuFixture as Record<string, unknown>).metadata).toBeDefined();
-    const meta = (haikuFixture as Record<string, unknown>).metadata as Record<string, unknown>;
-    expect(meta.systemHash).toMatch(/^[a-f0-9]{8}$/);
+    expect(haikuFixture.metadata).toBeDefined();
+    expect(haikuFixture.metadata!.systemHash).toMatch(/^[a-f0-9]{8}$/);
 
     // Cleanup
     await new Promise<void>((resolve) => recorderServer.server.close(() => resolve()));
@@ -5164,5 +5163,592 @@ describe("fixture metadata recording", () => {
     expect(hash1).toBeDefined();
     expect(hash2).toBeDefined();
     expect(hash1).not.toBe(hash2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webSearches propagation into the persisted fixture
+//
+// Drives a raw upstream that emits exactly the OpenAI Responses-API SSE shape
+// `collapseOpenAISSE` recognizes (a completed web_search_call), then exercises
+// `proxyAndRecord` end-to-end and asserts that the collapsed `webSearches` land
+// in the persisted fixture.
+// ---------------------------------------------------------------------------
+
+describe("recorder webSearches propagation", () => {
+  let rawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  // Spin up a raw upstream that replies with a fixed SSE body and a real recorder
+  // server pointed at it, then POST a streaming chat request through the recorder.
+  async function recordSse(sseBody: string): Promise<{
+    fixturePath: string;
+    response: { status: number; body: string };
+  }> {
+    rawServer = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sseBody);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (rawServer!.address() as { port: number }).port;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-collapse-prop-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: `http://127.0.0.1:${upstreamPort}` },
+        fixturePath: tmpDir,
+      },
+    });
+
+    const response = await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "search the web" }],
+      stream: true,
+    });
+
+    return { fixturePath: tmpDir, response };
+  }
+
+  it("propagates webSearches from a collapsed Responses-API stream into the persisted fixture", async () => {
+    // OpenAI Responses-API SSE: a completed web_search_call followed by text output.
+    // collapseOpenAISSE returns { content, webSearches: ["..."] }.
+    const sse = [
+      'data: {"type":"response.output_item.done","item":{"type":"web_search_call","action":{"query":"weather in Paris"}}}',
+      'data: {"type":"response.output_text.delta","delta":"It is sunny in Paris."}',
+      "data: [DONE]",
+    ]
+      .map((l) => l + "\n\n")
+      .join("");
+
+    const { fixturePath } = await recordSse(sse);
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    const saved = fixtureContent.fixtures[0].response as {
+      content: string;
+      webSearches?: string[];
+    };
+    expect(saved.content).toBe("It is sunny in Paris.");
+    // The bug: webSearches was collapsed but never written to the fixture.
+    expect(saved.webSearches).toEqual(["weather in Paris"]);
+  });
+
+  it("propagates webSearches alongside tool calls into the persisted fixture", async () => {
+    // web_search_call + a structured tool call → collapsed result carries both
+    // toolCalls and webSearches; the fixture must retain webSearches in the
+    // tool-call branch too.
+    const sse = [
+      'data: {"type":"response.output_item.done","item":{"type":"web_search_call","action":{"query":"latest news"}}}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_news","arguments":"{}"}}]}}]}',
+      "data: [DONE]",
+    ]
+      .map((l) => l + "\n\n")
+      .join("");
+
+    const { fixturePath } = await recordSse(sse);
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    const saved = fixtureContent.fixtures[0].response as {
+      toolCalls: unknown[];
+      webSearches?: string[];
+    };
+    expect(saved.toolCalls).toHaveLength(1);
+    expect(saved.webSearches).toEqual(["latest news"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dropped-chunk diagnostic logging
+//
+// A malformed SSE frame is dropped during collapse; the collapser captures a
+// `firstDroppedSample` diagnostic. Assert that sample reaches the logged
+// dropped-chunk warning so the loss is actionable.
+// ---------------------------------------------------------------------------
+
+describe("recorder dropped-chunk diagnostic", () => {
+  let rawServer: http.Server | undefined;
+  let warnSpy: MockInstance | undefined;
+
+  afterEach(async () => {
+    warnSpy?.mockRestore();
+    warnSpy = undefined;
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  it("logs firstDroppedSample alongside the dropped-chunk warning", async () => {
+    // A malformed data frame increments droppedChunks and sets firstDroppedSample.
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+      "data: {not valid json", // malformed → dropped, captured as the first sample
+      "data: [DONE]",
+    ]
+      .map((l) => l + "\n\n")
+      .join("");
+
+    // Capture warnings via a real logger instance (silent suppresses output, so
+    // spy on the instance method directly and run it through proxyAndRecord).
+    const logger = new Logger("warn");
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    rawServer = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (rawServer!.address() as { port: number }).port;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-collapse-dropped-"));
+    const record: RecordConfig = {
+      providers: { openai: `http://127.0.0.1:${upstreamPort}` },
+      fixturePath: tmpDir,
+    };
+
+    const { req, res } = createMockReqRes();
+    Object.assign(res, {
+      writeHead: () => res,
+      write: () => true,
+      end: () => res,
+      setHeader: () => res,
+      flushHeaders: () => undefined,
+    });
+
+    await proxyAndRecord(
+      req,
+      res,
+      { model: "gpt-4", messages: [{ role: "user", content: "drop a chunk" }] },
+      "openai",
+      "/v1/chat/completions",
+      [],
+      { record, logger },
+    );
+
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+    const droppedWarning = warnings.find((w) => w.includes("dropped during stream collapse"));
+    expect(droppedWarning).toBeDefined();
+    // The bug: the sample diagnostic was computed but never surfaced.
+    expect(droppedWarning).toContain("not valid json");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gemini audio-branch companion-modality propagation
+//
+// A single Gemini turn can interleave inlineData audio with a functionCall (and
+// text/thought parts). collapseGeminiSSE returns audioB64 ALONGSIDE
+// toolCalls/content/reasoning, but the recorder audio branch historically built
+// only `{ audio: { b64Json, contentType } }` — silently discarding the tool
+// call. These tests drive the real record path against a raw Gemini SSE upstream
+// and assert the persisted fixture retains the companion modalities.
+// ---------------------------------------------------------------------------
+
+describe("recorder Gemini audio-branch propagation", () => {
+  let rawServer: http.Server | undefined;
+
+  afterEach(async () => {
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  // Raw Gemini upstream emitting a fixed SSE body, fronted by a real recorder
+  // configured with the `gemini` provider key so collapseGeminiSSE runs.
+  async function recordGeminiSse(sseBody: string): Promise<{
+    fixturePath: string;
+    response: { status: number; body: string };
+  }> {
+    rawServer = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sseBody);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (rawServer!.address() as { port: number }).port;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-gemini-audio-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { gemini: `http://127.0.0.1:${upstreamPort}` },
+        fixturePath: tmpDir,
+      },
+    });
+
+    // Gemini streaming is the :streamGenerateContent endpoint with a Gemini-shaped
+    // request body (contents/parts), which routes to the `gemini` provider so
+    // collapseGeminiSSE runs over the upstream SSE.
+    const response = await post(
+      `${recorder.url}/v1beta/models/gemini-2.0-flash:streamGenerateContent`,
+      {
+        contents: [{ role: "user", parts: [{ text: "speak and call a tool" }] }],
+      },
+    );
+
+    return { fixturePath: tmpDir, response };
+  }
+
+  it("retains a functionCall in the persisted fixture when audio is also present", async () => {
+    // Gemini SSE interleaving inlineData audio with a functionCall part.
+    // collapseGeminiSSE returns { audioB64, audioMimeType, toolCalls }.
+    const sse = [
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ inlineData: { mimeType: "audio/pcm", data: "QUJD" } }],
+            },
+          },
+        ],
+      }),
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ functionCall: { name: "get_weather", args: { city: "SF" } } }],
+            },
+          },
+        ],
+      }),
+    ]
+      .map((l) => `data: ${l}\n\n`)
+      .join("");
+
+    const { fixturePath } = await recordGeminiSse(sse);
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    const saved = fixtureContent.fixtures[0].response as {
+      audio: { b64Json: string; contentType?: string };
+      toolCalls?: Array<{ name: string; arguments: string }>;
+    };
+    // Audio still persisted.
+    expect(saved.audio.b64Json).toBe("QUJD");
+    expect(saved.audio.contentType).toBe("audio/pcm");
+    // The bug: the tool call was collapsed but dropped from the fixture.
+    expect(saved.toolCalls).toHaveLength(1);
+    expect(saved.toolCalls![0].name).toBe("get_weather");
+    expect(JSON.parse(saved.toolCalls![0].arguments)).toEqual({ city: "SF" });
+  });
+
+  it("retains text content and reasoning alongside audio in the persisted fixture", async () => {
+    // Audio interleaved with a normal text part and a `thought` (reasoning) part.
+    const sse = [
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ inlineData: { mimeType: "audio/pcm", data: "WFla" } }],
+            },
+          },
+        ],
+      }),
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: "Here is the weather.", thought: false },
+                { text: "Thinking about it.", thought: true },
+              ],
+            },
+          },
+        ],
+      }),
+    ]
+      .map((l) => `data: ${l}\n\n`)
+      .join("");
+
+    const { fixturePath } = await recordGeminiSse(sse);
+
+    const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+    ) as FixtureFile;
+    const saved = fixtureContent.fixtures[0].response as {
+      audio: { b64Json: string };
+      content?: string;
+      reasoning?: string;
+    };
+    expect(saved.audio.b64Json).toBe("WFla");
+    // The bug: content/reasoning collapsed alongside audio were dropped.
+    expect(saved.content).toBe("Here is the weather.");
+    expect(saved.reasoning).toBe("Thinking about it.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harmony-unparsed recording (end-to-end)
+//
+// When a gpt-oss stream carries harmony channel tokens that cannot be parsed
+// into a valid harmony structure, the collapser preserves the bytes VERBATIM and
+// surfaces the distinct `harmonyUnparsed` signal — it is NOT transport loss.
+// The recorder must therefore persist a content-bearing fixture (verbatim, not
+// an error/truncated fixture) and emit a DISTINCT harmony warning, never the
+// dropped-chunk or truncation warnings.
+// ---------------------------------------------------------------------------
+
+describe("recorder harmony-unparsed recording", () => {
+  let rawServer: http.Server | undefined;
+  let warnSpy: MockInstance | undefined;
+
+  afterEach(async () => {
+    warnSpy?.mockRestore();
+    warnSpy = undefined;
+    if (rawServer) {
+      await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    }
+  });
+
+  // A <|channel|> + <|message|> opener whose tool-call body never yields valid
+  // JSON — isHarmonyContent recognizes the tokens but parsing fails, so the
+  // collapser sets harmonyUnparsed and preserves content verbatim.
+  const BROKEN_HARMONY =
+    "<|start|>assistant<|channel|>commentary to=functions.broken<|constrain|>json<|message|>{not valid json";
+
+  it("persists verbatim harmony content as a content fixture (not error/truncated)", async () => {
+    const sse = [
+      `data: ${JSON.stringify({ id: "chatcmpl-broken", choices: [{ delta: { content: BROKEN_HARMONY } }] })}`,
+      "data: [DONE]",
+    ]
+      .map((l) => l + "\n\n")
+      .join("");
+
+    rawServer = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (rawServer!.address() as { port: number }).port;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-harmony-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: `http://127.0.0.1:${upstreamPort}` },
+        fixturePath: tmpDir,
+      },
+    });
+
+    await post(`${recorder.url}/v1/chat/completions`, {
+      model: "gpt-oss",
+      messages: [{ role: "user", content: "use harmony" }],
+      stream: true,
+    });
+
+    const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"),
+    ) as FixtureFile;
+    const saved = fixtureContent.fixtures[0].response as {
+      content?: string;
+      error?: unknown;
+      toolCalls?: unknown[];
+    };
+    // Verbatim content, no fabricated tool call, no error fixture.
+    expect(saved.error).toBeUndefined();
+    expect(saved.toolCalls).toBeUndefined();
+    expect(saved.content).toBe(BROKEN_HARMONY);
+  });
+
+  it("emits the distinct harmony-unparsed warning, not dropped-chunk/truncation warnings", async () => {
+    const sse = [
+      `data: ${JSON.stringify({ id: "chatcmpl-broken", choices: [{ delta: { content: BROKEN_HARMONY } }] })}`,
+      "data: [DONE]",
+    ]
+      .map((l) => l + "\n\n")
+      .join("");
+
+    const logger = new Logger("warn");
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    rawServer = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => rawServer!.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (rawServer!.address() as { port: number }).port;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-harmony-warn-"));
+    const record: RecordConfig = {
+      providers: { openai: `http://127.0.0.1:${upstreamPort}` },
+      fixturePath: tmpDir,
+    };
+
+    const { req, res } = createMockReqRes();
+    Object.assign(res, {
+      writeHead: () => res,
+      write: () => true,
+      end: () => res,
+      setHeader: () => res,
+      flushHeaders: () => undefined,
+    });
+
+    await proxyAndRecord(
+      req,
+      res,
+      { model: "gpt-oss", messages: [{ role: "user", content: "use harmony" }] },
+      "openai",
+      "/v1/chat/completions",
+      [],
+      { record, logger },
+    );
+
+    const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+    const harmonyWarning = warnings.find((w) =>
+      w.includes("Harmony tokens present but unparseable"),
+    );
+    expect(harmonyWarning).toBeDefined();
+    // Distinct signal — NOT counted as dropped/truncated transport loss.
+    expect(warnings.some((w) => w.includes("dropped during stream collapse"))).toBe(false);
+    expect(warnings.some((w) => w.includes("may be truncated"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Frame-timing splitter — CRLF delimiter tolerance
+//
+// Some upstreams/proxies emit SSE/NDJSON frames with CRLF line endings
+// (\r\n\r\n for SSE, \r\n for NDJSON), which the SSE spec permits. The
+// frame-timing splitter must split on these boundaries so per-frame
+// timestamps are captured. An LF-only splitter sees the whole stream as a
+// single frame, producing no recordedTimings.
+// ---------------------------------------------------------------------------
+
+describe("recorder frame-timing: CRLF delimiters", () => {
+  it("captures per-frame timing for CRLF-delimited SSE streams", async () => {
+    // Anthropic-style SSE, but with CRLF (\r\n\r\n) frame boundaries.
+    const rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const frames = [
+        `event: message_start\r\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_crlf", role: "assistant" } })}`,
+        `event: content_block_delta\r\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "CRLF " } })}`,
+        `event: content_block_delta\r\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "frames" } })}`,
+        `event: message_stop\r\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+      ];
+      // Write each frame with a CRLF/CRLF terminator on its own tick so the
+      // per-frame timestamps are distinguishable.
+      let i = 0;
+      const writeNext = () => {
+        if (i >= frames.length) {
+          res.end();
+          return;
+        }
+        res.write(`${frames[i]}\r\n\r\n`);
+        i++;
+        setTimeout(writeNext, 2);
+      };
+      writeNext();
+    });
+    await new Promise<void>((resolve) => rawServer.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { anthropic: rawUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/v1/messages`, {
+      model: "claude-3-sonnet",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "crlf sse timing test" }],
+      stream: true,
+    });
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"),
+    ) as FixtureFile;
+
+    // Content collapse must still work across CRLF frames.
+    const savedResponse = fixtureContent.fixtures[0].response as { content?: string };
+    expect(savedResponse.content).toBe("CRLF frames");
+
+    // The splitter must have seen each CRLF-terminated frame individually,
+    // so recordedTimings is present with one inter-chunk delay per frame gap.
+    const timings = fixtureContent.fixtures[0].recordedTimings;
+    expect(timings).toBeDefined();
+    // 4 frames → 3 inter-frame delays.
+    expect(timings!.interChunkDelaysMs.length).toBe(3);
+
+    await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+  });
+
+  it("captures per-frame timing for CRLF-delimited NDJSON streams", async () => {
+    // Ollama-style NDJSON, but with CRLF (\r\n) line endings.
+    const rawServer = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      const lines = [
+        JSON.stringify({ message: { role: "assistant", content: "NDJSON " }, done: false }),
+        JSON.stringify({ message: { role: "assistant", content: "over " }, done: false }),
+        JSON.stringify({ message: { role: "assistant", content: "CRLF" }, done: true }),
+      ];
+      let i = 0;
+      const writeNext = () => {
+        if (i >= lines.length) {
+          res.end();
+          return;
+        }
+        res.write(`${lines[i]}\r\n`);
+        i++;
+        setTimeout(writeNext, 2);
+      };
+      writeNext();
+    });
+    await new Promise<void>((resolve) => rawServer.listen(0, "127.0.0.1", resolve));
+    const rawAddr = rawServer.address() as { port: number };
+    const rawUrl = `http://127.0.0.1:${rawAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { ollama: rawUrl }, fixturePath: tmpDir },
+    });
+
+    const resp = await post(`${recorder.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "crlf ndjson timing test" }],
+      stream: true,
+    });
+    expect(resp.status).toBe(200);
+
+    const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const fixtureContent = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"),
+    ) as FixtureFile;
+
+    // Each CRLF-terminated NDJSON line must be timestamped individually.
+    const timings = fixtureContent.fixtures[0].recordedTimings;
+    expect(timings).toBeDefined();
+    // 3 frames → 2 inter-frame delays.
+    expect(timings!.interChunkDelaysMs.length).toBe(2);
+
+    await new Promise<void>((resolve) => rawServer.close(() => resolve()));
   });
 });
