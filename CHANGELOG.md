@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-06-02
+
+### Added
+
+- **Harmony channel format** — parse OpenAI "harmony" channel tokens (`<|channel|>… <|message|>… <|call|>`) emitted by local gpt-oss models (Ollama / vLLM / OpenRouter) so their tool calls, reasoning, and content are captured when recording (hosted OpenAI pre-parses harmony, so only local runtimes pass it through raw). Implemented as a lexer + state-machine parser with a uniform all-or-nothing verbatim fail-safe, wired as fallback-only so it never produces phantom tool calls.
+
+### Fixed
+
+- **Recorder** — decode streamed response chunks incrementally to prevent multibyte UTF-8 corruption; CRLF-tolerant frame-timing splitter; propagate `webSearches` and audio-companion fields (tool calls / content / reasoning) into recorded fixtures; log `firstDroppedSample` alongside dropped-chunk warnings.
+- **Stream collapsers** — multi-line and CRLF SSE handling; missing/uncorrelated tool-call index guards with symmetric dropped-chunk accounting across OpenAI / Anthropic / Bedrock / Cohere; bound Bedrock EventStream header parsing against malformed frames.
+- **Gemini** — replay audio-companion tool calls / content / reasoning on audio turns instead of dropping them.
+
 ## [1.27.3] - 2026-05-27
 
 ### Fixed
