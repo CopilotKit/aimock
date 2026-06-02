@@ -192,9 +192,23 @@ export interface ImageResponse {
   images?: ImageItem[];
 }
 
+// ORDERING CONTRACT: audio fixtures MUST be discriminated by `isAudioResponse`
+// BEFORE the `isContentWithToolCallsResponse` / `isToolCallResponse` / text
+// guards, because the optional companion fields below make these shapes
+// structurally overlap (an AudioResponse with `toolCalls`/`content` would also
+// satisfy those guards otherwise).
 export interface AudioResponse {
   audio: string | { b64Json: string; contentType?: string };
   format?: string;
+  /**
+   * Companion modalities that can accompany streamed audio. A single Gemini turn
+   * may interleave inlineData audio with a functionCall and/or text/thought
+   * parts; the recorder preserves them here so the tool call / content / reasoning
+   * are not silently discarded when audio is also present.
+   */
+  toolCalls?: ToolCall[];
+  content?: string;
+  reasoning?: string;
 }
 
 export interface TranscriptionResponse {

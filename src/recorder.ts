@@ -3,6 +3,7 @@ import * as https from "node:https";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -366,15 +367,40 @@ export async function proxyAndRecord(
       defaults.logger.warn("Bedrock EventStream: CRC mismatch — response may be truncated");
     }
     if (collapsed.droppedChunks && collapsed.droppedChunks > 0) {
-      defaults.logger.warn(`${collapsed.droppedChunks} chunk(s) dropped during stream collapse`);
+      defaults.logger.warn(
+        `${collapsed.droppedChunks} chunk(s) dropped during stream collapse${collapsed.firstDroppedSample ? ` — first: ${collapsed.firstDroppedSample}` : ""}`,
+      );
     }
-    // Audio from streamed inlineData (e.g. Gemini SSE with audio parts)
+    if (collapsed.harmonyUnparsed) {
+      defaults.logger.warn(
+        `Harmony tokens present but unparseable — content preserved verbatim${collapsed.harmonyNote ? ` (${collapsed.harmonyNote})` : ""}`,
+      );
+    }
+    // Audio from streamed inlineData (e.g. Gemini SSE with audio parts).
+    // A single Gemini turn can interleave audio with a functionCall and/or
+    // text/thought parts; preserve those companion modalities so the tool call
+    // / content / reasoning are not silently dropped when audio is present.
     if (collapsed.audioB64) {
+      const audioToolCallsSpread =
+        collapsed.toolCalls && collapsed.toolCalls.length > 0
+          ? {
+              toolCalls: collapsed.toolCalls.map((tc) => ({
+                ...tc,
+                name: tc.name ?? "",
+                arguments: tc.arguments ?? "{}",
+              })),
+            }
+          : {};
+      const audioContentSpread = collapsed.content ? { content: collapsed.content } : {};
+      const audioReasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
       fixtureResponse = {
         audio: {
           b64Json: collapsed.audioB64,
           contentType: collapsed.audioMimeType ?? "audio/mpeg",
         },
+        ...audioToolCallsSpread,
+        ...audioContentSpread,
+        ...audioReasoningSpread,
       };
     } else if (
       collapsed.content === "" &&
@@ -382,9 +408,19 @@ export async function proxyAndRecord(
     ) {
       defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
-      fixtureResponse = { content: collapsed.content ?? "", ...reasoningSpread };
+      const webSearchesSpread = collapsed.webSearches?.length
+        ? { webSearches: collapsed.webSearches }
+        : {};
+      fixtureResponse = {
+        content: collapsed.content ?? "",
+        ...reasoningSpread,
+        ...webSearchesSpread,
+      };
     } else {
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
+      const webSearchesSpread = collapsed.webSearches?.length
+        ? { webSearches: collapsed.webSearches }
+        : {};
       if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
         const sanitizedToolCalls = collapsed.toolCalls.map((tc) => ({
           ...tc,
@@ -397,12 +433,21 @@ export async function proxyAndRecord(
             content: collapsed.content,
             toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
+            ...webSearchesSpread,
           };
         } else {
-          fixtureResponse = { toolCalls: sanitizedToolCalls, ...reasoningSpread };
+          fixtureResponse = {
+            toolCalls: sanitizedToolCalls,
+            ...reasoningSpread,
+            ...webSearchesSpread,
+          };
         }
       } else {
-        fixtureResponse = { content: collapsed.content ?? "", ...reasoningSpread };
+        fixtureResponse = {
+          content: collapsed.content ?? "",
+          ...reasoningSpread,
+          ...webSearchesSpread,
+        };
       }
     }
   } else {
@@ -572,6 +617,26 @@ export async function proxyAndRecord(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Decodes a sequence of byte chunks to UTF-8 text for SSE/NDJSON frame
+ * splitting on the streamed-capture path. Wraps Node's StringDecoder so a
+ * multibyte UTF-8 character (CJK, emoji, ...) whose bytes are split across a
+ * TCP chunk boundary buffers across chunks instead of decoding to U+FFFD
+ * replacement characters — decoding each chunk independently with
+ * Buffer#toString() would corrupt the recorded frame text.
+ */
+export class StreamingFrameDecoder {
+  private decoder = new StringDecoder("utf8");
+  /** Decode a chunk, holding back any trailing partial multibyte sequence. */
+  write(chunk: Buffer): string {
+    return this.decoder.write(chunk);
+  }
+  /** Flush any buffered bytes once the stream has ended. */
+  end(): string {
+    return this.decoder.end();
+  }
+}
+
 function clampTimeout(value: number | undefined, fallback: number): number {
   if (value == null || !Number.isFinite(value) || value <= 0) return fallback;
   return value;
@@ -631,6 +696,10 @@ function makeUpstreamRequest(
         const frameTimestamps: number[] = [];
         const streamStartTime = Date.now();
         let frameBuffer = "";
+        // Decode chunks through a streaming-aware decoder so a multibyte UTF-8
+        // character split across a TCP chunk boundary buffers across chunks
+        // instead of decoding to U+FFFD replacement characters.
+        const frameDecoder = new StreamingFrameDecoder();
         let binaryFrameBuffer = Buffer.alloc(0);
 
         let streamedToClient = false;
@@ -670,8 +739,14 @@ function makeUpstreamRequest(
           // TCP data events don't align with SSE frames — buffer and
           // split on the protocol delimiter to timestamp each complete frame.
           if (isSSE || isNDJSON) {
-            frameBuffer += chunk.toString();
-            const delimiter = isNDJSON ? "\n" : "\n\n";
+            frameBuffer += frameDecoder.write(chunk);
+            // Split on the protocol delimiter, tolerating CRLF line endings.
+            // The SSE spec permits CRLF, and some upstreams/proxies emit
+            // \r\n\r\n (SSE) or \r\n (NDJSON) frame boundaries. An LF-only
+            // split would see the whole CRLF stream as a single frame and
+            // lose per-frame timing. The last split element (a partial frame
+            // tail) stays buffered, exactly as with a string delimiter.
+            const delimiter = isNDJSON ? /\r?\n/ : /\r?\n\r?\n/;
             const parts = frameBuffer.split(delimiter);
             // All complete frames (everything except the last part which
             // may be incomplete).
@@ -721,8 +796,13 @@ function makeUpstreamRequest(
           // the stream ended without a trailing delimiter. Binary EventStream
           // frames are length-prefixed so partial frames at end-of-stream are
           // genuinely incomplete and should not be timestamped.
-          if ((isSSE || isNDJSON) && frameBuffer.trim().length > 0) {
-            frameTimestamps.push(Date.now());
+          if (isSSE || isNDJSON) {
+            // Drain any bytes the decoder buffered for an incomplete multibyte
+            // sequence so the final frame text is complete before we test it.
+            frameBuffer += frameDecoder.end();
+            if (frameBuffer.trim().length > 0) {
+              frameTimestamps.push(Date.now());
+            }
           }
           const rawBuffer = Buffer.concat(chunks);
           if (
