@@ -10,6 +10,7 @@
 import { crc32 } from "node:zlib";
 import type { RecordProviderKey, ToolCall } from "./types.js";
 import type { Logger } from "./logger.js";
+import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
 
 // ---------------------------------------------------------------------------
 // Result type shared by all collapse functions
@@ -25,6 +26,79 @@ export interface CollapseResult {
   truncated?: boolean;
   audioB64?: string;
   audioMimeType?: string;
+  /**
+   * Set when harmony channel tokens were present in the accumulated content but
+   * could NOT be parsed into a complete, valid harmony structure. The content
+   * is preserved VERBATIM, so this is NOT transport loss — it is distinct from
+   * `droppedChunks` / `truncated`, which are reserved for genuine transport loss
+   * (malformed SSE/NDJSON frames, CRC mismatch). The caller surfaces this as a
+   * dedicated warning rather than a dropped/truncated-chunk warning.
+   */
+  harmonyUnparsed?: true;
+  /** Short human-readable note accompanying {@link harmonyUnparsed}. */
+  harmonyNote?: string;
+}
+
+/**
+ * Slice the first `max` UTF-16 code units of `s` for a diagnostic sample,
+ * trimming a trailing lone high-surrogate so the resulting sample never ends on
+ * a lone high surrogate (i.e. never mid-surrogate-pair).
+ */
+function surrogateSafeSlice(s: string, max: number): string {
+  let out = s.slice(0, max);
+  if (out.length > 0) {
+    const last = out.charCodeAt(out.length - 1);
+    // A high surrogate (U+D800..U+DBFF) at the end is the lead of a split pair.
+    if (last >= 0xd800 && last <= 0xdbff) {
+      out = out.slice(0, -1);
+    }
+  }
+  return out;
+}
+
+/**
+ * Split a raw SSE body into per-event blocks.
+ *
+ * Events are delimited by a blank line. Real HTTP/SSE transports use CRLF
+ * (`\r\n`) line endings, so the inter-event delimiter is `\r\n\r\n` (which
+ * contains no `\n\n` substring) and each line ends with a trailing `\r`.
+ * Splitting on `/\r?\n\r?\n/` handles LF, CRLF, and mixed streams; per-line
+ * `\r` trimming happens in {@link splitSSELines}. Blank blocks are dropped.
+ */
+function splitSSEEvents(body: string): string[] {
+  return body.split(/\r?\n\r?\n/).filter((block) => block.trim().length > 0);
+}
+
+/**
+ * Split a single SSE event block into its lines, trimming a trailing `\r` so
+ * CRLF streams parse identically to LF streams.
+ */
+function splitSSELines(block: string): string[] {
+  return block.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+}
+
+/**
+ * Extract the SSE `data` field from a single event block's lines.
+ *
+ * Per the SSE spec a single event may carry MULTIPLE `data:` lines; the field
+ * value is every data line's content joined with "\n". Collecting only the
+ * first `data:` line (e.g. via `.find`) corrupts payloads that a server split
+ * across lines. Callers MUST pass lines produced by {@link splitSSELines} so
+ * any trailing `\r` is already stripped. Returns the joined payload (with the
+ * leading "data:" prefix and one optional leading space stripped per line), or
+ * `undefined` when the block contains no `data:` line.
+ */
+function extractSSEData(lines: string[]): string | undefined {
+  const dataParts: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    // Strip "data:" then a single optional leading space, per the SSE spec.
+    let part = line.slice(5);
+    if (part.startsWith(" ")) part = part.slice(1);
+    dataParts.push(part);
+  }
+  if (dataParts.length === 0) return undefined;
+  return dataParts.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -39,19 +113,30 @@ export interface CollapseResult {
  *   data: [DONE]\n\n
  */
 export function collapseOpenAISSE(body: string): CollapseResult {
-  const lines = body.split("\n\n").filter((l) => l.trim().length > 0);
+  const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
   const webSearchQueries: string[] = [];
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
+  let harmonyUnparsed = false;
+  let harmonyNote: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+  // Fallback keying for deltas that OMIT `index`. Without this, every
+  // index-less delta collapses under one `undefined`/NaN key, merging distinct
+  // tool calls and corrupting arguments. Index-less fragments that share an
+  // `id` correlate via `idKeyMap`; otherwise each gets a fresh synthetic key
+  // assigned from a counter kept above any real index so sort order is stable.
+  // The 1_000_000 sentinel assumes real provider tool-call indices stay below
+  // it (they are small per-stream counters), so synthetic keys never collide.
+  let nextSyntheticIndex = 1_000_000;
+  const idKeyMap = new Map<string, number>();
 
   for (const line of lines) {
-    const dataLine = line.split("\n").find((l) => l.startsWith("data:"));
-    if (!dataLine) continue;
+    const data = extractSSEData(splitSSELines(line));
+    if (data === undefined) continue;
 
-    const payload = dataLine.slice(5).trim();
+    const payload = data.trim();
     if (payload === "[DONE]") continue;
 
     let parsed: Record<string, unknown>;
@@ -61,7 +146,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(payload, 200)}`;
       }
       continue;
     }
@@ -118,12 +203,30 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     const toolCalls = delta.tool_calls as Array<Record<string, unknown>> | undefined;
     if (toolCalls) {
       for (const tc of toolCalls) {
-        const index = tc.index as number;
         const fn = tc.function as Record<string, unknown> | undefined;
+        const rawId = typeof tc.id === "string" ? tc.id : undefined;
+
+        // Resolve a stable map key. Prefer the streamed `index`; when it is
+        // absent, correlate by `id` if present, else mint a fresh synthetic
+        // key so distinct index-less calls never merge.
+        let index: number;
+        if (typeof tc.index === "number") {
+          index = tc.index;
+        } else if (rawId !== undefined) {
+          const existing = idKeyMap.get(rawId);
+          if (existing !== undefined) {
+            index = existing;
+          } else {
+            index = nextSyntheticIndex++;
+            idKeyMap.set(rawId, index);
+          }
+        } else {
+          index = nextSyntheticIndex++;
+        }
 
         if (!toolCallMap.has(index)) {
           toolCallMap.set(index, {
-            id: (tc.id as string) ?? "",
+            id: rawId ?? "",
             name: (fn?.name as string) ?? "",
             arguments: "",
           });
@@ -143,17 +246,54 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     }
   }
 
-  if (toolCallMap.size > 0) {
+  // Open-weight gpt-oss models (Ollama / vLLM / OpenRouter) stream tool calls
+  // as raw harmony channel tokens inside delta.content rather than structured
+  // delta.tool_calls. Harmony parsing is FALLBACK-ONLY: attempt it ONLY when
+  // there are NO structured delta.tool_calls. If structured tool calls exist,
+  // any harmony-looking content is prose — never merged (no phantom tool call),
+  // never stamped as truncated/dropped. When harmony IS the only source, a
+  // successful parse routes channels (content/reasoning/toolCalls); a failure
+  // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
+  // signal (NOT droppedChunks/truncated — the bytes are not lost).
+  const harmonyToolCalls: ToolCall[] = [];
+  if (toolCallMap.size === 0 && isHarmonyContent(content)) {
+    const parsed = parseHarmonyContent(content);
+    if (parsed.failed) {
+      harmonyUnparsed = true;
+      harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
+    } else {
+      content = parsed.content;
+      if (parsed.reasoning) {
+        reasoning += parsed.reasoning;
+      }
+      harmonyToolCalls.push(...parsed.toolCalls);
+    }
+  }
+
+  if (toolCallMap.size > 0 || harmonyToolCalls.length > 0) {
     const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
     return {
       ...(content ? { content } : {}),
-      toolCalls: sorted.map(([, tc]) => ({
-        name: tc.name,
-        arguments: tc.arguments,
-        ...(tc.id ? { id: tc.id } : {}),
-      })),
+      // Fallback-only: harmonyToolCalls are populated ONLY in the
+      // no-structured-calls branch, so this is never a merge of both sources.
+      toolCalls: [
+        ...sorted.map(([, tc]) => ({
+          name: tc.name,
+          arguments: tc.arguments,
+          ...(tc.id ? { id: tc.id } : {}),
+        })),
+        ...harmonyToolCalls,
+      ],
+      // Reasoning is preserved alongside tool calls for ALL structured streams
+      // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
+      // parity with every other collapser and the non-streaming path.
+      ...(reasoning ? { reasoning } : {}),
+      // webSearches parity with the text-only return branch.
+      ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+      ...(harmonyNote ? { harmonyNote } : {}),
     };
   }
 
@@ -163,6 +303,8 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+    ...(harmonyNote ? { harmonyNote } : {}),
   };
 }
 
@@ -178,21 +320,32 @@ export function collapseOpenAISSE(body: string): CollapseResult {
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
  */
 export function collapseAnthropicSSE(body: string): CollapseResult {
-  const blocks = body.split("\n\n").filter((b) => b.trim().length > 0);
+  const blocks = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+  // Fallback keying for content blocks that OMIT `index` (mirrors the OpenAI /
+  // Cohere / Bedrock guards). Without it, every index-less block collapses
+  // under one `undefined` key, merging distinct tool_use blocks. Index-less
+  // starts mint a fresh synthetic key (kept above any real index so sort order
+  // is stable). Despite its name, `lastSyntheticIndex` tracks whichever
+  // tool_use start most recently opened REGARDLESS of whether its index was
+  // real or synthetic (it is set on EVERY start), so an index-less delta
+  // correlates to the most-recent start — not just to the last synthetic one.
+  // The 1_000_000 sentinel assumes real provider indices stay below it.
+  let nextSyntheticIndex = 1_000_000;
+  let lastSyntheticIndex: number | undefined;
 
   for (const block of blocks) {
-    const lines = block.split("\n");
+    const lines = splitSSELines(block);
     const eventLine = lines.find((l) => l.startsWith("event:"));
-    const dataLine = lines.find((l) => l.startsWith("data:"));
-    if (!dataLine) continue;
+    const data = extractSSEData(lines);
+    if (data === undefined) continue;
 
     const eventType = eventLine ? eventLine.slice(6).trim() : "";
-    const payload = dataLine.slice(5).trim();
+    const payload = data.trim();
 
     let parsed: Record<string, unknown>;
     try {
@@ -201,15 +354,23 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(payload, 200)}`;
       }
       continue;
     }
 
     if (eventType === "content_block_start") {
-      const index = parsed.index as number;
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
       if (contentBlock?.type === "tool_use") {
+        // Prefer the streamed `index`; when absent, mint a fresh synthetic key
+        // so distinct index-less tool_use blocks never merge.
+        let index: number;
+        if (typeof parsed.index === "number") {
+          index = parsed.index;
+        } else {
+          index = nextSyntheticIndex++;
+        }
+        lastSyntheticIndex = index;
         toolCallMap.set(index, {
           id: (contentBlock.id as string) ?? "",
           name: (contentBlock.name as string) ?? "",
@@ -219,7 +380,6 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
     }
 
     if (eventType === "content_block_delta") {
-      const index = parsed.index as number;
       const delta = parsed.delta as Record<string, unknown> | undefined;
       if (!delta) continue;
 
@@ -232,9 +392,24 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       }
 
       if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-        const entry = toolCallMap.get(index);
+        // Use the streamed `index` when present; otherwise correlate to the
+        // most recent tool_use start (mirrors the start-side fallback).
+        const index = typeof parsed.index === "number" ? parsed.index : lastSyntheticIndex;
+        // A delta that cannot correlate to any known start (no streamed index
+        // AND no prior start, or a stale index with no entry) would otherwise
+        // silently lose its args. Account for it as a dropped chunk instead of
+        // vanishing (mirrors the Cohere uncorrelated-delta path).
+        const entry = index !== undefined ? toolCallMap.get(index) : undefined;
         if (entry) {
           entry.arguments += delta.partial_json;
+        } else {
+          droppedChunks++;
+          if (droppedChunks === 1) {
+            firstDroppedSample = `input_json_delta with no correlating tool_use start: ${surrogateSafeSlice(
+              payload,
+              200,
+            )}`;
+          }
         }
       }
     }
@@ -274,7 +449,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
  *   data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}\n\n
  */
 export function collapseGeminiSSE(body: string): CollapseResult {
-  const lines = body.split("\n\n").filter((l) => l.trim().length > 0);
+  const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -284,10 +459,10 @@ export function collapseGeminiSSE(body: string): CollapseResult {
   const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
-    const dataLine = line.split("\n").find((l) => l.startsWith("data:"));
-    if (!dataLine) continue;
+    const data = extractSSEData(splitSSELines(line));
+    if (data === undefined) continue;
 
-    const payload = dataLine.slice(5).trim();
+    const payload = data.trim();
 
     let parsed: Record<string, unknown>;
     try {
@@ -296,7 +471,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(payload, 200)}`;
       }
       continue;
     }
@@ -315,7 +490,12 @@ export function collapseGeminiSSE(body: string): CollapseResult {
         const fc = part.functionCall as Record<string, unknown>;
         toolCalls.push({
           name: String(fc.name ?? ""),
-          arguments: typeof fc.args === "string" ? (fc.args as string) : JSON.stringify(fc.args),
+          // Default undefined/object args to a JSON object string (matches
+          // collapseGeminiInteractionsSSE / Ollama). JSON.stringify(undefined)
+          // would otherwise yield the VALUE undefined, violating the
+          // ToolCall.arguments:string contract.
+          arguments:
+            typeof fc.args === "string" ? (fc.args as string) : JSON.stringify(fc.args ?? {}),
         });
       } else if (
         part.inlineData &&
@@ -340,9 +520,15 @@ export function collapseGeminiSSE(body: string): CollapseResult {
   }
 
   if (audioB64) {
+    // Preserve any content / reasoning / tool calls accumulated in the same
+    // stream — a Gemini turn can interleave audio with text and functionCall
+    // parts, and the early return must not silently drop them.
     return {
       audioB64,
       audioMimeType,
+      ...(content ? { content } : {}),
+      ...(reasoning ? { reasoning } : {}),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
@@ -378,12 +564,20 @@ export function collapseGeminiSSE(body: string): CollapseResult {
  *
  * /api/generate format:
  *   {"model":"llama3","response":"Hello","done":false}\n
+ *
+ * Open-weight gpt-oss served via Ollama streams harmony channel tokens inside
+ * `message.content` (just like the OpenAI SSE path), so after accumulation the
+ * content is run through the same fail-safe {@link parseHarmonyContent} gate to
+ * capture structured tool calls / reasoning instead of leaking raw tokens.
  */
 export function collapseOllamaNDJSON(body: string): CollapseResult {
   const lines = body.split("\n").filter((l) => l.trim().length > 0);
   let content = "";
+  let reasoning = "";
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
+  let harmonyUnparsed = false;
+  let harmonyNote: string | undefined;
   const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
@@ -394,7 +588,7 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${line.trim().slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(line.trim(), 200)}`;
       }
       continue;
     }
@@ -413,8 +607,13 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
           if (fn) {
             toolCalls.push({
               name: String(fn.name ?? ""),
+              // Default undefined/object args to a JSON object (matching
+              // collapseGeminiInteractionsSSE) — JSON.stringify(undefined)
+              // would otherwise yield the literal string "undefined".
               arguments:
-                typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments),
+                typeof fn.arguments === "string"
+                  ? fn.arguments
+                  : JSON.stringify(fn.arguments ?? {}),
             });
           }
         }
@@ -427,19 +626,46 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
     }
   }
 
+  // Open-weight gpt-oss served via Ollama streams harmony channel tokens inside
+  // message.content (same as the OpenAI SSE path). Harmony parsing is
+  // FALLBACK-ONLY: attempt it ONLY when there are NO structured message
+  // tool_calls. If structured tool calls exist, harmony-looking content is
+  // prose — never merged (no phantom), never stamped truncated/dropped. On a
+  // harmony failure the content is preserved VERBATIM and surfaced via the
+  // distinct `harmonyUnparsed` signal (NOT droppedChunks/truncated).
+  if (toolCalls.length === 0 && isHarmonyContent(content)) {
+    const parsedHarmony = parseHarmonyContent(content);
+    if (parsedHarmony.failed) {
+      harmonyUnparsed = true;
+      harmonyNote = `harmony tokens present but unparseable; content preserved verbatim: ${surrogateSafeSlice(content, 200)}`;
+    } else {
+      content = parsedHarmony.content;
+      if (parsedHarmony.reasoning) {
+        reasoning += parsedHarmony.reasoning;
+      }
+      toolCalls.push(...parsedHarmony.toolCalls);
+    }
+  }
+
   if (toolCalls.length > 0) {
     return {
       ...(content ? { content } : {}),
       toolCalls,
+      ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+      ...(harmonyNote ? { harmonyNote } : {}),
     };
   }
 
   return {
     content,
+    ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
+    ...(harmonyNote ? { harmonyNote } : {}),
   };
 }
 
@@ -454,20 +680,30 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
  *   event: content-delta\ndata: {"type":"content-delta","delta":{"message":{"content":{"text":"Hello"}}}}\n\n
  */
 export function collapseCohereSSE(body: string): CollapseResult {
-  const blocks = body.split("\n\n").filter((b) => b.trim().length > 0);
+  const blocks = splitSSEEvents(body);
   let content = "";
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+  // Fallback keying for tool-call events that OMIT `index` (mirrors the
+  // OpenAI guard). Without it, every index-less tool-call-start collapses
+  // under one `undefined`/NaN key, merging distinct calls. Index-less starts
+  // mint a fresh synthetic key. `lastStartKey` tracks the most-recent
+  // tool-call-start key REGARDLESS of whether it was real or synthetic, so an
+  // index-less tool-call-delta correlates to whichever start most recently
+  // opened — not just to the last synthetic one. The 1_000_000 sentinel
+  // assumes real provider indices stay below it.
+  let nextSyntheticIndex = 1_000_000;
+  let lastStartKey: number | undefined;
 
   for (const block of blocks) {
-    const lines = block.split("\n");
+    const lines = splitSSELines(block);
     const eventLine = lines.find((l) => l.startsWith("event:"));
-    const dataLine = lines.find((l) => l.startsWith("data:"));
-    if (!dataLine) continue;
+    const data = extractSSEData(lines);
+    if (data === undefined) continue;
 
     const eventType = eventLine ? eventLine.slice(6).trim() : "";
-    const payload = dataLine.slice(5).trim();
+    const payload = data.trim();
 
     let parsed: Record<string, unknown>;
     try {
@@ -476,7 +712,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(payload, 200)}`;
       }
       continue;
     }
@@ -491,7 +727,15 @@ export function collapseCohereSSE(body: string): CollapseResult {
     }
 
     if (eventType === "tool-call-start") {
-      const index = parsed.index as number;
+      let index: number;
+      if (typeof parsed.index === "number") {
+        index = parsed.index;
+      } else {
+        index = nextSyntheticIndex++;
+      }
+      // Track the most-recent start key (real OR synthetic) so a following
+      // index-less delta correlates to whichever call just opened.
+      lastStartKey = index;
       const delta = parsed.delta as Record<string, unknown> | undefined;
       const message = delta?.message as Record<string, unknown> | undefined;
       const toolCalls = message?.tool_calls as Record<string, unknown> | undefined;
@@ -506,16 +750,29 @@ export function collapseCohereSSE(body: string): CollapseResult {
     }
 
     if (eventType === "tool-call-delta") {
-      const index = parsed.index as number;
+      // Use the streamed `index` when present; otherwise correlate to the most
+      // recent tool-call-start (real or synthetic key).
+      const index = typeof parsed.index === "number" ? parsed.index : lastStartKey;
       const delta = parsed.delta as Record<string, unknown> | undefined;
       const message = delta?.message as Record<string, unknown> | undefined;
       const toolCalls = message?.tool_calls as Record<string, unknown> | undefined;
       if (toolCalls) {
         const fn = toolCalls.function as Record<string, unknown> | undefined;
         if (fn && typeof fn.arguments === "string") {
-          const entry = toolCallMap.get(index);
+          // A delta that cannot correlate to any known start (no streamed
+          // index AND no prior start) would otherwise silently lose its args.
+          // Account for it as a dropped chunk instead of vanishing.
+          const entry = index !== undefined ? toolCallMap.get(index) : undefined;
           if (entry) {
             entry.arguments += fn.arguments;
+          } else {
+            droppedChunks++;
+            if (droppedChunks === 1) {
+              firstDroppedSample = `tool-call-delta with no correlating start: ${surrogateSafeSlice(
+                payload,
+                200,
+              )}`;
+            }
           }
         }
       }
@@ -586,26 +843,55 @@ function decodeEventStreamFrames(buf: Buffer): {
     // Parse headers
     const headersStart = offset + 12;
     const headersEnd = headersStart + headersLength;
+    const payloadEnd = offset + totalLength - 4; // minus message CRC
+
+    // Validate the headers region fits inside the frame. A frame can carry a
+    // valid prelude CRC yet declare a `headersLength` that overruns the payload
+    // region (the prelude CRC only covers total/headers length, not the body).
+    // Without this guard a per-header read walks off the buffer and throws an
+    // uncaught RangeError; treat it as truncation instead.
+    if (headersEnd > payloadEnd || headersEnd > buf.length) {
+      return { frames, truncated: true };
+    }
+
     const headers: Record<string, string> = {};
     let hOffset = headersStart;
+    let headerOverrun = false;
 
     while (hOffset < headersEnd) {
+      // Each read must stay within the declared headers region. Bail out
+      // (truncated) on any overrun rather than reading past the boundary.
+      if (hOffset + 1 > headersEnd) {
+        headerOverrun = true;
+        break;
+      }
       const nameLen = buf.readUInt8(hOffset);
       hOffset += 1;
+      if (hOffset + nameLen + 1 + 2 > headersEnd) {
+        headerOverrun = true;
+        break;
+      }
       const name = buf.subarray(hOffset, hOffset + nameLen).toString("utf8");
       hOffset += nameLen;
       // Skip header type byte (type 7 = STRING)
       hOffset += 1;
       const valueLen = buf.readUInt16BE(hOffset);
       hOffset += 2;
+      if (hOffset + valueLen > headersEnd) {
+        headerOverrun = true;
+        break;
+      }
       const value = buf.subarray(hOffset, hOffset + valueLen).toString("utf8");
       hOffset += valueLen;
       headers[name] = value;
     }
 
+    if (headerOverrun) {
+      return { frames, truncated: true };
+    }
+
     // Extract payload
     const payloadStart = headersEnd;
-    const payloadEnd = offset + totalLength - 4; // minus message CRC
     const payload = buf.subarray(payloadStart, payloadEnd);
 
     // Validate message CRC (covers entire frame minus last 4 bytes)
@@ -644,7 +930,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${frameStr.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(frameStr, 200)}`;
       }
       continue;
     }
@@ -657,9 +943,20 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       }
       if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
         const index = parsed.index as number | undefined;
-        if (index !== undefined) {
-          const entry = toolCallMap.get(index);
-          if (entry) entry.arguments += delta.partial_json;
+        // An arg delta that cannot correlate to a known tool_use start would
+        // otherwise silently lose its args. Account for it as a dropped chunk
+        // instead of vanishing (mirrors the Cohere uncorrelated-delta path).
+        const entry = index !== undefined ? toolCallMap.get(index) : undefined;
+        if (entry) {
+          entry.arguments += delta.partial_json;
+        } else {
+          droppedChunks++;
+          if (droppedChunks === 1) {
+            firstDroppedSample = `input_json_delta with no correlating tool_use start: ${surrogateSafeSlice(
+              frameStr,
+              200,
+            )}`;
+          }
         }
       }
       continue;
@@ -712,10 +1009,21 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       // Tool use input JSON delta
       if (typeof delta.toolUse === "object" && delta.toolUse !== null) {
         const toolUseDelta = delta.toolUse as Record<string, unknown>;
-        if (typeof toolUseDelta.input === "string" && index !== undefined) {
-          const entry = toolCallMap.get(index);
+        if (typeof toolUseDelta.input === "string") {
+          // An arg delta that cannot correlate to a known tool_use start would
+          // otherwise silently lose its args. Account for it as a dropped chunk
+          // instead of vanishing (mirrors the Cohere uncorrelated-delta path).
+          const entry = index !== undefined ? toolCallMap.get(index) : undefined;
           if (entry) {
             entry.arguments += toolUseDelta.input;
+          } else {
+            droppedChunks++;
+            if (droppedChunks === 1) {
+              firstDroppedSample = `toolUse.input delta with no correlating tool_use start: ${surrogateSafeSlice(
+                frameStr,
+                200,
+              )}`;
+            }
           }
         }
       }
@@ -756,7 +1064,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
  *   data: {"event_type":"interaction.complete","interaction":{"id":"...","usage":{...}}}\n\n
  */
 export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
-  const lines = body.split("\n\n").filter((l) => l.trim().length > 0);
+  const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
   let droppedChunks = 0;
@@ -764,10 +1072,10 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
   const toolCalls: ToolCall[] = [];
 
   for (const line of lines) {
-    const dataLine = line.split("\n").find((l) => l.startsWith("data:"));
-    if (!dataLine) continue;
+    const data = extractSSEData(splitSSELines(line));
+    if (data === undefined) continue;
 
-    const payload = dataLine.slice(5).trim();
+    const payload = data.trim();
 
     let parsed: Record<string, unknown>;
     try {
@@ -776,7 +1084,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
       droppedChunks++;
       if (droppedChunks === 1) {
         const msg = err instanceof Error ? err.message : "unknown";
-        firstDroppedSample = `parse failed (${msg}): ${payload.slice(0, 200)}`;
+        firstDroppedSample = `parse failed (${msg}): ${surrogateSafeSlice(payload, 200)}`;
       }
       continue;
     }
