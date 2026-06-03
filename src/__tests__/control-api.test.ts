@@ -282,6 +282,31 @@ describe("/__aimock control API", () => {
     });
   });
 
+  describe("DELETE /v1/_requests", () => {
+    it("clears journal entries while preserving fixture match-counts", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+
+      // Make a request so the journal records an entry AND the fixture's
+      // match-count is incremented to a non-zero value.
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
+      const countBefore = instance.journal.getFixtureMatchCount(fixtures[0]);
+      expect(countBefore).toBeGreaterThan(0);
+
+      // Clear ONLY the request journal entries.
+      const res = await httpRequest(`${instance.url}/v1/_requests`, "DELETE");
+      expect(res.status).toBe(204);
+
+      // Journal entries cleared, but the fixture match-count must survive —
+      // clearing the request log must not rewind sequenced fixtures to index 0.
+      expect(instance.journal.size).toBe(0);
+      expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBe(countBefore);
+    });
+  });
+
   describe("GET /__aimock/journal", () => {
     it("returns journal entries", async () => {
       const fixtures: Fixture[] = [
