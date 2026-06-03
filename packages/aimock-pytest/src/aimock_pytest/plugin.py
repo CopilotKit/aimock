@@ -5,6 +5,8 @@ Auto-discovered by pytest via the ``pytest11`` entry point in pyproject.toml.
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 import pytest
 
 from aimock_pytest._version import AIMOCK_VERSION
@@ -36,20 +38,20 @@ def _aimock_node_manager(request: pytest.FixtureRequest) -> NodeManager:
 
 
 @pytest.fixture
-def aimock(_aimock_node_manager: NodeManager) -> AIMockServer:
+def aimock(_aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
     """Function-scoped aimock server.  A fresh server is started for every
     test that requests this fixture, and torn down afterwards."""
     server = AIMockServer(_aimock_node_manager, port=0)
     server.start()
-    yield server  # type: ignore[misc]
+    yield server
     server.stop()
 
 
 @pytest.fixture(scope="session")
-def aimock_session(_aimock_node_manager: NodeManager) -> AIMockServer:
+def aimock_session(_aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
     """Session-scoped aimock server.  One server is shared across all tests
     that request this fixture."""
     server = AIMockServer(_aimock_node_manager, port=0)
     server.start()
-    yield server  # type: ignore[misc]
+    yield server
     server.stop()

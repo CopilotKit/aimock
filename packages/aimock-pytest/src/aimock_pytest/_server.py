@@ -5,8 +5,10 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import queue
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,16 @@ class AIMockServer:
         self.fixtures_path = fixtures_path
         self._proc: subprocess.Popen[str] | None = None
         self._base_url: str | None = None
+        # Background stdout drainer state. The reader thread continuously
+        # consumes the child's stdout so (a) readiness detection can enforce
+        # a real timeout instead of blocking on readline(), and (b) a long
+        # run never deadlocks on a full stdout pipe buffer.
+        self._stdout_queue: queue.Queue[str | None] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
+        # Path to a temp fixtures dir we create when no fixtures_path is
+        # supplied; ``None`` until ``start()`` creates one. Always defined so
+        # ``stop()`` can clean up without a ``hasattr`` guard.
+        self._tmp_fixtures: str | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
@@ -77,8 +89,31 @@ class AIMockServer:
         )
         atexit.register(self.stop)
 
+        # Start draining stdout immediately so the pipe never fills and the
+        # readiness wait can poll lines with a real deadline.
+        self._reader_thread = threading.Thread(
+            target=self._drain_stdout,
+            args=(self._proc.stdout,),
+            daemon=True,
+        )
+        self._reader_thread.start()
+
         self._base_url = self._wait_for_ready(timeout=15)
         return self._base_url
+
+    def _drain_stdout(self, stream: Any) -> None:
+        """Continuously read the child's stdout, forwarding each line to the
+        queue. Runs for the whole process lifetime so the stdout pipe buffer
+        never fills (which would otherwise deadlock the child). Pushes a
+        sentinel ``None`` when the stream closes (process exit)."""
+        try:
+            for line in iter(stream.readline, ""):
+                self._stdout_queue.put(line)
+        except (ValueError, OSError):
+            # Stream closed underneath us during shutdown.
+            pass
+        finally:
+            self._stdout_queue.put(None)
 
     def stop(self) -> None:
         """Terminate the aimock subprocess."""
@@ -96,8 +131,13 @@ class AIMockServer:
                     pass
             finally:
                 self._proc = None
+        # The reader thread is a daemon and exits on its own once the stdout
+        # stream closes; give it a brief moment to wind down.
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=1)
+            self._reader_thread = None
         # Clean up temp fixtures directory if we created one
-        if hasattr(self, "_tmp_fixtures") and self._tmp_fixtures:
+        if self._tmp_fixtures:
             import shutil
 
             shutil.rmtree(self._tmp_fixtures, ignore_errors=True)
@@ -116,7 +156,42 @@ class AIMockServer:
         """Alias for :attr:`base_url`."""
         return self.base_url
 
+    # Seconds to wait for the health check to pass once the child logs its
+    # listening URL. Used both to compute the health deadline and in the
+    # failure message, so the window is named in a single place.
+    _HEALTH_TIMEOUT_S = 3.0
+
     # ── control API methods ─────────────────────────────────────────────
+
+    # Match-level option keys. These belong under the fixture's ``match``
+    # block: the server reads exactly these fields from ``entry.match`` in
+    # ``entryToFixture`` (src/fixture-loader.ts). This set MUST track that
+    # function's match keys — if the server starts reading another field from
+    # ``entry.match``, add it here, or a kwarg opt with that name will be
+    # spread to the top level and silently dropped (over-broad matching).
+    #
+    # The list below is illustrative-but-must-stay-complete, NOT a validated
+    # or closed allow-list: any kwarg whose key is NOT in this set still
+    # spreads onto the top-level entry (that is how fixture-level options such
+    # as ``latency``, ``chunkSize``, ``truncateAfterChunks``,
+    # ``disconnectAfterMs``, ``streamingProfile``, ``recordedTimings``,
+    # ``replaySpeed``, ``chaos`` and ``metadata`` reach the server).
+    _MATCH_LEVEL_OPT_KEYS = frozenset(
+        {
+            "userMessage",
+            "systemMessage",
+            "inputText",
+            "toolCallId",
+            "toolName",
+            "model",
+            "responseFormat",
+            "endpoint",
+            "sequenceIndex",
+            "turnIndex",
+            "hasToolResult",
+            "context",
+        }
+    )
 
     def add_fixture(
         self,
@@ -124,10 +199,24 @@ class AIMockServer:
         response: dict[str, Any],
         **opts: Any,
     ) -> None:
-        """Add a single fixture via ``POST /__aimock/fixtures``."""
-        fixture: dict[str, Any] = {"match": match, "response": response}
-        if opts:
-            fixture["opts"] = opts
+        """Add a single fixture via ``POST /__aimock/fixtures``.
+
+        ``**opts`` are routed to the wire shape the server actually reads:
+        fixture-level options (e.g. ``latency``, ``chunkSize``, ``chaos``,
+        ``streamingProfile``) are spread onto the top-level entry, while
+        match-level options (any key the server reads from ``entry.match`` —
+        e.g. ``model``, ``toolName``, ``sequenceIndex``, ``turnIndex``,
+        ``hasToolResult``; see :data:`_MATCH_LEVEL_OPT_KEYS`) are merged into
+        the ``match`` block. There is no ``opts`` wrapper key in the server's
+        fixture schema.
+        """
+        fixture_match = dict(match)
+        fixture: dict[str, Any] = {"match": fixture_match, "response": response}
+        for key, value in opts.items():
+            if key in self._MATCH_LEVEL_OPT_KEYS:
+                fixture_match[key] = value
+            else:
+                fixture[key] = value
         r = requests.post(
             f"{self.base_url}/__aimock/fixtures",
             json={"fixtures": [fixture]},
@@ -149,9 +238,10 @@ class AIMockServer:
         self,
         pattern: str,
         response: dict[str, Any],
+        **opts: Any,
     ) -> AIMockServer:
         """Convenience: add a fixture matching ``inputText``."""
-        self.add_fixture({"inputText": pattern}, response)
+        self.add_fixture({"inputText": pattern}, response, **opts)
         return self
 
     def on_system_message(
@@ -264,44 +354,112 @@ class AIMockServer:
 
     # ── internal ────────────────────────────────────────────────────────
 
+    def _drain_collected(self) -> str:
+        """Non-blocking drain of whatever stdout lines are currently queued.
+
+        Used when building a startup-failure error message so the child's
+        captured output is surfaced. Does not block waiting for more output —
+        it only consumes what the reader thread has already enqueued. A
+        sentinel ``None`` (stream closed) is left intact for callers that
+        still need to observe process exit; only string lines are returned."""
+        lines: list[str] = []
+        while True:
+            try:
+                item = self._stdout_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                # Preserve the exit sentinel; we don't consume it here.
+                self._stdout_queue.put(None)
+                break
+            lines.append(item)
+        return "".join(lines)
+
     def _wait_for_ready(self, timeout: int = 15) -> str:
-        """Read stdout lines until we see the listening URL, then verify via
-        health check."""
+        """Poll the background-drained stdout lines until we see the listening
+        URL, then verify via health check. Honors ``timeout`` strictly: the
+        deadline loop never blocks indefinitely because lines arrive via the
+        reader thread's queue rather than a blocking ``readline()``.
+
+        On any startup failure (process exit, health-check failure, or
+        readiness timeout) the subprocess is torn down via :meth:`stop`
+        before the ``RuntimeError`` propagates, so a half-started child and
+        its bound port never leak when ``start()`` raises (the pytest fixture
+        teardown never runs in that case)."""
+        try:
+            return self._wait_for_ready_inner(timeout)
+        except Exception:
+            # Tear down the half-started child so it (and its bound port) do
+            # not leak for the rest of the session. ``stop`` is idempotent
+            # and guards against a missing/already-reaped process.
+            self.stop()
+            raise
+
+    def _wait_for_ready_inner(self, timeout: int) -> str:
         assert self._proc is not None
-        assert self._proc.stdout is not None
 
         deadline = time.monotonic() + timeout
+        collected: list[str] = []
         while time.monotonic() < deadline:
-            # Check if process exited
-            if self._proc.poll() is not None:
-                remaining = ""
-                if self._proc.stdout:
-                    remaining = self._proc.stdout.read()
+            # Drain whatever startup output the reader thread has captured,
+            # bounded by the remaining time so we never block past the
+            # deadline.
+            try:
+                line = self._stdout_queue.get(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
+            except queue.Empty:
+                break
+
+            if line is None:
+                # Sentinel: stdout closed → the process exited.
+                self._proc.wait()
+                output = "".join(collected)
                 raise RuntimeError(
                     f"aimock process exited with code {self._proc.returncode}"
-                    f"{': ' + remaining if remaining else ''}"
+                    f"{': ' + output if output else ''}"
                 )
 
-            line = self._proc.stdout.readline()
-            if not line:
-                continue
+            collected.append(line)
 
             m = re.search(r"listening on (http://\S+)", line)
             if m:
                 url = m.group(1).rstrip("/")
-                # Verify health endpoint is reachable
-                for _ in range(30):
+                start = time.monotonic()
+                health_deadline = start + self._HEALTH_TIMEOUT_S
+                attempts = 0
+                while time.monotonic() < health_deadline:
+                    attempts += 1
                     try:
                         r = requests.get(
                             f"{url}/__aimock/health", timeout=0.5
                         )
                         if r.status_code == 200:
                             return url
-                        time.sleep(0.1)
                     except requests.RequestException:
+                        pass
+                    # Don't sleep past the health window: only back off if the
+                    # next attempt would still fall inside the deadline.
+                    if time.monotonic() + 0.1 < health_deadline:
                         time.sleep(0.1)
+                    else:
+                        break
+                elapsed = time.monotonic() - start
+                # Surface any further stdout the child emitted after the
+                # "listening on" line (e.g. a crash trace) to aid diagnosis.
+                collected.append(self._drain_collected())
+                output = "".join(collected)
                 raise RuntimeError(
-                    "aimock started but health check failed after 3 seconds"
+                    f"aimock started but health check failed after "
+                    f"{attempts} attempt(s) over {elapsed:.1f}s"
+                    f"{': ' + output if output else ''}"
                 )
 
-        raise RuntimeError(f"aimock did not start within {timeout}s")
+        # Readiness timeout: include whatever startup output was captured so
+        # a silent/slow child isn't an opaque failure.
+        collected.append(self._drain_collected())
+        output = "".join(collected)
+        raise RuntimeError(
+            f"aimock did not start within {timeout}s"
+            f"{': ' + output if output else ''}"
+        )
