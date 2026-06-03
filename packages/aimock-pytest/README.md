@@ -64,7 +64,9 @@ aimock.next_error(429, {"message": "Rate limited"})
 
 # Reset
 aimock.clear_fixtures()    # remove all fixtures
-aimock.reset()             # clear fixtures + journal
+aimock.reset_fixtures()    # clear fixtures + generation state (and journal)
+aimock.reset_journal()     # clear only the request journal (fixtures preserved)
+aimock.reset()             # alias for reset_fixtures()
 ```
 
 ## CLI Options

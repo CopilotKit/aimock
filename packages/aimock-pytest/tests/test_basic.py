@@ -69,6 +69,38 @@ def test_reset_clears_fixtures(aimock):
     assert r.status_code == 404
 
 
+def test_reset_journal_preserves_fixtures(aimock):
+    """reset_journal() clears the journal but leaves fixtures intact."""
+    aimock.on_message("hello", {"content": "Hi there!"})
+
+    # Make a matching request so the journal records an entry.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+    assert r.status_code == 200
+    assert len(aimock.get_journal()) > 0
+
+    aimock.reset_journal()
+
+    # Journal cleared...
+    assert aimock.get_journal() == []
+
+    # ...but the fixture is preserved: the same matching request still hits it.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "Hi there!"
+
+
 def test_on_system_message_string(aimock):
     """on_system_message with a single-substring pattern gates on the system text."""
     aimock.on_system_message(
