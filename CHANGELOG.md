@@ -9,6 +9,10 @@
 - `aimock-pytest`: `reset_fixtures()` and `reset_journal()` client methods.
 - Control API reference documentation.
 
+### Changed
+
+- `engines.node` lowered to `>=20.15.0`. The runtime supports Node 20 (the published CLI runs on Node 20/22/24); the previous `>=24.0.0` floor reflected an OIDC publish-time requirement, which is a CI concern handled by the publish workflow, not a runtime constraint for consumers.
+
 ### Deprecated
 
 - `POST /__aimock/reset` — now a deprecated alias for `/__aimock/reset/fixtures`; it still performs a full reset but emits a `Deprecation` response header and a `deprecated` field in the body. Use the explicit `/reset/fixtures` or `/reset/journal` routes instead.
@@ -16,6 +20,9 @@
 ### Fixed
 
 - **Video** — `POST /v1/videos` (`videos.create`) now parses `multipart/form-data` bodies. The OpenAI SDK (>=6.28.0) sends video-create requests as multipart instead of JSON (even for File-less bodies), which previously returned a `400 invalid_json`. The handler reuses the existing transcription multipart field parser and preserves the JSON path for older SDKs.
+- `aimock-pytest`: per-fixture options passed via `add_fixture`/`on_message`/etc. (`latency`, `chunkSize`, `sequenceIndex`, `chaos`, …) are now forwarded in the correct wire shape. They were previously nested under an `opts` key the server ignored, so they were silently dropped.
+- `aimock-pytest`: `_wait_for_ready` now honors its startup timeout (a background reader thread drains the child's stdout, so a no-output child can no longer hang past the deadline or deadlock on a full pipe buffer), tears down the subprocess on a startup failure, and surfaces the child's captured output (the health-check failure path also reports accurate elapsed time).
+- `DELETE /v1/_requests` now clears only the request-journal entries, preserving fixture match-counts (so sequenced fixtures are not rewound) — consistent with `POST /__aimock/reset/journal`.
 
 ## [1.28.0] - 2026-06-02
 
