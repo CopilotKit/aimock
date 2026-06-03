@@ -1351,7 +1351,11 @@ export async function createServer(
         return;
       }
       if (req.method === "DELETE") {
-        journal.clear();
+        // Clear only the request journal entries, preserving fixture
+        // match-counts (sequencing state). Clearing the request log must not
+        // silently rewind sequenced fixtures. For a full reset (entries +
+        // match-counts), use POST /__aimock/reset/fixtures.
+        journal.clearEntries();
         res.writeHead(204);
         res.end();
         return;
