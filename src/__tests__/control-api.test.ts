@@ -200,9 +200,85 @@ describe("/__aimock control API", () => {
 
       const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
       expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({ reset: true });
+      expect(fixtures.length).toBe(0);
+      expect(instance.journal.size).toBe(0);
+    });
+  });
+
+  describe("POST /__aimock/reset routes", () => {
+    it("POST /__aimock/reset/fixtures clears fixtures and journal", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+
+      // Make a request to populate journal
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
+
+      const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
+      expect(res.status).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ reset: true });
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
+    });
+
+    it("POST /__aimock/reset/journal clears journal but preserves fixtures", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+
+      // Make a request to populate journal
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
+
+      const before = fixtures.length;
+      expect(before).toBeGreaterThan(0);
+      const res = await httpRequest(`${instance.url}/__aimock/reset/journal`, "POST");
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ reset: true });
+      expect(fixtures.length).toBe(before); // fixtures preserved
+      expect(instance.journal.size).toBe(0); // journal cleared
+    });
+
+    it("POST /__aimock/reset/journal preserves fixture match-counts while clearing entries", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+
+      // Make a request so the journal records an entry AND the fixture's
+      // match-count is incremented to a non-zero value.
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
+      const countBefore = instance.journal.getFixtureMatchCount(fixtures[0]);
+      expect(countBefore).toBeGreaterThan(0);
+
+      // Reset ONLY the journal.
+      const res = await httpRequest(`${instance.url}/__aimock/reset/journal`, "POST");
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ reset: true });
+
+      // Journal entries cleared, but the fixture match-count must survive —
+      // clearing the journal must not rewind sequenced fixtures to index 0.
+      expect(instance.journal.size).toBe(0);
+      expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBe(countBefore);
+    });
+
+    it("POST /__aimock/reset is a deprecated alias that still performs a full reset", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+
+      const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
+      expect(res.status).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body).toMatchObject({ reset: true, deprecated: true });
+      expect(typeof body.deprecation).toBe("string");
+      expect(fixtures.length).toBe(0);
     });
   });
 

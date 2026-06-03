@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `POST /__aimock/reset/fixtures` — full reset (clears fixtures, generation state, and journal).
+- `POST /__aimock/reset/journal` — clears only the request journal, leaving fixtures intact.
+- `aimock-pytest`: `reset_fixtures()` and `reset_journal()` client methods.
+- Control API reference documentation.
+
+### Deprecated
+
+- `POST /__aimock/reset` — now a deprecated alias for `/__aimock/reset/fixtures`; it still performs a full reset but emits a `Deprecation` response header and a `deprecated` field in the body. Use the explicit `/reset/fixtures` or `/reset/journal` routes instead.
+
 ## [1.28.0] - 2026-06-02
 
 ### Added

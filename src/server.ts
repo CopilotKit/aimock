@@ -214,6 +214,30 @@ function handleNotFound(res: http.ServerResponse, message: string): void {
 const CONTROL_PREFIX = "/__aimock";
 
 /**
+ * Perform a full fixtures reset: clear the fixtures array, journal, video/fal
+ * generation state, and the interaction/event-id counters, then zero the
+ * `aimock_fixtures_loaded` gauge. Shared by `/reset/fixtures` and the
+ * deprecated `/reset` alias.
+ */
+function performFixturesReset(
+  fixtures: Fixture[],
+  journal: Journal,
+  videoStates: VideoStateMap,
+  defaults: HandlerDefaults,
+): void {
+  fixtures.length = 0;
+  journal.clear();
+  videoStates.clear();
+  falJobs.clear();
+  falQueueStates.clear();
+  resetInteractionCounter();
+  resetEventIdCounter();
+  if (defaults.registry) {
+    defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
+  }
+}
+
+/**
  * Handle requests under `/__aimock/`. Returns `true` if the request was
  * handled, `false` if the path doesn't match the control prefix.
  */
@@ -304,20 +328,33 @@ async function handleControlAPI(
     return true;
   }
 
-  // POST /__aimock/reset — clear fixtures + journal + match counts
-  if (subPath === "/reset" && req.method === "POST") {
-    fixtures.length = 0;
-    journal.clear();
-    videoStates.clear();
-    falJobs.clear();
-    falQueueStates.clear();
-    resetInteractionCounter();
-    resetEventIdCounter();
-    if (defaults.registry) {
-      defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
-    }
+  // POST /__aimock/reset/fixtures — full reset (fixtures + journal + match counts)
+  if (subPath === "/reset/fixtures" && req.method === "POST") {
+    performFixturesReset(fixtures, journal, videoStates, defaults);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
+    return true;
+  }
+
+  // POST /__aimock/reset/journal — clear only the request journal entries,
+  // preserving fixture match-counts (sequencing state stays intact)
+  if (subPath === "/reset/journal" && req.method === "POST") {
+    journal.clearEntries();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ reset: true }));
+    return true;
+  }
+
+  // POST /__aimock/reset — DEPRECATED alias for /reset/fixtures (full reset)
+  if (subPath === "/reset" && req.method === "POST") {
+    performFixturesReset(fixtures, journal, videoStates, defaults);
+    const deprecation =
+      "POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)";
+    defaults.logger.warn(
+      "POST /__aimock/reset is deprecated; use /__aimock/reset/fixtures or /__aimock/reset/journal",
+    );
+    res.writeHead(200, { "Content-Type": "application/json", Deprecation: "true" });
+    res.end(JSON.stringify({ reset: true, deprecated: true, deprecation }));
     return true;
   }
 

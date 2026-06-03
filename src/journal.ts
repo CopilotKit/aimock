@@ -198,6 +198,17 @@ export class Journal {
     }
   }
 
+  /**
+   * Clear ONLY the request journal entries, preserving fixture match-counts.
+   * Match-counts are fixture-matching/sequencing state, not journal data, so
+   * clearing the journal must not silently rewind sequenced fixtures. Used by
+   * `POST /__aimock/reset/journal`. For a full reset (entries + match-counts),
+   * use `clear()` instead.
+   */
+  clearEntries(): void {
+    this.entries = [];
+  }
+
   clear(): void {
     this.entries = [];
     this.fixtureMatchCountsByTestId.clear();
