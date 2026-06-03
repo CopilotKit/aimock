@@ -109,13 +109,20 @@
   // ─── Build Sidebar HTML ─────────────────────────────────────────
   function buildSidebar() {
     var html = "";
+    // Only the first link matching the current page gets `.active`, so
+    // duplicate hrefs across sections don't highlight more than one entry.
+    var activeMarked = false;
     for (var i = 0; i < sections.length; i++) {
       var section = sections[i];
       html += '<div class="sidebar-section">';
       html += "<h3>" + section.title + "</h3>";
       for (var j = 0; j < section.links.length; j++) {
         var link = section.links[j];
-        var activeClass = link.href === currentPage ? ' class="active"' : "";
+        var activeClass = "";
+        if (!activeMarked && link.href === currentPage) {
+          activeClass = ' class="active"';
+          activeMarked = true;
+        }
         html += '<a href="' + link.href + '"' + activeClass + ">" + link.label + "</a>";
       }
       html += "</div>";
@@ -142,16 +149,41 @@
     var headings = content.querySelectorAll("h2, h3");
 
     // Always assign ids so cross-page anchors resolve, even on short pages.
+    // Two-pass: reserve every hardcoded id first so an earlier bare heading
+    // can't claim a bare slug that a later hardcoded id needs (which would
+    // produce two elements sharing the same id).
+    var usedIds = {};
+
+    // First pass: reserve all pre-existing (hardcoded) ids up front.
     for (var i = 0; i < headings.length; i++) {
-      var h = headings[i];
-      if (!h.id) {
-        h.id = h.textContent
-          .toLowerCase()
-          .replace(/[^a-z0-9\s-]/g, "")
-          .replace(/\s+/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "");
+      if (headings[i].id) {
+        usedIds[headings[i].id] = true;
       }
+    }
+
+    // Second pass: generate slugs for headings without an id, de-duplicating
+    // against the now-fully-populated set (hardcoded ids + earlier auto ids).
+    for (var p = 0; p < headings.length; p++) {
+      var h = headings[p];
+      if (h.id) continue;
+      var slug = h.textContent
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      // Fall back to a stable id when the heading slugifies to nothing.
+      if (!slug) slug = "section";
+      // De-duplicate so identical (or identically-slugifying) headings
+      // don't collide — append -2, -3, … on each repeat.
+      var uniqueSlug = slug;
+      var n = 2;
+      while (usedIds[uniqueSlug]) {
+        uniqueSlug = slug + "-" + n;
+        n++;
+      }
+      usedIds[uniqueSlug] = true;
+      h.id = uniqueSlug;
     }
 
     // TOC rendering requires at least 4 headings to be worth the space.
@@ -204,8 +236,8 @@
       { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
     );
 
-    for (var p = 0; p < headingEls.length; p++) {
-      observer.observe(headingEls[p]);
+    for (var r = 0; r < headingEls.length; r++) {
+      observer.observe(headingEls[r]);
     }
 
     // Set initial active state
