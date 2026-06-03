@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Control API — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Control API</h1>
+        <p class="lead">
+          aimock exposes a small HTTP control surface under the <code>/__aimock/*</code> prefix for
+          inspecting recorded traffic and resetting server state between test runs &mdash; no
+          restart required.
+        </p>
+
+        <p>
+          All control routes are exact-match and live alongside your mocked LLM endpoints on the
+          same port. They are intended for use from test harnesses (directly via
+          <code>fetch</code> / <code>curl</code>, or through the
+          <a href="/test-plugins">aimock-pytest</a> client).
+        </p>
+
+        <h2>Route Overview</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/health</code></td>
+              <td>Liveness probe</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/journal</code></td>
+              <td>Read-only snapshot of recorded requests</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/fixtures</code></td>
+              <td>Add fixtures at runtime</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/__aimock/fixtures</code></td>
+              <td>Clear all fixtures</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/reset/fixtures</code></td>
+              <td>Full reset: fixtures + generation state + journal</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/reset/journal</code></td>
+              <td>Clear only the request journal</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/reset</code></td>
+              <td><strong>Deprecated.</strong> Alias for <code>/reset/fixtures</code></td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/error</code></td>
+              <td>Queue a one-shot error injection</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Reset Routes</h2>
+        <p>
+          aimock keeps several kinds of in-memory state between requests: the loaded
+          <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video,
+          fal.ai, and Gemini counters), the <strong>fixture match-counts</strong> (sequence
+          position), and the <strong>request journal</strong> (recorded requests). The reset routes
+          let you clear these selectively &mdash; a full reset clears everything, while a journal
+          reset clears only the recorded requests and leaves the rest intact.
+        </p>
+
+        <div
+          class="callout"
+          style="
+            border: 1px solid var(--warning);
+            border-left-width: 4px;
+            border-radius: 6px;
+            background: var(--bg-card);
+            padding: 1rem 1.25rem;
+            margin: 1.5rem 0;
+          "
+        >
+          <strong style="color: var(--warning)">The footgun this split fixes</strong> &mdash; a
+          caller that wanted a clean journal between test runs used to call
+          <code>POST /__aimock/reset</code> and unintentionally wiped the loaded fixtures too. Every
+          subsequent request then returned <code>no_fixture_match</code> until the server was
+          restarted. If you only want a clean read between runs, use
+          <code>POST /__aimock/reset/journal</code> &mdash; it leaves your fixtures intact.
+        </div>
+
+        <h3>POST /__aimock/reset/fixtures</h3>
+        <p>
+          <strong>Full reset.</strong> Clears the in-memory fixtures, the generation state (video /
+          fal.ai / Gemini counters), <em>and</em> the journal. Use this when you want the server
+          returned to a pristine, fixture-free state.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Full reset <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/reset/fixtures</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"reset"</span>: <span class="kw">true</span> }</code></pre>
+        </div>
+
+        <h3>POST /__aimock/reset/journal</h3>
+        <p>
+          <strong>Journal only.</strong> Clears only the request journal entries. Your loaded
+          fixtures, generation state, and fixture match-counts (sequence position) are preserved, so
+          the next request still matches. This is the recommended call for a clean read between test
+          runs.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Journal-only reset <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/reset/journal</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"reset"</span>: <span class="kw">true</span> }</code></pre>
+        </div>
+
+        <h3>POST /__aimock/reset <span style="color: var(--warning)">(Deprecated)</span></h3>
+        <p>
+          <strong>Deprecated alias</strong> for <code>/__aimock/reset/fixtures</code>. It performs
+          the same full reset, but additionally sets a <code>Deprecation: true</code> response
+          header and adds <code>deprecated</code> / <code>deprecation</code> fields to the body.
+          Prefer the explicit <code>/reset/fixtures</code> or <code>/reset/journal</code> routes
+          &mdash; they make the intent (and blast radius) of the reset unambiguous.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Deprecated reset <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -i -X POST http://localhost:4010/__aimock/reset</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code><span class="cm">// Deprecation: true   (response header)</span>
+{
+  <span class="prop">"reset"</span>: <span class="kw">true</span>,
+  <span class="prop">"deprecated"</span>: <span class="kw">true</span>,
+  <span class="prop">"deprecation"</span>: <span class="str">"POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)"</span>
+}</code></pre>
+        </div>
+
+        <h2>Inspection</h2>
+
+        <h3>GET /__aimock/health</h3>
+        <p>
+          A simple liveness probe. Returns <code>200</code> once the server is accepting requests.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Health check <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl http://localhost:4010/__aimock/health</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"status"</span>: <span class="str">"ok"</span> }</code></pre>
+        </div>
+
+        <h3>GET /__aimock/journal</h3>
+        <p>
+          Returns a read-only snapshot of the recorded request entries as a JSON array. The journal
+          records each incoming request so tests can assert on what was sent. Clearing it does not
+          affect fixtures &mdash; see <code>/__aimock/reset/journal</code> above.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Read the journal <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl http://localhost:4010/__aimock/journal</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>[
+  <span class="cm">/* recorded request entries */</span>
+]</code></pre>
+        </div>
+
+        <h2>Fixtures</h2>
+
+        <h3>POST /__aimock/fixtures</h3>
+        <p>
+          Add fixtures at runtime without restarting the server. The body is an object with a
+          <code>"fixtures"</code> array of fixtures to register. Returns the number of fixtures
+          added.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Add fixtures <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/fixtures \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{ "fixtures": [{ "match": { ... }, "response": { ... } }] }'</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"added"</span>: <span class="num">1</span> }</code></pre>
+        </div>
+
+        <h3>DELETE /__aimock/fixtures</h3>
+        <p>
+          Clears all registered fixtures. Generation state and the journal are left untouched. To
+          clear everything at once, use <code>/__aimock/reset/fixtures</code> instead.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Clear fixtures <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X DELETE http://localhost:4010/__aimock/fixtures</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"cleared"</span>: <span class="kw">true</span> }</code></pre>
+        </div>
+
+        <h2>Error Injection</h2>
+
+        <h3>POST /__aimock/error</h3>
+        <p>
+          Queues a one-shot error injection. The next matching request returns the queued error
+          instead of a normal response, after which the injection is consumed. See
+          <a href="/error-injection">Error Injection</a> for the full request shape and options.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Queue an error <span class="lang-tag">shell</span></div>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/error \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{ "status": 429, "body": { "message": "rate limited", "type": "rate_limit_error" } }'</span></code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{ <span class="prop">"queued"</span>: <span class="kw">true</span> }</code></pre>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+  </body>
+</html>

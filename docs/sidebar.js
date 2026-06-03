@@ -81,6 +81,7 @@
       title: "Orchestration",
       links: [
         { label: "aimock CLI & Config", href: "/aimock-cli" },
+        { label: "Control API", href: "/control-api" },
         { label: "Docker & Helm", href: "/docker" },
         { label: "GitHub Action", href: "/github-action" },
         { label: "Test Plugins", href: "/test-plugins" },
