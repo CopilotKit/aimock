@@ -319,6 +319,33 @@ describe("video generation", () => {
     expect(res.status).toBe(404);
     await mock.stop();
   });
+
+  test("video creation parses multipart/form-data body (OpenAI SDK 6.28.0+)", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "a guitar", endpoint: "video" },
+      response: {
+        video: { id: "vid_mp", status: "completed", url: "https://example.com/video.mp4" },
+      },
+    });
+    await mock.start();
+
+    // The OpenAI SDK (>=6.28.0) sends videos.create as multipart/form-data.
+    // `fetch` sets the multipart Content-Type (with boundary) automatically.
+    const form = new FormData();
+    form.set("model", "sora-2");
+    form.set("prompt", "a guitar");
+    form.set("seconds", "8");
+    const create = await fetch(`${mock.url}/v1/videos`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: form,
+    });
+    const job = await create.json();
+    expect(job.id).toBe("vid_mp");
+    expect(job.status).toBe("completed");
+    await mock.stop();
+  });
 });
 
 describe("convenience methods", () => {

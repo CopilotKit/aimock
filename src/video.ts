@@ -16,6 +16,7 @@ import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { extractBoundary, extractFormField } from "./transcription.js";
 
 interface VideoRequest {
   model?: string;
@@ -119,30 +120,55 @@ export async function handleVideoCreate(
   const path = req.url ?? "/v1/videos";
   const method = req.method ?? "POST";
 
+  const contentType = Array.isArray(req.headers["content-type"])
+    ? req.headers["content-type"][0]
+    : req.headers["content-type"];
+  const isMultipart = (contentType ?? "").toLowerCase().includes("multipart/form-data");
+
   let videoReq: VideoRequest;
-  try {
-    videoReq = JSON.parse(raw) as VideoRequest;
-  } catch (parseErr) {
-    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
-    journal.add({
-      method,
-      path,
-      headers: flattenHeaders(req.headers),
-      body: null,
-      response: { status: 400, fixture: null },
-    });
-    writeErrorResponse(
-      res,
-      400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-          code: "invalid_json",
-        },
-      }),
-    );
-    return;
+  if (isMultipart) {
+    // The OpenAI SDK (6.28.0+) sends POST /v1/videos as multipart/form-data;
+    // older SDKs sent JSON for a File-less body. Parse the form fields into the
+    // same shape the JSON path produces, reusing the transcription multipart
+    // helpers. Numeric fields (e.g. `seconds`) arrive as strings and are
+    // coerced to numbers to match the JSON body's types.
+    const boundary = extractBoundary(contentType);
+    const prompt = extractFormField(raw, "prompt", boundary);
+    const model = extractFormField(raw, "model", boundary);
+    const size = extractFormField(raw, "size", boundary);
+    const secondsRaw = extractFormField(raw, "seconds", boundary);
+    videoReq = { prompt: prompt ?? "" };
+    if (model !== undefined) videoReq.model = model;
+    if (size !== undefined) videoReq.size = size;
+    if (secondsRaw !== undefined) {
+      const secondsNum = Number(secondsRaw);
+      videoReq.seconds = Number.isNaN(secondsNum) ? secondsRaw : secondsNum;
+    }
+  } else {
+    try {
+      videoReq = JSON.parse(raw) as VideoRequest;
+    } catch (parseErr) {
+      const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+      journal.add({
+        method,
+        path,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null },
+      });
+      writeErrorResponse(
+        res,
+        400,
+        JSON.stringify({
+          error: {
+            message: `Malformed JSON: ${detail}`,
+            type: "invalid_request_error",
+            code: "invalid_json",
+          },
+        }),
+      );
+      return;
+    }
   }
 
   if (!videoReq.prompt) {

@@ -13,6 +13,10 @@
 
 - `POST /__aimock/reset` — now a deprecated alias for `/__aimock/reset/fixtures`; it still performs a full reset but emits a `Deprecation` response header and a `deprecated` field in the body. Use the explicit `/reset/fixtures` or `/reset/journal` routes instead.
 
+### Fixed
+
+- **Video** — `POST /v1/videos` (`videos.create`) now parses `multipart/form-data` bodies. The OpenAI SDK (>=6.28.0) sends video-create requests as multipart instead of JSON (even for File-less bodies), which previously returned a `400 invalid_json`. The handler reuses the existing transcription multipart field parser and preserves the JSON path for older SDKs.
+
 ## [1.28.0] - 2026-06-02
 
 ### Added
