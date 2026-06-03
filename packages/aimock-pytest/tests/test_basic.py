@@ -281,3 +281,55 @@ def test_match_level_kwarg_opt_routed_under_match():
 
     # ...and must NOT leak to the top level where the server ignores it.
     assert "model" not in entry
+
+
+def test_match_level_opt_keys_match_server_schema():
+    """Drift guard: ``_MATCH_LEVEL_OPT_KEYS`` must cover every match-level
+    field the server reads from ``entry.match`` in ``entryToFixture``.
+
+    The server (``src/fixture-loader.ts``) reads each match-level constraint as
+    ``entry.match.<key>``. If a new such field is added server-side but not to
+    ``_MATCH_LEVEL_OPT_KEYS``, the Python client silently spreads it to the top
+    level of the entry — where the server ignores it — so the constraint is
+    dropped and matching becomes over-broad. This test fails loudly when that
+    happens.
+
+    The guard is repo/CI-only: when the TypeScript source is unavailable (e.g.
+    the package is installed standalone), it skips rather than fails.
+    """
+    import re
+    from pathlib import Path
+
+    import pytest
+
+    from aimock_pytest._server import AIMockServer
+
+    # test file: <repo>/packages/aimock-pytest/tests/test_basic.py
+    #   parents[0] = tests, [1] = aimock-pytest, [2] = packages, [3] = <repo>
+    fixture_loader = (
+        Path(__file__).resolve().parents[3] / "src" / "fixture-loader.ts"
+    )
+    if not fixture_loader.exists():
+        pytest.skip("fixture-loader.ts not available outside the repo")
+
+    source = fixture_loader.read_text(encoding="utf-8")
+
+    # Isolate the body of entryToFixture so we only collect the match-key reads
+    # from inside that function (and not any unrelated entry.match.X references
+    # elsewhere in the file, e.g. in validateFixtures which uses f.match.X).
+    start = source.index("export function entryToFixture")
+    rest = source[start + len("export function entryToFixture") :]
+    next_export = rest.find("\nexport function ")
+    body = rest if next_export == -1 else rest[:next_export]
+
+    server_match_keys = set(re.findall(r"entry\.match\.(\w+)", body))
+    assert server_match_keys, (
+        "no entry.match.<key> references found in entryToFixture — "
+        "the regex or function-body isolation is broken"
+    )
+
+    missing = server_match_keys - set(AIMockServer._MATCH_LEVEL_OPT_KEYS)
+    assert not missing, (
+        f"_MATCH_LEVEL_OPT_KEYS is missing server match keys: {sorted(missing)}. "
+        "Update it in _server.py to match entryToFixture in src/fixture-loader.ts."
+    )
