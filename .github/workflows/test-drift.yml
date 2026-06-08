@@ -40,6 +40,10 @@ jobs:
       # what changed. Consumed by the `notify` job (which runs in a separate
       # workspace and so cannot read drift-report.json directly).
       summary: ${{ steps.summary.outputs.drift_summary }}
+      # How many collector runs confirmed the drift (only set when drift
+      # persisted across every retry). Lets the alert say "confirmed across N
+      # runs". Empty on the common green/transient path.
+      runs: ${{ steps.drift.outputs.drift_runs }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
@@ -50,6 +54,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Run the collector behind a "retry before alert" wrapper. A single
+      # critical run can be a transient real-API hiccup (a streaming call
+      # failing mid-flight), NOT a format change — so the wrapper re-runs the
+      # collector and only reports critical drift (exit 2) if it PERSISTS
+      # across every attempt. Any clean retry = transient = exit 0, no alert.
+      # The common green path stays fast (no extra runs when the first is
+      # clean). Exit codes mirror the collector contract so the steps below
+      # are unchanged.
       - name: Run drift tests
         id: drift
         env:
@@ -58,15 +70,15 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set +e
-          npx tsx scripts/drift-report-collector.ts
+          npx tsx scripts/drift-retry.ts
           EXIT_CODE=$?
           set -e
-          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 2 ]; then
-            : # critical drift found, continue
+            : # critical drift persisted across retries, continue
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
-            exit $EXIT_CODE
+            exit "$EXIT_CODE"
           fi
 
       - name: Upload drift report
@@ -116,6 +128,7 @@ jobs:
           DRIFT_RESULT: ${{ needs.drift.result }}
           AGUI_RESULT: ${{ needs.agui-schema-drift.result }}
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
+          DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -153,14 +166,23 @@ jobs:
             DETAIL="${NL}${DRIFT_SUMMARY}"
           fi
 
+          # When HTTP API drift fired, it only alerts after the drift PERSISTED
+          # across every retry of the collector. Note that confirmation so the
+          # reader knows this was not a one-off transient blip. DRIFT_RUNS is
+          # the count of runs that confirmed the drift (set by drift-retry.ts).
+          CONFIRMED=""
+          if [ "$DRIFT_RESULT" = "failure" ] && [ -n "$DRIFT_RUNS" ] && [ "$DRIFT_RUNS" -gt 1 ] 2>/dev/null; then
+            CONFIRMED="${NL}_(confirmed across ${DRIFT_RUNS} runs)_"
+          fi
+
           # Both types of drift
           if [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
-            MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift.${DETAIL}${NL}${RUN_URL}"
+            MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift.${DETAIL}${CONFIRMED}${NL}${RUN_URL}"
           # HTTP API drift only
           elif [ "$HTTP_DRIFT" = "true" ]; then
             EMOJI="🚨"
-            MSG="*HTTP API drift detected* in aimock — providers changed response formats.${DETAIL}${NL}${RUN_URL}"
+            MSG="*HTTP API drift detected* in aimock — providers changed response formats.${DETAIL}${CONFIRMED}${NL}${RUN_URL}"
           # AG-UI schema drift only
           elif [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
