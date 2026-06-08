@@ -46,7 +46,20 @@ const contentWithToolsReasoningFixture: Fixture = {
   },
 };
 
-const allFixtures: Fixture[] = [reasoningFixture, plainFixture, contentWithToolsReasoningFixture];
+const toolOnlyReasoningFixture: Fixture = {
+  match: { userMessage: "toolonly" },
+  response: {
+    reasoning: REASONING_TEXT,
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+  },
+};
+
+const allFixtures: Fixture[] = [
+  reasoningFixture,
+  plainFixture,
+  contentWithToolsReasoningFixture,
+  toolOnlyReasoningFixture,
+];
 
 /** Mock ServerResponse that captures everything written to the body. */
 function createCapturingRes(): { res: http.ServerResponse; getBody: () => string } {
@@ -487,6 +500,128 @@ describe("Anthropic /v1/messages reasoning gating — content+toolCalls, capable
     const started = streamStartedBlocks(body);
     expect(started.map((b) => b.type)).toEqual(["thinking", "text", "tool_use"]);
     expect(streamTextDeltas(body)).toBe(CONTENT_TEXT);
+    expect(started.find((b) => b.type === "tool_use")?.name).toBe("get_weather");
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+});
+
+// ─── tool-only branch → gating on the pure-tool-call path ────────────────────
+//
+// aimock#253 newly synthesized a leading thinking block on the pure-tool-call
+// dispatch (no text content) so a replayed tool-only turn under extended
+// thinking does not self-trip `missing_thinking_first`. aimock#254's capability
+// gate never covered that path (it didn't emit reasoning at #254's time). These
+// cases lock in that the gate now applies there too: a non-reasoning model under
+// strict SUPPRESSES the thinking block, a capable model EMITS it — while the
+// tool_use block always survives. (Red without the `resolveReasoningForModel`
+// routing: raw `response.reasoning` would emit the thinking block unconditionally.)
+
+describe("Anthropic /v1/messages reasoning gating — tool-only, strict ON suppresses", () => {
+  it("non-streaming: suppresses thinking, keeps tool_use", async () => {
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+
+    const body = await run(
+      {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "toolonly" }],
+      },
+      makeDefaults(logger, true),
+    );
+
+    const blocks = contentBlocks(body);
+    expect(blocks.filter((b) => b.type === "thinking")).toHaveLength(0);
+
+    const toolUse = blocks.find((b) => b.type === "tool_use");
+    expect(toolUse?.name).toBe("get_weather");
+    expect(toolUse?.input).toEqual({ city: "NYC" });
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.join(" ")).toContain("claude-3-5-sonnet-20241022");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("streaming: emits no thinking deltas, keeps tool_use block", async () => {
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+
+    const body = await run(
+      {
+        model: "claude-3-5-sonnet-20241022",
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: "user", content: "toolonly" }],
+      },
+      makeDefaults(logger, true),
+    );
+
+    expect(streamThinkingDeltas(body)).toHaveLength(0);
+
+    const started = streamStartedBlocks(body);
+    expect(started.some((b) => b.type === "thinking")).toBe(false);
+    expect(started.map((b) => b.type)).toEqual(["tool_use"]);
+    expect(started.find((b) => b.type === "tool_use")?.name).toBe("get_weather");
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("Anthropic /v1/messages reasoning gating — tool-only, capable model emits", () => {
+  it("non-streaming: emits thinking, keeps tool_use in order", async () => {
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+
+    const body = await run(
+      {
+        model: "claude-opus-4",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "toolonly" }],
+      },
+      makeDefaults(logger),
+    );
+
+    const blocks = contentBlocks(body);
+    const thinking = blocks.filter((b) => b.type === "thinking");
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0].thinking).toBe(REASONING_TEXT);
+
+    const toolUse = blocks.find((b) => b.type === "tool_use");
+    expect(toolUse?.name).toBe("get_weather");
+    expect(toolUse?.input).toEqual({ city: "NYC" });
+
+    // Order: thinking → tool_use.
+    expect(blocks.map((b) => b.type)).toEqual(["thinking", "tool_use"]);
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("streaming: emits thinking deltas, keeps tool_use block in order", async () => {
+    const logger = new Logger("warn");
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+
+    const body = await run(
+      {
+        model: "claude-opus-4",
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: "user", content: "toolonly" }],
+      },
+      makeDefaults(logger),
+    );
+
+    expect(streamThinkingDeltas(body).join("")).toBe(REASONING_TEXT);
+
+    const started = streamStartedBlocks(body);
+    expect(started.map((b) => b.type)).toEqual(["thinking", "tool_use"]);
     expect(started.find((b) => b.type === "tool_use")?.name).toBe("get_weather");
 
     expect(warn).not.toHaveBeenCalled();

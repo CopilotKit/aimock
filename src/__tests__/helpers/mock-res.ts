@@ -53,6 +53,7 @@ export function createDefaults(overrides: Partial<HandlerDefaults> = {}): Handle
   return {
     latency: 0,
     chunkSize: 100,
+    replaySpeed: 1.0,
     logger: new Logger("silent"),
     ...overrides,
   };
