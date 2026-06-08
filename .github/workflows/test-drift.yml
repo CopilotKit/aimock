@@ -35,6 +35,11 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      # Short, scannable Slack mrkdwn summary of which providers drifted and
+      # what changed. Consumed by the `notify` job (which runs in a separate
+      # workspace and so cannot read drift-report.json directly).
+      summary: ${{ steps.summary.outputs.drift_summary }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
@@ -73,6 +78,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # Distill drift-report.json into a short Slack summary and expose it as a
+      # job output so the separate `notify` job can include it in the alert.
+      # Runs before the failure step below so the summary is captured even when
+      # critical drift is present.
+      - name: Summarize drift for Slack
+        id: summary
+        if: always()
+        run: npx tsx scripts/drift-slack-summary.ts
+
       - name: Fail if critical drift detected
         if: steps.drift.outputs.exit_code == '2'
         run: exit 1
@@ -101,6 +115,7 @@ jobs:
           PREV: ${{ steps.prev.outputs.conclusion }}
           DRIFT_RESULT: ${{ needs.drift.result }}
           AGUI_RESULT: ${{ needs.agui-schema-drift.result }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -125,18 +140,31 @@ jobs:
 
           RUN_URL="<https://github.com/${REPO}/actions/runs/${RUN_ID}|View run>"
 
+          # Build the "what drifted" detail block from the drift job's summary
+          # output. DRIFT_SUMMARY already contains real newlines (one bullet per
+          # provider); we prepend a real newline so the detail sits on its own
+          # lines under the headline. jq's --arg encodes these newlines into the
+          # JSON payload correctly, so Slack renders real line breaks.
+          # (No literal "\n" in any format() expression — that GitHub Actions
+          # gotcha renders a visible backslash-n; here we use bash newlines.)
+          NL=$'\n'
+          DETAIL=""
+          if [ -n "$DRIFT_SUMMARY" ]; then
+            DETAIL="${NL}${DRIFT_SUMMARY}"
+          fi
+
           # Both types of drift
           if [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
-            MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift. ${RUN_URL}"
+            MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift.${DETAIL}${NL}${RUN_URL}"
           # HTTP API drift only
           elif [ "$HTTP_DRIFT" = "true" ]; then
             EMOJI="🚨"
-            MSG="*HTTP API drift detected* in aimock — providers changed response formats. ${RUN_URL}"
+            MSG="*HTTP API drift detected* in aimock — providers changed response formats.${DETAIL}${NL}${RUN_URL}"
           # AG-UI schema drift only
           elif [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
-            MSG="*AG-UI schema drift detected* in aimock — canonical ag-ui types changed. ${RUN_URL}"
+            MSG="*AG-UI schema drift detected* in aimock — canonical ag-ui types changed.${DETAIL}${NL}${RUN_URL}"
           # Infra failure — always notify
           elif [ "$INFRA_ERROR" = "true" ]; then
             EMOJI="❌"
