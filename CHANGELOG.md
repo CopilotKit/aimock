@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Reasoning emission** — replaying a reasoning channel is now gated on the requested model's capability. aimock no longer synthesizes a reasoning channel (chat `reasoning_content` / Responses `reasoning_summary_text` / Anthropic thinking / etc.) for models that would not emit reasoning against the real provider. A new `isReasoningModel` classifier and `resolveReasoningForModel` gate are applied across OpenAI chat + Responses, Anthropic, Ollama, Gemini, Cohere, Bedrock (invoke + Converse), and WebSocket Responses: a non-reasoning model paired with a reasoning fixture has its reasoning suppressed under strict mode, or warns-and-emits otherwise. The `AIMOCK_REASONING_MODELS` and `AIMOCK_NONREASONING_MODELS` env vars override the classifier.
+
 ## [1.29.0] - 2026-06-04
 
 ### Added
