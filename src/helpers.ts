@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import type { Logger } from "./logger.js";
+import { isReasoningModel } from "./model-utils.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -62,6 +64,44 @@ export function strictOverrideField(
     return { strictOverride: effective };
   }
   return {};
+}
+
+/**
+ * Resolve the reasoning string to actually emit for a given model.
+ *
+ * aimock synthesizes a reasoning channel whenever a fixture carries a
+ * `reasoning` string, regardless of the requested model. But a non-reasoning
+ * model (e.g. `gpt-4.1`) would emit no reasoning against the real provider, so
+ * replaying it is a false green (see aimock#254). This gates the emission on
+ * the requested model's capability:
+ *
+ *   - no fixture reasoning            → undefined (no-op, short-circuit)
+ *   - reasoning-capable model         → emit unchanged, no log
+ *   - non-reasoning model, strict OFF → `logger.warn`, still emit (preserves
+ *                                       current behavior)
+ *   - non-reasoning model, strict ON  → `logger.error`, suppress (return undefined)
+ *
+ * Capability is decided from the REQUESTED model id (what the backend was wired
+ * to), not any `overrides.model` echoed in the payload.
+ */
+export function resolveReasoningForModel(
+  reasoning: string | undefined,
+  model: string | undefined,
+  strict: boolean,
+  logger: Logger,
+): string | undefined {
+  if (!reasoning) return undefined;
+  if (isReasoningModel(model)) return reasoning;
+  if (strict) {
+    logger.error(
+      `Strict mode: fixture has a reasoning channel but model "${model}" is not reasoning-capable — suppressing reasoning emission`,
+    );
+    return undefined;
+  }
+  logger.warn(
+    `Fixture has a reasoning channel but model "${model}" is not reasoning-capable — the real provider would emit no reasoning. Emitting anyway (set X-AIMock-Strict: true to suppress).`,
+  );
+  return reasoning;
 }
 
 export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
