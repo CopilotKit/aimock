@@ -23,6 +23,7 @@ import {
   extractOverrides,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   flattenHeaders,
 } from "./helpers.js";
@@ -232,6 +233,11 @@ async function processMessage(
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
+  // The WS path has no per-request `req.headers`; strict is resolved from the
+  // connection's upgrade headers (see the `!fixture` branch above). Used below
+  // to gate the synthesized reasoning channel on the requested model's capability.
+  const effectiveStrict = resolveStrictMode(defaults.strict, defaults.upgradeHeaders);
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
@@ -265,7 +271,12 @@ async function processMessage(
       response.toolCalls,
       completionReq.model,
       chunkSize,
-      response.reasoning,
+      resolveReasoningForModel(
+        response.reasoning,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      ),
       response.webSearches,
       extractOverrides(response),
     );
@@ -303,7 +314,12 @@ async function processMessage(
       response.content,
       completionReq.model,
       chunkSize,
-      response.reasoning,
+      resolveReasoningForModel(
+        response.reasoning,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      ),
       response.webSearches,
       extractOverrides(response),
     );

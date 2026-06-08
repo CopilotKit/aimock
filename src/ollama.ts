@@ -34,6 +34,7 @@ import {
   getTestId,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -736,12 +737,16 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      logger,
+    );
     if (!streaming) {
-      const body = buildOllamaChatTextResponse(
-        response.content,
-        completionReq.model,
-        response.reasoning,
-      );
+      const body = buildOllamaChatTextResponse(response.content, completionReq.model, effReasoning);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
@@ -749,7 +754,7 @@ export async function handleOllama(
         response.content,
         completionReq.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeNDJSONStream(res, chunks, {
@@ -1036,11 +1041,19 @@ export async function handleOllamaGenerate(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     if (!streaming) {
       const body = buildOllamaGenerateTextResponse(
         response.content,
         completionReq.model,
-        response.reasoning,
+        effReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1049,7 +1062,7 @@ export async function handleOllamaGenerate(
         response.content,
         completionReq.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeNDJSONStream(res, chunks, {

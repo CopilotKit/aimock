@@ -28,6 +28,7 @@ import {
   getContext,
   getTestId,
   resolveResponse,
+  resolveReasoningForModel,
   resolveStrictMode,
   strictOverrideField,
 } from "./helpers.js";
@@ -710,6 +711,12 @@ export async function handleConverse(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -721,7 +728,7 @@ export async function handleConverse(
       response.content,
       response.toolCalls,
       logger,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -737,6 +744,12 @@ export async function handleConverse(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -744,7 +757,7 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseTextResponse(response.content, response.reasoning, overrides);
+    const body = buildConverseTextResponse(response.content, effReasoning, overrides);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -1006,6 +1019,12 @@ export async function handleConverseStream(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1018,7 +1037,7 @@ export async function handleConverseStream(
       response.toolCalls,
       chunkSize,
       logger,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);
@@ -1047,6 +1066,12 @@ export async function handleConverseStream(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1057,7 +1082,7 @@ export async function handleConverseStream(
     const events = buildBedrockStreamTextEvents(
       response.content,
       chunkSize,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);

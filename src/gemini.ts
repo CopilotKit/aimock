@@ -33,6 +33,7 @@ import {
   getTestId,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
 } from "./helpers.js";
 import { matchFixture } from "./router.js";
@@ -841,6 +842,13 @@ export async function handleGemini(
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path,
@@ -853,7 +861,7 @@ export async function handleGemini(
         response.content,
         response.toolCalls,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -864,7 +872,7 @@ export async function handleGemini(
         response.toolCalls,
         chunkSize,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);
@@ -892,6 +900,13 @@ export async function handleGemini(
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path,
@@ -900,14 +915,14 @@ export async function handleGemini(
       response: { status: 200, fixture },
     });
     if (!streaming) {
-      const body = buildGeminiTextResponse(response.content, response.reasoning, overrides);
+      const body = buildGeminiTextResponse(response.content, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const chunks = buildGeminiTextStreamChunks(
         response.content,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);

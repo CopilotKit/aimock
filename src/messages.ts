@@ -30,6 +30,7 @@ import {
   getTestId,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -904,6 +905,13 @@ export async function handleMessages(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -917,7 +925,7 @@ export async function handleMessages(
         response.toolCalls,
         completionReq.model,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -929,7 +937,7 @@ export async function handleMessages(
         completionReq.model,
         chunkSize,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);
@@ -959,6 +967,13 @@ export async function handleMessages(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -970,7 +985,7 @@ export async function handleMessages(
       const body = buildClaudeTextResponse(
         response.content,
         completionReq.model,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -980,7 +995,7 @@ export async function handleMessages(
         response.content,
         completionReq.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);

@@ -30,6 +30,7 @@ import {
   getTestId,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -1093,6 +1094,14 @@ export async function handleResponses(
   // Combined content + tool calls response
   if (isContentWithToolCallsResponse(response)) {
     const overrides = extractOverrides(response);
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -1105,7 +1114,7 @@ export async function handleResponses(
         response.content,
         response.toolCalls,
         completionReq.model,
-        response.reasoning,
+        effReasoning,
         response.webSearches,
         overrides,
       );
@@ -1117,7 +1126,7 @@ export async function handleResponses(
         response.toolCalls,
         completionReq.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         response.webSearches,
         overrides,
       );
@@ -1143,6 +1152,14 @@ export async function handleResponses(
   // Text response
   if (isTextResponse(response)) {
     const overrides = extractOverrides(response);
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -1154,7 +1171,7 @@ export async function handleResponses(
       const body = buildTextResponse(
         response.content,
         completionReq.model,
-        response.reasoning,
+        effReasoning,
         response.webSearches,
         overrides,
       );
@@ -1165,7 +1182,7 @@ export async function handleResponses(
         response.content,
         completionReq.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         response.webSearches,
         overrides,
       );
