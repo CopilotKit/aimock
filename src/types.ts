@@ -160,6 +160,7 @@ export interface ToolCall {
 
 export interface ToolCallResponse extends ResponseOverrides {
   toolCalls: ToolCall[];
+  reasoning?: string;
   webSearches?: string[];
 }
 
@@ -357,6 +358,7 @@ export interface FixtureFileToolCall {
 
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
+  reasoning?: string;
   webSearches?: string[];
 }
 
