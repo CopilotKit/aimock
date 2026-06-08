@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Extended-thinking request invariants** — aimock now validates Anthropic extended-thinking continuations on the tool-use loop. When extended thinking is enabled, a continuation whose prior assistant turn drops the leading `thinking` block (or its `signature`, or a `redacted_thinking` block's `data`) is rejected with the real Anthropic `400`, instead of producing a false-green replay — under strict mode; otherwise the violation warns and replay proceeds. Emitted thinking blocks now carry a non-empty placeholder signature so record→replay round-trips stay green across text, content+tool, and tool-only response shapes.
+
 ### Changed
 
 - **Reasoning emission** — replaying a reasoning channel is now gated on the requested model's capability. aimock no longer synthesizes a reasoning channel (chat `reasoning_content` / Responses `reasoning_summary_text` / Anthropic thinking / etc.) for models that would not emit reasoning against the real provider. A new `isReasoningModel` classifier and `resolveReasoningForModel` gate are applied across OpenAI chat + Responses, Anthropic, Ollama, Gemini, Cohere, Bedrock (invoke + Converse), and WebSocket Responses: a non-reasoning model paired with a reasoning fixture has its reasoning suppressed under strict mode, or warns-and-emits otherwise. The `AIMOCK_REASONING_MODELS` and `AIMOCK_NONREASONING_MODELS` env vars override the classifier.
