@@ -36,6 +36,7 @@ import {
   getTestId,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -977,6 +978,13 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      cohereReq.model,
+      effectiveStrict,
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -989,7 +997,7 @@ export async function handleCohere(
         response.content,
         response.toolCalls,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1000,7 +1008,7 @@ export async function handleCohere(
         response.toolCalls,
         chunkSize,
         logger,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);
@@ -1030,6 +1038,13 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      cohereReq.model,
+      effectiveStrict,
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1038,14 +1053,14 @@ export async function handleCohere(
       response: { status: 200, fixture },
     });
     if (cohereReq.stream !== true) {
-      const body = buildCohereTextResponse(response.content, response.reasoning, overrides);
+      const body = buildCohereTextResponse(response.content, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const events = buildCohereTextStreamEvents(
         response.content,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);

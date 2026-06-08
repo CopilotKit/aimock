@@ -39,6 +39,7 @@ import {
   getContext,
   getTestId,
   resolveResponse,
+  resolveReasoningForModel,
   resolveStrictMode,
   strictOverrideField,
 } from "./helpers.js";
@@ -538,6 +539,12 @@ export async function handleBedrock(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -548,7 +555,7 @@ export async function handleBedrock(
     const textBody = buildBedrockTextResponse(
       response.content,
       completionReq.model,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     const toolBody = buildBedrockToolCallResponse(
@@ -577,6 +584,12 @@ export async function handleBedrock(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -587,7 +600,7 @@ export async function handleBedrock(
     const body = buildBedrockTextResponse(
       response.content,
       completionReq.model,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1184,6 +1197,12 @@ export async function handleBedrockStream(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1197,7 +1216,7 @@ export async function handleBedrockStream(
       completionReq.model,
       chunkSize,
       logger,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);
@@ -1224,6 +1243,12 @@ export async function handleBedrockStream(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1235,7 +1260,7 @@ export async function handleBedrockStream(
       response.content,
       completionReq.model,
       chunkSize,
-      response.reasoning,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);

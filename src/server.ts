@@ -35,6 +35,7 @@ import {
   readBody,
   resolveResponse,
   resolveStrictMode,
+  resolveReasoningForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -766,6 +767,13 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      body.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -778,7 +786,7 @@ async function handleCompletions(
         response.content,
         response.toolCalls,
         body.model,
-        response.reasoning,
+        effReasoning,
         overrides,
         body.messages,
       );
@@ -790,7 +798,7 @@ async function handleCompletions(
         response.toolCalls,
         body.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       // Build usage chunk for stream_options.include_usage
@@ -846,6 +854,13 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      body.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -857,7 +872,7 @@ async function handleCompletions(
       const completion = buildTextCompletion(
         response.content,
         body.model,
-        response.reasoning,
+        effReasoning,
         overrides,
         body.messages,
       );
@@ -868,7 +883,7 @@ async function handleCompletions(
         response.content,
         body.model,
         chunkSize,
-        response.reasoning,
+        effReasoning,
         overrides,
       );
       const usageChunk = includeUsage
