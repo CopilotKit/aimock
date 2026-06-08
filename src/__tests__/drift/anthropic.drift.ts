@@ -212,7 +212,10 @@ describe("Anthropic Claude extended thinking shapes", () => {
     expect(mockBody.content.length).toBe(2);
     expect(mockBody.content[0].type).toBe("thinking");
     expect(mockBody.content[0].thinking).toBe("I need to consider...");
-    expect(mockBody.content[0].signature).toBe("");
+    // Real Anthropic non-streaming returns a non-empty cryptographic signature
+    // on the assembled thinking block (assembled here from the signature_delta).
+    expect(typeof mockBody.content[0].signature).toBe("string");
+    expect(mockBody.content[0].signature.length).toBeGreaterThan(0);
     expect(mockBody.content[1].type).toBe("text");
     expect(mockBody.content[1].text).toBe("Hello!");
 
@@ -261,7 +264,11 @@ describe("Anthropic Claude extended thinking shapes", () => {
       (e) => e.type === "content_block_delta" && e.data?.delta?.type === "signature_delta",
     );
     expect(signatureDeltas.length, "Missing signature_delta event").toBe(1);
-    expect(signatureDeltas[0].data.delta.signature).toBe("");
+    // Real Anthropic delivers the non-empty cryptographic signature here (the
+    // `content_block_start` carried ""); an SDK assembles the block's signature
+    // from this delta.
+    expect(typeof signatureDeltas[0].data.delta.signature).toBe("string");
+    expect(signatureDeltas[0].data.delta.signature.length).toBeGreaterThan(0);
 
     // Verify text block follows thinking block
     const textBlockStart = mockEvents.find(
