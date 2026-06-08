@@ -42,10 +42,29 @@ import type { Logger } from "./logger.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
+/**
+ * Non-empty placeholder signature written into emitted `thinking` blocks.
+ *
+ * The real Anthropic signature is a cryptographic value aimock cannot
+ * reproduce, but extended-thinking invariant (b) requires a non-empty
+ * `signature` on the leading thinking block of a tool-loop continuation turn.
+ * Emitting "" would make a record→replay round-trip of an aimock thinking turn
+ * self-trip that invariant under strict mode. A non-empty placeholder keeps
+ * round-trips green; the invariant only checks for non-emptiness, not value.
+ */
+const PLACEHOLDER_SIGNATURE = "aimock-placeholder-signature";
+
 // ─── Claude Messages API request types ──────────────────────────────────────
 
 interface ClaudeContentBlock {
-  type: "text" | "tool_use" | "tool_result" | "image" | "document";
+  type:
+    | "text"
+    | "tool_use"
+    | "tool_result"
+    | "image"
+    | "document"
+    | "thinking"
+    | "redacted_thinking";
   text?: string;
   id?: string;
   name?: string;
@@ -53,6 +72,12 @@ interface ClaudeContentBlock {
   tool_use_id?: string;
   content?: string | ClaudeContentBlock[];
   is_error?: boolean;
+  // Extended-thinking fields (Anthropic): `thinking` blocks carry the reasoning
+  // text plus a cryptographic `signature`; `redacted_thinking` blocks carry an
+  // opaque `data` payload instead.
+  thinking?: string;
+  signature?: string;
+  data?: string;
 }
 
 interface ClaudeMessage {
@@ -75,15 +100,33 @@ interface ClaudeRequest {
   stream?: boolean;
   max_tokens: number;
   temperature?: number;
+  // Extended-thinking config. Explicitly modeled so it is no longer swallowed
+  // by the index signature below; read defensively (may be a non-object).
+  thinking?: { type?: "enabled" | "disabled"; budget_tokens?: number };
   [key: string]: unknown;
+}
+
+// ─── Extended-thinking request invariants (Anthropic) ───────────────────────
+
+/**
+ * A detected violation of the Anthropic extended-thinking request invariants on
+ * a tool-loop continuation turn. `kind` distinguishes the three failure modes
+ * so callers can template a per-kind error message and tests can assert without
+ * string matching.
+ */
+interface ThinkingViolation {
+  kind: "missing_thinking_first" | "missing_signature" | "dropped_redacted_thinking";
+  messageIndex: number;
+  observedFirstBlockType?: string;
 }
 
 // ─── Input conversion: Claude → ChatCompletions messages ────────────────────
 
 function extractClaudeTextContent(content: string | ClaudeContentBlock[]): string {
   if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
   return content
-    .filter((b) => b.type === "text")
+    .filter((b) => b != null && typeof b === "object" && b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
 }
@@ -96,21 +139,28 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
     const systemText =
       typeof req.system === "string"
         ? req.system
-        : req.system
-            .filter((b) => b.type === "text")
-            .map((b) => b.text ?? "")
-            .join("");
+        : Array.isArray(req.system)
+          ? req.system
+              .filter((b) => b != null && typeof b === "object" && b.type === "text")
+              .map((b) => b.text ?? "")
+              .join("")
+          : "";
     if (systemText) {
       messages.push({ role: "system", content: systemText });
     }
   }
 
-  for (const msg of req.messages) {
+  const reqMessages = Array.isArray(req.messages) ? req.messages : [];
+  for (const msg of reqMessages) {
+    // `req.messages` is untrusted JSON; entries may be null / non-object.
+    if (!msg || typeof msg !== "object") continue;
     if (msg.role === "user") {
       // Check for tool_result blocks
       if (typeof msg.content !== "string" && Array.isArray(msg.content)) {
-        const toolResults = msg.content.filter((b) => b.type === "tool_result");
-        const textBlocks = msg.content.filter((b) => b.type === "text");
+        // Content blocks are equally untrusted; skip null / non-object entries.
+        const blocks = msg.content.filter((b) => b != null && typeof b === "object");
+        const toolResults = blocks.filter((b) => b.type === "tool_result");
+        const textBlocks = blocks.filter((b) => b.type === "text");
 
         if (toolResults.length > 0) {
           // Each tool_result → tool message
@@ -120,7 +170,7 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
                 ? tr.content
                 : Array.isArray(tr.content)
                   ? tr.content
-                      .filter((b) => b.type === "text")
+                      .filter((b) => b != null && typeof b === "object" && b.type === "text")
                       .map((b) => b.text ?? "")
                       .join("")
                   : "";
@@ -149,7 +199,12 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
       if (typeof msg.content === "string") {
         messages.push({ role: "assistant", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        const toolUseBlocks = msg.content.filter((b) => b.type === "tool_use");
+        const toolUseBlocks = msg.content.filter(
+          (b) => b != null && typeof b === "object" && b.type === "tool_use",
+        );
+        // Only `text` blocks feed fixture matching; `thinking` /
+        // `redacted_thinking` blocks are intentionally excluded from the
+        // matchable content.
         const textContent = extractClaudeTextContent(msg.content);
 
         if (toolUseBlocks.length > 0) {
@@ -197,6 +252,125 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
     tools,
     _endpointType: "chat",
   };
+}
+
+// ─── Extended-thinking invariant validation ─────────────────────────────────
+
+/** True iff `req.thinking` is an object with `type === "enabled"`. */
+function isThinkingEnabled(req: ClaudeRequest): boolean {
+  const t = req.thinking;
+  return typeof t === "object" && t !== null && (t as { type?: unknown }).type === "enabled";
+}
+
+/**
+ * True iff the user turn at `req.messages[userIndex]` carries a `tool_result`
+ * referencing one of `toolUseIds` — i.e. it answers the preceding assistant
+ * turn's `tool_use` block(s), making that assistant turn a tool-loop
+ * continuation point.
+ */
+function userTurnAnswersToolUse(msg: ClaudeMessage | undefined, toolUseIds: Set<string>): boolean {
+  if (!msg || msg.role !== "user" || !Array.isArray(msg.content)) return false;
+  return msg.content.some(
+    (b) =>
+      b != null &&
+      typeof b === "object" &&
+      b.type === "tool_result" &&
+      typeof b.tool_use_id === "string" &&
+      toolUseIds.has(b.tool_use_id),
+  );
+}
+
+/**
+ * Validate the Anthropic extended-thinking request invariants on tool-loop
+ * continuation turns. Pure: returns the first detected `ThinkingViolation` or
+ * `null` when thinking is disabled or every in-scope turn is well-formed.
+ *
+ * Scope: an assistant turn is in-scope only when it (a) is array content
+ * carrying at least one `tool_use` block and (b) is followed by a matching
+ * `tool_result` on the next user turn. Text-only / `end_turn` turns, string or
+ * empty turns, and trailing unanswered `tool_use` turns are all exempt.
+ *
+ * Scope detection assumes well-formed Anthropic transcripts: `tool_use` ids are
+ * unique, and a tool_use turn is answered by the immediately-following user
+ * turn's `tool_result` (adjacency). Malformed shapes — non-adjacent answers,
+ * idless `tool_use` blocks, or a `tool_result` separated from its `tool_use` by
+ * intervening turns — are intentionally treated as out-of-scope (and therefore
+ * not 400'd) rather than validated, since the real Anthropic API would never
+ * have produced them.
+ */
+export function validateThinkingInvariants(req: ClaudeRequest): ThinkingViolation | null {
+  if (!isThinkingEnabled(req)) return null;
+
+  const messages = Array.isArray(req.messages) ? req.messages : [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    // `req.messages` is untrusted JSON; entries may be null / non-object.
+    if (!msg || typeof msg !== "object") continue;
+    if (msg.role !== "assistant" || !Array.isArray(msg.content) || msg.content.length === 0) {
+      continue;
+    }
+
+    const toolUseIds = new Set<string>();
+    for (const b of msg.content) {
+      // Content blocks are equally untrusted; skip null / non-object entries.
+      if (!b || typeof b !== "object") continue;
+      if (b.type === "tool_use" && typeof b.id === "string") toolUseIds.add(b.id);
+    }
+    // Not a tool_use-bearing turn → not a reasoning-bearing continuation turn.
+    if (toolUseIds.size === 0) continue;
+    // Trailing/unanswered tool_use (no matching tool_result follows) → out of scope.
+    if (!userTurnAnswersToolUse(messages[i + 1], toolUseIds)) continue;
+
+    const first = msg.content[0];
+
+    // A null / non-object leading block cannot be a thinking block → it
+    // violates invariant (a) just as a wrong-typed block would.
+    if (!first || typeof first !== "object") {
+      return {
+        kind: "missing_thinking_first",
+        messageIndex: i,
+        observedFirstBlockType: undefined,
+      };
+    }
+
+    // (a) The in-scope turn must lead with a thinking / redacted_thinking block.
+    if (first.type !== "thinking" && first.type !== "redacted_thinking") {
+      return {
+        kind: "missing_thinking_first",
+        messageIndex: i,
+        observedFirstBlockType: first.type,
+      };
+    }
+
+    // (b) A leading `thinking` block must carry a non-empty string `signature`.
+    if (first.type === "thinking") {
+      if (typeof first.signature !== "string" || first.signature.length === 0) {
+        return { kind: "missing_signature", messageIndex: i };
+      }
+    }
+
+    // (c) A leading `redacted_thinking` block must preserve a non-empty `data`.
+    if (first.type === "redacted_thinking") {
+      if (typeof first.data !== "string" || first.data.length === 0) {
+        return { kind: "dropped_redacted_thinking", messageIndex: i };
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Render the Anthropic-shaped 400 error message for a thinking violation. */
+function thinkingViolationMessage(v: ThinkingViolation): string {
+  const prefix = `messages.${v.messageIndex}.content.0`;
+  switch (v.kind) {
+    case "missing_thinking_first":
+      return `${prefix}: when \`thinking\` is enabled, a tool-loop continuation assistant turn must begin with a \`thinking\` block; got \`${v.observedFirstBlockType ?? "unknown"}\`.`;
+    case "missing_signature":
+      return `${prefix}: the leading \`thinking\` block is missing a non-empty \`signature\`.`;
+    case "dropped_redacted_thinking":
+      return `${prefix}: the leading \`redacted_thinking\` block must preserve its \`data\`.`;
+  }
 }
 
 // ─── Response building: fixture → Claude Messages API format ────────────────
@@ -255,6 +429,9 @@ function buildClaudeTextStreamEvents(
 
   // Thinking block (emitted before text when reasoning is present)
   if (reasoning) {
+    // Real Anthropic emits an empty `signature` on the thinking
+    // `content_block_start`; the cryptographic signature arrives only via the
+    // trailing `signature_delta`. Mirror that wire shape here.
     events.push({
       type: "content_block_start",
       index: blockIndex,
@@ -273,7 +450,7 @@ function buildClaudeTextStreamEvents(
     events.push({
       type: "content_block_delta",
       index: blockIndex,
-      delta: { type: "signature_delta", signature: "" },
+      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
     });
 
     events.push({
@@ -328,6 +505,7 @@ function buildClaudeToolCallStreamEvents(
   model: string,
   chunkSize: number,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
@@ -349,8 +527,47 @@ function buildClaudeToolCallStreamEvents(
     },
   });
 
-  for (let idx = 0; idx < toolCalls.length; idx++) {
-    const tc = toolCalls[idx];
+  let blockIndex = 0;
+
+  // Optional thinking block (emitted before the tool_use blocks when reasoning
+  // is present). Mirrors buildClaudeContentWithToolCallsStreamEvents exactly so
+  // a pure-tool-call turn under extended thinking emits a leading thinking
+  // block — without it, replaying the emitted turn under strict self-trips
+  // `missing_thinking_first`.
+  if (reasoning) {
+    // Real Anthropic emits an empty `signature` on the thinking
+    // `content_block_start`; the cryptographic signature arrives only via the
+    // trailing `signature_delta`. Mirror that wire shape here.
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: { type: "thinking_delta", thinking: slice },
+      });
+    }
+
+    events.push({
+      type: "content_block_delta",
+      index: blockIndex,
+      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
+    });
+
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    });
+
+    blockIndex++;
+  }
+
+  for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
     // Parse arguments to JSON object (Claude uses objects, not strings)
@@ -368,7 +585,7 @@ function buildClaudeToolCallStreamEvents(
     // content_block_start
     events.push({
       type: "content_block_start",
-      index: idx,
+      index: blockIndex,
       content_block: {
         type: "tool_use",
         id: toolUseId,
@@ -382,7 +599,7 @@ function buildClaudeToolCallStreamEvents(
       const slice = argsJson.slice(i, i + chunkSize);
       events.push({
         type: "content_block_delta",
-        index: idx,
+        index: blockIndex,
         delta: { type: "input_json_delta", partial_json: slice },
       });
     }
@@ -390,8 +607,10 @@ function buildClaudeToolCallStreamEvents(
     // content_block_stop
     events.push({
       type: "content_block_stop",
-      index: idx,
+      index: blockIndex,
     });
+
+    blockIndex++;
   }
 
   // message_delta
@@ -421,7 +640,7 @@ function buildClaudeTextResponse(
   const contentBlocks: object[] = [];
 
   if (reasoning) {
-    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
+    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
   }
 
   contentBlocks.push({ type: "text", text: content });
@@ -442,29 +661,41 @@ function buildClaudeToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): object {
+  const contentBlocks: object[] = [];
+
+  // Leading thinking block when reasoning is present — mirrors
+  // buildClaudeContentWithToolCallsResponse so a pure-tool-call turn under
+  // extended thinking carries the same leading thinking block.
+  if (reasoning) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
+  }
+
+  for (const tc of toolCalls) {
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    contentBlocks.push({
+      type: "tool_use",
+      id: tc.id || generateToolUseId(),
+      name: tc.name,
+      input: argsObj,
+    });
+  }
+
   return {
     id: overrides?.id ?? generateMessageId(),
     type: "message",
     role: overrides?.role ?? "assistant",
-    content: toolCalls.map((tc) => {
-      let argsObj: unknown;
-      try {
-        argsObj = JSON.parse(tc.arguments || "{}");
-      } catch {
-        logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-        );
-        argsObj = {};
-      }
-      return {
-        type: "tool_use",
-        id: tc.id || generateToolUseId(),
-        name: tc.name,
-        input: argsObj,
-      };
-    }),
+    content: contentBlocks,
     model: overrides?.model ?? model,
     stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
@@ -504,6 +735,9 @@ function buildClaudeContentWithToolCallsStreamEvents(
 
   // Optional thinking block
   if (reasoning) {
+    // Real Anthropic emits an empty `signature` on the thinking
+    // `content_block_start`; the cryptographic signature arrives only via the
+    // trailing `signature_delta`. Mirror that wire shape here.
     events.push({
       type: "content_block_start",
       index: blockIndex,
@@ -522,7 +756,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
     events.push({
       type: "content_block_delta",
       index: blockIndex,
-      delta: { type: "signature_delta", signature: "" },
+      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
     });
 
     events.push({
@@ -626,7 +860,7 @@ function buildClaudeContentWithToolCallsResponse(
   const contentBlocks: object[] = [];
 
   if (reasoning) {
-    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
+    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
   }
 
   contentBlocks.push({ type: "text", text: content });
@@ -745,6 +979,44 @@ export async function handleMessages(
       }),
     );
     return;
+  }
+
+  // Extended-thinking invariant validation. The validator runs whenever
+  // thinking is enabled (it self-short-circuits to null otherwise). On a
+  // detected violation: strict ON → 400, strict OFF → warn + replay. Mirrors
+  // the real Anthropic API, which 400s on these.
+  const thinkingViolation = validateThinkingInvariants(claudeReq);
+  if (thinkingViolation) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const violationMessage = thinkingViolationMessage(thinkingViolation);
+    if (effectiveStrict) {
+      logger.error(`THINKING: ${violationMessage}`);
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/messages",
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: {
+          status: 400,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        400,
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message: violationMessage,
+          },
+        }),
+      );
+      return;
+    }
+    logger.warn(`THINKING: ${violationMessage} (strict off — replaying anyway)`);
+    // Fall through to existing match/replay behavior.
   }
 
   // Convert to ChatCompletionRequest for fixture matching
@@ -1025,6 +1297,13 @@ export async function handleMessages(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -1037,6 +1316,7 @@ export async function handleMessages(
         response.toolCalls,
         completionReq.model,
         logger,
+        effReasoning,
         overrides,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1047,6 +1327,7 @@ export async function handleMessages(
         completionReq.model,
         chunkSize,
         logger,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);
