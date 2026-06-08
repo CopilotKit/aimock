@@ -17,7 +17,9 @@ import {
   todayStamp,
 } from "../../scripts/fix-drift.js";
 
-import type { DriftReport } from "../../scripts/drift-types.js";
+import { summarizeDriftReport } from "../../scripts/drift-slack-summary.js";
+
+import type { DriftEntry, DriftReport } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -315,5 +317,125 @@ describe("parsePorcelainLine", () => {
 describe("todayStamp", () => {
   it("returns an ISO date string", () => {
     expect(todayStamp()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeDriftReport (Slack detail)
+// ---------------------------------------------------------------------------
+
+function makeEntry(overrides?: Partial<DriftEntry>): DriftEntry {
+  return {
+    provider: "OpenAI Chat",
+    scenario: "non-streaming text",
+    builderFile: "src/helpers.ts",
+    builderFunctions: ["buildTextCompletion"],
+    typesFile: "src/types.ts",
+    sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+    diffs: [
+      {
+        severity: "critical",
+        issue: "field missing from mock",
+        path: "choices[0].message.refusal",
+        expected: "null",
+        real: "null",
+        mock: "<absent>",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("summarizeDriftReport", () => {
+  it("returns an empty string when there are no entries", () => {
+    expect(summarizeDriftReport({ timestamp: "t", entries: [] })).toBe("");
+  });
+
+  it("names the drifted provider, severity tally, and a changed path", () => {
+    const summary = summarizeDriftReport({ timestamp: "t", entries: [makeEntry()] });
+    expect(summary).toContain("*OpenAI Chat*");
+    expect(summary).toContain("1 critical");
+    expect(summary).toContain("`choices[0].message.refusal`");
+    expect(summary.startsWith("•")).toBe(true);
+  });
+
+  it("merges multiple entries for the same provider into one line with combined counts", () => {
+    const summary = summarizeDriftReport({
+      timestamp: "t",
+      entries: [
+        makeEntry(),
+        makeEntry({
+          scenario: "streaming text",
+          diffs: [
+            {
+              severity: "warning",
+              issue: "type changed",
+              path: "choices[0].delta.role",
+              expected: "string",
+              real: "string",
+              mock: "number",
+            },
+          ],
+        }),
+      ],
+    });
+    // One bullet line for the single provider
+    expect(summary.split("\n").filter((l) => l.startsWith("• *OpenAI Chat*"))).toHaveLength(1);
+    expect(summary).toContain("1 critical, 1 warning");
+  });
+
+  it("lists multiple providers on separate lines, critical-first", () => {
+    const summary = summarizeDriftReport({
+      timestamp: "t",
+      entries: [
+        makeEntry({
+          provider: "Anthropic",
+          diffs: [
+            {
+              severity: "warning",
+              issue: "x",
+              path: "content[0].type",
+              expected: "a",
+              real: "a",
+              mock: "b",
+            },
+          ],
+        }),
+        makeEntry(), // OpenAI Chat with a critical
+      ],
+    });
+    const lines = summary.split("\n");
+    expect(lines).toHaveLength(2);
+    // Provider with a critical diff sorts before the warning-only provider
+    expect(lines[0]).toContain("*OpenAI Chat*");
+    expect(lines[1]).toContain("*Anthropic*");
+  });
+
+  it("caps example paths per provider and reports the remainder", () => {
+    const manyPaths = Array.from({ length: 6 }, (_, i) => ({
+      severity: "critical" as const,
+      issue: "x",
+      path: `field.${i}`,
+      expected: "a",
+      real: "a",
+      mock: "b",
+    }));
+    const summary = summarizeDriftReport({
+      timestamp: "t",
+      entries: [makeEntry({ diffs: manyPaths })],
+    });
+    expect(summary).toContain("`field.0`");
+    expect(summary).toContain("`field.2`");
+    expect(summary).not.toContain("`field.3`");
+    expect(summary).toContain("+3 more");
+  });
+
+  it("uses real newlines (not literal backslash-n) between providers", () => {
+    const summary = summarizeDriftReport({
+      timestamp: "t",
+      entries: [makeEntry(), makeEntry({ provider: "Anthropic" })],
+    });
+    expect(summary).toContain("\n");
+    expect(summary).not.toContain("\\n");
   });
 });
