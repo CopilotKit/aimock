@@ -195,7 +195,7 @@ afterEach(async () => {
 describe("POST /v1/chat/completions (reasoning non-streaming)", () => {
   it("includes reasoning_content field on assistant message", async () => {
     const res = await post(`/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: false,
     });
@@ -224,7 +224,7 @@ describe("POST /v1/chat/completions (reasoning non-streaming)", () => {
 describe("POST /v1/chat/completions (reasoning streaming)", () => {
   it("emits reasoning_content deltas before content deltas", async () => {
     const res = await post(`/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: true,
     });

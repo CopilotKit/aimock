@@ -30,7 +30,21 @@ const reasoningFixture: Fixture = {
   response: { content: "The answer.", reasoning: "Let me reason about this." },
 };
 
-const allFixtures: Fixture[] = [textFixture, toolFixture, errorFixture, reasoningFixture];
+// Reasoning fixture used by the capability-gating tests. Distinct match key so it
+// can be exercised against different requested models without colliding with the
+// `gpt-4`-defaulting "think" fixture above.
+const capabilityReasoningFixture: Fixture = {
+  match: { userMessage: "reason-please" },
+  response: { content: "The answer.", reasoning: "Let me reason about this." },
+};
+
+const allFixtures: Fixture[] = [
+  textFixture,
+  toolFixture,
+  errorFixture,
+  reasoningFixture,
+  capabilityReasoningFixture,
+];
 
 // --- tests ---
 
@@ -469,5 +483,107 @@ describe("WebSocket /v1/responses", () => {
     const reasoningIdx = types.indexOf("response.reasoning_summary_text.delta");
     const textIdx = types.indexOf("response.output_text.delta");
     expect(reasoningIdx).toBeLessThan(textIdx);
+  });
+});
+
+// ─── Capability-aware reasoning gating: WebSocket /v1/responses ───────────────
+
+describe("WebSocket /v1/responses reasoning capability gating", () => {
+  it("emits reasoning for a reasoning-capable model", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("reason-please", "o3-mini"));
+
+    const raw = await ws.waitForMessages(15);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.output_text.delta");
+
+    ws.close();
+  });
+
+  it("emits reasoning (warn-by-default) for a non-reasoning model when strict is off", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    // gpt-4.1 is a known non-reasoning model; strict is off by default, so the
+    // reasoning channel is still emitted (a warning is logged at non-silent levels).
+    ws.send(responseCreateMsg("reason-please", "gpt-4.1"));
+
+    const raw = await ws.waitForMessages(15);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.output_text.delta");
+
+    ws.close();
+  });
+
+  it("suppresses reasoning for a non-reasoning model when strict is on (upgrade header)", async () => {
+    instance = await createServer(allFixtures);
+    // Strict resolves from the connection upgrade headers on the WS path; pass
+    // X-AIMock-Strict via the upgrade handshake.
+    const ws = await connectWebSocket(instance.url, "/v1/responses", {
+      "X-AIMock-Strict": "true",
+    });
+
+    ws.send(responseCreateMsg("reason-please", "gpt-4.1"));
+
+    // Without reasoning the text response is a shorter sequence; wait for the
+    // terminal response.completed rather than a reasoning-inflated count.
+    const raw = await ws.waitForMessages(9);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).not.toContain("response.reasoning_summary_text.delta");
+    expect(types).not.toContain("response.reasoning_summary_text.done");
+    // Text emission is unaffected.
+    expect(types).toContain("response.output_text.delta");
+    expect(types[types.length - 1]).toBe("response.completed");
+
+    ws.close();
+  });
+
+  it("still emits reasoning for a reasoning-capable model under strict mode", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses", {
+      "X-AIMock-Strict": "true",
+    });
+
+    ws.send(responseCreateMsg("reason-please", "o3-mini"));
+
+    const raw = await ws.waitForMessages(15);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.output_text.delta");
+
+    ws.close();
+  });
+
+  it("no-op when the fixture carries no reasoning (non-reasoning model, strict on)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses", {
+      "X-AIMock-Strict": "true",
+    });
+
+    // textFixture has no reasoning; gating short-circuits before any model check.
+    ws.send(responseCreateMsg("hello", "gpt-4.1"));
+
+    const raw = await ws.waitForMessages(9);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).not.toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.output_text.delta");
+    const deltas = events.filter((e) => e.type === "response.output_text.delta");
+    expect(deltas.map((d) => d.delta).join("")).toBe("Hi there!");
+
+    ws.close();
   });
 });

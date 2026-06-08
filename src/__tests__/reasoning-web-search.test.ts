@@ -112,7 +112,7 @@ describe("POST /v1/responses (reasoning streaming)", () => {
   it("emits reasoning events before text events", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -135,7 +135,7 @@ describe("POST /v1/responses (reasoning streaming)", () => {
   it("reasoning deltas reconstruct full reasoning text", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -151,7 +151,7 @@ describe("POST /v1/responses (reasoning streaming)", () => {
   it("text deltas still reconstruct full content", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -165,7 +165,7 @@ describe("POST /v1/responses (reasoning streaming)", () => {
   it("response.completed includes reasoning output item", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -268,7 +268,7 @@ describe("POST /v1/responses (combined reasoning + web search)", () => {
   it("emits reasoning, then web search, then text events in order", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "combined" }],
       stream: true,
     });
@@ -303,7 +303,7 @@ describe("POST /v1/responses (combined reasoning + web search)", () => {
   it("response.completed output includes all item types in order", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "combined" }],
       stream: true,
     });
@@ -325,7 +325,7 @@ describe("POST /v1/responses (non-streaming with reasoning)", () => {
   it("includes reasoning output item in non-streaming response", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "think" }],
       stream: false,
     });
@@ -362,7 +362,7 @@ describe("POST /v1/responses (non-streaming with reasoning)", () => {
   it("combined non-streaming response has correct output order", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-4",
+      model: "o3-mini",
       input: [{ role: "user", content: "combined" }],
       stream: false,
     });
@@ -578,7 +578,7 @@ describe("POST /v1/chat/completions (reasoning_content streaming)", () => {
   it("emits reasoning_content deltas before content deltas", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -603,7 +603,7 @@ describe("POST /v1/chat/completions (reasoning_content streaming)", () => {
   it("reasoning_content deltas reconstruct full reasoning text", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -616,7 +616,7 @@ describe("POST /v1/chat/completions (reasoning_content streaming)", () => {
   it("content deltas still reconstruct full text", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: true,
     });
@@ -644,7 +644,7 @@ describe("POST /v1/chat/completions (reasoning_content non-streaming)", () => {
   it("includes reasoning_content in non-streaming response", async () => {
     instance = await createServer(allFixtures);
     const res = await post(`${instance.url}/v1/chat/completions`, {
-      model: "gpt-4",
+      model: "o3-mini",
       messages: [{ role: "user", content: "think" }],
       stream: false,
     });
