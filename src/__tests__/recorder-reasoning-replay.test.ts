@@ -951,9 +951,9 @@ describe("Anthropic replay gates encrypted reasoning artifacts on model capabili
     // The thinking block is emitted (not suppressed)...
     expect(thinkingBlocks(events)).toHaveLength(1);
     // ...carrying the recorded real signature, not the placeholder.
-    expect(signatureDeltas(events).map((e) => (e.delta as { signature?: string }).signature)).toEqual(
-      [REAL_SIGNATURE],
-    );
+    expect(
+      signatureDeltas(events).map((e) => (e.delta as { signature?: string }).signature),
+    ).toEqual([REAL_SIGNATURE]);
   });
 });
 
