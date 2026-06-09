@@ -149,6 +149,12 @@ export interface ResponseOverrides {
 export interface TextResponse extends ResponseOverrides {
   content: string;
   reasoning?: string;
+  /**
+   * The real cryptographic `signature` captured from a recorded Anthropic
+   * thinking turn. When present it is emitted on the replayed thinking block;
+   * otherwise replay falls back to aimock's round-trip-safe placeholder.
+   */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 
@@ -161,6 +167,8 @@ export interface ToolCall {
 export interface ToolCallResponse extends ResponseOverrides {
   toolCalls: ToolCall[];
   reasoning?: string;
+  /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 
@@ -168,6 +176,8 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
   content: string;
   toolCalls: ToolCall[];
   reasoning?: string;
+  /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 
@@ -359,6 +369,8 @@ export interface FixtureFileToolCall {
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
   reasoning?: string;
+  /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 
@@ -366,6 +378,8 @@ export interface FixtureFileTextResponse extends ResponseOverrides {
   /** Accepts a JSON object or array (structured output) — the loader will JSON.stringify it. */
   content: string | Record<string, unknown> | unknown[];
   reasoning?: string;
+  /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 
@@ -374,6 +388,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
   content: string | Record<string, unknown> | unknown[];
   toolCalls: FixtureFileToolCall[];
   reasoning?: string;
+  /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
+  reasoningSignature?: string;
   webSearches?: string[];
 }
 

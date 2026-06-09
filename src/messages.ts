@@ -405,9 +405,13 @@ function buildClaudeTextStreamEvents(
   chunkSize: number,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
+  // Prefer a recorded real signature when one was captured; otherwise fall back
+  // to the round-trip-safe placeholder.
+  const signature = reasoningSignature ?? PLACEHOLDER_SIGNATURE;
   const events: ClaudeSSEEvent[] = [];
 
   // message_start
@@ -450,7 +454,7 @@ function buildClaudeTextStreamEvents(
     events.push({
       type: "content_block_delta",
       index: blockIndex,
-      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
+      delta: { type: "signature_delta", signature },
     });
 
     events.push({
@@ -507,9 +511,13 @@ function buildClaudeToolCallStreamEvents(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
+  // Prefer a recorded real signature when one was captured; otherwise fall back
+  // to the round-trip-safe placeholder.
+  const signature = reasoningSignature ?? PLACEHOLDER_SIGNATURE;
   const events: ClaudeSSEEvent[] = [];
 
   // message_start
@@ -556,7 +564,7 @@ function buildClaudeToolCallStreamEvents(
     events.push({
       type: "content_block_delta",
       index: blockIndex,
-      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
+      delta: { type: "signature_delta", signature },
     });
 
     events.push({
@@ -636,11 +644,17 @@ function buildClaudeTextResponse(
   model: string,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): object {
   const contentBlocks: object[] = [];
 
   if (reasoning) {
-    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
+    contentBlocks.push({
+      type: "thinking",
+      thinking: reasoning,
+      // Prefer a recorded real signature; otherwise the round-trip-safe placeholder.
+      signature: reasoningSignature ?? PLACEHOLDER_SIGNATURE,
+    });
   }
 
   contentBlocks.push({ type: "text", text: content });
@@ -663,6 +677,7 @@ function buildClaudeToolCallResponse(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): object {
   const contentBlocks: object[] = [];
 
@@ -670,7 +685,12 @@ function buildClaudeToolCallResponse(
   // buildClaudeContentWithToolCallsResponse so a pure-tool-call turn under
   // extended thinking carries the same leading thinking block.
   if (reasoning) {
-    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
+    contentBlocks.push({
+      type: "thinking",
+      thinking: reasoning,
+      // Prefer a recorded real signature; otherwise the round-trip-safe placeholder.
+      signature: reasoningSignature ?? PLACEHOLDER_SIGNATURE,
+    });
   }
 
   for (const tc of toolCalls) {
@@ -711,9 +731,13 @@ function buildClaudeContentWithToolCallsStreamEvents(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
+  // Prefer a recorded real signature when one was captured; otherwise fall back
+  // to the round-trip-safe placeholder.
+  const signature = reasoningSignature ?? PLACEHOLDER_SIGNATURE;
   const events: ClaudeSSEEvent[] = [];
 
   // message_start
@@ -756,7 +780,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
     events.push({
       type: "content_block_delta",
       index: blockIndex,
-      delta: { type: "signature_delta", signature: PLACEHOLDER_SIGNATURE },
+      delta: { type: "signature_delta", signature },
     });
 
     events.push({
@@ -856,11 +880,17 @@ function buildClaudeContentWithToolCallsResponse(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  reasoningSignature?: string,
 ): object {
   const contentBlocks: object[] = [];
 
   if (reasoning) {
-    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: PLACEHOLDER_SIGNATURE });
+    contentBlocks.push({
+      type: "thinking",
+      thinking: reasoning,
+      // Prefer a recorded real signature; otherwise the round-trip-safe placeholder.
+      signature: reasoningSignature ?? PLACEHOLDER_SIGNATURE,
+    });
   }
 
   contentBlocks.push({ type: "text", text: content });
@@ -1199,6 +1229,7 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1211,6 +1242,7 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1259,6 +1291,7 @@ export async function handleMessages(
         completionReq.model,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1269,6 +1302,7 @@ export async function handleMessages(
         chunkSize,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1318,6 +1352,7 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1329,6 +1364,7 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
+        response.reasoningSignature,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {

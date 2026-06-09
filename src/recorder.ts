@@ -408,16 +408,31 @@ export async function proxyAndRecord(
     ) {
       defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
+      // Carry the real Anthropic thinking-block signature only when reasoning is
+      // also present (a bare signature has nothing to attach to on replay), so a
+      // recorded thinking turn replays its actual signature instead of the
+      // round-trip-safe placeholder.
+      const reasoningSignatureSpread =
+        collapsed.reasoning && collapsed.reasoningSignature
+          ? { reasoningSignature: collapsed.reasoningSignature }
+          : {};
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
       fixtureResponse = {
         content: collapsed.content ?? "",
         ...reasoningSpread,
+        ...reasoningSignatureSpread,
         ...webSearchesSpread,
       };
     } else {
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
+      // Carry the real Anthropic thinking-block signature only when reasoning is
+      // also present; see the empty-content branch above.
+      const reasoningSignatureSpread =
+        collapsed.reasoning && collapsed.reasoningSignature
+          ? { reasoningSignature: collapsed.reasoningSignature }
+          : {};
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
@@ -433,12 +448,14 @@ export async function proxyAndRecord(
             content: collapsed.content,
             toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
+            ...reasoningSignatureSpread,
             ...webSearchesSpread,
           };
         } else {
           fixtureResponse = {
             toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
+            ...reasoningSignatureSpread,
             ...webSearchesSpread,
           };
         }
@@ -446,6 +463,7 @@ export async function proxyAndRecord(
         fixtureResponse = {
           content: collapsed.content ?? "",
           ...reasoningSpread,
+          ...reasoningSignatureSpread,
           ...webSearchesSpread,
         };
       }
