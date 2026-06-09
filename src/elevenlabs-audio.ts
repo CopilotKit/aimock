@@ -12,8 +12,10 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { proxyAndRecord } from "./recorder.js";
 import type { Journal } from "./journal.js";
@@ -94,7 +96,12 @@ export async function handleElevenLabsTTS(
   // Match fixture
   const testId = getTestId(req);
   const matchCounts = journal.getFixtureMatchCountsForTest(testId);
-  const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    syntheticReq,
+    matchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
@@ -119,6 +126,8 @@ export async function handleElevenLabsTTS(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -135,7 +144,7 @@ export async function handleElevenLabsTTS(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },
@@ -347,7 +356,12 @@ export async function handleElevenLabsAudio(
   // Match fixture
   const testId = getTestId(req);
   const matchCounts = journal.getFixtureMatchCountsForTest(testId);
-  const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    syntheticReq,
+    matchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
@@ -372,6 +386,8 @@ export async function handleElevenLabsAudio(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -388,7 +404,7 @@ export async function handleElevenLabsAudio(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },

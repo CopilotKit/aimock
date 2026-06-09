@@ -13,7 +13,7 @@ import type {
   ToolDefinition,
   AudioResponse,
 } from "./types.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import {
   isTextResponse,
   isToolCallResponse,
@@ -26,6 +26,8 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
@@ -383,7 +385,7 @@ async function processMessage(
   };
 
   const testId = defaults.testId ?? DEFAULT_TEST_ID;
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -397,7 +399,8 @@ async function processMessage(
 
   if (!fixture) {
     if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
-      defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.warn(strictNoMatchLogLine("WS", path, skippedBySequenceOrTurn));
       journal.add({
         method: "WS",
         path,
@@ -409,7 +412,7 @@ async function processMessage(
           ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
         },
       });
-      ws.close(1008, "Strict mode: no fixture matched");
+      ws.close(1008, strictMessage);
       return;
     }
     journal.add({

@@ -37,8 +37,10 @@ import {
   resolveReasoningForModel,
   strictOverrideField,
   getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { writeNDJSONStream } from "./ndjson-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -578,7 +580,7 @@ export async function handleOllama(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -616,8 +618,8 @@ export async function handleOllama(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
       journal.add({
         method: req.method ?? "POST",
         path: urlPath,
@@ -962,7 +964,7 @@ export async function handleOllamaGenerate(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -1000,8 +1002,10 @@ export async function handleOllamaGenerate(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
-      defaults.logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(
+        strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn),
+      );
       journal.add({
         method: req.method ?? "POST",
         path: urlPath,
@@ -1295,7 +1299,7 @@ export async function handleOllamaEmbeddings(
   };
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -1391,7 +1395,8 @@ export async function handleOllamaEmbeddings(
   // No fixture match — check strict mode first, then try proxy
   const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
   if (effectiveStrict) {
-    logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+    const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+    logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1408,7 +1413,7 @@ export async function handleOllamaEmbeddings(
       503,
       JSON.stringify({
         error: {
-          message: "Strict mode: no fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
         },
       }),

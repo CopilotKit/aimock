@@ -19,9 +19,11 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
 import { buildFalForwardHeaders, walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
@@ -301,7 +303,12 @@ async function handleQueueSubmit(
     _context: getContext(req),
   };
 
-  const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    syntheticReq,
+    matchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
@@ -330,6 +337,10 @@ async function handleQueueSubmit(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(
+        strictNoMatchLogLine(req.method ?? "POST", pathname, skippedBySequenceOrTurn),
+      );
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
@@ -345,7 +356,7 @@ async function handleQueueSubmit(
       res.end(
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },
@@ -833,7 +844,12 @@ async function handleSyncRun(
     _context: getContext(req),
   };
 
-  const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    syntheticReq,
+    matchCounts,
+    defaults.requestTransform,
+  );
 
   if (fixture) {
     journal.incrementFixtureMatchCount(fixture, fixtures, getTestId(req));
@@ -862,6 +878,10 @@ async function handleSyncRun(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(
+        strictNoMatchLogLine(req.method ?? "POST", pathname, skippedBySequenceOrTurn),
+      );
       journal.add({
         method: req.method ?? "POST",
         path: pathname,
@@ -877,7 +897,7 @@ async function handleSyncRun(
       res.end(
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },

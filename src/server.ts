@@ -9,7 +9,7 @@ import type {
   RecordProviderKey,
 } from "./types.js";
 import { Journal } from "./journal.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { validateFixtures, entryToFixture } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -37,6 +37,8 @@ import {
   resolveStrictMode,
   resolveReasoningForModel,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
   getContext,
 } from "./helpers.js";
 import { handleResponses } from "./responses.js";
@@ -532,7 +534,7 @@ async function handleCompletions(
   // (headers > fixture.chaos > server defaults), so the fixture has to be
   // known before we can roll with the right config.
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     body,
     journal.getFixtureMatchCountsForTest(testId),
@@ -592,9 +594,13 @@ async function handleCompletions(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? COMPLETIONS_PATH}`,
+        strictNoMatchLogLine(
+          req.method ?? "POST",
+          req.url ?? COMPLETIONS_PATH,
+          skippedBySequenceOrTurn,
+        ),
       );
       journal.add({
         method: req.method ?? "POST",

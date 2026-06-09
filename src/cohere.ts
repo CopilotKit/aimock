@@ -39,8 +39,10 @@ import {
   resolveReasoningForModel,
   strictOverrideField,
   getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
@@ -864,7 +866,7 @@ export async function handleCohere(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -902,9 +904,9 @@ export async function handleCohere(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v2/chat"}`,
+        strictNoMatchLogLine(req.method ?? "POST", req.url ?? "/v2/chat", skippedBySequenceOrTurn),
       );
       journal.add({
         method: req.method ?? "POST",
@@ -1293,7 +1295,7 @@ export async function handleCohereEmbed(
   };
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -1401,8 +1403,9 @@ export async function handleCohereEmbed(
 
   // No fixture match — check strict mode
   if (resolveStrictMode(defaults.strict, req.headers)) {
+    const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
-      `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v2/embed"}`,
+      strictNoMatchLogLine(req.method ?? "POST", req.url ?? "/v2/embed", skippedBySequenceOrTurn),
     );
     journal.add({
       method: req.method ?? "POST",
@@ -1420,7 +1423,7 @@ export async function handleCohereEmbed(
       503,
       JSON.stringify({
         error: {
-          message: "Strict mode: no fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
         },
       }),

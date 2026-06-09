@@ -10,8 +10,10 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
@@ -118,7 +120,7 @@ export async function handleImages(
 
   const syntheticReq = buildSyntheticRequest(model, prompt, getContext(req));
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -150,6 +152,8 @@ export async function handleImages(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -166,7 +170,7 @@ export async function handleImages(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },
@@ -350,7 +354,7 @@ export async function handleImageEdit(
 
   const syntheticReq = buildSyntheticRequest(model, prompt, getContext(req));
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -382,6 +386,8 @@ export async function handleImageEdit(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -398,7 +404,7 @@ export async function handleImageEdit(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },
@@ -534,7 +540,7 @@ export async function handleImageVariations(
   // Variations don't have a prompt — use a synthetic placeholder for fixture matching
   const syntheticReq = buildSyntheticRequest(model, "[variation]", getContext(req));
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -566,6 +572,8 @@ export async function handleImageVariations(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -582,7 +590,7 @@ export async function handleImageVariations(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },

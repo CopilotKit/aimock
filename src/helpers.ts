@@ -67,6 +67,43 @@ export function strictOverrideField(
 }
 
 /**
+ * Build the strict-mode 503 error message, distinguishing a true no-match from
+ * a sequence/turn-exhausted miss.
+ *
+ * `skippedBySequenceOrTurn` is the count reported by `matchFixtureDiagnostic`
+ * (router.ts): the number of fixtures that matched the request SHAPE but were
+ * rejected ONLY by their `sequenceIndex`/`turnIndex` count state.
+ *
+ *   - `0`  → `"Strict mode: no fixture matched"` (no candidate had a matching shape)
+ *   - `>0` → `"Strict mode: N candidate fixture(s) skipped by sequence/turn state"`
+ *
+ * The HTTP status (503) and error envelope shape are unchanged at every call
+ * site — only this message string differs. Endpoints with no sequence/turn
+ * gates always pass `0` and therefore see the generic message.
+ */
+export function strictNoMatchMessage(skippedBySequenceOrTurn: number): string {
+  if (skippedBySequenceOrTurn > 0) {
+    return `Strict mode: ${skippedBySequenceOrTurn} candidate fixture(s) skipped by sequence/turn state`;
+  }
+  return "Strict mode: no fixture matched";
+}
+
+/**
+ * Build the strict-mode error LOG line, mirroring {@link strictNoMatchMessage}'s
+ * disambiguation so the error log distinguishes the two miss kinds too.
+ */
+export function strictNoMatchLogLine(
+  method: string,
+  url: string,
+  skippedBySequenceOrTurn: number,
+): string {
+  if (skippedBySequenceOrTurn > 0) {
+    return `STRICT: ${skippedBySequenceOrTurn} candidate fixture(s) skipped by sequence/turn state for ${method} ${url}`;
+  }
+  return `STRICT: No fixture matched for ${method} ${url}`;
+}
+
+/**
  * Resolve the reasoning string to actually emit for a given model.
  *
  * aimock synthesizes a reasoning channel whenever a fixture carries a

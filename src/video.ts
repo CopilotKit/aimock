@@ -10,8 +10,10 @@ import {
   resolveStrictMode,
   strictOverrideField,
   getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
@@ -197,7 +199,7 @@ export async function handleVideoCreate(
   };
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -229,6 +231,8 @@ export async function handleVideoCreate(
   if (!fixture) {
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
       journal.add({
         method,
         path,
@@ -245,7 +249,7 @@ export async function handleVideoCreate(
         503,
         JSON.stringify({
           error: {
-            message: "Strict mode: no fixture matched",
+            message: strictMessage,
             type: "invalid_request_error",
             code: "no_fixture_match",
           },

@@ -33,8 +33,10 @@ import {
   resolveReasoningForModel,
   strictOverrideField,
   getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { RecordedTimings } from "./types.js";
@@ -960,7 +962,7 @@ export async function handleResponses(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -1002,9 +1004,13 @@ export async function handleResponses(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
       defaults.logger.error(
-        `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/responses"}`,
+        strictNoMatchLogLine(
+          req.method ?? "POST",
+          req.url ?? "/v1/responses",
+          skippedBySequenceOrTurn,
+        ),
       );
       journal.add({
         method: req.method ?? "POST",

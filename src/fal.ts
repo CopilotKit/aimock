@@ -21,9 +21,11 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
 import { writeErrorResponse } from "./sse-writer.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
 import { resolveUpstreamUrl } from "./url.js";
 import type { Journal } from "./journal.js";
@@ -527,11 +529,20 @@ export async function handleFal(
       };
 
       const matchCounts = journal.getFixtureMatchCountsForTest(testId);
-      const fixture = matchFixture(fixtures, syntheticReq, matchCounts, defaults.requestTransform);
+      const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+        fixtures,
+        syntheticReq,
+        matchCounts,
+        defaults.requestTransform,
+      );
 
       if (!fixture) {
         const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
         if (effectiveStrict) {
+          const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+          defaults.logger.error(
+            strictNoMatchLogLine(req.method ?? "POST", pathname, skippedBySequenceOrTurn),
+          );
           journal.add({
             method: req.method ?? "POST",
             path: pathname,
@@ -547,7 +558,7 @@ export async function handleFal(
           res.end(
             JSON.stringify({
               error: {
-                message: "Strict mode: no fixture matched",
+                message: strictMessage,
                 type: "invalid_request_error",
                 code: "no_fixture_match",
               },

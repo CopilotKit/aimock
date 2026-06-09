@@ -8,7 +8,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { ChatCompletionRequest, ChatMessage, Fixture } from "./types.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import {
   generateToolCallId,
   flattenHeaders,
@@ -19,6 +19,8 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
@@ -703,7 +705,7 @@ async function handleResponseCreate(
   };
 
   const testId = defaults.testId ?? DEFAULT_TEST_ID;
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -717,7 +719,8 @@ async function handleResponseCreate(
 
   if (!fixture) {
     if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
-      defaults.logger.warn(`STRICT: No fixture matched for WebSocket message`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.warn(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
         method: "WS",
         path: "/v1/realtime",
@@ -729,7 +732,7 @@ async function handleResponseCreate(
           ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
         },
       });
-      ws.close(1008, "Strict mode: no fixture matched");
+      ws.close(1008, strictMessage);
       return;
     }
     journal.add({

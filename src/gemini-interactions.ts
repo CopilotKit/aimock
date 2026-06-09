@@ -32,8 +32,10 @@ import {
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
@@ -779,7 +781,7 @@ export async function handleGeminiInteractions(
   const model = completionReq.model;
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -814,8 +816,8 @@ export async function handleGeminiInteractions(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
       journal.add({
         method: req.method ?? "POST",
         path: urlPath,

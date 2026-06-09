@@ -42,8 +42,10 @@ import {
   resolveReasoningForModel,
   resolveStrictMode,
   strictOverrideField,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { writeEventStream } from "./aws-event-stream.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -400,7 +402,7 @@ export async function handleBedrock(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -441,8 +443,8 @@ export async function handleBedrock(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
       journal.add({
         method: req.method ?? "POST",
         path: urlPath,
@@ -1107,7 +1109,7 @@ export async function handleBedrockStream(
   completionReq._context = getContext(req);
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     completionReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -1148,8 +1150,8 @@ export async function handleBedrockStream(
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictStatus = 503;
-      const strictMessage = "Strict mode: no fixture matched";
-      logger.error(`STRICT: No fixture matched for ${req.method ?? "POST"} ${urlPath}`);
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      logger.error(strictNoMatchLogLine(req.method ?? "POST", urlPath, skippedBySequenceOrTurn));
       journal.add({
         method: req.method ?? "POST",
         path: urlPath,

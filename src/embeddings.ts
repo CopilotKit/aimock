@@ -25,8 +25,10 @@ import {
   resolveStrictMode,
   strictOverrideField,
   getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
-import { matchFixture } from "./router.js";
+import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
@@ -124,7 +126,7 @@ export async function handleEmbeddings(
   };
 
   const testId = getTestId(req);
-  const fixture = matchFixture(
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
     fixtures,
     syntheticReq,
     journal.getFixtureMatchCountsForTest(testId),
@@ -217,8 +219,13 @@ export async function handleEmbeddings(
 
   // No fixture match — check strict mode first, then try proxy
   if (resolveStrictMode(defaults.strict, req.headers)) {
+    const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
     logger.error(
-      `STRICT: No fixture matched for ${req.method ?? "POST"} ${req.url ?? "/v1/embeddings"}`,
+      strictNoMatchLogLine(
+        req.method ?? "POST",
+        req.url ?? "/v1/embeddings",
+        skippedBySequenceOrTurn,
+      ),
     );
     journal.add({
       method: req.method ?? "POST",
@@ -236,7 +243,7 @@ export async function handleEmbeddings(
       503,
       JSON.stringify({
         error: {
-          message: "Strict mode: no fixture matched",
+          message: strictMessage,
           type: "invalid_request_error",
           code: "no_fixture_match",
         },
