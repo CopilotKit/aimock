@@ -416,6 +416,11 @@ export async function proxyAndRecord(
         collapsed.reasoning && collapsed.reasoningSignature
           ? { reasoningSignature: collapsed.reasoningSignature }
           : {};
+      logDroppedReasoningSignature(
+        defaults.logger,
+        collapsed.reasoning,
+        collapsed.reasoningSignature,
+      );
       // Redacted-thinking blocks carry their OWN encrypted reasoning, so they are
       // carried independently of any plaintext `reasoning` (a turn can have only
       // redacted thinking) so the recorded turn round-trips its redacted blocks.
@@ -440,6 +445,11 @@ export async function proxyAndRecord(
         collapsed.reasoning && collapsed.reasoningSignature
           ? { reasoningSignature: collapsed.reasoningSignature }
           : {};
+      logDroppedReasoningSignature(
+        defaults.logger,
+        collapsed.reasoning,
+        collapsed.reasoningSignature,
+      );
       // Redacted-thinking blocks carry their OWN encrypted reasoning, so they are
       // carried independently of any plaintext `reasoning`; see the empty-content
       // branch above.
@@ -526,7 +536,12 @@ export async function proxyAndRecord(
           `Could not parse encoding_format from raw body: ${err instanceof Error ? err.message : "unknown error"}`,
         );
       }
-      fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, encodingFormat);
+      fixtureResponse = buildFixtureResponse(
+        parsedResponse,
+        upstreamStatus,
+        encodingFormat,
+        defaults.logger,
+      );
     }
   }
 
@@ -884,10 +899,27 @@ function makeUpstreamRequest(
  * Detect the response format from the parsed upstream JSON and convert
  * it into an aimock FixtureResponse.
  */
+/**
+ * A captured Anthropic thinking-block signature is only persisted alongside
+ * non-empty plaintext `reasoning` (a bare signature has nothing to attach to on
+ * replay). When that gate drops a present signature, emit a debug line so the
+ * loss is observable.
+ */
+function logDroppedReasoningSignature(
+  logger: Logger | undefined,
+  reasoning: string | undefined,
+  reasoningSignature: string | undefined,
+): void {
+  if (reasoningSignature && !reasoning) {
+    logger?.debug("Dropping captured reasoningSignature — no plaintext reasoning to attach it to");
+  }
+}
+
 function buildFixtureResponse(
   parsed: unknown,
   status: number,
   encodingFormat?: string,
+  logger?: Logger,
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -1144,6 +1176,7 @@ function buildFixtureResponse(
       anthropicReasoning && anthropicReasoningSignature
         ? { reasoningSignature: anthropicReasoningSignature }
         : {};
+    logDroppedReasoningSignature(logger, anthropicReasoning, anthropicReasoningSignature);
     const redactedThinkingSpread = redactedThinking.length > 0 ? { redactedThinking } : {};
 
     if (hasToolCalls) {
