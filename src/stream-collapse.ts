@@ -19,6 +19,19 @@ import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
 export interface CollapseResult {
   content?: string;
   reasoning?: string;
+  /**
+   * The real cryptographic `signature` value captured from an Anthropic
+   * `signature_delta`. Carried so a recorded real-provider thinking turn can
+   * replay its ACTUAL signature instead of aimock's placeholder. Absent when the
+   * stream carried no signature.
+   */
+  reasoningSignature?: string;
+  /**
+   * The opaque `data` payload(s) of any Anthropic `redacted_thinking` blocks, in
+   * stream order. Captured so a recorded redacted-thinking turn round-trips its
+   * encrypted reasoning faithfully. Absent when none present.
+   */
+  redactedThinking?: string[];
   webSearches?: string[];
   toolCalls?: ToolCall[];
   droppedChunks?: number;
@@ -323,6 +336,15 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   const blocks = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
+  // Real cryptographic signature captured from a `signature_delta`; stays
+  // undefined when the stream carried none (e.g. aimock's own placeholder turns
+  // or non-thinking turns). Carried so a recorded real-provider thinking turn
+  // can replay its ACTUAL signature instead of aimock's placeholder.
+  let reasoningSignature: string | undefined;
+  // Opaque `data` payloads of any `redacted_thinking` content blocks, in stream
+  // order. Stays empty when none present. Carried so a recorded redacted-thinking
+  // turn round-trips its encrypted reasoning faithfully on replay.
+  const redactedThinking: string[] = [];
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -361,6 +383,12 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
 
     if (eventType === "content_block_start") {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
+      // A `redacted_thinking` block carries its encrypted reasoning in an opaque
+      // `data` string on the start event (no deltas follow). Capture it so the
+      // recorded turn can replay the redacted block faithfully.
+      if (contentBlock?.type === "redacted_thinking" && typeof contentBlock.data === "string") {
+        redactedThinking.push(contentBlock.data);
+      }
       if (contentBlock?.type === "tool_use") {
         // Prefer the streamed `index`; when absent, mint a fresh synthetic key
         // so distinct index-less tool_use blocks never merge.
@@ -389,6 +417,13 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
 
       if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
         reasoning += delta.thinking;
+      }
+
+      // The real cryptographic signature arrives via a trailing
+      // `signature_delta` (the `content_block_start` carried ""). Capture the
+      // last one seen so a recorded thinking turn replays its actual signature.
+      if (delta.type === "signature_delta" && typeof delta.signature === "string") {
+        reasoningSignature = delta.signature;
       }
 
       if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
@@ -425,6 +460,8 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       })),
       ...(reasoning ? { reasoning } : {}),
+      ...(reasoningSignature ? { reasoningSignature } : {}),
+      ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
@@ -433,6 +470,8 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   return {
     content,
     ...(reasoning ? { reasoning } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
@@ -682,6 +721,11 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
 export function collapseCohereSSE(body: string): CollapseResult {
   const blocks = splitSSEEvents(body);
   let content = "";
+  // Reasoning text assembled from `thinking` content-delta blocks. Cohere's
+  // reasoning models stream a `content.type === "thinking"` block carrying a
+  // `thinking` string before the `text` block; capture it so a recorded
+  // reasoning turn round-trips its reasoning instead of dropping it.
+  let reasoning = "";
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -721,7 +765,9 @@ export function collapseCohereSSE(body: string): CollapseResult {
       const delta = parsed.delta as Record<string, unknown> | undefined;
       const message = delta?.message as Record<string, unknown> | undefined;
       const contentObj = message?.content as Record<string, unknown> | undefined;
-      if (contentObj && typeof contentObj.text === "string") {
+      if (contentObj && contentObj.type === "thinking" && typeof contentObj.thinking === "string") {
+        reasoning += contentObj.thinking;
+      } else if (contentObj && typeof contentObj.text === "string") {
         content += contentObj.text;
       }
     }
@@ -788,6 +834,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
         arguments: tc.arguments,
         ...(tc.id ? { id: tc.id } : {}),
       })),
+      ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
@@ -795,6 +842,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
 
   return {
     content,
+    ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
   };
@@ -917,6 +965,11 @@ function decodeEventStreamFrames(buf: Buffer): {
 export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   const { frames, truncated } = decodeEventStreamFrames(body);
   let content = "";
+  // Reasoning text assembled from Converse `reasoningContent.text` deltas. The
+  // Bedrock Converse stream interleaves a `delta.reasoningContent` block carrying
+  // the model's reasoning; capture it so a recorded reasoning turn round-trips
+  // its reasoning instead of dropping it.
+  let reasoning = "";
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -1006,6 +1059,14 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
         content += delta.text;
       }
 
+      // Reasoning delta — Converse carries reasoning in `reasoningContent.text`.
+      if (typeof delta.reasoningContent === "object" && delta.reasoningContent !== null) {
+        const reasoningDelta = delta.reasoningContent as Record<string, unknown>;
+        if (typeof reasoningDelta.text === "string") {
+          reasoning += reasoningDelta.text;
+        }
+      }
+
       // Tool use input JSON delta
       if (typeof delta.toolUse === "object" && delta.toolUse !== null) {
         const toolUseDelta = delta.toolUse as Record<string, unknown>;
@@ -1038,6 +1099,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
         arguments: tc.arguments,
         ...(tc.id ? { id: tc.id } : {}),
       })),
+      ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(truncated ? { truncated } : {}),
@@ -1046,6 +1108,7 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
 
   return {
     content,
+    ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(truncated ? { truncated } : {}),
