@@ -17,7 +17,7 @@ import type {
 import { getLastMessageByRole, getTextContent } from "./router.js";
 import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
-import { collapseStreamingResponse } from "./stream-collapse.js";
+import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { getTestId, slugifyTestId } from "./helpers.js";
@@ -902,8 +902,8 @@ function makeUpstreamRequest(
 /**
  * A captured Anthropic thinking-block signature is only persisted alongside
  * non-empty plaintext `reasoning` (a bare signature has nothing to attach to on
- * replay). When that gate drops a present signature, emit a debug line so the
- * loss is observable.
+ * replay). When that gate drops a present signature, warn so the loss is
+ * observable (matching the recording-side anomaly convention in this file).
  */
 function logDroppedReasoningSignature(
   logger: Logger | undefined,
@@ -911,7 +911,7 @@ function logDroppedReasoningSignature(
   reasoningSignature: string | undefined,
 ): void {
   if (reasoningSignature && !reasoning) {
-    logger?.debug("Dropping captured reasoningSignature — no plaintext reasoning to attach it to");
+    logger?.warn("Dropping captured reasoningSignature — no plaintext reasoning to attach it to");
   }
 }
 
@@ -1138,15 +1138,11 @@ function buildFixtureResponse(
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
     // A `redacted_thinking` block carries its encrypted reasoning in an opaque
     // `data` string; collect them in content-array order so the recorded turn
-    // round-trips its redacted blocks (mirrors the streaming collapse path).
-    // Require NON-EMPTY data: the replay-side validator rejects a leading
-    // empty-data redacted_thinking block, so recording `data: ""` would yield a
-    // fixture that 400s under strict replay.
+    // round-trips its redacted blocks (mirrors the streaming collapse path;
+    // see capturedRedactedData for the non-empty rule).
     const redactedThinking = blocks
-      .filter(
-        (b) => b.type === "redacted_thinking" && typeof b.data === "string" && b.data.length > 0,
-      )
-      .map((b) => String(b.data));
+      .map((b) => capturedRedactedData(b))
+      .filter((data): data is string => data !== undefined);
     const hasToolCalls = toolUseBlocks.length > 0;
     const joinedText = textBlocks.map((b) => String(b.text ?? "")).join("");
     const hasContent = joinedText.length > 0;

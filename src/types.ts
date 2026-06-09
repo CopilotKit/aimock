@@ -164,7 +164,9 @@ export interface TextResponse extends ResponseOverrides {
    * captured from a recorded thinking turn, in stream order. When present they
    * are replayed as faithful `redacted_thinking` content blocks so the encrypted
    * reasoning round-trips; absent for non-Anthropic providers and turns without
-   * redacted thinking.
+   * redacted thinking. Recorded redacted blocks replay as a leading group: the
+   * original interleaving of `thinking` and `redacted_thinking` blocks is not
+   * preserved (see the CHANGELOG fidelity caveat).
    */
   redactedThinking?: string[];
   webSearches?: string[];
@@ -707,8 +709,6 @@ export interface FalQueueConfig {
 
 // Handler defaults — the common shape passed from server.ts to every handler
 
-// TODO: Consider adding a resolveChunkSize(fixture, defaults) helper to centralize
-// the Math.max(1, fixture.chunkSize ?? defaults.chunkSize) pattern used by all handlers.
 export interface HandlerDefaults {
   latency: number;
   chunkSize: number;

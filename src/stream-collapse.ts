@@ -58,6 +58,28 @@ export interface CollapseResult {
 }
 
 /**
+ * The opaque `data` of a non-empty Anthropic `redacted_thinking` block, or
+ * `undefined` if `block` is not a redacted_thinking block or carries empty/no
+ * data. NON-EMPTY is required: the replay-side validator rejects a leading
+ * empty-data redacted_thinking block, so recording `data: ""` would yield a
+ * fixture that 400s under strict replay. Shared by every capture site (SSE,
+ * Anthropic-native binary, non-streaming recorder) so the rule stays in one
+ * place.
+ */
+export function capturedRedactedData(
+  block: Record<string, unknown> | undefined,
+): string | undefined {
+  if (
+    block?.type === "redacted_thinking" &&
+    typeof block.data === "string" &&
+    block.data.length > 0
+  ) {
+    return block.data;
+  }
+  return undefined;
+}
+
+/**
  * Slice the first `max` UTF-16 code units of `s` for a diagnostic sample,
  * trimming a trailing lone high-surrogate so the resulting sample never ends on
  * a lone high surrogate (i.e. never mid-surrogate-pair).
@@ -392,17 +414,11 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
       // A `redacted_thinking` block carries its encrypted reasoning in an opaque
       // `data` string on the start event (no deltas follow). Capture it so the
-      // recorded turn can replay the redacted block faithfully. Require NON-EMPTY
-      // data: the replay-side validator rejects a leading empty-data
-      // redacted_thinking block, so recording `data: ""` would yield a fixture
-      // that 400s under strict replay. Drop empty entries to keep capture and
-      // validation in agreement.
-      if (
-        contentBlock?.type === "redacted_thinking" &&
-        typeof contentBlock.data === "string" &&
-        contentBlock.data.length > 0
-      ) {
-        redactedThinking.push(contentBlock.data);
+      // recorded turn can replay the redacted block faithfully
+      // (see capturedRedactedData for the non-empty rule).
+      const redactedData = capturedRedactedData(contentBlock);
+      if (redactedData !== undefined) {
+        redactedThinking.push(redactedData);
       }
       if (contentBlock?.type === "tool_use") {
         // Prefer the streamed `index`; when absent, mint a fresh synthetic key
@@ -990,8 +1006,11 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   let reasoning = "";
   // Anthropic-native extended-thinking fields (invoke-with-response-stream).
   // The native binary branch carries the same thinking/signature/redacted
-  // channel as the Anthropic SSE collapser; mirror its capture rules so a
-  // recorded reasoning turn round-trips instead of silently dropping it.
+  // channel as the Anthropic SSE collapser; it mirrors that path's
+  // thinking/signature/redacted capture rules so a recorded reasoning turn
+  // round-trips instead of silently dropping it. Unlike the SSE path, binary
+  // tool_use correlation has no index-less fallback and relies on an explicit
+  // `index`.
   let reasoningSignature: string | undefined;
   const redactedThinking: string[] = [];
   let droppedChunks = 0;
@@ -1052,10 +1071,11 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       const index = parsed.index as number | undefined;
       // A `redacted_thinking` block carries its encrypted reasoning in an
       // opaque `data` string on the start event (no deltas follow). Capture it
-      // (non-empty only — the validator rejects empty data) so the recorded
-      // turn replays the redacted block faithfully (mirrors collapseAnthropicSSE).
-      if (block?.type === "redacted_thinking" && typeof block.data === "string" && block.data) {
-        redactedThinking.push(block.data);
+      // so the recorded turn replays the redacted block faithfully
+      // (mirrors collapseAnthropicSSE; see capturedRedactedData).
+      const redactedData = capturedRedactedData(block);
+      if (redactedData !== undefined) {
+        redactedThinking.push(redactedData);
       }
       if (block?.type === "tool_use" && index !== undefined) {
         toolCallMap.set(index, {
@@ -1100,6 +1120,10 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       }
 
       // Reasoning delta — Converse carries reasoning in `reasoningContent.text`.
+      // The Converse branch intentionally captures no signature/redacted channel:
+      // Converse has no `signature_delta`/`redacted_thinking` wire shape, so the
+      // asymmetry with the Anthropic-native branch above is by design, not a gap
+      // to be "fixed" later.
       if (typeof delta.reasoningContent === "object" && delta.reasoningContent !== null) {
         const reasoningDelta = delta.reasoningContent as Record<string, unknown>;
         if (typeof reasoningDelta.text === "string") {
