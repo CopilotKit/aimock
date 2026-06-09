@@ -1210,9 +1210,13 @@ function buildFixtureResponse(
       };
     }
     // Thinking-only / redacted-only response (no text, no tool calls). A turn can
-    // carry only redacted_thinking blocks, so produce a normal empty-content
-    // fixture rather than falling through to the error fallback below.
-    if (anthropicReasoning || redactedThinking.length > 0) {
+    // carry only thinking blocks (even ones whose plaintext is empty but which
+    // bear a real signature) or only redacted_thinking blocks, so key on the
+    // PRESENCE of those blocks — not the truthiness of the joined thinking text —
+    // and produce a normal empty-content fixture rather than falling through to
+    // the error fallback below. (Per the persistence contract, a bare signature
+    // with empty reasoning is still dropped via logDroppedReasoningSignature.)
+    if (thinkingBlocks.length > 0 || redactedThinking.length > 0) {
       return {
         content: "",
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
