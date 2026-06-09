@@ -126,6 +126,9 @@ export function resolveReasoningForModel(
  *   - non-reasoning model, strict OFF → `logger.warn`, still emit (preserves
  *                                       current behavior)
  *   - non-reasoning model, strict ON  → `logger.error`, suppress both
+ *
+ * Must be invoked alongside resolveReasoningForModel with identical model/strict
+ * inputs so the plaintext and encrypted channels stay suppressed together.
  */
 export function resolveReasoningArtifactsForModel(
   reasoningSignature: string | undefined,

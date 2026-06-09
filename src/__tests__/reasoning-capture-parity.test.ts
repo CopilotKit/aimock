@@ -19,20 +19,15 @@ import type { FixtureFile } from "../types.js";
 // contract every path must satisfy, so a future capture path bolts on by
 // reusing the same table.
 //
-// Contract pinned here is the POST-FIX contract (see file header in the PR):
+// Contract pinned here (the cross-path parity now holds on every path):
 //   - reasoning  = the two thinking blocks' text joined (T1 + T2), per each
 //                  path's documented join.
-//   - reasoningSignature = S2 (LAST-signature-wins). The binary path gains
-//                  thinking_delta/signature_delta capture mirroring the SSE
-//                  path; the non-streaming recorder switches from FIRST- to
-//                  LAST-seen thinking-block signature.
+//   - reasoningSignature = S2 (LAST-signature-wins). The binary path captures
+//                  thinking_delta/signature_delta mirroring the SSE path; the
+//                  non-streaming recorder binds the LAST-seen thinking-block
+//                  signature.
 //   - redactedThinking = [D1] (one non-empty redacted block). All capture sites
 //                  require NON-EMPTY redacted data.
-//
-// In THIS worktree (tests authored before the sibling source fixes land), the
-// binary-path signature/reasoning assertions and the non-streaming last-wins
-// signature assertion are EXPECTED-RED. They go green once fixes 1 and 2 are
-// integrated. The SSE path is already green.
 // ---------------------------------------------------------------------------
 
 // One logical turn: two thinking blocks, one redacted block, one text block.
@@ -170,12 +165,12 @@ describe("reasoning-capture parity — Path B: Anthropic-native binary frames", 
     const buf = Buffer.concat(frames);
 
     const result = collapseBedrockEventStream(buf);
-    // The binary path must produce the IDENTICAL artifacts as Path A.
-    // EXPECTED-RED in this worktree until fix 1 adds thinking_delta /
-    // signature_delta / redacted_thinking capture to the binary frame path.
-    expect(result.reasoning).toBe(EXPECTED.reasoning); // RED until fix 1
-    expect(result.reasoningSignature).toBe(EXPECTED.reasoningSignature); // RED until fix 1
-    expect(result.redactedThinking).toEqual(EXPECTED.redactedThinking); // RED until fix 1
+    // The binary path produces the IDENTICAL artifacts as Path A: it captures
+    // thinking_delta / signature_delta / redacted_thinking from the native
+    // binary frames.
+    expect(result.reasoning).toBe(EXPECTED.reasoning);
+    expect(result.reasoningSignature).toBe(EXPECTED.reasoningSignature);
+    expect(result.redactedThinking).toEqual(EXPECTED.redactedThinking);
     expect(result.content).toBe(TEXT);
   });
 });
@@ -301,10 +296,9 @@ describe("reasoning-capture parity — Path C: non-streaming JSON recorder", () 
 
     expect(savedResponse.content).toBe(TEXT);
     expect(savedResponse.reasoning).toBe(EXPECTED.reasoning);
-    // EXPECTED-RED in this worktree until fix 2 switches the non-streaming
-    // Anthropic branch from FIRST- to LAST-seen thinking-block signature.
-    // Pre-fix this captures S1; post-fix it captures S2.
-    expect(savedResponse.reasoningSignature).toBe(EXPECTED.reasoningSignature); // RED until fix 2
+    // The non-streaming Anthropic branch binds the LAST-seen thinking-block
+    // signature, so the saved fixture carries S2 (not the first block's S1).
+    expect(savedResponse.reasoningSignature).toBe(EXPECTED.reasoningSignature);
     expect(savedResponse.redactedThinking).toEqual(EXPECTED.redactedThinking);
   });
 });
