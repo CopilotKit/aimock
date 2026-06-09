@@ -996,6 +996,30 @@ describe("Gemini Interactions — non-streaming", () => {
     expect(body.error.code).toBe("UNAVAILABLE");
   });
 
+  it("returns the skipped-by-state message when a sequence-exhausted fixture is replayed", async () => {
+    const seqFixture: Fixture = {
+      match: { userMessage: "seq-step", sequenceIndex: 0 },
+      response: { content: "First" },
+    };
+    instance = await createServer([seqFixture], { strict: true });
+    // First call consumes the sequenceIndex:0 fixture (count → 1).
+    const first = await post(`${instance.url}/v1beta/interactions`, {
+      model: "gemini-2.5-flash",
+      input: "seq-step",
+      stream: false,
+    });
+    expect(first.status).toBe(200);
+    // Replay: shape still matches but the fixture is skipped by sequence state.
+    const res = await post(`${instance.url}/v1beta/interactions`, {
+      model: "gemini-2.5-flash",
+      input: "seq-step",
+      stream: false,
+    });
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+  });
+
   it("matches userMessage fixture when input is Step[] envelope (issue #228)", async () => {
     // Reproduces the live wire contract that Google's /v1beta/interactions accepts:
     // a top-level Array<Step> where each step is { type: "user_input", content: [...] }.

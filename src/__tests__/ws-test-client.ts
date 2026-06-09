@@ -8,11 +8,21 @@
 import * as net from "node:net";
 import { randomBytes } from "node:crypto";
 
+export interface WSCloseInfo {
+  code: number;
+  reason: string;
+}
+
 export interface WSTestClient {
   send(data: string): void;
   close(): void;
   waitForMessages(count: number, timeoutMs?: number): Promise<string[]>;
   waitForClose(): Promise<void>;
+  /**
+   * Resolves with the RFC 6455 close frame's status code and reason once the
+   * server sends a close frame. Useful for asserting strict-mode `ws.close(1008, …)`.
+   */
+  waitForCloseFrame(timeoutMs?: number): Promise<WSCloseInfo>;
 }
 
 export function connectWebSocket(
@@ -44,6 +54,8 @@ export function connectWebSocket(
       const messages: string[] = [];
       const messageResolvers: Array<() => void> = [];
       const closeResolvers: Array<() => void> = [];
+      let closeInfo: WSCloseInfo | null = null;
+      const closeFrameResolvers: Array<() => void> = [];
 
       socket.on("data", (data: Buffer) => {
         buffer = Buffer.concat([buffer, data]);
@@ -126,6 +138,26 @@ export function connectWebSocket(
                 closeResolvers.push(resolve);
               });
             },
+            waitForCloseFrame(timeoutMs = 5000): Promise<WSCloseInfo> {
+              return new Promise((resolve, reject) => {
+                let settled = false;
+                const timer = setTimeout(() => {
+                  if (!settled) {
+                    settled = true;
+                    reject(new Error("Timeout waiting for close frame"));
+                  }
+                }, timeoutMs);
+                const check = () => {
+                  if (!settled && closeInfo) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(closeInfo);
+                  }
+                };
+                check();
+                closeFrameResolvers.push(check);
+              });
+            },
           });
         }
 
@@ -154,7 +186,17 @@ export function connectWebSocket(
             messages.push(payload.toString("utf-8"));
             for (const r of messageResolvers) r();
           } else if (opcode === 0x8) {
-            // close
+            // close — RFC 6455: first 2 bytes are the status code (big-endian),
+            // remaining bytes are the UTF-8 reason.
+            if (payload.length >= 2) {
+              closeInfo = {
+                code: payload.readUInt16BE(0),
+                reason: payload.subarray(2).toString("utf-8"),
+              };
+            } else {
+              closeInfo = { code: 1005, reason: "" };
+            }
+            for (const r of closeFrameResolvers) r();
             socket.end();
             for (const r of closeResolvers) r();
           }
