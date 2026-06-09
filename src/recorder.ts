@@ -896,10 +896,6 @@ function makeUpstreamRequest(
 }
 
 /**
- * Detect the response format from the parsed upstream JSON and convert
- * it into an aimock FixtureResponse.
- */
-/**
  * A captured Anthropic thinking-block signature is only persisted alongside
  * non-empty plaintext `reasoning` (a bare signature has nothing to attach to on
  * replay). When that gate drops a present signature, warn so the loss is
@@ -915,6 +911,10 @@ function logDroppedReasoningSignature(
   }
 }
 
+/**
+ * Detect the response format from the parsed upstream JSON and convert
+ * it into an aimock FixtureResponse.
+ */
 function buildFixtureResponse(
   parsed: unknown,
   status: number,
