@@ -978,6 +978,12 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   // the model's reasoning; capture it so a recorded reasoning turn round-trips
   // its reasoning instead of dropping it.
   let reasoning = "";
+  // Anthropic-native extended-thinking fields (invoke-with-response-stream).
+  // The native binary branch carries the same thinking/signature/redacted
+  // channel as the Anthropic SSE collapser; mirror its capture rules so a
+  // recorded reasoning turn round-trips instead of silently dropping it.
+  let reasoningSignature: string | undefined;
+  const redactedThinking: string[] = [];
   let droppedChunks = 0;
   let firstDroppedSample: string | undefined;
   const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -1002,6 +1008,15 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
       if (delta?.type === "text_delta" && typeof delta.text === "string") {
         content += delta.text;
       }
+      if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+        reasoning += delta.thinking;
+      }
+      // Last-signature-wins: a turn with MULTIPLE thinking blocks overwrites
+      // this on each block, so the merged `reasoning` ends up bound only to the
+      // FINAL block's signature (mirrors collapseAnthropicSSE).
+      if (delta?.type === "signature_delta" && typeof delta.signature === "string") {
+        reasoningSignature = delta.signature;
+      }
       if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
         const index = parsed.index as number | undefined;
         // An arg delta that cannot correlate to a known tool_use start would
@@ -1025,6 +1040,13 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
     if (parsed.type === "content_block_start") {
       const block = parsed.content_block as Record<string, unknown> | undefined;
       const index = parsed.index as number | undefined;
+      // A `redacted_thinking` block carries its encrypted reasoning in an
+      // opaque `data` string on the start event (no deltas follow). Capture it
+      // (non-empty only — the validator rejects empty data) so the recorded
+      // turn replays the redacted block faithfully (mirrors collapseAnthropicSSE).
+      if (block?.type === "redacted_thinking" && typeof block.data === "string" && block.data) {
+        redactedThinking.push(block.data);
+      }
       if (block?.type === "tool_use" && index !== undefined) {
         toolCallMap.set(index, {
           id: (block.id as string) ?? "",
@@ -1108,6 +1130,8 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       })),
       ...(reasoning ? { reasoning } : {}),
+      ...(reasoningSignature ? { reasoningSignature } : {}),
+      ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(truncated ? { truncated } : {}),
@@ -1117,6 +1141,8 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
   return {
     content,
     ...(reasoning ? { reasoning } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(truncated ? { truncated } : {}),
