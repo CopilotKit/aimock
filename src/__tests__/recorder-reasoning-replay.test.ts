@@ -840,3 +840,165 @@ describe("redacted_thinking capture ↔ strict-replay round-trip contract", () =
     expect(res.body).not.toContain("dropped_redacted_thinking");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Strict-continuation round-trip: the replayed assistant turn (carrying the
+// recorded reasoning + signature + redacted block) is fed BACK as a tool-loop
+// continuation under strict mode and must survive the thinking invariants with
+// no 400. This is the round-trip the PLACEHOLDER_SIGNATURE design promises: a
+// reasoning turn aimock replays is itself a valid continuation input.
+//
+// Expected GREEN already — the replay path emits a non-empty signature (the
+// recorded one, else the placeholder) and non-empty redacted data, both of
+// which the strict thinking invariants require.
+// ---------------------------------------------------------------------------
+
+describe("Anthropic strict-mode reasoning round-trip (replay → continuation, no 400)", () => {
+  let server: ServerInstance;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.server.close(() => r()));
+  });
+
+  const REASONING_MODEL = "claude-3-7-sonnet-20250219";
+  const STRICT = { "X-AIMock-Strict": "true" };
+  const REAL_SIGNATURE = "ErcBCkgIA...recordedRealCryptographicSignature==";
+  const REDACTED_DATA = "EncryptedRedactedThinkingPayloadAAA==";
+
+  type AnthropicBlock = {
+    type: string;
+    text?: string;
+    thinking?: string;
+    signature?: string;
+    data?: string;
+    id?: string;
+    name?: string;
+    input?: unknown;
+  };
+
+  it("replayed reasoning+tool turn round-trips as a strict continuation (200, no invariant 400)", async () => {
+    // A reasoning-capable fixture that, on the FIRST turn, replays a thinking
+    // block (with a recorded real signature) + a redacted block + a tool_use.
+    // The SECOND turn (the tool_result continuation) matches a follow-up fixture.
+    const firstTurn: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_DATA],
+      },
+    };
+    const continuation: Fixture = {
+      match: { hasToolResult: true },
+      response: { content: "It is sunny in Paris." },
+    };
+    server = await createServer([firstTurn, continuation], { port: 0 });
+
+    // Turn 1: replay the reasoning + tool turn (non-streaming JSON).
+    const firstRes = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: REASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(firstRes.status).toBe(200);
+    const firstBody = JSON.parse(firstRes.body) as { content: AnthropicBlock[] };
+
+    // The replayed assistant turn leads with a thinking block carrying the
+    // recorded real signature (NOT empty), the redacted block, and a tool_use.
+    const thinkingBlock = firstBody.content.find((b) => b.type === "thinking");
+    expect(thinkingBlock?.signature).toBe(REAL_SIGNATURE);
+    const redactedBlock = firstBody.content.find((b) => b.type === "redacted_thinking");
+    expect(redactedBlock?.data).toBe(REDACTED_DATA);
+    const toolUseBlock = firstBody.content.find((b) => b.type === "tool_use");
+    expect(toolUseBlock).toBeDefined();
+    const toolUseId = String(toolUseBlock!.id);
+
+    // Turn 2: feed the EXACT replayed assistant content back as a tool-loop
+    // continuation under strict mode. The strict thinking invariants validate
+    // the in-scope assistant turn (leading thinking block must carry a non-empty
+    // signature; any redacted_thinking must carry non-empty data) — the
+    // round-trip must pass with NO 400.
+    const secondRes = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: REASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [
+          { role: "user", content: "weather?" },
+          { role: "assistant", content: firstBody.content },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: toolUseId, content: "Sunny" }],
+          },
+        ],
+      },
+      STRICT,
+    );
+    // No invariant violation: the replayed reasoning turn is a valid strict
+    // continuation input.
+    expect(secondRes.status).toBe(200);
+  });
+
+  it("replayed reasoning text turn (no recorded signature) round-trips via the placeholder (200)", async () => {
+    // No reasoningSignature recorded → replay emits the placeholder signature,
+    // which is itself non-empty, so the strict missing_signature invariant still
+    // passes when the turn is fed back as a continuation.
+    const firstTurn: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "Let me think about the weather.",
+      },
+    };
+    const continuation: Fixture = {
+      match: { hasToolResult: true },
+      response: { content: "It is sunny in Paris." },
+    };
+    server = await createServer([firstTurn, continuation], { port: 0 });
+
+    const firstRes = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: REASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(firstRes.status).toBe(200);
+    const firstBody = JSON.parse(firstRes.body) as { content: AnthropicBlock[] };
+
+    // The replayed thinking block carries the (non-empty) placeholder signature.
+    const thinkingBlock = firstBody.content.find((b) => b.type === "thinking");
+    expect(thinkingBlock?.signature).toBe("aimock-placeholder-signature");
+    const toolUseBlock = firstBody.content.find((b) => b.type === "tool_use");
+    const toolUseId = String(toolUseBlock!.id);
+
+    const secondRes = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: REASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [
+          { role: "user", content: "weather?" },
+          { role: "assistant", content: firstBody.content },
+          {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: toolUseId, content: "Sunny" }],
+          },
+        ],
+      },
+      STRICT,
+    );
+    expect(secondRes.status).toBe(200);
+  });
+});
