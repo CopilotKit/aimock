@@ -1804,6 +1804,256 @@ describe("collapseAnthropicSSE with thinking", () => {
   });
 });
 
+describe("collapseAnthropicSSE captures reasoning signature", () => {
+  it("captures the real signature_delta value into reasoningSignature", () => {
+    const realSignature = "ErcBCkgIA...realCryptographicSignatureValue==";
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Deep thought" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "signature_delta", signature: realSignature } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.reasoning).toBe("Deep thought");
+    expect(result.content).toBe("Answer");
+    // The cryptographic signature is captured, not dropped.
+    expect(result.reasoningSignature).toBe(realSignature);
+  });
+
+  it("leaves reasoningSignature undefined when no signature_delta present", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Hmm" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.reasoning).toBe("Hmm");
+    expect(result.reasoningSignature).toBeUndefined();
+  });
+
+  it("captures signature alongside a tool_use turn", () => {
+    const realSignature = "sig-with-toolcall-abc==";
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Plan" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "signature_delta", signature: realSignature } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "tool_use", id: "tool_1", name: "get_weather" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "input_json_delta", partial_json: '{"city":"Paris"}' } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.reasoning).toBe("Plan");
+    expect(result.reasoningSignature).toBe(realSignature);
+  });
+});
+
+describe("collapseAnthropicSSE captures redacted_thinking", () => {
+  it("captures redacted_thinking block data into redactedThinking", () => {
+    const redactedData = "EncryptedRedactedThinkingPayloadAAA==";
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: redactedData } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Answer");
+    // The opaque redacted payload is captured, not dropped.
+    expect(result.redactedThinking).toEqual([redactedData]);
+  });
+
+  it("captures multiple redacted_thinking blocks in order", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: "first==" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "redacted_thinking", data: "second==" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 2, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 2, delta: { type: "text_delta", text: "Done" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 2 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Done");
+    expect(result.redactedThinking).toEqual(["first==", "second=="]);
+  });
+
+  it("leaves redactedThinking undefined when no redacted blocks present", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "text_delta", text: "Plain" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.redactedThinking).toBeUndefined();
+  });
+});
+
+describe("collapseCohereSSE captures reasoning", () => {
+  it("captures thinking content-delta into reasoning", () => {
+    const body = [
+      `event: message-start`,
+      `data: ${JSON.stringify({ type: "message-start", delta: { message: { role: "assistant" } } })}`,
+      "",
+      `event: content-delta`,
+      `data: ${JSON.stringify({ type: "content-delta", index: 0, delta: { message: { content: { type: "thinking", thinking: "Let me " } } } })}`,
+      "",
+      `event: content-delta`,
+      `data: ${JSON.stringify({ type: "content-delta", index: 0, delta: { message: { content: { type: "thinking", thinking: "reason." } } } })}`,
+      "",
+      `event: content-delta`,
+      `data: ${JSON.stringify({ type: "content-delta", index: 1, delta: { message: { content: { type: "text", text: "Answer" } } } })}`,
+      "",
+      `event: message-end`,
+      `data: ${JSON.stringify({ type: "message-end", delta: { finish_reason: "COMPLETE" } })}`,
+      "",
+    ].join("\n");
+
+    const result = collapseCohereSSE(body);
+    expect(result.content).toBe("Answer");
+    // Reasoning text is captured instead of dropped.
+    expect(result.reasoning).toBe("Let me reason.");
+  });
+
+  it("leaves reasoning undefined when no thinking content-delta present", () => {
+    const body = [
+      `event: content-delta`,
+      `data: ${JSON.stringify({ type: "content-delta", index: 0, delta: { message: { content: { type: "text", text: "Hi" } } } })}`,
+      "",
+    ].join("\n");
+
+    const result = collapseCohereSSE(body);
+    expect(result.content).toBe("Hi");
+    expect(result.reasoning).toBeUndefined();
+  });
+});
+
+describe("collapseBedrockEventStream captures converse reasoningContent", () => {
+  it("captures reasoningContent.text delta into reasoning", () => {
+    const reasoningFrame1 = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 0,
+      contentBlockDelta: {
+        contentBlockIndex: 0,
+        delta: { reasoningContent: { text: "Thinking " } },
+      },
+    });
+    const reasoningFrame2 = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 0,
+      contentBlockDelta: {
+        contentBlockIndex: 0,
+        delta: { reasoningContent: { text: "hard." } },
+      },
+    });
+    const textFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 1,
+      contentBlockDelta: {
+        contentBlockIndex: 1,
+        delta: { text: "Answer" },
+      },
+    });
+
+    const buf = Buffer.concat([reasoningFrame1, reasoningFrame2, textFrame]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.content).toBe("Answer");
+    // Converse reasoningContent text is captured.
+    expect(result.reasoning).toBe("Thinking hard.");
+  });
+
+  it("captures reasoningContent alongside a tool_use turn", () => {
+    const reasoningFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 0,
+      contentBlockDelta: {
+        contentBlockIndex: 0,
+        delta: { reasoningContent: { text: "Plan it" } },
+      },
+    });
+    const startFrame = encodeEventStreamMessage("contentBlockStart", {
+      contentBlockIndex: 1,
+      contentBlockStart: {
+        contentBlockIndex: 1,
+        start: { toolUse: { toolUseId: "tool_9", name: "get_weather" } },
+      },
+    });
+    const argsFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 1,
+      contentBlockDelta: {
+        contentBlockIndex: 1,
+        delta: { toolUse: { input: '{"city":"Paris"}' } },
+      },
+    });
+
+    const buf = Buffer.concat([reasoningFrame, startFrame, argsFrame]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.reasoning).toBe("Plan it");
+  });
+
+  it("leaves reasoning undefined when no reasoningContent present", () => {
+    const textFrame = encodeEventStreamMessage("contentBlockDelta", {
+      contentBlockIndex: 0,
+      contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Plain" } },
+    });
+    const result = collapseBedrockEventStream(textFrame);
+    expect(result.content).toBe("Plain");
+    expect(result.reasoning).toBeUndefined();
+  });
+});
+
 describe("collapseOpenAISSE with chat completions reasoning_content", () => {
   it("extracts reasoning from reasoning_content delta fields", () => {
     const body = [

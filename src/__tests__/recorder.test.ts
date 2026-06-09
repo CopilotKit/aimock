@@ -600,6 +600,93 @@ describe("recorder streaming collapse", () => {
     expect(savedResponse.toolCalls).toBeDefined();
     expect(savedResponse.toolCalls).toHaveLength(1);
   });
+
+  it("captures a real Anthropic signature_delta into the recorded fixture's reasoningSignature", async () => {
+    const REAL_SIGNATURE = "ErcBCkgIA...recordedRealCryptographicSignature==";
+    // Raw Anthropic SSE upstream that streams a thinking block carrying a real
+    // signature_delta (aimock's own server would only emit the placeholder).
+    const sse = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "Let me think." } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "signature_delta", signature: REAL_SIGNATURE } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer." } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const anthropicUpstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => anthropicUpstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (anthropicUpstream.address() as { port: number }).port;
+
+    const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-recorder-sig-"));
+
+    const recorderServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks).toString();
+        await proxyAndRecord(
+          req,
+          res,
+          JSON.parse(rawBody),
+          "anthropic",
+          "/v1/messages",
+          [],
+          {
+            record: {
+              providers: { anthropic: `http://127.0.0.1:${upstreamPort}` },
+              fixturePath,
+            },
+            logger: new Logger("silent"),
+          },
+          rawBody,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+    const recorderPort = (recorderServer.address() as { port: number }).port;
+
+    try {
+      const resp = await post(`http://127.0.0.1:${recorderPort}/v1/messages`, {
+        model: "claude-3-7-sonnet-20250219",
+        max_tokens: 1024,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        stream: true,
+        messages: [{ role: "user", content: "think please" }],
+      });
+      expect(resp.status).toBe(200);
+
+      const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const fixtureContent = JSON.parse(
+        fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+      ) as FixtureFile;
+      const savedResponse = fixtureContent.fixtures[0].response as {
+        reasoning?: string;
+        reasoningSignature?: string;
+      };
+      expect(savedResponse.reasoning).toBe("Let me think.");
+      // The real signature is recorded so replay can emit it instead of the placeholder.
+      expect(savedResponse.reasoningSignature).toBe(REAL_SIGNATURE);
+    } finally {
+      await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
