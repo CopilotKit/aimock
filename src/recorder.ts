@@ -1136,10 +1136,17 @@ function buildFixtureResponse(
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
+    // Raw `redacted_thinking` block presence drives reasoning-bearing
+    // classification below (mirrors how `thinkingBlocks` keys on PRESENCE, not
+    // surviving payload). A turn whose redacted blocks all carry empty `data`
+    // is constructible upstream and must NOT fall through to the error fallback.
+    const redactedBlocks = blocks.filter((b) => b.type === "redacted_thinking");
     // A `redacted_thinking` block carries its encrypted reasoning in an opaque
-    // `data` string; collect them in content-array order so the recorded turn
-    // round-trips its redacted blocks (mirrors the streaming collapse path;
-    // see capturedRedactedData for the non-empty rule).
+    // `data` string; collect the SURVIVING (non-empty) payloads in content-array
+    // order for the persisted fixture so the recorded turn round-trips its
+    // redacted blocks (mirrors the streaming collapse path; see
+    // capturedRedactedData for the non-empty rule — empty-data blocks are dropped
+    // from the payload, but still count toward classification via redactedBlocks).
     const redactedThinking = blocks
       .map((b) => capturedRedactedData(b))
       .filter((data): data is string => data !== undefined);
@@ -1207,12 +1214,17 @@ function buildFixtureResponse(
     }
     // Thinking-only / redacted-only response (no text, no tool calls). A turn can
     // carry only thinking blocks (even ones whose plaintext is empty but which
-    // bear a real signature) or only redacted_thinking blocks, so key on the
-    // PRESENCE of those blocks — not the truthiness of the joined thinking text —
-    // and produce a normal empty-content fixture rather than falling through to
-    // the error fallback below. (Per the persistence contract, a bare signature
-    // with empty reasoning is still dropped via logDroppedReasoningSignature.)
-    if (thinkingBlocks.length > 0 || redactedThinking.length > 0) {
+    // bear a real signature) or only redacted_thinking blocks (even ones whose
+    // `data` is empty and thus dropped from the persisted payload), so key on the
+    // PRESENCE of those RAW blocks — not the truthiness of the joined thinking text
+    // nor the post-filter `redactedThinking` array — and produce a normal
+    // empty-content fixture rather than falling through to the error fallback
+    // below. This matches the streaming path, which classifies on content
+    // emptiness for the same logical turn. (Per the persistence contract, a bare
+    // signature with empty reasoning is still dropped via
+    // logDroppedReasoningSignature, and empty-data redacted blocks yield NO
+    // redactedThinking field.)
+    if (thinkingBlocks.length > 0 || redactedBlocks.length > 0) {
       return {
         content: "",
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),

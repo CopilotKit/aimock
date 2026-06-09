@@ -1112,6 +1112,33 @@ describe("recorder streaming collapse", () => {
     expect(savedResponse.redactedThinking).toEqual([REDACTED_DATA_A, REDACTED_DATA_B]);
   });
 
+  it("records a non-streaming empty-data redacted-only Anthropic turn as empty content, not an error", async () => {
+    // A redacted-only turn whose blocks all carry empty `data` is constructible
+    // upstream. The capture filter (capturedRedactedData) drops empty-data blocks,
+    // so redactedThinking is empty — but classification keys on the PRESENCE of any
+    // redacted_thinking block (raw), so the turn round-trips as a normal
+    // empty-content response, not the "Could not detect response format" error
+    // fallback. With no surviving data, NO redactedThinking field is persisted —
+    // matching the streaming sibling's `{ content: "" }` outcome.
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "redacted_thinking", data: "" },
+          { type: "redacted_thinking", data: "" },
+        ],
+      },
+      "aimock-recorder-ns-redacted-empty-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      redactedThinking?: string[];
+      error?: unknown;
+    };
+    expect(savedResponse.error).toBeUndefined();
+    expect(savedResponse.content).toBe("");
+    expect(savedResponse.redactedThinking).toBeUndefined();
+  });
+
   it("records a non-streaming empty-text thinking-only Anthropic turn as empty content, not an error", async () => {
     const REAL_SIGNATURE = "ErcBCkgIA...emptyTextThinkingOnlySignature==";
     const fixtureContent = await recordNonStreamingAnthropic(
@@ -1219,6 +1246,90 @@ describe("recorder streaming collapse", () => {
       expect(savedResponse.content).toBe("");
       expect(savedResponse.reasoning).toBeUndefined();
       expect(savedResponse.reasoningSignature).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("records a streaming empty-data redacted-only Anthropic turn as empty content, not an error", async () => {
+    // Raw Anthropic SSE upstream streaming ONLY redacted_thinking blocks whose
+    // `data` is empty — no text block, no tool calls. This is the streaming
+    // sibling of the non-streaming empty-data redacted-only case: the collapse
+    // path classifies on content emptiness, the empty `data` is filtered out of
+    // the persisted payload (capturedRedactedData drops it), so the turn
+    // round-trips as a normal `{ content: "" }` fixture with NO redactedThinking
+    // field — never the "Could not detect response format" error fallback.
+    const sse = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: "" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const anthropicUpstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => anthropicUpstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (anthropicUpstream.address() as { port: number }).port;
+
+    const fixturePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "aimock-recorder-stream-redacted-empty-"),
+    );
+
+    const recorderServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks).toString();
+        await proxyAndRecord(
+          req,
+          res,
+          JSON.parse(rawBody),
+          "anthropic",
+          "/v1/messages",
+          [],
+          {
+            record: {
+              providers: { anthropic: `http://127.0.0.1:${upstreamPort}` },
+              fixturePath,
+            },
+            logger: new Logger("silent"),
+          },
+          rawBody,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+    const recorderPort = (recorderServer.address() as { port: number }).port;
+
+    try {
+      const resp = await post(`http://127.0.0.1:${recorderPort}/v1/messages`, {
+        model: "claude-3-7-sonnet-20250219",
+        max_tokens: 1024,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        stream: true,
+        messages: [{ role: "user", content: "think please" }],
+      });
+      expect(resp.status).toBe(200);
+
+      const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const fixtureContent = JSON.parse(
+        fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+      ) as FixtureFile;
+      const savedResponse = fixtureContent.fixtures[0].response as {
+        content?: string;
+        redactedThinking?: string[];
+        error?: unknown;
+      };
+      expect(savedResponse.error).toBeUndefined();
+      expect(savedResponse.content).toBe("");
+      expect(savedResponse.redactedThinking).toBeUndefined();
     } finally {
       await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
       await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
