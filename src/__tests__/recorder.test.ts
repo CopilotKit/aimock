@@ -1039,6 +1039,35 @@ describe("recorder streaming collapse", () => {
     expect(savedResponse.reasoningSignature).toBe(REAL_SIGNATURE);
   });
 
+  it("binds non-streaming multi-thinking-block reasoning to the LAST block's signature", async () => {
+    // Two thinking blocks each carry text and a DISTINCT signature. The streaming
+    // collapser overwrites reasoningSignature on every signature_delta
+    // (last-signature-wins), so the non-streaming path must agree: the merged
+    // reasoning string binds to the SECOND (last) block's signature, never the first.
+    const FIRST_SIGNATURE = "ErcBfirstThinkingBlockSignatureAAA==";
+    const SECOND_SIGNATURE = "ErcBsecondThinkingBlockSignatureBBB==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "thinking", thinking: "First thought. ", signature: FIRST_SIGNATURE },
+          { type: "thinking", thinking: "Second thought.", signature: SECOND_SIGNATURE },
+          { type: "text", text: "Answer." },
+        ],
+      },
+      "aimock-recorder-ns-multi-sig-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      reasoning?: string;
+      reasoningSignature?: string;
+    };
+    expect(savedResponse.content).toBe("Answer.");
+    // Reasoning is the joined text of every thinking block, in order.
+    expect(savedResponse.reasoning).toBe("First thought. Second thought.");
+    // Last-signature-wins parity with collapseAnthropicSSE: the LAST block's signature.
+    expect(savedResponse.reasoningSignature).toBe(SECOND_SIGNATURE);
+  });
+
   it("captures non-streaming Anthropic redacted_thinking block data into redactedThinking", async () => {
     const REDACTED_DATA = "EncryptedNonStreamingRedactedThinkingPayloadAAA==";
     const fixtureContent = await recordNonStreamingAnthropic(
