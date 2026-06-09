@@ -48,15 +48,41 @@ export function getTextContent(content: string | ContentPart[] | null): string |
   return null;
 }
 
-export function matchFixture(
+/**
+ * Result of {@link matchFixtureDiagnostic}: the matched fixture (or `null`) plus
+ * the number of fixtures that matched the request SHAPE (every predicate above
+ * the sequenceIndex/turnIndex gates) but were rejected ONLY by the
+ * sequenceIndex/turnIndex count state.
+ *
+ * `skippedBySequenceOrTurn > 0` with `fixture === null` distinguishes a
+ * "sequence/turn exhausted" miss (candidate fixtures existed but their count
+ * gate had moved on) from a true "no fixture had a matching shape" miss — used
+ * to disambiguate the strict-mode 503 message.
+ */
+export interface MatchFixtureDiagnostic {
+  fixture: Fixture | null;
+  skippedBySequenceOrTurn: number;
+}
+
+/**
+ * Match a fixture against a request, additionally reporting WHY a `null` result
+ * occurred. Shares the exact predicate loop with {@link matchFixture}; a fixture
+ * that passes every shape predicate but fails ONLY the sequenceIndex or
+ * turnIndex gate increments `skippedBySequenceOrTurn`. {@link matchFixture} is a
+ * thin wrapper that returns the `.fixture` field, so existing callers are
+ * unaffected.
+ */
+export function matchFixtureDiagnostic(
   fixtures: Fixture[],
   req: ChatCompletionRequest,
   matchCounts?: Map<Fixture, number>,
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest,
-): Fixture | null {
+): MatchFixtureDiagnostic {
   // Apply transform once before matching — used for stripping dynamic data
   const effective = requestTransform ? requestTransform(req) : req;
   const useExactMatch = !!requestTransform;
+
+  let skippedBySequenceOrTurn = 0;
 
   for (const fixture of fixtures) {
     const { match } = fixture;
@@ -222,24 +248,54 @@ export function matchFixture(
       }
     }
 
-    // sequenceIndex — check against the fixture's match count
-    if (match.sequenceIndex !== undefined && matchCounts !== undefined) {
-      const count = matchCounts.get(fixture) ?? 0;
-      if (count !== match.sequenceIndex) continue;
-    }
-
-    if (match.turnIndex !== undefined) {
-      const assistantCount = effective.messages.filter((m) => m.role === "assistant").length;
-      if (assistantCount !== match.turnIndex) continue;
-    }
-
+    // hasToolResult — request-SHAPE predicate: does the conversation contain a
+    // tool result message? Must be evaluated with the other shape predicates
+    // ABOVE the sequence/turn state gates so that a fixture whose shape never
+    // matched is not miscounted as "skipped by sequence/turn state".
     if (match.hasToolResult !== undefined) {
       const hasTool = effective.messages.some((m) => m.role === "tool");
       if (hasTool !== match.hasToolResult) continue;
     }
 
-    return fixture;
+    // At this point every SHAPE predicate above has passed. The sequenceIndex
+    // and turnIndex gates below reject based on per-test count / turn STATE,
+    // not request shape — a fixture that fails only these is a "candidate that
+    // was skipped by sequence/turn state", which we count separately so callers
+    // can disambiguate the strict-mode 503 message.
+    let skippedByState = false;
+
+    // sequenceIndex — check against the fixture's match count
+    if (match.sequenceIndex !== undefined && matchCounts !== undefined) {
+      const count = matchCounts.get(fixture) ?? 0;
+      if (count !== match.sequenceIndex) skippedByState = true;
+    }
+
+    if (!skippedByState && match.turnIndex !== undefined) {
+      const assistantCount = effective.messages.filter((m) => m.role === "assistant").length;
+      if (assistantCount !== match.turnIndex) skippedByState = true;
+    }
+
+    if (skippedByState) {
+      skippedBySequenceOrTurn++;
+      continue;
+    }
+
+    return { fixture, skippedBySequenceOrTurn };
   }
 
-  return null;
+  return { fixture: null, skippedBySequenceOrTurn };
+}
+
+/**
+ * Match a fixture against a request, returning the fixture or `null`. Thin
+ * wrapper over {@link matchFixtureDiagnostic} that discards the skip diagnostic
+ * — preserves the historical signature for all existing callers.
+ */
+export function matchFixture(
+  fixtures: Fixture[],
+  req: ChatCompletionRequest,
+  matchCounts?: Map<Fixture, number>,
+  requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest,
+): Fixture | null {
+  return matchFixtureDiagnostic(fixtures, req, matchCounts, requestTransform).fixture;
 }

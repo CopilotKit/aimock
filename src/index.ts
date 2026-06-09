@@ -21,7 +21,8 @@ export type { LogLevel } from "./logger.js";
 export { Journal, DEFAULT_TEST_ID } from "./journal.js";
 
 // Router
-export { matchFixture, getTextContent } from "./router.js";
+export { matchFixture, matchFixtureDiagnostic, getTextContent } from "./router.js";
+export type { MatchFixtureDiagnostic } from "./router.js";
 
 // Provider handlers
 export {
@@ -121,6 +122,8 @@ export {
   buildEmbeddingResponse,
   FORMAT_TO_CONTENT_TYPE,
   formatToMime,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
 } from "./helpers.js";
 export type { EmbeddingAPIResponse } from "./helpers.js";
 
