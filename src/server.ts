@@ -936,6 +936,13 @@ async function handleCompletions(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      body.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -947,13 +954,20 @@ async function handleCompletions(
       const completion = buildToolCallCompletion(
         response.toolCalls,
         body.model,
+        effReasoning,
         overrides,
         body.messages,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completion));
     } else {
-      const chunks = buildToolCallChunks(response.toolCalls, body.model, chunkSize, overrides);
+      const chunks = buildToolCallChunks(
+        response.toolCalls,
+        body.model,
+        chunkSize,
+        effReasoning,
+        overrides,
+      );
       const completionText = response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = includeUsage
         ? buildUsageChunk(

@@ -294,29 +294,36 @@ function buildBedrockToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): object {
+  const contentBlocks: object[] = [];
+  // Thinking block (emitted before tool_use blocks when reasoning is present)
+  if (reasoning) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
+  }
+  for (const tc of toolCalls) {
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    contentBlocks.push({
+      type: "tool_use",
+      id: tc.id || generateToolUseId(),
+      name: tc.name,
+      input: argsObj,
+    });
+  }
   return {
     id: overrides?.id ?? generateMessageId(),
     type: "message",
     role: "assistant",
-    content: toolCalls.map((tc) => {
-      let argsObj: unknown;
-      try {
-        argsObj = JSON.parse(tc.arguments || "{}");
-      } catch {
-        logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-        );
-        argsObj = {};
-      }
-      return {
-        type: "tool_use",
-        id: tc.id || generateToolUseId(),
-        name: tc.name,
-        input: argsObj,
-      };
-    }),
+    content: contentBlocks,
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
@@ -562,6 +569,9 @@ export async function handleBedrock(
       response.toolCalls,
       completionReq.model,
       logger,
+      // Reasoning is rendered by the text response in this merged path; pass
+      // undefined here to avoid emitting a duplicate thinking block.
+      undefined,
       overrides,
     );
     // Merge: take the text response as base, append tool_use blocks, set stop_reason to tool_use
@@ -614,6 +624,12 @@ export async function handleBedrock(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -625,6 +641,7 @@ export async function handleBedrock(
       response.toolCalls,
       completionReq.model,
       logger,
+      effReasoning,
       overrides,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -928,21 +945,62 @@ export function buildBedrockStreamToolCallEvents(
   model: string,
   chunkSize: number,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [];
 
   events.push(buildBedrockInvokeMessageStart(model, overrides));
 
+  // Leading reasoning block shifts every subsequent tool_use block index by 1.
+  let blockIndex = 0;
+
+  // Thinking block (emitted before tool_use blocks when reasoning is present)
+  if (reasoning) {
+    events.push({
+      eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+      payload: {
+        type: "content_block_start",
+        index: blockIndex,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      },
+    });
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+        payload: {
+          type: "content_block_delta",
+          index: blockIndex,
+          delta: { type: "thinking_delta", thinking: slice },
+        },
+      });
+    }
+    events.push({
+      eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+      payload: {
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: { type: "signature_delta", signature: "" },
+      },
+    });
+    events.push({
+      eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+      payload: { type: "content_block_stop", index: blockIndex },
+    });
+    blockIndex++;
+  }
+
   for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
     const tc = toolCalls[tcIdx];
     const toolUseId = tc.id || generateToolUseId();
+    const currentBlock = blockIndex + tcIdx;
 
     events.push({
       eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
       payload: {
         type: "content_block_start",
-        index: tcIdx,
+        index: currentBlock,
         content_block: {
           type: "tool_use",
           id: toolUseId,
@@ -960,7 +1018,7 @@ export function buildBedrockStreamToolCallEvents(
         eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
         payload: {
           type: "content_block_delta",
-          index: tcIdx,
+          index: currentBlock,
           delta: { type: "input_json_delta", partial_json: slice },
         },
       });
@@ -968,7 +1026,7 @@ export function buildBedrockStreamToolCallEvents(
 
     events.push({
       eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
-      payload: { type: "content_block_stop", index: tcIdx },
+      payload: { type: "content_block_stop", index: currentBlock },
     });
   }
 
@@ -1287,6 +1345,12 @@ export async function handleBedrockStream(
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1299,6 +1363,7 @@ export async function handleBedrockStream(
       completionReq.model,
       chunkSize,
       logger,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);

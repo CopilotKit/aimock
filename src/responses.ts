@@ -324,13 +324,14 @@ export function buildToolCallStreamEvents(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
+  reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
     chunkSize,
-    undefined,
+    reasoning,
     webSearches,
     overrides,
   );
@@ -721,10 +722,18 @@ function buildTextResponse(
 function buildToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
+  reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
 ): object {
   const output: object[] = [];
+  if (reasoning) {
+    output.push({
+      type: "reasoning",
+      id: generateId("rs"),
+      summary: [{ type: "summary_text", text: reasoning }],
+    });
+  }
   if (webSearches && webSearches.length > 0) {
     for (const query of webSearches) {
       output.push({
@@ -1208,6 +1217,14 @@ export async function handleResponses(
   // Tool call response
   if (isToolCallResponse(response)) {
     const overrides = extractOverrides(response);
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
@@ -1219,6 +1236,7 @@ export async function handleResponses(
       const body = buildToolCallResponse(
         response.toolCalls,
         completionReq.model,
+        effReasoning,
         response.webSearches,
         overrides,
       );
@@ -1229,6 +1247,7 @@ export async function handleResponses(
         response.toolCalls,
         completionReq.model,
         chunkSize,
+        effReasoning,
         response.webSearches,
         overrides,
       );

@@ -262,6 +262,7 @@ function buildCohereTextResponse(
 function buildCohereToolCallResponse(
   toolCalls: ToolCall[],
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): object {
   const cohereCalls = toolCalls.map((tc) => {
@@ -286,12 +287,18 @@ function buildCohereToolCallResponse(
     };
   });
 
+  // Reasoning as a leading text block (Cohere has no native reasoning type)
+  const contentBlocks: { type: string; text: string }[] = [];
+  if (reasoning) {
+    contentBlocks.push({ type: "text", text: reasoning });
+  }
+
   return {
     id: overrides?.id ?? generateMessageId(),
     finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
     message: {
       role: "assistant",
-      content: [],
+      content: contentBlocks,
       tool_calls: cohereCalls,
       tool_plan: "",
       citations: [],
@@ -443,6 +450,7 @@ function buildCohereToolCallStreamEvents(
   toolCalls: ToolCall[],
   chunkSize: number,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): CohereSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
@@ -462,6 +470,24 @@ function buildCohereToolCallStreamEvents(
       },
     },
   });
+
+  // Reasoning as a text block before the tool plan (Cohere has no native reasoning type)
+  if (reasoning) {
+    events.push({
+      type: "content-start",
+      index: 0,
+      delta: { message: { content: { type: "text" } } },
+    });
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        type: "content-delta",
+        index: 0,
+        delta: { message: { content: { type: "text", text: slice } } },
+      });
+    }
+    events.push({ type: "content-end", index: 0 });
+  }
 
   // tool-plan-delta
   events.push({
@@ -1090,6 +1116,13 @@ export async function handleCohere(
       );
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      cohereReq.model,
+      effectiveStrict,
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1098,7 +1131,7 @@ export async function handleCohere(
       response: { status: 200, fixture },
     });
     if (cohereReq.stream !== true) {
-      const body = buildCohereToolCallResponse(response.toolCalls, logger, overrides);
+      const body = buildCohereToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
@@ -1106,6 +1139,7 @@ export async function handleCohere(
         response.toolCalls,
         chunkSize,
         logger,
+        effReasoning,
         overrides,
       );
       const interruption = createInterruptionSignal(fixture);

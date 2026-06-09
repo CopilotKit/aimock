@@ -344,24 +344,44 @@ function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
 
 function buildGeminiToolCallStreamChunks(
   toolCalls: ToolCall[],
+  chunkSize: number,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): GeminiResponseChunk[] {
+  const chunks: GeminiResponseChunk[] = [];
+
+  // Reasoning chunks (thought: true) — mirror the content+tool / text paths so a
+  // tool-only fixture on a reasoning-capable model still emits its thought channel.
+  if (reasoning) {
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      chunks.push({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: slice, thought: true }] },
+            index: 0,
+          },
+        ],
+      });
+    }
+  }
+
   const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
 
   // Gemini sends all tool calls in a single response chunk
-  return [
-    {
-      candidates: [
-        {
-          content: { role: "model", parts },
-          finishReason: geminiFinishReason(overrides?.finishReason, "FUNCTION_CALL"),
-          index: 0,
-        },
-      ],
-      usageMetadata: geminiUsageMetadata(overrides),
-    },
-  ];
+  chunks.push({
+    candidates: [
+      {
+        content: { role: "model", parts },
+        finishReason: geminiFinishReason(overrides?.finishReason, "FUNCTION_CALL"),
+        index: 0,
+      },
+    ],
+    usageMetadata: geminiUsageMetadata(overrides),
+  });
+
+  return chunks;
 }
 
 // Non-streaming response builders
@@ -392,9 +412,14 @@ function buildGeminiTextResponse(
 function buildGeminiToolCallResponse(
   toolCalls: ToolCall[],
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): GeminiResponseChunk {
-  const parts: GeminiPart[] = toolCalls.map((tc) => parseToolCallPart(tc, logger));
+  const parts: GeminiPart[] = [];
+  if (reasoning) {
+    parts.push({ text: reasoning, thought: true });
+  }
+  parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
 
   return {
     candidates: [
@@ -518,11 +543,21 @@ function resolveAudioInlineData(audio: AudioResponse): { mimeType: string; data:
 // NOTE: audio companions are only re-emitted on this Gemini replay path because
 // `audioB64` collapse is currently Gemini-only — a cross-provider audio fixture
 // would not replay its companions.
-function buildGeminiAudioParts(audio: AudioResponse, logger: Logger): GeminiPart[] {
+// `effReasoning` is the capability-gated reasoning string (already passed
+// through resolveReasoningForModel at the dispatch). When the requested model
+// is not reasoning-capable (and strict mode is on), it is undefined and the
+// companion `thought` part is suppressed — mirroring the text/content+tool
+// branches so the audio path does not replay reasoning a real Gemini model
+// would never emit.
+function buildGeminiAudioParts(
+  audio: AudioResponse,
+  logger: Logger,
+  effReasoning: string | undefined,
+): GeminiPart[] {
   const inlineData = resolveAudioInlineData(audio);
   const parts: GeminiPart[] = [{ inlineData }];
-  if (audio.reasoning) {
-    parts.push({ text: audio.reasoning, thought: true });
+  if (effReasoning) {
+    parts.push({ text: effReasoning, thought: true });
   }
   if (audio.content) {
     parts.push({ text: audio.content });
@@ -533,11 +568,15 @@ function buildGeminiAudioParts(audio: AudioResponse, logger: Logger): GeminiPart
   return parts;
 }
 
-function buildGeminiAudioResponse(audio: AudioResponse, logger: Logger): GeminiResponseChunk {
+function buildGeminiAudioResponse(
+  audio: AudioResponse,
+  logger: Logger,
+  effReasoning: string | undefined,
+): GeminiResponseChunk {
   return {
     candidates: [
       {
-        content: { role: "model", parts: buildGeminiAudioParts(audio, logger) },
+        content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
         finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
         index: 0,
       },
@@ -546,12 +585,16 @@ function buildGeminiAudioResponse(audio: AudioResponse, logger: Logger): GeminiR
   };
 }
 
-function buildGeminiAudioStreamChunks(audio: AudioResponse, logger: Logger): GeminiResponseChunk[] {
+function buildGeminiAudioStreamChunks(
+  audio: AudioResponse,
+  logger: Logger,
+  effReasoning: string | undefined,
+): GeminiResponseChunk[] {
   return [
     {
       candidates: [
         {
-          content: { role: "model", parts: buildGeminiAudioParts(audio, logger) },
+          content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
           finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
           index: 0,
         },
@@ -804,6 +847,13 @@ export async function handleGemini(
 
   // Audio response
   if (isAudioResponse(response)) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path,
@@ -812,11 +862,11 @@ export async function handleGemini(
       response: { status: 200, fixture },
     });
     if (!streaming) {
-      const body = buildGeminiAudioResponse(response, logger);
+      const body = buildGeminiAudioResponse(response, logger, effReasoning);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildGeminiAudioStreamChunks(response, logger);
+      const chunks = buildGeminiAudioStreamChunks(response, logger, effReasoning);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
@@ -950,6 +1000,13 @@ export async function handleGemini(
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }
     const overrides = extractOverrides(response);
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      model,
+      effectiveStrict,
+      defaults.logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path,
@@ -958,11 +1015,17 @@ export async function handleGemini(
       response: { status: 200, fixture },
     });
     if (!streaming) {
-      const body = buildGeminiToolCallResponse(response.toolCalls, logger, overrides);
+      const body = buildGeminiToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildGeminiToolCallStreamChunks(response.toolCalls, logger, overrides);
+      const chunks = buildGeminiToolCallStreamChunks(
+        response.toolCalls,
+        chunkSize,
+        logger,
+        effReasoning,
+        overrides,
+      );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,

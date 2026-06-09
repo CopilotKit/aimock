@@ -355,6 +355,15 @@ async function processMessage(
       response.toolCalls,
       completionReq.model,
       chunkSize,
+      // Gate the synthesized reasoning channel on the requested model's
+      // capability, matching the WS text / content+tool branches and the HTTP
+      // tool-only path so reasoning emission is transport-independent.
+      resolveReasoningForModel(
+        response.reasoning,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      ),
       response.webSearches,
       extractOverrides(response),
     );

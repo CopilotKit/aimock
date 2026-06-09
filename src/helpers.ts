@@ -447,6 +447,7 @@ export function buildToolCallChunks(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): SSEChunk[] {
   const id = overrides?.id ?? generateId();
@@ -454,6 +455,23 @@ export function buildToolCallChunks(
   const effectiveModel = overrides?.model ?? model;
   const chunks: SSEChunk[] = [];
   const fingerprint = overrides?.systemFingerprint;
+
+  // Reasoning chunks (emitted before tool calls, OpenRouter format)
+  if (reasoning) {
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      chunks.push({
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model: effectiveModel,
+        choices: [
+          { index: 0, delta: { reasoning_content: slice }, logprobs: null, finish_reason: null },
+        ],
+        ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+      });
+    }
+  }
 
   // Role chunk
   chunks.push({
@@ -595,6 +613,7 @@ export function buildTextCompletion(
 export function buildToolCallCompletion(
   toolCalls: ToolCall[],
   model: string,
+  reasoning?: string,
   overrides?: ResponseOverrides,
   requestMessages?: ChatCompletionRequest["messages"],
 ): ChatCompletion {
@@ -622,6 +641,7 @@ export function buildToolCallCompletion(
           role: overrides?.role ?? "assistant",
           content: null,
           refusal: null,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           tool_calls: toolCalls.map((tc) => ({
             id: tc.id || generateToolCallId(),
             type: "function" as const,

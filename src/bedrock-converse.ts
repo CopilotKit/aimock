@@ -231,19 +231,46 @@ function buildBedrockStreamToolCallEvents(
   toolCalls: ToolCall[],
   chunkSize: number,
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [
     { eventType: "messageStart", payload: { role: "assistant" } },
   ];
 
+  // A leading reasoning block occupies contentBlockIndex 0, shifting the
+  // toolUse blocks by +1 (mirrors the content+tool builder's sequencing).
+  if (reasoning) {
+    const reasoningBlockIndex = 0;
+    events.push({
+      eventType: "contentBlockStart",
+      payload: { contentBlockIndex: reasoningBlockIndex, start: { reasoningContent: {} } },
+    });
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: reasoningBlockIndex,
+          delta: { reasoningContent: { text: reasoning.slice(i, i + chunkSize) } },
+        },
+      });
+    }
+    events.push({
+      eventType: "contentBlockStop",
+      payload: { contentBlockIndex: reasoningBlockIndex },
+    });
+  }
+
+  const toolBlockOffset = reasoning ? 1 : 0;
+
   for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+    const blockIndex = tcIdx + toolBlockOffset;
     const tc = toolCalls[tcIdx];
     const toolUseId = tc.id || generateToolUseId();
     events.push({
       eventType: "contentBlockStart",
       payload: {
-        contentBlockIndex: tcIdx,
+        contentBlockIndex: blockIndex,
         start: { toolUse: { toolUseId, name: tc.name } },
       },
     });
@@ -252,14 +279,14 @@ function buildBedrockStreamToolCallEvents(
       events.push({
         eventType: "contentBlockDelta",
         payload: {
-          contentBlockIndex: tcIdx,
+          contentBlockIndex: blockIndex,
           delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
         },
       });
     }
     events.push({
       eventType: "contentBlockStop",
-      payload: { contentBlockIndex: tcIdx },
+      payload: { contentBlockIndex: blockIndex },
     });
   }
   events.push({
@@ -419,30 +446,39 @@ function buildConverseTextResponse(
 function buildConverseToolCallResponse(
   toolCalls: ToolCall[],
   logger: Logger,
+  reasoning?: string,
   overrides?: ResponseOverrides,
 ): object {
+  const contentBlocks: object[] = [];
+  if (reasoning) {
+    contentBlocks.push({
+      reasoningContent: { reasoningText: { text: reasoning } },
+    });
+  }
+  for (const tc of toolCalls) {
+    let argsObj: unknown;
+    try {
+      argsObj = JSON.parse(tc.arguments || "{}");
+    } catch {
+      logger.warn(
+        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+      );
+      argsObj = {};
+    }
+    contentBlocks.push({
+      toolUse: {
+        toolUseId: tc.id || generateToolUseId(),
+        name: tc.name,
+        input: argsObj,
+      },
+    });
+  }
+
   return {
     output: {
       message: {
         role: "assistant",
-        content: toolCalls.map((tc) => {
-          let argsObj: unknown;
-          try {
-            argsObj = JSON.parse(tc.arguments || "{}");
-          } catch {
-            logger.warn(
-              `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-            );
-            argsObj = {};
-          }
-          return {
-            toolUse: {
-              toolUseId: tc.id || generateToolUseId(),
-              name: tc.name,
-              input: argsObj,
-            },
-          };
-        }),
+        content: contentBlocks,
       },
     },
     stopReason: converseStopReason(overrides?.finishReason, "tool_use"),
@@ -771,6 +807,12 @@ export async function handleConverse(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -778,7 +820,7 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseToolCallResponse(response.toolCalls, logger, overrides);
+    const body = buildConverseToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -1111,6 +1153,12 @@ export async function handleConverseStream(
       );
     }
     const overrides = extractOverrides(response);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1122,6 +1170,7 @@ export async function handleConverseStream(
       response.toolCalls,
       chunkSize,
       logger,
+      effReasoning,
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);

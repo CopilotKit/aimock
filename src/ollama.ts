@@ -228,7 +228,9 @@ function buildOllamaChatTextResponse(content: string, model: string, reasoning?:
 function buildOllamaChatToolCallChunks(
   toolCalls: ToolCall[],
   model: string,
+  chunkSize: number,
   logger: Logger,
+  reasoning?: string,
 ): object[] {
   const ollamaToolCalls = toolCalls.map((tc) => {
     let argsObj: unknown;
@@ -251,6 +253,20 @@ function buildOllamaChatToolCallChunks(
   // Tool calls are sent in a single chunk (no streaming of individual args)
   const chunks: object[] = [];
   const createdAt = new Date().toISOString();
+
+  // Reasoning chunks (before tool calls)
+  if (reasoning) {
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      chunks.push({
+        model,
+        created_at: createdAt,
+        message: { role: "assistant", content: "", reasoning_content: slice },
+        done: false,
+      });
+    }
+  }
+
   chunks.push({
     model,
     created_at: createdAt,
@@ -278,6 +294,7 @@ function buildOllamaChatToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
+  reasoning?: string,
 ): object {
   const ollamaToolCalls = toolCalls.map((tc) => {
     let argsObj: unknown;
@@ -303,6 +320,7 @@ function buildOllamaChatToolCallResponse(
     message: {
       role: "assistant",
       content: "",
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
       tool_calls: ollamaToolCalls,
     },
     done: true,
@@ -318,9 +336,23 @@ function buildOllamaChatContentWithToolCallsChunks(
   model: string,
   chunkSize: number,
   logger: Logger,
+  reasoning?: string,
 ): object[] {
   const chunks: object[] = [];
   const createdAt = new Date().toISOString();
+
+  // Reasoning chunks (before content)
+  if (reasoning) {
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      chunks.push({
+        model,
+        created_at: createdAt,
+        message: { role: "assistant", content: "", reasoning_content: slice },
+        done: false,
+      });
+    }
+  }
 
   // Content chunks first
   for (let i = 0; i < content.length; i += chunkSize) {
@@ -380,6 +412,7 @@ function buildOllamaChatContentWithToolCallsResponse(
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
+  reasoning?: string,
 ): object {
   const ollamaToolCalls = toolCalls.map((tc) => {
     let argsObj: unknown;
@@ -405,6 +438,7 @@ function buildOllamaChatContentWithToolCallsResponse(
     message: {
       role: "assistant",
       content,
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
       tool_calls: ollamaToolCalls,
     },
     done: true,
@@ -689,12 +723,21 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      logger,
+    );
     if (!streaming) {
       const body = buildOllamaChatContentWithToolCallsResponse(
         response.content,
         response.toolCalls,
         completionReq.model,
         logger,
+        effReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -705,6 +748,7 @@ export async function handleOllama(
         completionReq.model,
         chunkSize,
         logger,
+        effReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeNDJSONStream(res, chunks, {
@@ -787,12 +831,31 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    // Gate reasoning emission on the requested model's capability (aimock#254).
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    const effReasoning = resolveReasoningForModel(
+      response.reasoning,
+      completionReq.model,
+      effectiveStrict,
+      logger,
+    );
     if (!streaming) {
-      const body = buildOllamaChatToolCallResponse(response.toolCalls, completionReq.model, logger);
+      const body = buildOllamaChatToolCallResponse(
+        response.toolCalls,
+        completionReq.model,
+        logger,
+        effReasoning,
+      );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildOllamaChatToolCallChunks(response.toolCalls, completionReq.model, logger);
+      const chunks = buildOllamaChatToolCallChunks(
+        response.toolCalls,
+        completionReq.model,
+        chunkSize,
+        logger,
+        effReasoning,
+      );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeNDJSONStream(res, chunks, {
         latency,
