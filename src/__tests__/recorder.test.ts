@@ -1111,6 +1111,120 @@ describe("recorder streaming collapse", () => {
     expect(savedResponse.content).toBe("");
     expect(savedResponse.redactedThinking).toEqual([REDACTED_DATA_A, REDACTED_DATA_B]);
   });
+
+  it("records a non-streaming empty-text thinking-only Anthropic turn as empty content, not an error", async () => {
+    const REAL_SIGNATURE = "ErcBCkgIA...emptyTextThinkingOnlySignature==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [{ type: "thinking", thinking: "", signature: REAL_SIGNATURE }],
+      },
+      "aimock-recorder-ns-empty-thinking-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      reasoning?: string;
+      reasoningSignature?: string;
+      error?: unknown;
+    };
+    // A thinking-only turn whose plaintext is empty but which bears a real
+    // signature is classified by the PRESENCE of the thinking block, so it
+    // round-trips as a normal empty-content response, not the "Could not detect
+    // response format" error fallback. The bare signature is still dropped per
+    // the persistence contract (no reasoning text to attach it to on replay).
+    expect(savedResponse.error).toBeUndefined();
+    expect(savedResponse.content).toBe("");
+    expect(savedResponse.reasoning).toBeUndefined();
+    expect(savedResponse.reasoningSignature).toBeUndefined();
+  });
+
+  it("records a streaming empty-text thinking-only Anthropic turn as empty content, not an error", async () => {
+    const REAL_SIGNATURE = "ErcBCkgIA...streamingEmptyTextThinkingOnlySignature==";
+    // Raw Anthropic SSE upstream that streams ONLY a thinking block carrying a
+    // real signature_delta but NO thinking_delta text — no text block, no tool
+    // calls. The streaming collapse path drives the empty-content branch
+    // (recorder.ts), which records a normal empty-content fixture. This is the
+    // streaming sibling of the non-streaming empty-text thinking-only case: both
+    // round-trip as a normal response (never the error fallback), and the bare
+    // signature is dropped because there is no reasoning text to attach it to.
+    const sse = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "signature_delta", signature: REAL_SIGNATURE } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const anthropicUpstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => anthropicUpstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (anthropicUpstream.address() as { port: number }).port;
+
+    const fixturePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "aimock-recorder-stream-empty-thinking-"),
+    );
+
+    const recorderServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks).toString();
+        await proxyAndRecord(
+          req,
+          res,
+          JSON.parse(rawBody),
+          "anthropic",
+          "/v1/messages",
+          [],
+          {
+            record: {
+              providers: { anthropic: `http://127.0.0.1:${upstreamPort}` },
+              fixturePath,
+            },
+            logger: new Logger("silent"),
+          },
+          rawBody,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+    const recorderPort = (recorderServer.address() as { port: number }).port;
+
+    try {
+      const resp = await post(`http://127.0.0.1:${recorderPort}/v1/messages`, {
+        model: "claude-3-7-sonnet-20250219",
+        max_tokens: 1024,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+        stream: true,
+        messages: [{ role: "user", content: "think please" }],
+      });
+      expect(resp.status).toBe(200);
+
+      const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const fixtureContent = JSON.parse(
+        fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+      ) as FixtureFile;
+      const savedResponse = fixtureContent.fixtures[0].response as {
+        content?: string;
+        reasoning?: string;
+        reasoningSignature?: string;
+        error?: unknown;
+      };
+      expect(savedResponse.error).toBeUndefined();
+      expect(savedResponse.content).toBe("");
+      expect(savedResponse.reasoning).toBeUndefined();
+      expect(savedResponse.reasoningSignature).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
