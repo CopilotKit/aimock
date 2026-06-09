@@ -997,6 +997,30 @@ describe("POST /api/chat (strict mode)", () => {
     const body = JSON.parse(res.body);
     expect(body.error.message).toContain("no fixture matched");
   });
+
+  it("returns the skipped-by-state message when a sequence-exhausted fixture is replayed", async () => {
+    const seqFixture: Fixture = {
+      match: { userMessage: "hello", sequenceIndex: 0 },
+      response: { content: "Hi there!" },
+    };
+    instance = await createServer([seqFixture], { strict: true });
+    // First call consumes the sequenceIndex:0 fixture (count → 1).
+    const first = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+    expect(first.status).toBe(200);
+    // Replay: shape still matches but the fixture is skipped by sequence state.
+    const res = await post(`${instance.url}/api/chat`, {
+      model: "llama3",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    });
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+  });
 });
 
 // ─── Integration tests: multiple tool calls ─────────────────────────────────

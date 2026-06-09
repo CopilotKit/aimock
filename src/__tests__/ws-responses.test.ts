@@ -479,6 +479,33 @@ describe("WebSocket /v1/responses", () => {
     expect(entry!.response.interruptReason).toBe("disconnectAfterMs");
   });
 
+  // ── Strict no-match surfaces as an RFC 6455 close(1008, …) frame. The three
+  //    WS handlers (ws-responses, ws-gemini-live, ws-realtime) share this path;
+  //    ws-responses is the cleanest to assert against. ──
+  it("closes with 1008 and a skipped-by-state reason when a sequence-exhausted fixture is replayed (strict)", async () => {
+    const seqFixture: Fixture = {
+      match: { userMessage: "hello", sequenceIndex: 0 },
+      response: { content: "Hi there!" },
+    };
+    instance = await createServer([seqFixture], { strict: true });
+
+    // First connection consumes the sequenceIndex:0 fixture (count → 1).
+    const ws1 = await connectWebSocket(instance.url, "/v1/responses");
+    ws1.send(responseCreateMsg("hello"));
+    const firstRaw = await ws1.waitForMessages(9);
+    const firstEvents = parseEvents(firstRaw);
+    expect(firstEvents[firstEvents.length - 1].type).toBe("response.completed");
+    ws1.close();
+
+    // Replay: shape still matches but the fixture is skipped by sequence state,
+    // so strict mode closes the socket with 1008 + the skipped-by-state reason.
+    const ws2 = await connectWebSocket(instance.url, "/v1/responses");
+    ws2.send(responseCreateMsg("hello"));
+    const close = await ws2.waitForCloseFrame();
+    expect(close.code).toBe(1008);
+    expect(close.reason).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+  });
+
   it("streams reasoning events before text via WebSocket", async () => {
     instance = await createServer(allFixtures);
     const ws = await connectWebSocket(instance.url, "/v1/responses");
