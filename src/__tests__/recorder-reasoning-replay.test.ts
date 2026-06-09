@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
+import { loadFixtureFile } from "../fixture-loader.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -358,6 +362,143 @@ describe("Anthropic replay emits faithful redacted_thinking blocks", () => {
     expect(res.status).toBe(200);
     const events = parseClaudeSSEEvents(res.body);
     expect(redactedDataFromEvents(events)).toEqual([]);
+  });
+
+  // A turn recorded by the empty-content branch can carry ONLY redacted_thinking
+  // (content: "", no plaintext reasoning). This is the exact fixture shape the
+  // recorder produces for a redacted-thinking-only turn with no text output.
+  it("redacted-only fixture (empty content, no reasoning) replays the redacted block then an empty text block", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: { content: "", redactedThinking: [REDACTED_A] },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+
+    // The redacted block opens at index 0 (it leads the turn).
+    const redactedStart = events.find(
+      (e) =>
+        e.type === "content_block_start" &&
+        (e.content_block as { type?: string }).type === "redacted_thinking",
+    );
+    expect(redactedStart?.index).toBe(0);
+    expect((redactedStart?.content_block as { data?: string }).data).toBe(REDACTED_A);
+
+    // The empty text block follows at index 1 (no thinking block is emitted
+    // because there is no plaintext reasoning).
+    const textStart = events.find(
+      (e) =>
+        e.type === "content_block_start" && (e.content_block as { type?: string }).type === "text",
+    );
+    expect(textStart?.index).toBe(1);
+    // No text_delta events were emitted for the empty content.
+    const textDeltas = events.filter(
+      (e) =>
+        e.type === "content_block_delta" && (e.delta as { type?: string }).type === "text_delta",
+    );
+    expect(textDeltas).toHaveLength(0);
+  });
+
+  it("redacted-only fixture replays the redacted block leading the content array (non-streaming)", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: { content: "", redactedThinking: [REDACTED_A] },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as {
+      content: Array<{ type: string; data?: string }>;
+    };
+    // The redacted block leads the content array.
+    expect(body.content[0].type).toBe("redacted_thinking");
+    expect(body.content[0].data).toBe(REDACTED_A);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Replay: new reasoning fields survive the on-disk FILE-LOAD path
+// ---------------------------------------------------------------------------
+
+describe("Anthropic replay round-trips reasoningSignature + redactedThinking from a fixture FILE", () => {
+  let server: ServerInstance;
+  let tmpDir: string;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.server.close(() => r()));
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const REAL_SIGNATURE = "ErcBCkgIA...recordedRealCryptographicSignature==";
+  const REDACTED_DATA = "EncryptedRedactedThinkingPayloadAAA==";
+
+  it("loads a fixture file with reasoningSignature + redactedThinking and replays both", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-replay-fileload-"));
+    const filePath = path.join(tmpDir, "reasoning-fixture.json");
+    // Write a real fixture FILE (not an in-memory object) so the fields must
+    // survive normalizeResponse's raw spread in the file-load path.
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "weather?" },
+            response: {
+              content: "It is sunny.",
+              reasoning: "Let me check the weather.",
+              reasoningSignature: REAL_SIGNATURE,
+              redactedThinking: [REDACTED_DATA],
+            },
+          },
+        ],
+      }),
+    );
+
+    const fixtures = loadFixtureFile(filePath);
+    server = await createServer(fixtures, { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+
+    // The recorded redacted block is emitted from the loaded file.
+    const redactedData = events
+      .filter(
+        (e) =>
+          e.type === "content_block_start" &&
+          (e.content_block as { type?: string }).type === "redacted_thinking",
+      )
+      .map((e) => (e.content_block as { data?: string }).data);
+    expect(redactedData).toEqual([REDACTED_DATA]);
+
+    // The recorded real signature is emitted (not the placeholder).
+    const sigDelta = events.find(
+      (e) =>
+        e.type === "content_block_delta" &&
+        (e.delta as { type?: string }).type === "signature_delta",
+    );
+    expect((sigDelta?.delta as { signature?: string }).signature).toBe(REAL_SIGNATURE);
   });
 });
 
