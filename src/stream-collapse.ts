@@ -23,7 +23,10 @@ export interface CollapseResult {
    * The real cryptographic `signature` value captured from an Anthropic
    * `signature_delta`. Carried so a recorded real-provider thinking turn can
    * replay its ACTUAL signature instead of aimock's placeholder. Absent when the
-   * stream carried no signature.
+   * stream carried no signature. Single-signature assumption: a turn with
+   * MULTIPLE thinking blocks collapses to one merged `reasoning` string carrying
+   * only the FINAL block's signature (last-signature-wins) — per-block fidelity
+   * is not preserved.
    */
   reasoningSignature?: string;
   /**
@@ -424,6 +427,9 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       // The real cryptographic signature arrives via a trailing
       // `signature_delta` (the `content_block_start` carried ""). Capture the
       // last one seen so a recorded thinking turn replays its actual signature.
+      // Last-signature-wins: a turn with MULTIPLE thinking blocks overwrites this
+      // on each block, so the merged `reasoning` string ends up bound only to the
+      // FINAL block's signature — per-block signatures are not preserved.
       if (delta.type === "signature_delta" && typeof delta.signature === "string") {
         reasoningSignature = delta.signature;
       }

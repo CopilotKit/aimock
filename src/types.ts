@@ -153,6 +153,10 @@ export interface TextResponse extends ResponseOverrides {
    * The real cryptographic `signature` captured from a recorded Anthropic
    * thinking turn. When present it is emitted on the replayed thinking block;
    * otherwise replay falls back to aimock's round-trip-safe placeholder.
+   * Persisted only alongside a non-empty `reasoning`: a signature captured
+   * without plaintext reasoning (e.g. whitespace-only thinking) is intentionally
+   * discarded at the persistence layer, since replay attaches signatures only to
+   * plaintext thinking blocks.
    */
   reasoningSignature?: string;
   /**
