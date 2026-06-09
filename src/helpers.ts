@@ -104,6 +104,52 @@ export function resolveReasoningForModel(
   return reasoning;
 }
 
+/**
+ * Resolve the encrypted reasoning artifacts (`reasoningSignature` and
+ * `redactedThinking`) to actually emit for a given model.
+ *
+ * `redacted_thinking` blocks and a thinking `signature` ARE part of the
+ * reasoning channel — they are just the encrypted form of it — so they must be
+ * gated on the same model-capability resolution as the plaintext `reasoning`
+ * string (see resolveReasoningForModel). Gating only the plaintext channel
+ * leaves a half-gated reasoning path: replaying a fixture recorded from a
+ * reasoning model against a non-reasoning model would strip the `thinking`
+ * block but still emit `redacted_thinking` blocks, which the real provider for
+ * that model would never produce.
+ *
+ * Capability is decided from the REQUESTED model id, independently of whether a
+ * plaintext `reasoning` string is present — a fixture may carry only
+ * `redactedThinking` with no plaintext reasoning.
+ *
+ *   - reasoning-capable model         → emit both unchanged, no log
+ *   - non-reasoning model, no artifacts → no-op, nothing to suppress
+ *   - non-reasoning model, strict OFF → `logger.warn`, still emit (preserves
+ *                                       current behavior)
+ *   - non-reasoning model, strict ON  → `logger.error`, suppress both
+ */
+export function resolveReasoningArtifactsForModel(
+  reasoningSignature: string | undefined,
+  redactedThinking: string[] | undefined,
+  model: string | undefined,
+  strict: boolean,
+  logger: Logger,
+): { reasoningSignature?: string; redactedThinking?: string[] } {
+  const hasArtifacts = reasoningSignature !== undefined || (redactedThinking?.length ?? 0) > 0;
+  if (!hasArtifacts || isReasoningModel(model)) {
+    return { reasoningSignature, redactedThinking };
+  }
+  if (strict) {
+    logger.error(
+      `Strict mode: fixture has encrypted reasoning artifacts (redacted_thinking/signature) but model "${model}" is not reasoning-capable — suppressing reasoning emission`,
+    );
+    return {};
+  }
+  logger.warn(
+    `Fixture has encrypted reasoning artifacts (redacted_thinking/signature) but model "${model}" is not reasoning-capable — the real provider would emit no reasoning. Emitting anyway (set X-AIMock-Strict: true to suppress).`,
+  );
+  return { reasoningSignature, redactedThinking };
+}
+
 export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
   const flat: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {

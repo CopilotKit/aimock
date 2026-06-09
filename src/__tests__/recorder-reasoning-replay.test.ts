@@ -360,3 +360,256 @@ describe("Anthropic replay emits faithful redacted_thinking blocks", () => {
     expect(redactedDataFromEvents(events)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Capability gate: encrypted reasoning artifacts (redacted_thinking +
+// signature) are suppressed wholesale on non-reasoning models under strict
+// mode, just like the plaintext reasoning channel — see aimock#254.
+// ---------------------------------------------------------------------------
+
+describe("Anthropic replay gates encrypted reasoning artifacts on model capability", () => {
+  let server: ServerInstance;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.server.close(() => r()));
+  });
+
+  const REAL_SIGNATURE = "ErcBCkgIA...recordedRealCryptographicSignature==";
+  const REDACTED_A = "EncryptedRedactedThinkingPayloadAAA==";
+  const REDACTED_B = "EncryptedRedactedThinkingPayloadBBB==";
+  // claude-3-5-sonnet is in NONREASONING_FAMILIES — the real provider for it
+  // emits no thinking/redacted_thinking channel at all.
+  const NONREASONING_MODEL = "claude-3-5-sonnet-20241022";
+  const REASONING_MODEL = "claude-3-7-sonnet-20250219";
+  const STRICT = { "X-AIMock-Strict": "true" };
+
+  function thinkingBlocks(events: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    return events.filter(
+      (e) =>
+        e.type === "content_block_start" &&
+        (e.content_block as { type?: string } | undefined)?.type === "thinking",
+    );
+  }
+
+  function redactedBlocks(events: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    return events.filter(
+      (e) =>
+        e.type === "content_block_start" &&
+        (e.content_block as { type?: string } | undefined)?.type === "redacted_thinking",
+    );
+  }
+
+  function signatureDeltas(events: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    return events.filter(
+      (e) =>
+        e.type === "content_block_delta" &&
+        (e.delta as { type?: string } | undefined)?.type === "signature_delta",
+    );
+  }
+
+  // -- Streaming, strict ON: full reasoning channel suppressed ----------------
+
+  it("strict mode: streamed text turn strips thinking AND redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        reasoning: "Let me check the weather.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A, REDACTED_B],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(thinkingBlocks(events)).toHaveLength(0);
+    expect(redactedBlocks(events)).toHaveLength(0);
+    expect(signatureDeltas(events)).toHaveLength(0);
+  });
+
+  it("strict mode: non-streaming text turn strips thinking AND redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        reasoning: "Let me check the weather.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { content: Array<{ type: string }> };
+    expect(body.content.some((b) => b.type === "thinking")).toBe(false);
+    expect(body.content.some((b) => b.type === "redacted_thinking")).toBe(false);
+  });
+
+  it("strict mode: suppresses redacted_thinking even when there is NO plaintext reasoning", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(redactedBlocks(events)).toHaveLength(0);
+  });
+
+  it("strict mode: streamed tool-call turn strips redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(thinkingBlocks(events)).toHaveLength(0);
+    expect(redactedBlocks(events)).toHaveLength(0);
+  });
+
+  it("strict mode: streamed content+tool turn strips redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "Checking now.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(thinkingBlocks(events)).toHaveLength(0);
+    expect(redactedBlocks(events)).toHaveLength(0);
+  });
+
+  // -- Reasoning-capable model path is unchanged under strict mode ------------
+
+  it("reasoning-capable model under strict mode still emits thinking, signature, and redacted_thinking", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        reasoning: "Let me check the weather.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: REASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        stream: true,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(redactedBlocks(events).map((e) => (e.content_block as { data?: string }).data)).toEqual([
+      REDACTED_A,
+    ]);
+    const sig = signatureDeltas(events)[0];
+    expect((sig?.delta as { signature?: string } | undefined)?.signature).toBe(REAL_SIGNATURE);
+  });
+
+  // -- Non-strict (warn) mode: artifacts still emitted, mirroring plaintext ---
+
+  it("non-strict mode: non-reasoning model still emits redacted_thinking (warn, not suppress)", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: NONREASONING_MODEL,
+      max_tokens: 1024,
+      thinking: ENABLED,
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    expect(redactedBlocks(events).map((e) => (e.content_block as { data?: string }).data)).toEqual([
+      REDACTED_A,
+    ]);
+  });
+});

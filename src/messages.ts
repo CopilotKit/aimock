@@ -31,6 +31,7 @@ import {
   resolveResponse,
   resolveStrictMode,
   resolveReasoningForModel,
+  resolveReasoningArtifactsForModel,
   strictOverrideField,
   getContext,
 } from "./helpers.js";
@@ -1289,6 +1290,14 @@ export async function handleMessages(
       effectiveStrict,
       defaults.logger,
     );
+    const { reasoningSignature: effReasoningSignature, redactedThinking: effRedactedThinking } =
+      resolveReasoningArtifactsForModel(
+        response.reasoningSignature,
+        response.redactedThinking,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -1304,8 +1313,8 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1318,8 +1327,8 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1355,6 +1364,14 @@ export async function handleMessages(
       effectiveStrict,
       defaults.logger,
     );
+    const { reasoningSignature: effReasoningSignature, redactedThinking: effRedactedThinking } =
+      resolveReasoningArtifactsForModel(
+        response.reasoningSignature,
+        response.redactedThinking,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -1368,8 +1385,8 @@ export async function handleMessages(
         completionReq.model,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1380,8 +1397,8 @@ export async function handleMessages(
         chunkSize,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1417,6 +1434,14 @@ export async function handleMessages(
       effectiveStrict,
       defaults.logger,
     );
+    const { reasoningSignature: effReasoningSignature, redactedThinking: effRedactedThinking } =
+      resolveReasoningArtifactsForModel(
+        response.reasoningSignature,
+        response.redactedThinking,
+        completionReq.model,
+        effectiveStrict,
+        defaults.logger,
+      );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
@@ -1431,8 +1456,8 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1444,8 +1469,8 @@ export async function handleMessages(
         logger,
         effReasoning,
         overrides,
-        response.reasoningSignature,
-        response.redactedThinking,
+        effReasoningSignature,
+        effRedactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
