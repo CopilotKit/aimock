@@ -129,6 +129,7 @@ describe("buildToolCallCompletion token estimation", () => {
       [{ name: "get_weather", arguments: '{"city":"New York"}' }],
       "gpt-4",
       undefined,
+      undefined,
       [{ role: "user", content: "What is the weather in NYC?" }],
     );
     expect(result.usage.prompt_tokens).toBeGreaterThan(0);
@@ -142,6 +143,7 @@ describe("buildToolCallCompletion token estimation", () => {
     const result = buildToolCallCompletion(
       [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
       "gpt-4",
+      undefined,
       { usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } },
     );
     expect(result.usage).toEqual({

@@ -38,12 +38,24 @@ const capabilityReasoningFixture: Fixture = {
   response: { content: "The answer.", reasoning: "Let me reason about this." },
 };
 
+// Tool-only fixture that also carries reasoning. Distinct match key so it can
+// be exercised against reasoning-capable / non-reasoning models without
+// colliding with the plain `weather` tool fixture above.
+const toolReasoningFixture: Fixture = {
+  match: { userMessage: "tool-reason" },
+  response: {
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+    reasoning: "Let me reason about the tool call.",
+  },
+};
+
 const allFixtures: Fixture[] = [
   textFixture,
   toolFixture,
   errorFixture,
   reasoningFixture,
   capabilityReasoningFixture,
+  toolReasoningFixture,
 ];
 
 // --- tests ---
@@ -583,6 +595,72 @@ describe("WebSocket /v1/responses reasoning capability gating", () => {
     expect(types).toContain("response.output_text.delta");
     const deltas = events.filter((e) => e.type === "response.output_text.delta");
     expect(deltas.map((d) => d.delta).join("")).toBe("Hi there!");
+
+    ws.close();
+  });
+
+  // ── Tool-only path: reasoning must gate the same as text / content+tool, so
+  //    emission is transport-independent (HTTP tool-only already gates+emits). ──
+
+  it("emits reasoning on a tool-only response for a reasoning-capable model", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("tool-reason", "o3-mini"));
+
+    const raw = await ws.waitForMessages(12);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    // Reasoning channel is emitted, and the function call is intact.
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.function_call_arguments.delta");
+    expect(types).toContain("response.function_call_arguments.done");
+
+    const argDeltas = events.filter((e) => e.type === "response.function_call_arguments.delta");
+    expect(argDeltas.map((d) => d.delta).join("")).toBe('{"city":"NYC"}');
+
+    ws.close();
+  });
+
+  it("suppresses tool-only reasoning for a non-reasoning model under strict (function call intact)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses", {
+      "X-AIMock-Strict": "true",
+    });
+
+    ws.send(responseCreateMsg("tool-reason", "gpt-4.1"));
+
+    const raw = await ws.waitForMessages(7);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    // Reasoning suppressed, but the function call still streams.
+    expect(types).not.toContain("response.reasoning_summary_text.delta");
+    expect(types).not.toContain("response.reasoning_summary_text.done");
+    expect(types).toContain("response.function_call_arguments.delta");
+    expect(types).toContain("response.function_call_arguments.done");
+    expect(types[types.length - 1]).toBe("response.completed");
+
+    const argDeltas = events.filter((e) => e.type === "response.function_call_arguments.delta");
+    expect(argDeltas.map((d) => d.delta).join("")).toBe('{"city":"NYC"}');
+
+    ws.close();
+  });
+
+  it("emits tool-only reasoning for a non-reasoning model when strict is off", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("tool-reason", "gpt-4.1"));
+
+    const raw = await ws.waitForMessages(12);
+    const events = parseEvents(raw);
+    const types = events.map((e) => e.type);
+
+    expect(types).toContain("response.reasoning_summary_text.delta");
+    expect(types).toContain("response.function_call_arguments.delta");
+    expect(types).toContain("response.function_call_arguments.done");
 
     ws.close();
   });
