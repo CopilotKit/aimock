@@ -2054,6 +2054,133 @@ describe("collapseBedrockEventStream captures converse reasoningContent", () => 
   });
 });
 
+// ---------------------------------------------------------------------------
+// collapseBedrockEventStream — Anthropic Messages format extended thinking
+// (invoke-with-response-stream binary frames carrying thinking/signature/redacted)
+// ---------------------------------------------------------------------------
+
+describe("collapseBedrockEventStream — Anthropic Messages format extended thinking", () => {
+  it("captures thinking_delta + signature_delta into reasoning and reasoningSignature", () => {
+    const realSignature = "ErcBCkgIARABG=signature";
+    const thinkFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+    const thinkDelta1 = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: "Hmm " },
+    });
+    const thinkDelta2 = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: "interesting" },
+    });
+    const sigDelta = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "signature_delta", signature: realSignature },
+    });
+    const textFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "text_delta", text: "Answer" },
+    });
+    const buf = Buffer.concat([thinkFrame, thinkDelta1, thinkDelta2, sigDelta, textFrame]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.content).toBe("Answer");
+    expect(result.reasoning).toBe("Hmm interesting");
+    expect(result.reasoningSignature).toBe(realSignature);
+  });
+
+  it("captures redacted_thinking block data into redactedThinking", () => {
+    const redactedData = "Er8BCkgIARAB=redacted";
+    const redactedFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "redacted_thinking", data: redactedData },
+    });
+    const textFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "text_delta", text: "Answer" },
+    });
+    const buf = Buffer.concat([redactedFrame, textFrame]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.content).toBe("Answer");
+    expect(result.redactedThinking).toEqual([redactedData]);
+  });
+
+  it("last signature wins across multiple thinking blocks", () => {
+    const firstSig = "first==sig";
+    const lastSig = "last==sig";
+    const think0Start = encodeEventStreamMessage("chunk", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+    const think0Delta = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: "Block one. " },
+    });
+    const sig0 = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "signature_delta", signature: firstSig },
+    });
+    const think1Start = encodeEventStreamMessage("chunk", {
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    });
+    const think1Delta = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "thinking_delta", thinking: "Block two." },
+    });
+    const sig1 = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "signature_delta", signature: lastSig },
+    });
+    const buf = Buffer.concat([think0Start, think0Delta, sig0, think1Start, think1Delta, sig1]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.reasoning).toBe("Block one. Block two.");
+    expect(result.reasoningSignature).toBe(lastSig);
+  });
+
+  it("leaves reasoning/signature/redacted undefined when absent", () => {
+    const textFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "Plain" },
+    });
+    const result = collapseBedrockEventStream(textFrame);
+    expect(result.content).toBe("Plain");
+    expect(result.reasoning).toBeUndefined();
+    expect(result.reasoningSignature).toBeUndefined();
+    expect(result.redactedThinking).toBeUndefined();
+  });
+
+  it("does not capture empty redacted_thinking data", () => {
+    const redactedFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "redacted_thinking", data: "" },
+    });
+    const textFrame = encodeEventStreamMessage("chunk", {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "text_delta", text: "Answer" },
+    });
+    const buf = Buffer.concat([redactedFrame, textFrame]);
+    const result = collapseBedrockEventStream(buf);
+    expect(result.redactedThinking).toBeUndefined();
+  });
+});
+
 describe("collapseOpenAISSE with chat completions reasoning_content", () => {
   it("extracts reasoning from reasoning_content delta fields", () => {
     const body = [
