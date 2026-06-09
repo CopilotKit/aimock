@@ -354,9 +354,11 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   // starts mint a fresh synthetic key (kept above any real index so sort order
   // is stable). Despite its name, `lastSyntheticIndex` tracks whichever
   // tool_use start most recently opened REGARDLESS of whether its index was
-  // real or synthetic (it is set on EVERY start), so an index-less delta
-  // correlates to the most-recent start — not just to the last synthetic one.
-  // The 1_000_000 sentinel assumes real provider indices stay below it.
+  // real or synthetic (it is set on every tool_use start; thinking /
+  // redacted_thinking starts do not touch it), so an index-less delta
+  // correlates to the most-recent tool_use start — not just to the last
+  // synthetic one. The 1_000_000 sentinel assumes real provider indices stay
+  // below it.
   let nextSyntheticIndex = 1_000_000;
   let lastSyntheticIndex: number | undefined;
 

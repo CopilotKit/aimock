@@ -406,7 +406,14 @@ interface ClaudeSSEEvent {
  * and `content_block_stop` per recorded block, with NO deltas (real Anthropic
  * delivers the encrypted reasoning entirely on the start event). Returns the
  * next free block index. When `redactedThinking` is empty/absent this is a
- * no-op, so behavior is byte-identical to a turn without redacted thinking.
+ * no-op, so no events are added.
+ *
+ * Leading placement keeps the turn round-trip-safe for the extended-thinking
+ * leading-block invariant (a thinking / redacted_thinking block must come
+ * first). It does NOT reproduce real Anthropic's stream order: aimock joins all
+ * plaintext reasoning into one block and emits all redacted blocks ahead of it,
+ * whereas real Anthropic interleaves `thinking` and `redacted_thinking` in the
+ * order they occurred. The interleaving between the two is not preserved.
  */
 function pushRedactedThinkingStreamEvents(
   events: ClaudeSSEEvent[],
@@ -462,9 +469,9 @@ function buildClaudeTextStreamEvents(
 
   let blockIndex = 0;
 
-  // Redacted-thinking blocks lead the turn (before any thinking / text), mirroring
-  // real Anthropic, so a recorded redacted turn round-trips and replaying it under
-  // strict satisfies the leading-block invariant.
+  // Redacted-thinking blocks lead the turn (before any thinking / text) to
+  // satisfy the leading-block invariant on replay; see the helper for the
+  // ordering caveat.
   blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Thinking block (emitted before text when reasoning is present)
@@ -574,9 +581,9 @@ function buildClaudeToolCallStreamEvents(
 
   let blockIndex = 0;
 
-  // Redacted-thinking blocks lead the turn (before thinking / tool_use blocks),
-  // mirroring real Anthropic. A leading redacted_thinking block also satisfies
-  // the extended-thinking leading-block invariant on replay.
+  // Redacted-thinking blocks lead the turn (before thinking / tool_use blocks)
+  // to satisfy the extended-thinking leading-block invariant on replay; see the
+  // helper for the ordering caveat.
   blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Optional thinking block (emitted before the tool_use blocks when reasoning
@@ -684,8 +691,14 @@ function buildClaudeToolCallStreamEvents(
 /**
  * Push faithful Anthropic `redacted_thinking` content blocks (each a
  * `{ type: "redacted_thinking", data }`) onto a non-streaming content array, in
- * recorded order. No-op when `redactedThinking` is empty/absent, so behavior is
- * byte-identical to a turn without redacted thinking.
+ * recorded order. No-op when `redactedThinking` is empty/absent, so no blocks
+ * are added.
+ *
+ * Leading placement keeps the turn round-trip-safe for the extended-thinking
+ * leading-block invariant. It does NOT reproduce real Anthropic's block order:
+ * aimock joins all plaintext reasoning into one block and emits all redacted
+ * blocks ahead of it, whereas real Anthropic interleaves `thinking` and
+ * `redacted_thinking` in occurrence order. The interleaving is not preserved.
  */
 function pushRedactedThinkingBlocks(
   contentBlocks: object[],
@@ -706,8 +719,8 @@ function buildClaudeTextResponse(
 ): object {
   const contentBlocks: object[] = [];
 
-  // Redacted-thinking blocks lead the content array (before thinking / text),
-  // mirroring real Anthropic.
+  // Redacted-thinking blocks lead the content array (before thinking / text);
+  // see the helper for the ordering caveat.
   pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   if (reasoning) {
@@ -744,8 +757,9 @@ function buildClaudeToolCallResponse(
 ): object {
   const contentBlocks: object[] = [];
 
-  // Redacted-thinking blocks lead the content array (before thinking / tool_use),
-  // mirroring real Anthropic and satisfying the leading-block invariant on replay.
+  // Redacted-thinking blocks lead the content array (before thinking / tool_use)
+  // to satisfy the leading-block invariant on replay; see the helper for the
+  // ordering caveat.
   pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   // Leading thinking block when reasoning is present — mirrors
@@ -825,7 +839,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
 
   let blockIndex = 0;
 
-  // Redacted-thinking blocks lead the turn (before thinking / text / tool_use).
+  // Redacted-thinking blocks lead the turn (before thinking / text / tool_use);
+  // see the helper for the ordering caveat.
   blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Optional thinking block
@@ -957,7 +972,7 @@ function buildClaudeContentWithToolCallsResponse(
   const contentBlocks: object[] = [];
 
   // Redacted-thinking blocks lead the content array (before thinking / text /
-  // tool_use), mirroring real Anthropic.
+  // tool_use); see the helper for the ordering caveat.
   pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   if (reasoning) {
