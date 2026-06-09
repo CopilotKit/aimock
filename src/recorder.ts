@@ -1104,6 +1104,12 @@ function buildFixtureResponse(
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
     const thinkingBlocks = blocks.filter((b) => b.type === "thinking");
+    // A `redacted_thinking` block carries its encrypted reasoning in an opaque
+    // `data` string; collect them in content-array order so the recorded turn
+    // round-trips its redacted blocks (mirrors the streaming collapse path).
+    const redactedThinking = blocks
+      .filter((b) => b.type === "redacted_thinking" && typeof b.data === "string")
+      .map((b) => String(b.data));
     const hasToolCalls = toolUseBlocks.length > 0;
     const joinedText = textBlocks.map((b) => String(b.text ?? "")).join("");
     const hasContent = joinedText.length > 0;
@@ -1111,6 +1117,22 @@ function buildFixtureResponse(
       thinkingBlocks.length > 0
         ? thinkingBlocks.map((b) => String(b.thinking ?? "")).join("")
         : undefined;
+    // The real cryptographic signature lives on the first thinking block; carry
+    // it only when reasoning is also present (a bare signature has nothing to
+    // attach to on replay), matching the streaming recorder's gating.
+    const anthropicReasoningSignature =
+      typeof thinkingBlocks[0]?.signature === "string"
+        ? String(thinkingBlocks[0].signature)
+        : undefined;
+    // Carry the real Anthropic thinking-block signature only when reasoning is
+    // also present; redacted blocks carry their OWN encrypted reasoning so they
+    // are carried independently of any plaintext `reasoning`. Both mirror the
+    // streaming spread gating in proxyAndRecord.
+    const reasoningSignatureSpread =
+      anthropicReasoning && anthropicReasoningSignature
+        ? { reasoningSignature: anthropicReasoningSignature }
+        : {};
+    const redactedThinkingSpread = redactedThinking.length > 0 ? { redactedThinking } : {};
 
     if (hasToolCalls) {
       const toolCalls: ToolCall[] = toolUseBlocks.map((b) => ({
@@ -1123,19 +1145,35 @@ function buildFixtureResponse(
           content: joinedText,
           toolCalls,
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+          ...reasoningSignatureSpread,
+          ...redactedThinkingSpread,
         };
       }
-      return { toolCalls, ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}) };
+      return {
+        toolCalls,
+        ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+        ...reasoningSignatureSpread,
+        ...redactedThinkingSpread,
+      };
     }
     if (hasContent) {
       return {
         content: joinedText,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+        ...reasoningSignatureSpread,
+        ...redactedThinkingSpread,
       };
     }
-    // Thinking-only response (no text, no tool calls)
-    if (anthropicReasoning) {
-      return { content: "", reasoning: anthropicReasoning };
+    // Thinking-only / redacted-only response (no text, no tool calls). A turn can
+    // carry only redacted_thinking blocks, so produce a normal empty-content
+    // fixture rather than falling through to the error fallback below.
+    if (anthropicReasoning || redactedThinking.length > 0) {
+      return {
+        content: "",
+        ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
+        ...reasoningSignatureSpread,
+        ...redactedThinkingSpread,
+      };
     }
   }
 

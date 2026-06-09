@@ -771,6 +771,141 @@ describe("recorder streaming collapse", () => {
       fs.rmSync(fixturePath, { recursive: true, force: true });
     }
   });
+
+  // Non-streaming (plain JSON) recording must capture the SAME extended-thinking
+  // signal the streaming path does: the real thinking-block signature, redacted
+  // block payloads, and redacted-only turns. These mirror the streaming tests
+  // above but drive a JSON (non-SSE) Anthropic upstream.
+  function recordNonStreamingAnthropic(
+    responseJson: unknown,
+    fixturePathPrefix: string,
+  ): Promise<FixtureFile> {
+    return (async () => {
+      const anthropicUpstream = http.createServer((_upReq, upRes) => {
+        upRes.writeHead(200, { "Content-Type": "application/json" });
+        upRes.end(JSON.stringify(responseJson));
+      });
+      await new Promise<void>((resolve) =>
+        anthropicUpstream.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const upstreamPort = (anthropicUpstream.address() as { port: number }).port;
+
+      const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), fixturePathPrefix));
+
+      const recorderServer = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", async () => {
+          const rawBody = Buffer.concat(chunks).toString();
+          await proxyAndRecord(
+            req,
+            res,
+            JSON.parse(rawBody),
+            "anthropic",
+            "/v1/messages",
+            [],
+            {
+              record: {
+                providers: { anthropic: `http://127.0.0.1:${upstreamPort}` },
+                fixturePath,
+              },
+              logger: new Logger("silent"),
+            },
+            rawBody,
+          );
+        });
+      });
+      await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+      const recorderPort = (recorderServer.address() as { port: number }).port;
+
+      try {
+        const resp = await post(`http://127.0.0.1:${recorderPort}/v1/messages`, {
+          model: "claude-3-7-sonnet-20250219",
+          max_tokens: 1024,
+          thinking: { type: "enabled", budget_tokens: 1024 },
+          stream: false,
+          messages: [{ role: "user", content: "think please" }],
+        });
+        expect(resp.status).toBe(200);
+
+        const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+        expect(files).toHaveLength(1);
+        return JSON.parse(
+          fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+        ) as FixtureFile;
+      } finally {
+        await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
+        await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+        fs.rmSync(fixturePath, { recursive: true, force: true });
+      }
+    })();
+  }
+
+  it("captures a non-streaming Anthropic thinking-block signature into reasoningSignature", async () => {
+    const REAL_SIGNATURE = "ErcBCkgIA...recordedNonStreamingCryptographicSignature==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "thinking", thinking: "Let me think.", signature: REAL_SIGNATURE },
+          { type: "text", text: "Answer." },
+        ],
+      },
+      "aimock-recorder-ns-sig-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      reasoning?: string;
+      reasoningSignature?: string;
+    };
+    expect(savedResponse.content).toBe("Answer.");
+    expect(savedResponse.reasoning).toBe("Let me think.");
+    // The real signature is recorded so replay can emit it instead of the placeholder.
+    expect(savedResponse.reasoningSignature).toBe(REAL_SIGNATURE);
+  });
+
+  it("captures non-streaming Anthropic redacted_thinking block data into redactedThinking", async () => {
+    const REDACTED_DATA = "EncryptedNonStreamingRedactedThinkingPayloadAAA==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "redacted_thinking", data: REDACTED_DATA },
+          { type: "text", text: "Answer." },
+        ],
+      },
+      "aimock-recorder-ns-redacted-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      redactedThinking?: string[];
+    };
+    expect(savedResponse.content).toBe("Answer.");
+    // The opaque redacted payload is recorded so replay can emit it faithfully.
+    expect(savedResponse.redactedThinking).toEqual([REDACTED_DATA]);
+  });
+
+  it("records a non-streaming redacted-only Anthropic turn as empty content, not an error", async () => {
+    const REDACTED_DATA_A = "EncryptedRedactedOnlyAAA==";
+    const REDACTED_DATA_B = "EncryptedRedactedOnlyBBB==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "redacted_thinking", data: REDACTED_DATA_A },
+          { type: "redacted_thinking", data: REDACTED_DATA_B },
+        ],
+      },
+      "aimock-recorder-ns-redacted-only-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      redactedThinking?: string[];
+      error?: unknown;
+    };
+    // Redacted-only turns must round-trip as a normal empty-content response, not
+    // the "Could not detect response format" error fallback.
+    expect(savedResponse.error).toBeUndefined();
+    expect(savedResponse.content).toBe("");
+    expect(savedResponse.redactedThinking).toEqual([REDACTED_DATA_A, REDACTED_DATA_B]);
+  });
 });
 
 // ---------------------------------------------------------------------------
