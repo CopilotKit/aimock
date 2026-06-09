@@ -155,6 +155,14 @@ export interface TextResponse extends ResponseOverrides {
    * otherwise replay falls back to aimock's round-trip-safe placeholder.
    */
   reasoningSignature?: string;
+  /**
+   * Opaque `data` payload(s) of any Anthropic `redacted_thinking` blocks
+   * captured from a recorded thinking turn, in stream order. When present they
+   * are replayed as faithful `redacted_thinking` content blocks so the encrypted
+   * reasoning round-trips; absent for non-Anthropic providers and turns without
+   * redacted thinking.
+   */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 
@@ -169,6 +177,8 @@ export interface ToolCallResponse extends ResponseOverrides {
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
+  /** Anthropic redacted_thinking block data; see {@link TextResponse.redactedThinking}. */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 
@@ -178,6 +188,8 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
+  /** Anthropic redacted_thinking block data; see {@link TextResponse.redactedThinking}. */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 
@@ -371,6 +383,8 @@ export interface FixtureFileToolCallResponse extends ResponseOverrides {
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
+  /** Anthropic redacted_thinking block data; see {@link TextResponse.redactedThinking}. */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 
@@ -380,6 +394,8 @@ export interface FixtureFileTextResponse extends ResponseOverrides {
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
+  /** Anthropic redacted_thinking block data; see {@link TextResponse.redactedThinking}. */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 
@@ -390,6 +406,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
+  /** Anthropic redacted_thinking block data; see {@link TextResponse.redactedThinking}. */
+  redactedThinking?: string[];
   webSearches?: string[];
 }
 

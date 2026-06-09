@@ -399,6 +399,35 @@ interface ClaudeSSEEvent {
   [key: string]: unknown;
 }
 
+/**
+ * Emit faithful Anthropic `redacted_thinking` content-block events at the head
+ * of a streamed turn — one `content_block_start` (carrying the opaque `data`)
+ * and `content_block_stop` per recorded block, with NO deltas (real Anthropic
+ * delivers the encrypted reasoning entirely on the start event). Returns the
+ * next free block index. When `redactedThinking` is empty/absent this is a
+ * no-op, so behavior is byte-identical to a turn without redacted thinking.
+ */
+function pushRedactedThinkingStreamEvents(
+  events: ClaudeSSEEvent[],
+  startIndex: number,
+  redactedThinking: string[] | undefined,
+): number {
+  let blockIndex = startIndex;
+  for (const data of redactedThinking ?? []) {
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "redacted_thinking", data },
+    });
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    });
+    blockIndex++;
+  }
+  return blockIndex;
+}
+
 function buildClaudeTextStreamEvents(
   content: string,
   model: string,
@@ -406,6 +435,7 @@ function buildClaudeTextStreamEvents(
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
@@ -430,6 +460,11 @@ function buildClaudeTextStreamEvents(
   });
 
   let blockIndex = 0;
+
+  // Redacted-thinking blocks lead the turn (before any thinking / text), mirroring
+  // real Anthropic, so a recorded redacted turn round-trips and replaying it under
+  // strict satisfies the leading-block invariant.
+  blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Thinking block (emitted before text when reasoning is present)
   if (reasoning) {
@@ -512,6 +547,7 @@ function buildClaudeToolCallStreamEvents(
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
@@ -536,6 +572,11 @@ function buildClaudeToolCallStreamEvents(
   });
 
   let blockIndex = 0;
+
+  // Redacted-thinking blocks lead the turn (before thinking / tool_use blocks),
+  // mirroring real Anthropic. A leading redacted_thinking block also satisfies
+  // the extended-thinking leading-block invariant on replay.
+  blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Optional thinking block (emitted before the tool_use blocks when reasoning
   // is present). Mirrors buildClaudeContentWithToolCallsStreamEvents exactly so
@@ -639,14 +680,34 @@ function buildClaudeToolCallStreamEvents(
 
 // Non-streaming response builders
 
+/**
+ * Push faithful Anthropic `redacted_thinking` content blocks (each a
+ * `{ type: "redacted_thinking", data }`) onto a non-streaming content array, in
+ * recorded order. No-op when `redactedThinking` is empty/absent, so behavior is
+ * byte-identical to a turn without redacted thinking.
+ */
+function pushRedactedThinkingBlocks(
+  contentBlocks: object[],
+  redactedThinking: string[] | undefined,
+): void {
+  for (const data of redactedThinking ?? []) {
+    contentBlocks.push({ type: "redacted_thinking", data });
+  }
+}
+
 function buildClaudeTextResponse(
   content: string,
   model: string,
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): object {
   const contentBlocks: object[] = [];
+
+  // Redacted-thinking blocks lead the content array (before thinking / text),
+  // mirroring real Anthropic.
+  pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   if (reasoning) {
     contentBlocks.push({
@@ -678,8 +739,13 @@ function buildClaudeToolCallResponse(
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): object {
   const contentBlocks: object[] = [];
+
+  // Redacted-thinking blocks lead the content array (before thinking / tool_use),
+  // mirroring real Anthropic and satisfying the leading-block invariant on replay.
+  pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   // Leading thinking block when reasoning is present — mirrors
   // buildClaudeContentWithToolCallsResponse so a pure-tool-call turn under
@@ -732,6 +798,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
@@ -756,6 +823,9 @@ function buildClaudeContentWithToolCallsStreamEvents(
   });
 
   let blockIndex = 0;
+
+  // Redacted-thinking blocks lead the turn (before thinking / text / tool_use).
+  blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
   // Optional thinking block
   if (reasoning) {
@@ -881,8 +951,13 @@ function buildClaudeContentWithToolCallsResponse(
   reasoning?: string,
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
+  redactedThinking?: string[],
 ): object {
   const contentBlocks: object[] = [];
+
+  // Redacted-thinking blocks lead the content array (before thinking / text /
+  // tool_use), mirroring real Anthropic.
+  pushRedactedThinkingBlocks(contentBlocks, redactedThinking);
 
   if (reasoning) {
     contentBlocks.push({
@@ -1230,6 +1305,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1243,6 +1319,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1292,6 +1369,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1303,6 +1381,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {
@@ -1353,6 +1432,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1365,6 +1445,7 @@ export async function handleMessages(
         effReasoning,
         overrides,
         response.reasoningSignature,
+        response.redactedThinking,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {

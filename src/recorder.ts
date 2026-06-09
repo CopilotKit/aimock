@@ -416,6 +416,12 @@ export async function proxyAndRecord(
         collapsed.reasoning && collapsed.reasoningSignature
           ? { reasoningSignature: collapsed.reasoningSignature }
           : {};
+      // Redacted-thinking blocks carry their OWN encrypted reasoning, so they are
+      // carried independently of any plaintext `reasoning` (a turn can have only
+      // redacted thinking) so the recorded turn round-trips its redacted blocks.
+      const redactedThinkingSpread = collapsed.redactedThinking?.length
+        ? { redactedThinking: collapsed.redactedThinking }
+        : {};
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
@@ -423,6 +429,7 @@ export async function proxyAndRecord(
         content: collapsed.content ?? "",
         ...reasoningSpread,
         ...reasoningSignatureSpread,
+        ...redactedThinkingSpread,
         ...webSearchesSpread,
       };
     } else {
@@ -433,6 +440,12 @@ export async function proxyAndRecord(
         collapsed.reasoning && collapsed.reasoningSignature
           ? { reasoningSignature: collapsed.reasoningSignature }
           : {};
+      // Redacted-thinking blocks carry their OWN encrypted reasoning, so they are
+      // carried independently of any plaintext `reasoning`; see the empty-content
+      // branch above.
+      const redactedThinkingSpread = collapsed.redactedThinking?.length
+        ? { redactedThinking: collapsed.redactedThinking }
+        : {};
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
@@ -449,6 +462,7 @@ export async function proxyAndRecord(
             toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
             ...reasoningSignatureSpread,
+            ...redactedThinkingSpread,
             ...webSearchesSpread,
           };
         } else {
@@ -456,6 +470,7 @@ export async function proxyAndRecord(
             toolCalls: sanitizedToolCalls,
             ...reasoningSpread,
             ...reasoningSignatureSpread,
+            ...redactedThinkingSpread,
             ...webSearchesSpread,
           };
         }
@@ -464,6 +479,7 @@ export async function proxyAndRecord(
           content: collapsed.content ?? "",
           ...reasoningSpread,
           ...reasoningSignatureSpread,
+          ...redactedThinkingSpread,
           ...webSearchesSpread,
         };
       }
