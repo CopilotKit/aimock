@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-06-09
+
 ### Added
 
 - **Extended-thinking request invariants** — aimock now validates Anthropic extended-thinking continuations on the tool-use loop. When extended thinking is enabled, a continuation whose prior assistant turn drops the leading `thinking` block (or its `signature`, or a `redacted_thinking` block's `data`) is rejected with the real Anthropic `400`, instead of producing a false-green replay — under strict mode; otherwise the violation warns and replay proceeds. Emitted thinking blocks now carry a non-empty placeholder signature so record→replay round-trips stay green across text, content+tool, and tool-only response shapes.
@@ -11,11 +13,14 @@
 
 - **Reasoning emission** — replaying a reasoning channel is now gated on the requested model's capability. aimock no longer synthesizes a reasoning channel (chat `reasoning_content` / Responses `reasoning_summary_text` / Anthropic thinking / etc.) for models that would not emit reasoning against the real provider. A new `isReasoningModel` classifier and `resolveReasoningForModel` gate are applied across OpenAI chat + Responses, Anthropic, Ollama, Gemini, Cohere, Bedrock (invoke + Converse), and WebSocket Responses: a non-reasoning model paired with a reasoning fixture has its reasoning suppressed under strict mode, or warns-and-emits otherwise. The `AIMOCK_REASONING_MODELS` and `AIMOCK_NONREASONING_MODELS` env vars override the classifier.
 - **Tool-only reasoning emission** — the capability gate now also covers the tool-call-only response path of every provider (OpenAI chat + Responses, Cohere, Bedrock invoke + Converse, Ollama, WebSocket Responses, and the Gemini chat tool-only path). Previously a tool-only fixture carrying reasoning dropped the reasoning channel entirely; it now emits the provider-native reasoning channel for reasoning-capable models and is suppressed under strict mode (or warns-and-emits otherwise), matching the text and content+tool paths, with leading reasoning blocks shifting streaming tool/output indices by one where applicable. The Gemini audio companion's reasoning is now capability-gated as well.
+- Strict-mode 503 now distinguishes sequence/turn exhaustion from a true no-match: when candidate fixtures matched the request shape but were skipped by `sequenceIndex`/`turnIndex` count state, the 503 message and error log read `N candidate fixture(s) skipped by sequence/turn state` instead of the generic `no fixture matched`. HTTP status (503) and error envelope shape are unchanged. Applied across all strict-mode emission sites via a shared helper.
 
 ### Fixed
 
 - **Recorder** — pathological-but-real Anthropic turns (thinking-only with empty text, redacted-only, redacted blocks with empty `data`) now record as normal empty-content fixtures instead of "Could not detect response format" error fixtures, with streaming/non-streaming parity.
 - `redacted_thinking` blocks with empty `data` are filtered at every capture site via one shared predicate, matching the strict replay validator — a recorded fixture can no longer 400 on replay for data the validator rejects (record-green ⇒ replay-green).
+- **Strict no-match single-pass matching** — the strict no-match path now matches in a single pass: the diagnostic skip count is captured from the same `matchFixtureDiagnostic` call that performs the match, so stateful `match.predicate` functions fire exactly once per request. Previously the strict 503 branch re-ran the full matcher, double-firing predicate side effects.
+- **`hasToolResult` shape predicate ordering** — `matchFixtureDiagnostic` now evaluates the `hasToolResult` shape predicate before the `sequenceIndex`/`turnIndex` state gates, so the strict-503 "skipped by sequence/turn state" count no longer includes fixtures whose request shape never matched.
 
 ## [1.29.0] - 2026-06-04
 
