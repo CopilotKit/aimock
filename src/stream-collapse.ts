@@ -390,8 +390,16 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       const contentBlock = parsed.content_block as Record<string, unknown> | undefined;
       // A `redacted_thinking` block carries its encrypted reasoning in an opaque
       // `data` string on the start event (no deltas follow). Capture it so the
-      // recorded turn can replay the redacted block faithfully.
-      if (contentBlock?.type === "redacted_thinking" && typeof contentBlock.data === "string") {
+      // recorded turn can replay the redacted block faithfully. Require NON-EMPTY
+      // data: the replay-side validator rejects a leading empty-data
+      // redacted_thinking block, so recording `data: ""` would yield a fixture
+      // that 400s under strict replay. Drop empty entries to keep capture and
+      // validation in agreement.
+      if (
+        contentBlock?.type === "redacted_thinking" &&
+        typeof contentBlock.data === "string" &&
+        contentBlock.data.length > 0
+      ) {
         redactedThinking.push(contentBlock.data);
       }
       if (contentBlock?.type === "tool_use") {

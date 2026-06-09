@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
 import { loadFixtureFile } from "../fixture-loader.js";
+import { collapseAnthropicSSE } from "../stream-collapse.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -752,5 +753,90 @@ describe("Anthropic replay gates encrypted reasoning artifacts on model capabili
     expect(redactedBlocks(events).map((e) => (e.content_block as { data?: string }).data)).toEqual([
       REDACTED_A,
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-trip contract: anything the capture path persists must pass the
+// replay-side validator. An upstream emitting `data: ""` on a redacted_thinking
+// block must NOT yield a fixture that 400s as a strict tool-loop continuation.
+// (Convergence-audit lever: closes the record-green / replay-400 gap by tying
+// capture and validation to a single invariant.)
+// ---------------------------------------------------------------------------
+
+describe("redacted_thinking capture ↔ strict-replay round-trip contract", () => {
+  let server: ServerInstance;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.server.close(() => r()));
+  });
+
+  // Replay the captured assistant turn as a strict tool-loop continuation: the
+  // assistant turn leads with the captured redacted_thinking blocks + a tool_use
+  // that the following user turn answers, which is exactly the shape
+  // validateThinkingInvariants checks. A leading empty-data block would 400.
+  function continuationFrom(redactedThinking: string[] | undefined): Record<string, unknown> {
+    const redactedBlocks = (redactedThinking ?? []).map((data) => ({
+      type: "redacted_thinking",
+      data,
+    }));
+    return {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      messages: [
+        { role: "user", content: "weather?" },
+        {
+          role: "assistant",
+          content: [
+            ...redactedBlocks,
+            { type: "tool_use", id: "tu_1", name: "get_weather", input: { city: "NYC" } },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tu_1", content: "Sunny" }],
+        },
+      ],
+    };
+  }
+
+  it('upstream `data: ""` is dropped at capture, so the strict continuation replays without a dropped_redacted_thinking 400', async () => {
+    // Upstream leads with an empty-data redacted_thinking block (the offending
+    // shape), followed by a real redacted block and a tool_use. Capture must
+    // drop the empty leader so the surviving real block leads the replayed turn.
+    const upstream = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: "" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "redacted_thinking", data: "EncryptedRedactedPayload==" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 2, content_block: { type: "tool_use", id: "tu_1", name: "get_weather" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 2, delta: { type: "input_json_delta", partial_json: '{"city":"NYC"}' } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 2 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    // Capture path: this is what the recorder persists into the fixture.
+    const collapsed = collapseAnthropicSSE(upstream);
+
+    // The captured turn, replayed verbatim, must satisfy the strict validator.
+    server = await createServer([], { port: 0, strict: true });
+    const res = await post(
+      `${server.url}/v1/messages`,
+      continuationFrom(collapsed.redactedThinking),
+    );
+
+    // Record-green must imply replay-green: the empty block was never captured,
+    // so the continuation does not lead with an empty-data redacted_thinking.
+    expect(res.status).not.toBe(400);
+    expect(res.body).not.toContain("dropped_redacted_thinking");
   });
 });

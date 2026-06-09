@@ -1107,8 +1107,13 @@ function buildFixtureResponse(
     // A `redacted_thinking` block carries its encrypted reasoning in an opaque
     // `data` string; collect them in content-array order so the recorded turn
     // round-trips its redacted blocks (mirrors the streaming collapse path).
+    // Require NON-EMPTY data: the replay-side validator rejects a leading
+    // empty-data redacted_thinking block, so recording `data: ""` would yield a
+    // fixture that 400s under strict replay.
     const redactedThinking = blocks
-      .filter((b) => b.type === "redacted_thinking" && typeof b.data === "string")
+      .filter(
+        (b) => b.type === "redacted_thinking" && typeof b.data === "string" && b.data.length > 0,
+      )
       .map((b) => String(b.data));
     const hasToolCalls = toolUseBlocks.length > 0;
     const joinedText = textBlocks.map((b) => String(b.text ?? "")).join("");

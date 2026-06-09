@@ -1942,6 +1942,56 @@ describe("collapseAnthropicSSE captures redacted_thinking", () => {
     const result = collapseAnthropicSSE(body);
     expect(result.redactedThinking).toBeUndefined();
   });
+
+  it("does NOT capture a redacted_thinking block with empty-string data", () => {
+    // An upstream that emits `data: ""` must not be recorded: the replay-side
+    // validator rejects a leading empty-data redacted_thinking block, so
+    // capturing it would yield a fixture that 400s under strict replay.
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: "" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Answer" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Answer");
+    expect(result.redactedThinking).toBeUndefined();
+  });
+
+  it("keeps non-empty redacted_thinking blocks when a turn mixes empty and non-empty data", () => {
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "redacted_thinking", data: "" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "redacted_thinking", data: "real==" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 2, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 2, delta: { type: "text_delta", text: "Done" } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 2 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.content).toBe("Done");
+    // The empty-data block is dropped; only the non-empty payload survives.
+    expect(result.redactedThinking).toEqual(["real=="]);
+  });
 });
 
 describe("collapseCohereSSE captures reasoning", () => {
