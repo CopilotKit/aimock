@@ -1117,13 +1117,20 @@ function buildFixtureResponse(
       thinkingBlocks.length > 0
         ? thinkingBlocks.map((b) => String(b.thinking ?? "")).join("")
         : undefined;
-    // The real cryptographic signature lives on the first thinking block; carry
-    // it only when reasoning is also present (a bare signature has nothing to
-    // attach to on replay), matching the streaming recorder's gating.
-    const anthropicReasoningSignature =
-      typeof thinkingBlocks[0]?.signature === "string"
-        ? String(thinkingBlocks[0].signature)
-        : undefined;
+    // The real cryptographic signature is carried only when reasoning is also
+    // present (a bare signature has nothing to attach to on replay), matching the
+    // streaming recorder's gating. Multi-thinking-block parity: collapseAnthropicSSE
+    // overwrites reasoningSignature on every signature_delta (last-signature-wins),
+    // and a thinking block that streams NO signature_delta leaves the prior value
+    // intact. Mirror both: take the LAST block that actually carries a signature, so
+    // a block missing one does not clobber an earlier signature.
+    const anthropicReasoningSignature = (() => {
+      let sig: string | undefined;
+      for (const b of thinkingBlocks) {
+        if (typeof b.signature === "string") sig = String(b.signature);
+      }
+      return sig;
+    })();
     // Carry the real Anthropic thinking-block signature only when reasoning is
     // also present; redacted blocks carry their OWN encrypted reasoning so they
     // are carried independently of any plaintext `reasoning`. Both mirror the
