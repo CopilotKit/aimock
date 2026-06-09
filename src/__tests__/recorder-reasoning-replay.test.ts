@@ -609,6 +609,66 @@ describe("Anthropic replay gates encrypted reasoning artifacts on model capabili
     expect(body.content.some((b) => b.type === "redacted_thinking")).toBe(false);
   });
 
+  it("strict mode: non-streaming tool-call turn strips thinking AND redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { content: Array<{ type: string }> };
+    expect(body.content.some((b) => b.type === "thinking")).toBe(false);
+    expect(body.content.some((b) => b.type === "redacted_thinking")).toBe(false);
+    expect(body.content.some((b) => b.type === "tool_use")).toBe(true);
+  });
+
+  it("strict mode: non-streaming content+tool turn strips thinking AND redacted_thinking on a non-reasoning model", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "Checking now.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(
+      `${server.url}/v1/messages`,
+      {
+        model: NONREASONING_MODEL,
+        max_tokens: 1024,
+        thinking: ENABLED,
+        messages: [{ role: "user", content: "weather?" }],
+      },
+      STRICT,
+    );
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { content: Array<{ type: string }> };
+    expect(body.content.some((b) => b.type === "thinking")).toBe(false);
+    expect(body.content.some((b) => b.type === "redacted_thinking")).toBe(false);
+    expect(body.content.some((b) => b.type === "text")).toBe(true);
+    expect(body.content.some((b) => b.type === "tool_use")).toBe(true);
+  });
+
   it("strict mode: suppresses redacted_thinking even when there is NO plaintext reasoning", async () => {
     const fixture: Fixture = {
       match: { userMessage: "weather?" },
