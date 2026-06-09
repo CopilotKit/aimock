@@ -26,7 +26,9 @@ export interface CollapseResult {
    * stream carried no signature. Single-signature assumption: a turn with
    * MULTIPLE thinking blocks collapses to one merged `reasoning` string carrying
    * only the FINAL block's signature (last-signature-wins) — per-block fidelity
-   * is not preserved.
+   * is not preserved. The recorder persists this only alongside a non-empty
+   * `reasoning` (a bare signature has nothing to attach to on replay); see
+   * `TextResponse.reasoningSignature` in types.ts.
    */
   reasoningSignature?: string;
   /**
