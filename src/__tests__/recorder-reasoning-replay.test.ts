@@ -196,6 +196,69 @@ describe("Anthropic replay prefers a recorded reasoningSignature over the placeh
 });
 
 // ---------------------------------------------------------------------------
+// Replay: non-streaming content+tool array ordering with BOTH reasoning
+// (+signature) AND redactedThinking on a reasoning-capable model.
+// ---------------------------------------------------------------------------
+
+describe("Anthropic replay orders the non-streaming content+tool array correctly", () => {
+  let server: ServerInstance;
+
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.server.close(() => r()));
+  });
+
+  const REAL_SIGNATURE = "ErcBCkgIA...recordedRealCryptographicSignature==";
+  const REDACTED_A = "EncryptedRedactedThinkingPayloadAAA==";
+  const REDACTED_B = "EncryptedRedactedThinkingPayloadBBB==";
+
+  it("emits content blocks in [redacted_thinking..., thinking, text, tool_use] order", async () => {
+    // A content+tool turn carrying BOTH plaintext reasoning (+signature) AND
+    // recorded redacted_thinking. The non-streaming builder leads with every
+    // redacted block, then the single joined thinking block, then the text
+    // block, then the tool_use block — a fixed, replay-invariant order.
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "Checking now.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"Paris"}' }],
+        reasoning: "I should call the weather tool.",
+        reasoningSignature: REAL_SIGNATURE,
+        redactedThinking: [REDACTED_A, REDACTED_B],
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as {
+      content: Array<{ type: string; signature?: string; data?: string; text?: string }>;
+    };
+
+    // The content array order is exactly: both redacted blocks, then thinking,
+    // then text, then tool_use.
+    expect(body.content.map((b) => b.type)).toEqual([
+      "redacted_thinking",
+      "redacted_thinking",
+      "thinking",
+      "text",
+      "tool_use",
+    ]);
+    // The redacted blocks lead in recorded order.
+    expect(body.content[0].data).toBe(REDACTED_A);
+    expect(body.content[1].data).toBe(REDACTED_B);
+    // The thinking block carries the recorded signature.
+    expect(body.content[2].signature).toBe(REAL_SIGNATURE);
+    // The text block carries the content.
+    expect(body.content[3].text).toBe("Checking now.");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Replay: redacted_thinking blocks round-trip faithfully
 // ---------------------------------------------------------------------------
 
@@ -363,6 +426,52 @@ describe("Anthropic replay emits faithful redacted_thinking blocks", () => {
     expect(res.status).toBe(200);
     const events = parseClaudeSSEEvents(res.body);
     expect(redactedDataFromEvents(events)).toEqual([]);
+  });
+
+  it("an explicit empty redactedThinking array emits NO redacted_thinking blocks (streaming)", async () => {
+    // `redactedThinking: []` (explicit empty) is a no-op: no redacted_thinking
+    // start/stop events are emitted, and no stray empty redacted block leaks in.
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: { content: "It is sunny.", redactedThinking: [] },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    const redactedStarts = events.filter(
+      (e) =>
+        e.type === "content_block_start" &&
+        (e.content_block as { type?: string } | undefined)?.type === "redacted_thinking",
+    );
+    expect(redactedStarts).toHaveLength(0);
+    expect(redactedDataFromEvents(events)).toEqual([]);
+  });
+
+  it("an explicit empty redactedThinking array emits NO redacted_thinking blocks (non-streaming)", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: { content: "It is sunny.", redactedThinking: [] },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 1024,
+      thinking: ENABLED,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { content: Array<{ type: string }> };
+    // No redacted_thinking block leaks into the content array.
+    expect(body.content.some((b) => b.type === "redacted_thinking")).toBe(false);
   });
 
   // A turn recorded by the empty-content branch can carry ONLY redacted_thinking
@@ -813,6 +922,38 @@ describe("Anthropic replay gates encrypted reasoning artifacts on model capabili
     expect(redactedBlocks(events).map((e) => (e.content_block as { data?: string }).data)).toEqual([
       REDACTED_A,
     ]);
+  });
+
+  it("non-strict mode: non-reasoning model still emits the thinking block carrying the recorded signature (warn, not suppress)", async () => {
+    // Warn-and-emit parity for the signature half: a non-reasoning model in
+    // NON-strict mode still emits the plaintext thinking block, and that block
+    // carries the RECORDED signature (not the placeholder) just as a reasoning
+    // model would — the capability gate only suppresses under strict mode.
+    const fixture: Fixture = {
+      match: { userMessage: "weather?" },
+      response: {
+        content: "It is sunny.",
+        reasoning: "Let me check the weather.",
+        reasoningSignature: REAL_SIGNATURE,
+      },
+    };
+    server = await createServer([fixture], { port: 0 });
+
+    const res = await post(`${server.url}/v1/messages`, {
+      model: NONREASONING_MODEL,
+      max_tokens: 1024,
+      thinking: ENABLED,
+      stream: true,
+      messages: [{ role: "user", content: "weather?" }],
+    });
+    expect(res.status).toBe(200);
+    const events = parseClaudeSSEEvents(res.body);
+    // The thinking block is emitted (not suppressed)...
+    expect(thinkingBlocks(events)).toHaveLength(1);
+    // ...carrying the recorded real signature, not the placeholder.
+    expect(signatureDeltas(events).map((e) => (e.delta as { signature?: string }).signature)).toEqual(
+      [REAL_SIGNATURE],
+    );
   });
 });
 

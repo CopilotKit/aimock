@@ -1850,6 +1850,37 @@ describe("collapseAnthropicSSE captures reasoning signature", () => {
     expect(result.reasoningSignature).toBeUndefined();
   });
 
+  it("a trailing signature-less thinking block does not clobber an earlier block's signature", () => {
+    // Two thinking blocks: the first emits a signature_delta (S1), the second
+    // emits NONE. Last-signature-wins must only advance on an actual
+    // signature_delta, so the unsigned trailing block leaves S1 intact rather
+    // than overwriting it with undefined.
+    const firstSig = "ErcBfirstThinkingBlockSignatureAAA==";
+    const body = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "thinking", thinking: "", signature: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "thinking_delta", thinking: "First. " } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "signature_delta", signature: firstSig } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "thinking", thinking: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "thinking_delta", thinking: "Second." } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+
+    const result = collapseAnthropicSSE(body);
+    expect(result.reasoning).toBe("First. Second.");
+    // The unsigned second block does NOT clobber the first block's signature.
+    expect(result.reasoningSignature).toBe(firstSig);
+  });
+
   it("captures signature alongside a tool_use turn", () => {
     const realSignature = "sig-with-toolcall-abc==";
     const body = [

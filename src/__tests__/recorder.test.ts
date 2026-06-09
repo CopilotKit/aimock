@@ -1068,6 +1068,35 @@ describe("recorder streaming collapse", () => {
     expect(savedResponse.reasoningSignature).toBe(SECOND_SIGNATURE);
   });
 
+  it("a trailing signature-less non-streaming thinking block does not clobber an earlier block's signature", async () => {
+    // Block 1 carries text + a signature (S1); block 2 (the LAST) carries text
+    // but NO signature. The non-streaming capture path advances the recorded
+    // signature only on a block that actually carries one (mirroring
+    // collapseAnthropicSSE's signature_delta gating), so the unsigned trailing
+    // block leaves S1 intact rather than dropping the signature.
+    const FIRST_SIGNATURE = "ErcBfirstThinkingBlockSignatureAAA==";
+    const fixtureContent = await recordNonStreamingAnthropic(
+      {
+        content: [
+          { type: "thinking", thinking: "First thought. ", signature: FIRST_SIGNATURE },
+          { type: "thinking", thinking: "Second thought." },
+          { type: "text", text: "Answer." },
+        ],
+      },
+      "aimock-recorder-ns-trailing-unsigned-",
+    );
+    const savedResponse = fixtureContent.fixtures[0].response as {
+      content?: string;
+      reasoning?: string;
+      reasoningSignature?: string;
+    };
+    expect(savedResponse.content).toBe("Answer.");
+    // Reasoning is the joined text of every thinking block, in order.
+    expect(savedResponse.reasoning).toBe("First thought. Second thought.");
+    // The unsigned trailing block does NOT clobber the first block's signature.
+    expect(savedResponse.reasoningSignature).toBe(FIRST_SIGNATURE);
+  });
+
   it("captures non-streaming Anthropic redacted_thinking block data into redactedThinking", async () => {
     const REDACTED_DATA = "EncryptedNonStreamingRedactedThinkingPayloadAAA==";
     const fixtureContent = await recordNonStreamingAnthropic(
