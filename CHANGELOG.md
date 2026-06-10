@@ -4,12 +4,36 @@
 
 ### Added
 
-- **OpenRouter async video lifecycle** — mocks OpenRouter's dedicated video-generation job API alongside the existing OpenAI-shaped `/v1/videos` handler; both draw from the same `endpoint: "video"` fixture pool. `POST /api/v1/videos` matches fixtures on `prompt`/`model` (endpoint `video`) and returns a `{ id, polling_url, status: "pending" }` job envelope (a model-less submit assumes the default `bytedance/seedance-2.0` model for fixture matching); `GET /api/v1/videos/{jobId}` advances `pending → in_progress → completed | failed` per the new `openRouterVideo` poll-threshold config (same poll-threshold semantics as `falQueue`; by default the job is seeded terminal at submit — content is downloadable with zero polls, and the first poll merely reports the terminal status), adding `unsigned_urls` + `usage.cost` on completion and the fixture's `error` message on failure (a default "Video generation failed" message is used when the fixture has no `error` field); `GET /api/v1/videos/{jobId}/content?index=0` requires Bearer auth (401 otherwise) and serves the fixture's `b64` bytes — or a built-in minimal MP4 `ftyp` placeholder — always as `Content-Type: video/mp4` (matching production even when the client sends `Accept: application/octet-stream`). The `index` query param is accepted but ignored (jobs are single-video), and the content endpoint does not advance job state — content URLs are only learned from a completed status poll (API fidelity; diverges from fal's advance-on-result). `GET /api/v1/videos/models` synthesizes the video-model listing from loaded video fixtures that specify a string `match.model` (falling back to a built-in default set otherwise). Video fixtures gain optional `error`, `b64`, and `cost` fields. Replay/strict-only for now — record-mode proxying for this surface is a follow-up.
+- **OpenRouter async video lifecycle** — mocks OpenRouter's dedicated video-generation job API
+  alongside the existing OpenAI-shaped `/v1/videos` handler; both draw from the same
+  `endpoint: "video"` fixture pool. `POST /api/v1/videos` matches fixtures on `prompt`/`model`
+  (endpoint `video`) and returns a `{ id, polling_url, status: "pending" }` job envelope (a
+  model-less submit assumes the default `bytedance/seedance-2.0` model for fixture matching); the
+  envelope reports `"pending"` for API fidelity even though, under the default thresholds, the job
+  is already seeded terminal internally at submit. `GET /api/v1/videos/{jobId}` advances
+  `pending → in_progress → completed | failed` per the new `openRouterVideo` poll-threshold config
+  (same poll-threshold semantics as `falQueue`), adding `unsigned_urls` + `usage.cost` on
+  completion and the fixture's `error` message on failure (a default "Video generation failed"
+  message is used when the fixture has no `error` field). Because the job is server-side terminal
+  at submit by default, content is downloadable with zero polls if the client constructs the
+  content URL itself — the documented client flow still needs one status poll to learn
+  `unsigned_urls`. `GET /api/v1/videos/{jobId}/content?index=0` requires Bearer auth (401
+  otherwise) and serves the fixture's `b64` bytes — or a built-in minimal MP4 `ftyp` placeholder —
+  always as `Content-Type: video/mp4` (matching production even when the client sends
+  `Accept: application/octet-stream`). Status polls and the models listing are served without auth
+  — only the content endpoint enforces Bearer (a deliberate, documented divergence). The `index`
+  query param is accepted but ignored (jobs are single-video), and the content endpoint does not
+  advance job state — content URLs are only learned from a completed status poll (API fidelity;
+  diverges from fal's advance-on-result). `GET /api/v1/videos/models` synthesizes the video-model
+  listing from loaded video fixtures that specify a string `match.model` (falling back to a
+  built-in default set otherwise). Video fixtures gain optional `error`, `b64`, and `cost` fields.
+  Replay-only for now (no record/proxy mode yet — lenient mode 404s on a miss instead of
+  proxying); record-mode proxying for this surface is a follow-up.
 
 ### Fixed
 
-- **fal queue thresholds** — the progression resolver now shared with the OpenRouter video surface
-  also sanitizes the pre-existing `falQueue` config: non-finite
+- **fal queue thresholds** — the progression resolver — now shared with the OpenRouter video
+  surface — also sanitizes the pre-existing `falQueue` config: non-finite
   `pollsBeforeInProgress`/`pollsBeforeCompleted` values (NaN, Infinity) are treated as unset instead
   of stranding jobs short of a terminal status, negative/fractional values are floored and clamped
   to non-negative integers, and `createServer` now warns on invalid `falQueue`/`openRouterVideo`
