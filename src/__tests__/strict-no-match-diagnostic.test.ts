@@ -4,6 +4,7 @@ import { matchFixtureDiagnostic } from "../router.js";
 import { strictNoMatchMessage } from "../helpers.js";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture, ChatCompletionRequest } from "../types.js";
+import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,8 +48,6 @@ function chatRequest(userContent: string): ChatCompletionRequest {
     messages: [{ role: "user", content: userContent }],
   };
 }
-
-const SKIPPED_RE = /candidate fixture\(s\) skipped by sequence\/turn state/;
 
 // ---------------------------------------------------------------------------
 // Unit tests: strictNoMatchMessage helper
@@ -213,7 +212,7 @@ describe("strict-mode 503 sequence/turn disambiguation", () => {
     const res = await httpPost(`${server.url}/v1/chat/completions`, chatRequest("hello"));
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(SKIPPED_RE);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
     expect(body.error.type).toBe("invalid_request_error");
   });
 
@@ -226,7 +225,7 @@ describe("strict-mode 503 sequence/turn disambiguation", () => {
     const res = await httpPost(`${server.url}/v1/chat/completions`, chatRequest("hello"));
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(SKIPPED_RE);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
     expect(body.error.type).toBe("invalid_request_error");
   });
 

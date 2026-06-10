@@ -6,6 +6,7 @@ import { bedrockToCompletionRequest, handleBedrock, handleBedrockStream } from "
 import { Journal } from "../journal.js";
 import { Logger } from "../logger.js";
 import { createMockReq, createMockRes, createDefaults } from "./helpers/mock-res.js";
+import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
 // --- helpers ---
 
@@ -1551,7 +1552,7 @@ describe("POST /model/{modelId}/invoke (strict mode)", () => {
     );
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
   });
 });
 
@@ -1845,6 +1846,6 @@ describe("POST /model/{modelId}/converse (strict mode)", () => {
     );
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
   });
 });

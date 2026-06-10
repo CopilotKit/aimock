@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
+import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
 // --- fixtures ---
 
@@ -517,7 +518,7 @@ describe("WebSocket /v1/responses", () => {
     ws2.send(responseCreateMsg("hello"));
     const close = await ws2.waitForCloseFrame();
     expect(close.code).toBe(1008);
-    expect(close.reason).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+    expect(close.reason).toMatch(SKIPPED_BY_STATE_RE);
   });
 
   it("streams reasoning events before text via WebSocket", async () => {
