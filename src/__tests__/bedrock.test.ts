@@ -1818,3 +1818,33 @@ describe("Bedrock Converse webSearches warning", () => {
     expect(res.status).toBe(200);
   });
 });
+
+// ─── Bedrock Converse strict mode ────────────────────────────────────────────
+
+describe("POST /model/{modelId}/converse (strict mode)", () => {
+  it("returns the skipped-by-state message when a sequence-exhausted fixture is replayed", async () => {
+    const seqFixture: Fixture = {
+      match: { userMessage: "hello", sequenceIndex: 0 },
+      response: { content: "Hi there!" },
+    };
+    instance = await createServer([seqFixture], { strict: true });
+    // First converse call consumes the sequenceIndex:0 fixture (count → 1).
+    const first = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "hello" }] }],
+      },
+    );
+    expect(first.status).toBe(200);
+    // Replay: shape still matches but the fixture is skipped by sequence state.
+    const res = await post(
+      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse`,
+      {
+        messages: [{ role: "user", content: [{ text: "hello" }] }],
+      },
+    );
+    expect(res.status).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+  });
+});
