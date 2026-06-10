@@ -36,6 +36,7 @@
         { label: "Text-to-Speech", href: "/speech" },
         { label: "Audio Transcription", href: "/transcription" },
         { label: "Video Generation", href: "/video" },
+        { label: "OpenRouter Video", href: "/openrouter-video" },
         { label: "fal.ai", href: "/fal-ai" },
       ],
     },
