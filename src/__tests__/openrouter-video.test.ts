@@ -2674,3 +2674,74 @@ describe("OpenRouter video — CR round 8 content/header polish", () => {
     expect(data.data.length).toBeGreaterThan(0);
   });
 });
+
+describe("OpenRouter video — CR round 8 contract pins", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("a chaos-dropped submit consumes the fixture's sequence slot", async () => {
+    mock = new LLMock({ port: 0, strict: true });
+    mock.addFixture({
+      match: { userMessage: "slot once", endpoint: "video", sequenceIndex: 0 },
+      response: { video: { id: "vid_slot", status: "completed" } },
+    });
+    await mock.start();
+
+    const dropped = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-aimock-chaos-drop": "1" },
+      body: JSON.stringify({ model: "m/v", prompt: "slot once" }),
+    });
+    expect(dropped.status).toBe(500);
+    expect((await dropped.json()).error.code).toBe("chaos_drop");
+
+    // The match count incremented before chaos rolled, so an identical clean
+    // submit finds the sequence slot already consumed → strict 503.
+    const second = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "slot once" }),
+    });
+    expect(second.status).toBe(503);
+    const data = await second.json();
+    expect(data.error.message).toMatch(SKIPPED_BY_STATE_RE);
+  });
+
+  test("comma-joined x-forwarded-proto list honors the first value", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "proto list", endpoint: "video" },
+      response: { video: { id: "vid_pl", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-Proto": "https, http" },
+      body: JSON.stringify({ model: "m/v", prompt: "proto list" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("https://")).toBe(true);
+  });
+
+  test("a chaos-dropped status poll journals source internal", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const dropped = await fetch(`${mock.url}/api/v1/videos/some-job`, {
+      headers: { "x-aimock-chaos-drop": "1" },
+    });
+    expect(dropped.status).toBe(500);
+    expect((await dropped.json()).error.code).toBe("chaos_drop");
+
+    const entry = mock.journal
+      .getAll()
+      .find((e) => e.path === "/api/v1/videos/some-job" && e.response.chaosAction === "drop");
+    expect(entry).toBeDefined();
+    expect(entry!.response.source).toBe("internal");
+  });
+});
