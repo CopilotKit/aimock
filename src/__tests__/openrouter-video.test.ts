@@ -2,6 +2,7 @@ import { describe, test, expect, afterEach, vi } from "vitest";
 import { LLMock } from "../llmock.js";
 import { createServer } from "../server.js";
 import { resolveProgression } from "../fal.js";
+import { OpenRouterVideoJobMap } from "../openrouter-video.js";
 import type { VideoResponse } from "../types.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
@@ -49,17 +50,22 @@ describe("VideoResponse extended fields", () => {
       openRouterVideo: { pollsBeforeInProgress: 1, pollsBeforeCompleted: 2 },
     });
     await mock.start();
-    await mock.stop();
+    try {
+      expect(mock.url).toMatch(/^http:/);
+    } finally {
+      await mock.stop();
+    }
   });
 });
 
 // ─── Task 2: POST /api/v1/videos (submit) ───────────────────────────────────
 
 describe("POST /api/v1/videos (OpenRouter submit)", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("fixture match returns {id, polling_url, status: pending}", async () => {
@@ -361,19 +367,24 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "text only" }),
     });
     expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error.type).toBe("server_error");
+    expect(data.error.message).toBe("Fixture response is not a video type");
   });
 });
 
 // ─── Task 4: GET /api/v1/videos/{jobId}/content — download ──────────────────
 
 describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   async function submitJob(prompt: string): Promise<string> {
+    if (!mock) throw new Error("mock not started");
     const submit = await fetch(`${mock.url}/api/v1/videos`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -443,14 +454,17 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
     });
     await mock.start();
     const id = await submitJob("bytes");
-    // Reach completed via a status poll first (lifecycle order).
-    await fetch(`${mock.url}/api/v1/videos/${id}`);
+    // Status poll before download mirrors the real client flow. Under the
+    // default 0/0 progression the job is already seeded terminal at submit,
+    // so this poll is not what makes the job completed.
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer();
 
     const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
       headers: { Authorization: "Bearer test" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("video/mp4");
+    expect(res.headers.get("content-length")).toBe(String(bytes.length));
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.equals(bytes)).toBe(true);
   });
@@ -471,6 +485,7 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
     expect(res.headers.get("content-type")).toBe("video/mp4");
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.length).toBeGreaterThan(0);
+    expect(res.headers.get("content-length")).toBe(String(body.length));
     // ftyp box marker at byte offset 4
     expect(body.subarray(4, 8).toString("ascii")).toBe("ftyp");
   });
@@ -497,10 +512,11 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
 // ─── Task 5: GET /api/v1/videos/models — model listing ──────────────────────
 
 describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("synthesizes the listing from video fixtures with string models", async () => {
@@ -529,7 +545,9 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     const ids = data.data.map((m: { id: string }) => m.id);
-    expect(ids).toEqual(["bytedance/seedance-2.0", "openai/sora-2"]);
+    // Order-insensitive: ids come from Set iteration, not a documented order.
+    expect(ids).toHaveLength(2);
+    expect(ids).toEqual(expect.arrayContaining(["bytedance/seedance-2.0", "openai/sora-2"]));
     for (const entry of data.data) {
       expect(typeof entry.name).toBe("string");
       expect(Array.isArray(entry.supported_durations)).toBe(true);
@@ -538,39 +556,33 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     }
   });
 
-  test("returns sensible defaults when no video fixtures are loaded", async () => {
+  test("falls back to built-in defaults and is not swallowed by the status handler", async () => {
     mock = new LLMock({ port: 0 });
     await mock.start();
 
-    const res = await fetch(`${mock.url}/api/v1/videos/models`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(Array.isArray(data.data)).toBe(true);
-    expect(data.data.length).toBeGreaterThan(0);
-    expect(typeof data.data[0].id).toBe("string");
-  });
-
-  test("models path is not swallowed by the status handler", async () => {
-    mock = new LLMock({ port: 0 });
-    await mock.start();
-
-    // If the status RE matched first, this would be a 404 "Video job models
-    // not found" — it must instead return the model listing envelope.
+    // If the status RE captured "models" as a jobId, this would be the status
+    // handler's 404 shape: { error: { message: "Video job models not found",
+    // code: 404 } }. Assert that exact shape is absent and that the built-in
+    // default model listing comes back instead (no video fixtures loaded).
     const res = await fetch(`${mock.url}/api/v1/videos/models`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.error).toBeUndefined();
+    expect(JSON.stringify(data)).not.toContain("Video job models not found");
     expect(Array.isArray(data.data)).toBe(true);
+    expect(data.data.length).toBeGreaterThan(0);
+    expect(typeof data.data[0].id).toBe("string");
   });
 });
 
 // ─── Task 6: cross-cutting conformance ──────────────────────────────────────
 
 describe("OpenRouter video — strict mode diagnostics", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("strict 503 reports sequence/turn skip via shared matcher", async () => {
@@ -600,10 +612,11 @@ describe("OpenRouter video — strict mode diagnostics", () => {
 });
 
 describe("OpenRouter video — journal coverage", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("every lifecycle path journals an entry", async () => {
@@ -620,23 +633,30 @@ describe("OpenRouter video — journal coverage", () => {
       body: JSON.stringify({ model: "m/v", prompt: "journal me" }),
     });
     const { id } = (await submit.json()) as { id: string };
-    await fetch(`${mock.url}/api/v1/videos/${id}`);
-    await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
-      headers: { Authorization: "Bearer test" },
-    });
-    await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`); // 401
-    await fetch(`${mock.url}/api/v1/videos/unknown-job`); // 404
-    await fetch(`${mock.url}/api/v1/videos/models`);
-    await fetch(`${mock.url}/api/v1/videos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "m/v", prompt: "no match here" }),
-    }); // 404 no-match
-    await fetch(`${mock.url}/api/v1/videos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{nope",
-    }); // 400 malformed
+    // Consume every response body so no connection is left dangling.
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer();
+    await (
+      await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+        headers: { Authorization: "Bearer test" },
+      })
+    ).arrayBuffer();
+    await (await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`)).arrayBuffer(); // 401
+    await (await fetch(`${mock.url}/api/v1/videos/unknown-job`)).arrayBuffer(); // 404
+    await (await fetch(`${mock.url}/api/v1/videos/models`)).arrayBuffer();
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "m/v", prompt: "no match here" }),
+      })
+    ).arrayBuffer(); // 404 no-match
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{nope",
+      })
+    ).arrayBuffer(); // 400 malformed
 
     const entries = mock.journal.getAll();
     const byPathStatus = entries.map((e) => `${e.method} ${e.path} ${e.response.status}`);
@@ -652,10 +672,11 @@ describe("OpenRouter video — journal coverage", () => {
 });
 
 describe("OpenRouter video — chaos injection", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("chaos drop header applies to submit, status, and content", async () => {
@@ -854,10 +875,11 @@ describe("OpenRouter video — logger observability", () => {
 });
 
 describe("OpenRouter video — full lifecycle integration", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("submit → pending → in_progress → completed → download", async () => {
@@ -947,7 +969,7 @@ describe("OpenRouter video — full lifecycle integration", () => {
       body: JSON.stringify({ model: "m/v", prompt: "auth lifecycle" }),
     });
     const { id } = (await submit.json()) as { id: string };
-    await fetch(`${mock.url}/api/v1/videos/${id}`); // completed
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
 
     const unauthorized = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`);
     expect(unauthorized.status).toBe(401);
@@ -1271,10 +1293,11 @@ describe("server close clears video job state", () => {
 });
 
 describe("OpenRouter video — routing collision regression", () => {
-  let mock: LLMock;
+  let mock: LLMock | undefined;
 
   afterEach(async () => {
     await mock?.stop();
+    mock = undefined;
   });
 
   test("Ollama /api/chat still routes to the Ollama handler", async () => {
@@ -1339,5 +1362,165 @@ describe("OpenRouter video — routing collision regression", () => {
     expect(status.status).toBe(200);
     const statusBody = await status.json();
     expect(statusBody.status).toBe("completed");
+  });
+});
+
+// ─── Review coverage: job-map internals, reset plumbing, config + headers ───
+
+describe("OpenRouterVideoJobMap (unit)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeJob(id: string) {
+    return {
+      jobId: id,
+      status: "pending" as const,
+      pollCount: 0,
+      pollsBeforeInProgress: 0,
+      pollsBeforeCompleted: 0,
+      video: { id, status: "completed" as const },
+      createdAt: Date.now(),
+    };
+  }
+
+  test("entries expire after the 1h TTL (lazy eviction on get)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const map = new OpenRouterVideoJobMap();
+    map.set("t:job1", makeJob("job1"));
+    expect(map.get("t:job1")).toBeDefined();
+
+    // At exactly the TTL boundary the entry is still alive (strict >).
+    vi.setSystemTime(new Date("2026-01-01T01:00:00.000Z"));
+    expect(map.get("t:job1")).toBeDefined();
+    expect(map.size).toBe(1);
+
+    // One tick past the TTL: get() lazily evicts and returns undefined.
+    vi.setSystemTime(new Date("2026-01-01T01:00:00.001Z"));
+    expect(map.get("t:job1")).toBeUndefined();
+    expect(map.size).toBe(0);
+  });
+
+  test("evicts the oldest entries FIFO beyond the 10k capacity", () => {
+    const map = new OpenRouterVideoJobMap();
+    const CAP = 10_000; // OPENROUTER_VIDEO_MAX_ENTRIES (hardcoded, not exported)
+    const job = makeJob("shared"); // entries may share one job object — keeps this fast
+    for (let i = 0; i <= CAP; i++) {
+      map.set(`t:job${i}`, job);
+    }
+    expect(map.size).toBe(CAP);
+    expect(map.get("t:job0")).toBeUndefined(); // oldest entry evicted FIFO
+    expect(map.get("t:job1")).toBeDefined();
+    expect(map.get(`t:job${CAP}`)).toBeDefined(); // newest entry retained
+  });
+});
+
+describe("OpenRouter video — reset plumbing", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  async function submitJob(prompt: string): Promise<string> {
+    if (!mock) throw new Error("mock not started");
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    return id;
+  }
+
+  test("POST /__aimock/reset/fixtures clears job state (old jobId polls 404)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "reset http", endpoint: "video" },
+      response: { video: { id: "vid_rh", status: "completed" } },
+    });
+    await mock.start();
+    const id = await submitJob("reset http");
+
+    const before = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(before.status).toBe(200);
+    await before.arrayBuffer();
+
+    const reset = await fetch(`${mock.url}/__aimock/reset/fixtures`, { method: "POST" });
+    expect(reset.status).toBe(200);
+    await reset.arrayBuffer();
+
+    const after = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(after.status).toBe(404);
+    expect((await after.json()).error.code).toBe(404);
+  });
+
+  test("LLMock.reset() clears job state (old jobId polls 404)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "reset api", endpoint: "video" },
+      response: { video: { id: "vid_ra", status: "completed" } },
+    });
+    await mock.start();
+    const id = await submitJob("reset api");
+
+    const before = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(before.status).toBe(200);
+    await before.arrayBuffer();
+
+    mock.reset();
+
+    const after = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(after.status).toBe(404);
+    expect((await after.json()).error.code).toBe(404);
+  });
+});
+
+describe("OpenRouter video — config and header overrides", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("completed-only config ({pollsBeforeCompleted}) passes through in_progress", async () => {
+    mock = new LLMock({ port: 0, openRouterVideo: { pollsBeforeCompleted: 2 } });
+    mock.addFixture({
+      match: { userMessage: "completed only", endpoint: "video" },
+      response: { video: { id: "vid_co", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "completed only" }),
+    });
+    const { id, status } = (await submit.json()) as { id: string; status: string };
+    expect(status).toBe("pending");
+
+    // pollsBeforeInProgress defaults to 0, so the first poll is already
+    // in_progress; the second crosses the explicit completed threshold.
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("completed");
+  });
+
+  test("X-AIMock-Strict header turns a no-match 404 into a 503 on a strict-off server", async () => {
+    mock = new LLMock({ port: 0 }); // strict defaults off
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AIMock-Strict": "true" },
+      body: JSON.stringify({ model: "m/v", prompt: "nothing matches this" }),
+    });
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.error.code).toBe("no_fixture_match");
   });
 });
