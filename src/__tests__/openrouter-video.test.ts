@@ -591,10 +591,9 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     const data = await res.json();
     expect(data.data.length).toBeGreaterThan(0);
     expect(
-      logSpy.mock.calls.some((c) => {
-        const line = c.join(" ");
-        return line.includes("default") && line.includes("video");
-      }),
+      logSpy.mock.calls.some((c) =>
+        c.join(" ").includes("No video fixture contributes a string model"),
+      ),
     ).toBe(true);
   });
 });

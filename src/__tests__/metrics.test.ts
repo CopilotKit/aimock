@@ -761,5 +761,10 @@ describe("integration: /metrics endpoint", () => {
     // still return 200 — proof that the catch block in res.on("finish") swallows the error.
     const res2 = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("hello"));
     expect(res2.status).toBe(200);
+
+    // Guard against vacuous green: the faulty registry must actually have been
+    // exercised. If the spy stopped intercepting createMetricsRegistry, the real
+    // registry would serve both requests and callCount would stay 0.
+    expect(callCount).toBeGreaterThanOrEqual(2);
   });
 });
