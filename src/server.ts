@@ -1495,8 +1495,11 @@ export async function createServer(
           // on submit a throw may have already consumed a fixture-sequence
           // slot, which would otherwise leave no trace. Guarded on
           // headersSent so a throw after a successful journal + response
-          // does not double-journal. Wrapped so journaling can never mask
-          // the 500 write below.
+          // does not double-journal (the guard only covers post-write
+          // throws — a throw between the handler's journal.add and its
+          // writeHead would still double-journal, though that window is
+          // effectively throw-free today). Wrapped so journaling can never
+          // mask the 500 write below.
           try {
             journal.add({
               method: req.method ?? "POST",

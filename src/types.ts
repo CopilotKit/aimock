@@ -721,7 +721,9 @@ export interface FalQueueConfig {
    * explicitly setting this field — even to `0` — enables progression when
    * `pollsBeforeCompleted` is unset, with `pollsBeforeCompleted` defaulting
    * to `pollsBeforeInProgress + 1` so the job passes through IN_PROGRESS
-   * (an explicit `pollsBeforeCompleted: 0` still completes on submit).
+   * (an explicit `pollsBeforeCompleted: 0` completes on submit only when
+   * `pollsBeforeInProgress` is `0` or unset — otherwise the clamp below
+   * lifts it to `pollsBeforeInProgress`).
    */
   pollsBeforeInProgress?: number;
   /**
