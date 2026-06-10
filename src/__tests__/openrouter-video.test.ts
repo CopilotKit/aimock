@@ -871,6 +871,156 @@ describe("OpenRouter video — request body validation", () => {
   });
 });
 
+// ─── CR findings: testId embedded in generated URLs ────────────────────────
+
+describe("OpenRouter video — testId scoping of generated URLs", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  function addFixtureFor(prompt: string): void {
+    mock.addFixture({
+      match: { userMessage: prompt, endpoint: "video" },
+      response: { video: { id: "vid_tid", status: "completed", b64: "AAAA" } },
+    });
+  }
+
+  test("polling_url carries testId and resolves the job without the header", async () => {
+    mock = new LLMock({ port: 0 });
+    addFixtureFor("scoped poll");
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Id": "test-a" },
+      body: JSON.stringify({ model: "m/v", prompt: "scoped poll" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url).toContain("testId=test-a");
+
+    // Bare fetch — no X-Test-Id header — must still find the job via the URL.
+    const poll = await fetch(envelope.polling_url);
+    expect(poll.status).toBe(200);
+    const data = await poll.json();
+    expect(data.id).toBe(envelope.id);
+  });
+
+  test("unsigned_urls carry testId and resolve content without the header", async () => {
+    mock = new LLMock({ port: 0 });
+    addFixtureFor("scoped content");
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Id": "test-a" },
+      body: JSON.stringify({ model: "m/v", prompt: "scoped content" }),
+    });
+    const envelope = await submit.json();
+
+    const poll = await fetch(envelope.polling_url);
+    const data = await poll.json();
+    expect(data.status).toBe("completed");
+    expect(data.unsigned_urls[0]).toContain("testId=test-a");
+
+    // The @openrouter/sdk fetches unsigned URLs directly without custom
+    // headers — only Authorization. The testId in the URL must scope it.
+    const download = await fetch(data.unsigned_urls[0], {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("video/mp4");
+  });
+
+  test("job submitted under one testId is invisible to another", async () => {
+    mock = new LLMock({ port: 0 });
+    addFixtureFor("isolated");
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Test-Id": "test-a" },
+      body: JSON.stringify({ model: "m/v", prompt: "isolated" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    const crossPoll = await fetch(`${mock.url}/api/v1/videos/${id}`, {
+      headers: { "X-Test-Id": "test-b" },
+    });
+    expect(crossPoll.status).toBe(404);
+  });
+
+  test("default testId leaves URLs clean (no testId param)", async () => {
+    mock = new LLMock({ port: 0 });
+    addFixtureFor("clean urls");
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "clean urls" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url).not.toContain("testId=");
+
+    const data = await (await fetch(envelope.polling_url)).json();
+    expect(data.unsigned_urls[0]).not.toContain("testId=");
+  });
+});
+
+// ─── CR findings: x-forwarded-proto in generated URLs ──────────────────────
+
+describe("OpenRouter video — x-forwarded-proto scheme", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("generated URLs use https when x-forwarded-proto says so", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "behind proxy", endpoint: "video" },
+      response: { video: { id: "vid_xp", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-Proto": "https" },
+      body: JSON.stringify({ model: "m/v", prompt: "behind proxy" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("https://")).toBe(true);
+
+    // Poll over plain http (the mock listens on http) with the header set —
+    // unsigned_urls must come back https too.
+    const httpPollUrl = envelope.polling_url.replace(/^https:/, "http:");
+    const data = await (
+      await fetch(httpPollUrl, { headers: { "X-Forwarded-Proto": "https" } })
+    ).json();
+    expect(data.unsigned_urls[0].startsWith("https://")).toBe(true);
+  });
+
+  test("URLs stay http without the header", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "direct", endpoint: "video" },
+      response: { video: { id: "vid_dh", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "direct" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("http://")).toBe(true);
+  });
+});
+
 // ─── CR findings: Bearer scheme validation on /content ─────────────────────
 
 describe("OpenRouter video — Bearer scheme validation", () => {
