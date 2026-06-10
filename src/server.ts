@@ -78,7 +78,12 @@ import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
 import { applyChaosAction, evaluateChaos } from "./chaos.js";
-import { createMetricsRegistry, normalizePathLabel } from "./metrics.js";
+import {
+  createMetricsRegistry,
+  normalizePathLabel,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+} from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 
 export interface ServerInstance {
@@ -182,11 +187,11 @@ const OLLAMA_TAGS_PATH = "/api/tags";
 
 // OpenRouter async video lifecycle (/api/v1/videos). Dispatch order matters:
 // content RE → models exact → status RE → submit exact. The status RE's
-// `[^/]+` segment would otherwise swallow the `models` listing path.
+// `[^/]+` segment would otherwise swallow the `models` listing path. The
+// content/status REs are shared with metrics.ts path-label normalization
+// (imported above).
 const OPENROUTER_VIDEOS_PATH = "/api/v1/videos";
 const OPENROUTER_VIDEO_MODELS_PATH = "/api/v1/videos/models";
-const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
-const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
 
 const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";

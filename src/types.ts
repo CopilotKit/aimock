@@ -505,10 +505,12 @@ export interface JournalEntry {
     /**
      * What was going to serve this request. "fixture" = a fixture matched (or
      * would have, before chaos intervened). "proxy" = no fixture matched and
-     * proxy was configured. "internal" = served by aimock's own synthetic
-     * logic where no fixture matched and no proxy applies (e.g. the OpenRouter
-     * video lifecycle endpoints). Absent when the distinction doesn't apply
-     * (e.g. 404/503 fallback where nothing was going to serve).
+     * proxy was configured. "internal" = chaos-path entries where the request
+     * was served by aimock's own synthetic logic — neither a matched fixture
+     * nor a configured proxy (e.g. chaos on the OpenRouter video lifecycle
+     * endpoints; their normal 200/400/401/404 entries omit source). Absent
+     * when the distinction doesn't apply (e.g. 404/503 fallback where nothing
+     * was going to serve).
      */
     source?: "fixture" | "proxy" | "internal";
     interrupted?: boolean;
@@ -699,8 +701,9 @@ export interface MockServerOptions {
   /**
    * Configure OpenRouter async video job polling progression
    * (`pending → in_progress → completed | failed` on `GET /api/v1/videos/{id}`).
-   * Same threshold semantics as `falQueue`. By default a job reaches its
-   * terminal status on the first poll.
+   * Same threshold semantics as `falQueue`. By default (0/0) the job is
+   * seeded terminal at submit — content is downloadable with zero polls, and
+   * the first status poll merely reports the already-terminal status.
    */
   openRouterVideo?: FalQueueConfig;
 }
@@ -722,7 +725,9 @@ export interface FalQueueConfig {
    * `pollsBeforeInProgress` is also unset (no progression), otherwise
    * `pollsBeforeInProgress + 1` so the job spends one poll in IN_PROGRESS.
    * An explicit value lower than `pollsBeforeInProgress` is clamped up so
-   * IN_PROGRESS is never skipped.
+   * IN_PROGRESS is never skipped. When equal to a nonzero
+   * `pollsBeforeInProgress`, the job still spends one poll in IN_PROGRESS,
+   * so the terminal status lands one poll later than configured.
    */
   pollsBeforeCompleted?: number;
 }

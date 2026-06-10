@@ -180,11 +180,13 @@ function testIdSuffix(testId: string, sep: "?" | "&"): string {
  * Synthesizes a structurally valid journal body for field-validation 400s.
  * JournalEntry.body is typed `ChatCompletionRequest | null`, so the raw
  * parsed body cannot be journaled as-is — journal consumers may walk
- * `body.messages`. Mirrors the submit success path's synthetic shape: raw
- * request fields (including `prompt`) ride along via the index signature,
- * `messages` is empty (there is no validated prompt to wrap), and a
- * non-string `model` is JSON-encoded so the field stays a string without
- * dropping what the caller sent.
+ * `body.messages`. The result is ChatCompletionRequest-shaped: `model` is a
+ * string (a non-string value is JSON-encoded so the field stays a string
+ * without dropping what the caller sent) and `messages` is an empty array
+ * (there is no validated prompt to wrap). Raw request fields (including
+ * `prompt`) are preserved via the index signature only on this validation
+ * path — the success path's syntheticReq is built from scratch and does not
+ * carry them.
  */
 function validationJournalBody(videoReq: OpenRouterVideoRequest): ChatCompletionRequest {
   const rawModel = videoReq.model;
@@ -666,6 +668,9 @@ export async function handleOpenRouterVideoCreate(
     );
   }
 
+  // Chaos deliberately rolls AFTER body validation and fixture matching
+  // (mirrors handleCompletions) — unlike the GET endpoints above, where chaos
+  // rolls first.
   if (
     applyChaos(
       res,
