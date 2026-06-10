@@ -803,6 +803,128 @@ describe("OpenRouter video — full lifecycle integration", () => {
   });
 });
 
+// ─── CR findings: input validation (400, not 500/mismatch) ─────────────────
+
+describe("OpenRouter video — request body validation", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("JSON body `null` returns 400 invalid_request_error (not a raw 500)", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "null",
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+  });
+
+  test("JSON array body returns 400 invalid_request_error", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "[1,2]",
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+  });
+
+  test("non-string prompt returns 400", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: 123 }),
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+    expect(data.error.message).toContain("prompt");
+  });
+
+  test("non-string model returns 400", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: 123, prompt: "a sunset" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+    expect(data.error.message).toContain("model");
+  });
+});
+
+// ─── CR findings: Bearer scheme validation on /content ─────────────────────
+
+describe("OpenRouter video — Bearer scheme validation", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  async function completedJob(prompt: string): Promise<string> {
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await fetch(`${mock.url}/api/v1/videos/${id}`); // advance to completed
+    return id;
+  }
+
+  test("non-Bearer Authorization scheme is rejected with 401", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "scheme check", endpoint: "video" },
+      response: { video: { id: "vid_sc", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await completedJob("scheme check");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Basic xyz" },
+    });
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error.message).toBe("No auth credentials found");
+    expect(data.error.code).toBe(401);
+  });
+
+  test("minimal Bearer credential is accepted", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "bearer ok", endpoint: "video" },
+      response: { video: { id: "vid_bk", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await completedJob("bearer ok");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer k" },
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("OpenRouter video — routing collision regression", () => {
   let mock: LLMock;
 
