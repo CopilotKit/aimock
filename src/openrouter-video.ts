@@ -39,7 +39,7 @@ const DEFAULT_OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0";
 
 // ─── OpenRouterVideoJobMap (TTL + bounded) ──────────────────────────────────
 
-const OPENROUTER_VIDEO_MAX_ENTRIES = 10_000;
+export const OPENROUTER_VIDEO_MAX_ENTRIES = 10_000;
 const OPENROUTER_VIDEO_TTL_MS = 3_600_000; // 1 hour
 
 type OpenRouterVideoStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -584,6 +584,9 @@ export async function handleOpenRouterVideoCreate(
   );
 
   if (fixture) {
+    // Match count increments BEFORE applyChaos below by design (mirrors
+    // handleCompletions): a chaos-dropped submit still consumes the fixture's
+    // sequence slot.
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
     defaults.logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
   } else {
