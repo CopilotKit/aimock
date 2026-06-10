@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenRouter Video — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>OpenRouter Video</h1>
+        <p class="lead">
+          aimock mocks OpenRouter's dedicated video-generation job API under
+          <code>/api/v1/videos</code> &mdash; submit a job, poll it through
+          <code>pending &rarr; in_progress &rarr; completed | failed</code>, and download the bytes.
+          It draws from the same <code>endpoint: "video"</code> fixture pool as the OpenAI-shaped
+          <a href="/video">/v1/videos</a> handler.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/api/v1/videos</code></td>
+              <td>
+                <code>{ id, polling_url, status: "pending" }</code> job envelope; the matched
+                fixture's <code>video</code> drives the job's terminal state
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/videos/{jobId}</code></td>
+              <td>
+                <code>{ id, status }</code> &mdash; plus <code>unsigned_urls</code> +
+                <code>usage.cost</code> once <code>completed</code>, or <code>error</code> once
+                <code>failed</code>
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/videos/{jobId}/content</code></td>
+              <td>
+                The video bytes as <code>video/mp4</code> (Bearer auth required; 400 before the job
+                completes)
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/videos/models</code></td>
+              <td><code>{ data: [&hellip;] }</code> video-model listing</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Fixture Authoring</h2>
+        <p>
+          Submits are matched against <code>endpoint: "video"</code> fixtures on the request's
+          <code>prompt</code> (via <code>match.userMessage</code>) and <code>model</code> (via
+          <code>match.model</code>). A submit without a <code>model</code> assumes the default
+          <code>bytedance/seedance-2.0</code> for matching, so a fixture restricted to that model
+          still matches model-less submits.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">
+            openrouter-video.test.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"a cat playing piano"</span>, {
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"v1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">b64</span>: <span class="str">"AAAAGGZ0eXBpc29t..."</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
+});
+
+<span class="cm">// A failed job:</span>
+<span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"impossible prompt"</span>, {
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"v2"</span>, <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
+});</code></pre>
+        </div>
+
+        <p>The fixture's <code>video</code> object supports:</p>
+        <ul>
+          <li>
+            <code>id</code>, <code>status</code> &mdash; <code>"completed"</code> or
+            <code>"failed"</code> set the job's terminal state (any other status is coerced to
+            completed, with a warning)
+          </li>
+          <li><code>error?</code> &mdash; failure message surfaced on a failed status poll</li>
+          <li>
+            <code>b64?</code> &mdash; base64-encoded video bytes served by the content endpoint
+          </li>
+          <li>
+            <code>cost?</code> &mdash; generation cost surfaced as <code>usage.cost</code> on
+            completion
+          </li>
+          <li>
+            <code>url?</code> &mdash; ignored on this surface (the content endpoint serves bytes,
+            not a redirect); use <code>b64</code>
+          </li>
+        </ul>
+
+        <h2>Polling Realism</h2>
+        <p>
+          By default a submitted job is seeded terminal internally &mdash; the submit envelope still
+          reports <code>"pending"</code> for API fidelity, but content is downloadable with zero
+          polls and the first status poll reports the terminal status. To exercise client code that
+          reacts to intermediate states, pass <code>openRouterVideo</code> with poll thresholds. The
+          semantics are identical to <a href="/fal-ai#polling-realism"><code>falQueue</code></a
+          >, mapped onto <code>pending</code> / <code>in_progress</code> /
+          <code>completed | failed</code>.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">polling.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">port</span>: <span class="num">0</span>,
+  <span class="prop">openRouterVideo</span>: { <span class="prop">pollsBeforeInProgress</span>: <span class="num">1</span>, <span class="prop">pollsBeforeCompleted</span>: <span class="num">2</span> },
+});
+
+<span class="cm">// Submit  → { id, polling_url, status: "pending" }</span>
+<span class="cm">// poll 1  → in_progress</span>
+<span class="cm">// poll 2  → completed, unsigned_urls + usage.cost</span>
+<span class="cm">// content → 200 video/mp4 bytes</span></code></pre>
+        </div>
+
+        <div class="info-box">
+          <p>
+            Unset and an explicit <code>0</code> differ: with both fields unset the job is terminal
+            at submit, but explicitly setting <code>pollsBeforeInProgress</code> &mdash; even to
+            <code>0</code> &mdash; enables progression, with
+            <code>pollsBeforeCompleted</code> defaulting to
+            <code>pollsBeforeInProgress + 1</code> so the job passes through
+            <code>in_progress</code>. An explicit <code>pollsBeforeCompleted</code> lower than
+            <code>pollsBeforeInProgress</code> is clamped up so <code>in_progress</code> is never
+            skipped.
+          </p>
+        </div>
+
+        <p>
+          Thresholds are sanitized: non-finite values (<code>NaN</code>, <code>Infinity</code>) are
+          treated as unset, and negative or fractional values are floored and clamped to
+          non-negative integers. <code>createServer</code> warns at startup on invalid values.
+        </p>
+
+        <h2>Authentication</h2>
+        <p>
+          Only the content endpoint enforces auth:
+          <code>GET /api/v1/videos/{jobId}/content</code> requires a Bearer
+          <code>Authorization</code> header (any non-empty credential) and returns 401 otherwise,
+          matching the real API. Status polls and the models listing are served without auth &mdash;
+          a deliberate divergence to keep test polling loops friction-free.
+        </p>
+
+        <h2>Content Serving</h2>
+        <p>
+          The content endpoint serves the fixture's <code>b64</code> bytes when present, or a
+          built-in minimal MP4 <code>ftyp</code> placeholder otherwise &mdash; always as
+          <code>Content-Type: video/mp4</code>, even when the client sends
+          <code>Accept: application/octet-stream</code> (matching production). The
+          <code>index</code> query param is accepted but ignored (jobs are single-video), and
+          fetching content never advances job state &mdash; clients learn the content URL only from
+          a completed status poll.
+        </p>
+
+        <h2>Test Isolation</h2>
+        <p>
+          Generated URLs (<code>polling_url</code>, <code>unsigned_urls</code>) embed the request's
+          testId as a <code>?testId=</code> query param. The <code>@openrouter/sdk</code> fetches
+          these URLs with standard Authorization but no aimock-specific headers, so the testId must
+          travel in the URL for job state to resolve to the right test scope. The default testId is
+          omitted to keep single-tenant URLs clean.
+        </p>
+
+        <h2>Models Listing</h2>
+        <p>
+          <code>GET /api/v1/videos/models</code> synthesizes the listing from loaded video fixtures
+          that specify a string <code>match.model</code>. When no video fixture contributes a string
+          model, a built-in default set is served instead (with a warning if video fixtures are
+          loaded but none has a string model).
+        </p>
+
+        <h2>Chaos &amp; Metrics</h2>
+        <p>
+          <a href="/chaos-testing">Chaos injection</a> applies to all four routes; journal entries
+          for chaos served without a matched fixture carry <code>source: "internal"</code>. In
+          <a href="/metrics">Prometheus metrics</a>, per-job paths are templated as
+          <code>/api/v1/videos/{jobId}</code> and <code>/api/v1/videos/{jobId}/content</code> to
+          keep label cardinality bounded.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>Replay-only:</strong> this surface does not support record/proxy mode yet
+            &mdash; with <code>--record</code>, an unmatched submit warns and returns the normal
+            no-match response instead of proxying. Record-mode support is a follow-up.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

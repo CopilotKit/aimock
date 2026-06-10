@@ -274,7 +274,9 @@
 
         <p>
           If <code>pollsBeforeCompleted</code> is set lower than <code>pollsBeforeInProgress</code>,
-          it is clamped up so <code>IN_PROGRESS</code> is never skipped.
+          it is clamped up so <code>IN_PROGRESS</code> is never skipped. Thresholds are also
+          sanitized: non-finite values are treated as unset, negative or fractional values are
+          floored and clamped to non-negative integers, and invalid values warn at server start.
         </p>
 
         <p>

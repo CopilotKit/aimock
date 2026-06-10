@@ -342,8 +342,13 @@
             </tr>
             <tr>
               <td>Video</td>
-              <td>video.id, video.status, video.url?</td>
-              <td>Generated video URL with async polling</td>
+              <td>video.id, video.status, video.url?, video.error?, video.b64?, video.cost?</td>
+              <td>
+                Generated video with async polling &mdash; <code>error</code> is the failure message
+                surfaced by async video jobs, <code>b64</code> is base64-encoded video bytes served
+                by content-download endpoints, <code>cost</code> is the generation cost surfaced in
+                usage envelopes
+              </td>
             </tr>
           </tbody>
         </table>
