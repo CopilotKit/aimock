@@ -114,21 +114,24 @@
             openrouter-video.test.ts <span class="lang-tag">ts</span>
           </div>
           <pre><code><span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"a cat playing piano"</span>, {
-  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"v1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">b64</span>: <span class="str">"AAAAGGZ0eXBpc29t..."</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
+  <span class="prop">video</span>: { <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">b64</span>: <span class="str">"AAAAGGZ0eXBpc29t..."</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
 });
 
 <span class="cm">// A failed job:</span>
 <span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"impossible prompt"</span>, {
-  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"v2"</span>, <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
+  <span class="prop">video</span>: { <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
 });</code></pre>
         </div>
 
         <p>The fixture's <code>video</code> object supports:</p>
         <ul>
           <li>
-            <code>id</code>, <code>status</code> &mdash; <code>"completed"</code> or
-            <code>"failed"</code> set the job's terminal state (any other status is coerced to
-            completed, with a warning)
+            <code>status</code> &mdash; <code>"completed"</code> or <code>"failed"</code> sets the
+            job's terminal state (any other status is coerced to completed, with a warning)
+          </li>
+          <li>
+            <code>id</code> &mdash; ignored on this surface (the job id is always a server-minted
+            UUID); the <code>/v1/videos</code> surface does use it
           </li>
           <li><code>error?</code> &mdash; failure message surfaced on a failed status poll</li>
           <li>
