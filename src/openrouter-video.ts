@@ -147,7 +147,7 @@ function advanceJob(job: OpenRouterVideoJob): void {
  * valid later entries — so empty segments are skipped.
  */
 function firstForwardedValue(header: string | string[] | undefined): string | undefined {
-  const raw = Array.isArray(header) ? header[0] : header;
+  const raw = Array.isArray(header) ? header.join(",") : header;
   if (raw === undefined) return undefined;
   for (const segment of raw.split(",")) {
     const trimmed = segment.trim();
@@ -175,7 +175,16 @@ function requestBase(req: http.IncomingMessage, logger: Logger): string {
   // host[:port] (or a bracketed IPv6 literal) falls back to the Host header —
   // with a warn, so a misconfigured proxy isn't silently ignored.
   const fwdHost = firstForwardedValue(req.headers["x-forwarded-host"]);
-  let host = req.headers.host ?? "localhost";
+  // The Host fallback gets the same host[:port] validation — a junk Host
+  // (e.g. "evil.com/path") could otherwise smuggle URL structure into the
+  // generated URLs. No warn: a missing/odd Host is transport-level noise,
+  // unlike a misconfigured proxy's x-forwarded-host.
+  const rawHost = req.headers.host;
+  let host =
+    rawHost !== undefined &&
+    (FORWARDED_HOST_RE.test(rawHost) || FORWARDED_HOST_IPV6_RE.test(rawHost))
+      ? rawHost
+      : "localhost";
   if (fwdHost !== undefined) {
     if (FORWARDED_HOST_RE.test(fwdHost) || FORWARDED_HOST_IPV6_RE.test(fwdHost)) {
       host = fwdHost;
@@ -294,7 +303,14 @@ export function handleOpenRouterVideoStatus(
     ];
     body.usage = { cost: job.video.cost ?? 0 };
   } else if (job.status === "failed") {
-    body.error = job.video.error ?? "Video generation failed";
+    if (job.video.error === "") {
+      // An explicit-but-empty error is an authoring mistake — warn (mirroring
+      // the empty-b64 warn) instead of serving an empty failure reason.
+      defaults.logger.warn(
+        `Video fixture for job ${job.jobId} has an empty error message — using the default`,
+      );
+    }
+    body.error = job.video.error || "Video generation failed";
   }
 
   res.writeHead(200, { "Content-Type": "application/json" });

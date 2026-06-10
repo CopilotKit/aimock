@@ -1,4 +1,5 @@
 import { describe, test, expect, afterEach, vi } from "vitest";
+import * as http from "node:http";
 import { LLMock } from "../llmock.js";
 import { createServer } from "../server.js";
 import { resolveProgression } from "../fal.js";
@@ -1175,6 +1176,30 @@ describe("OpenRouter video — logger observability", () => {
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("empty b64"))).toBe(true);
   });
 
+  test("warns when a failed fixture has an empty error and serves the default", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "doomed silently", endpoint: "video" },
+      // error: "" is an authoring mistake — serving a literal "" error would
+      // give polling clients an empty failure reason.
+      response: { video: { id: "vid_ee", status: "failed", error: "" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "doomed silently" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const data = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(data.status).toBe("failed");
+    expect(data.error).toBe("Video generation failed");
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("empty error"))).toBe(true);
+  });
+
   test("warns when a rejected x-forwarded-host falls back to the Host header", async () => {
     mock = new LLMock({ port: 0, logLevel: "warn" });
     mock.addFixture({
@@ -1190,7 +1215,8 @@ describe("OpenRouter video — logger observability", () => {
       body: JSON.stringify({ model: "m/v", prompt: "rejected host" }),
     });
     const envelope = await submit.json();
-    // Still falls back to the Host header (pre-existing junk-host behavior).
+    // Falls back to the Host header, which is itself validated (the test's
+    // real host[:port] passes; a junk Host would fall back to localhost).
     expect(envelope.polling_url.startsWith(`${mock.url}/api/v1/videos/`)).toBe(true);
     expect(
       warnSpy.mock.calls.some((c) => c.join(" ").includes("x-forwarded-host value rejected")),
@@ -1745,6 +1771,47 @@ describe("OpenRouter video — x-forwarded-proto/host", () => {
       const envelope = await submit.json();
       expect(envelope.polling_url.startsWith(`${mock.url}/api/v1/videos/`)).toBe(true);
     }
+  });
+
+  test("a junk Host header fallback is validated and falls back to localhost", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "junk Host", endpoint: "video" },
+      response: { video: { id: "vid_jHf", status: "completed" } },
+    });
+    await mock.start();
+
+    // fetch forbids overriding the Host header, so issue a raw http.request
+    // with a path-smuggling Host value — the same junk shape the
+    // x-forwarded-host validation rejects.
+    const port = Number(new URL(mock.url).port);
+    const envelope = await new Promise<{ polling_url: string }>((resolve, reject) => {
+      const data = JSON.stringify({ model: "m/v", prompt: "junk Host" });
+      const req = http.request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/api/v1/videos",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+            Host: "evil.com/x",
+          },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk: Buffer) => (body += chunk));
+          res.on("end", () => resolve(JSON.parse(body) as { polling_url: string }));
+        },
+      );
+      req.on("error", reject);
+      req.write(data);
+      req.end();
+    });
+    // The smuggled path segment must not survive into the generated URL.
+    expect(envelope.polling_url.includes("/x/")).toBe(false);
+    expect(envelope.polling_url.startsWith("http://localhost/api/v1/videos/")).toBe(true);
   });
 });
 
@@ -2464,7 +2531,7 @@ describe("OpenRouter video — progression threshold sanitization (e2e)", () => 
         const line = c.join(" ");
         return (
           line.includes("openRouterVideo.pollsBeforeCompleted") &&
-          line.includes("not a non-negative integer")
+          line.includes("treating as unset")
         );
       }),
     ).toBe(true);
@@ -2473,7 +2540,7 @@ describe("OpenRouter video — progression threshold sanitization (e2e)", () => 
         const line = c.join(" ");
         return (
           line.includes("falQueue.pollsBeforeInProgress") &&
-          line.includes("not a non-negative integer")
+          line.includes("clamping to a non-negative integer")
         );
       }),
     ).toBe(true);
