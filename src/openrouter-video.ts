@@ -109,6 +109,13 @@ export class OpenRouterVideoJobMap {
 
 // ─── Job progression ────────────────────────────────────────────────────────
 
+/**
+ * Maps the fixture's terminal video status onto the job lifecycle. Anything
+ * that is not "failed" — including a fixture authored as "processing" — is
+ * treated as completed, since this surface always drives jobs to a terminal
+ * state. handleOpenRouterVideoCreate warns when a "processing" fixture is
+ * coerced this way.
+ */
 function terminalStatus(job: OpenRouterVideoJob): OpenRouterVideoStatus {
   return job.video.status === "failed" ? "failed" : "completed";
 }
@@ -321,7 +328,19 @@ export function handleOpenRouterVideoContent(
     return;
   }
 
-  const bytes = job.video.b64 ? Buffer.from(job.video.b64, "base64") : PLACEHOLDER_MP4;
+  let bytes: Buffer;
+  if (job.video.b64) {
+    bytes = Buffer.from(job.video.b64, "base64");
+    if (bytes.length === 0) {
+      // Non-empty b64 that decodes to nothing is almost certainly a corrupt
+      // fixture. Serve the (empty) decode as-is, but make the cause visible.
+      defaults.logger.warn(
+        `Video fixture b64 for job ${jobId} decoded to 0 bytes — likely corrupt base64`,
+      );
+    }
+  } else {
+    bytes = PLACEHOLDER_MP4;
+  }
 
   journal.add({
     method,
@@ -535,7 +554,10 @@ export async function handleOpenRouterVideoCreate(
     journal.incrementFixtureMatchCount(fixture, fixtures, testId);
     defaults.logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
   } else {
-    defaults.logger.debug(`No fixture matched for request`);
+    const snippet = videoReq.prompt.slice(0, 80);
+    defaults.logger.debug(
+      `No fixture matched for request (model=${syntheticReq.model}, msg="${snippet}")`,
+    );
   }
 
   if (
@@ -556,6 +578,11 @@ export async function handleOpenRouterVideoCreate(
     return;
 
   if (!fixture) {
+    if (defaults.record) {
+      defaults.logger.warn(
+        "record mode is not supported for /api/v1/videos — returning 404/503 no-match response",
+      );
+    }
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     if (effectiveStrict) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
@@ -646,6 +673,15 @@ export async function handleOpenRouterVideoCreate(
     body: syntheticReq,
     response: { status: 200, fixture },
   });
+
+  // A fixture authored with status "processing" has no terminal state to
+  // converge on — terminalStatus coerces it to completed. Keep the behavior
+  // (jobs always terminate) but surface the coercion.
+  if (response.video.status === "processing") {
+    defaults.logger.warn(
+      `Video fixture has status "processing" — treated as completed for /api/v1/videos jobs`,
+    );
+  }
 
   const jobId = crypto.randomUUID();
   const progression = resolveProgression(defaults.openRouterVideo);

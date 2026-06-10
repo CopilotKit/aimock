@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "vitest";
+import { describe, test, expect, afterEach, vi } from "vitest";
 import { LLMock } from "../llmock.js";
 import { resolveProgression } from "../fal.js";
 import type { VideoResponse } from "../types.js";
@@ -735,6 +735,120 @@ describe("OpenRouter video — chaos source label and models route", () => {
     // Without the header the route still serves the listing.
     const ok = await fetch(`${mock.url}/api/v1/videos/models`);
     expect(ok.status).toBe(200);
+  });
+});
+
+// ─── CR findings: logger observability ──────────────────────────────────────
+
+describe("OpenRouter video — logger observability", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await mock?.stop();
+  });
+
+  test("warns when a processing fixture is coerced to completed", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "still processing", endpoint: "video" },
+      response: { video: { id: "vid_pr", status: "processing" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "still processing" }),
+    });
+    expect(res.status).toBe(200);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("processing"))).toBe(true);
+  });
+
+  test("warns about the record-mode gap on no-match when record is configured", async () => {
+    mock = new LLMock({
+      port: 0,
+      logLevel: "warn",
+      record: { providers: { openai: "sk-test" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "unrecorded prompt" }),
+    });
+    expect(res.status).toBe(404);
+    expect(
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("record mode is not supported")),
+    ).toBe(true);
+  });
+
+  test("no record warn fires when record is not configured", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "no fixture" }),
+    });
+    expect(
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("record mode is not supported")),
+    ).toBe(false);
+  });
+
+  test("no-match debug log includes model and prompt snippet", async () => {
+    mock = new LLMock({ port: 0, logLevel: "debug" });
+    await mock.start();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "acme/video-x", prompt: "a very specific prompt" }),
+    });
+    expect(
+      logSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return (
+          line.includes("No fixture matched") &&
+          line.includes("acme/video-x") &&
+          line.includes("a very specific prompt")
+        );
+      }),
+    ).toBe(true);
+  });
+
+  test("warns when fixture b64 decodes to zero bytes but still serves the decode", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "corrupt bytes", endpoint: "video" },
+      // "!!!!" is non-empty but contains no valid base64 characters — the
+      // decode yields a 0-byte buffer.
+      response: { video: { id: "vid_cb", status: "completed", b64: "!!!!" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "corrupt bytes" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await fetch(`${mock.url}/api/v1/videos/${id}`); // advance to completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBe(0); // the decode is served as-is, just warned about
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
   });
 });
 
