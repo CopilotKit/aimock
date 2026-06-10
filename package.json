@@ -1,7 +1,7 @@
 {
   "name": "@copilotkit/aimock",
-  "version": "1.30.0",
-  "description": "Mock infrastructure for AI application testing — LLM APIs, image generation, text-to-speech, transcription, audio generation, video generation, MCP tools, A2A agents, AG-UI event streams, vector databases, search, rerank, and moderation. One package, one port, zero dependencies.",
+  "version": "1.31.0",
+  "description": "Mock infrastructure for AI application testing — LLM APIs, image generation, image editing, text-to-speech, transcription, audio translation, audio generation, video generation, embeddings, MCP tools, A2A agents, AG-UI event streams, vector databases, search, rerank, and moderation. One package, one port, zero dependencies.",
   "license": "MIT",
   "keywords": [
     "mock",
