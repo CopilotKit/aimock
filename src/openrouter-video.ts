@@ -142,7 +142,9 @@ function requestBase(req: http.IncomingMessage): string {
   // proxy in front of the mock. First value wins on comma-joined lists.
   const fwdProto = req.headers["x-forwarded-proto"];
   const protoRaw = Array.isArray(fwdProto) ? fwdProto[0] : fwdProto;
-  const proto = protoRaw?.split(",")[0]?.trim() || "http";
+  const candidate = protoRaw?.split(",")[0]?.trim().toLowerCase();
+  // Allowlist http/https — any other value (ws, junk header data) falls back.
+  const proto = candidate === "http" || candidate === "https" ? candidate : "http";
   return `${proto}://${req.headers.host ?? "localhost"}`;
 }
 
@@ -275,7 +277,10 @@ export function handleOpenRouterVideoContent(
 
   // The real endpoint requires Bearer auth even though the unsigned URL is
   // otherwise self-contained — the @openrouter/sdk fetches it with the key.
-  if (!req.headers.authorization?.startsWith("Bearer ")) {
+  // RFC 7235 auth schemes are case-insensitive; the credential must be
+  // non-empty.
+  const authorization = req.headers.authorization;
+  if (!authorization || !/^bearer\s+\S/i.test(authorization)) {
     journal.add({
       method,
       path,
@@ -334,11 +339,18 @@ export function handleOpenRouterVideoContent(
   let bytes: Buffer;
   if (job.video.b64) {
     bytes = Buffer.from(job.video.b64, "base64");
-    if (bytes.length === 0) {
-      // Non-empty b64 that decodes to nothing is almost certainly a corrupt
-      // fixture. Serve the (empty) decode as-is, but make the cause visible.
+    // Node's base64 decoder is lenient — invalid characters are skipped, so a
+    // corrupt payload silently truncates instead of erroring. Round-trip the
+    // decode (normalizing whitespace, padding, and the url-safe alphabet) and
+    // warn on mismatch. The decode is still served as-is.
+    const normalized = job.video.b64
+      .replace(/\s+/g, "")
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .replace(/=+$/, "");
+    if (bytes.toString("base64").replace(/=+$/, "") !== normalized) {
       defaults.logger.warn(
-        `Video fixture b64 for job ${jobId} decoded to 0 bytes — likely corrupt base64`,
+        `Video fixture b64 for job ${jobId} did not round-trip (decoded ${bytes.length} bytes) — likely corrupt base64`,
       );
     }
   } else {
@@ -414,10 +426,22 @@ export function handleOpenRouterVideoModels(
     return;
 
   const modelIds = new Set<string>();
+  let sawVideoFixture = false;
   for (const f of fixtures) {
-    if (f.match.endpoint === "video" && typeof f.match.model === "string") {
-      modelIds.add(f.match.model);
+    if (f.match.endpoint === "video") {
+      sawVideoFixture = true;
+      if (typeof f.match.model === "string") {
+        modelIds.add(f.match.model);
+      }
     }
+  }
+  if (modelIds.size === 0 && sawVideoFixture) {
+    // Video fixtures are loaded but none has a string match.model (e.g. all
+    // RegExp models or onVideo registrations) — the listing silently serves
+    // the default set, which can surprise fixture authors.
+    defaults.logger.debug(
+      "No video fixture contributes a string model — serving the default video model set",
+    );
   }
   const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_OPENROUTER_VIDEO_MODELS;
 
@@ -499,12 +523,16 @@ export async function handleOpenRouterVideoCreate(
     return;
   }
 
+  // Field-validation 400s journal the parsed body (unlike the malformed-JSON
+  // and non-object paths above, where there is no meaningful object to log).
+  const parsedBody = videoReq as ChatCompletionRequest;
+
   if (typeof videoReq.prompt !== "string" || !videoReq.prompt) {
     journal.add({
       method,
       path,
       headers: flattenHeaders(req.headers),
-      body: null,
+      body: parsedBody,
       response: { status: 400, fixture: null },
     });
     writeErrorResponse(
@@ -517,12 +545,14 @@ export async function handleOpenRouterVideoCreate(
     return;
   }
 
-  if (videoReq.model !== undefined && typeof videoReq.model !== "string") {
+  // An empty-string model is as unusable as a non-string one — it matches no
+  // fixture and is not a real model id — so both get the same 400.
+  if (videoReq.model !== undefined && (typeof videoReq.model !== "string" || !videoReq.model)) {
     journal.add({
       method,
       path,
       headers: flattenHeaders(req.headers),
-      body: null,
+      body: parsedBody,
       response: { status: 400, fixture: null },
     });
     writeErrorResponse(
@@ -530,7 +560,7 @@ export async function handleOpenRouterVideoCreate(
       400,
       JSON.stringify({
         error: {
-          message: "Invalid type for parameter: 'model' must be a string",
+          message: "Invalid type for parameter: 'model' must be a non-empty string",
           type: "invalid_request_error",
         },
       }),
@@ -677,12 +707,19 @@ export async function handleOpenRouterVideoCreate(
     response: { status: 200, fixture },
   });
 
-  // A fixture authored with status "processing" has no terminal state to
-  // converge on — terminalStatus coerces it to completed. Keep the behavior
-  // (jobs always terminate) but surface the coercion.
-  if (response.video.status === "processing") {
+  // A fixture authored with any non-terminal status — "processing" or a
+  // status outside the union entirely (JSON fixtures bypass the compile-time
+  // check) — has no terminal state to converge on; terminalStatus coerces it
+  // to completed. Keep the behavior (jobs always terminate) but surface the
+  // coercion. Widen to string first: the runtime value may not be in the union.
+  const fixtureStatus: string = response.video.status;
+  if (fixtureStatus === "processing") {
     defaults.logger.warn(
       `Video fixture has status "processing" — treated as completed for /api/v1/videos jobs`,
+    );
+  } else if (fixtureStatus !== "completed" && fixtureStatus !== "failed") {
+    defaults.logger.warn(
+      `Video fixture has unknown status "${fixtureStatus}" — treating as completed for /api/v1/videos jobs`,
     );
   }
 
