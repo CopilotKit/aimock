@@ -703,6 +703,11 @@ export interface MockServerOptions {
   openRouterVideo?: FalQueueConfig;
 }
 
+/**
+ * Poll-progression thresholds, documented below in fal queue terms; when used
+ * as `openRouterVideo` the states map to `pending` / `in_progress` /
+ * `completed | failed`.
+ */
 export interface FalQueueConfig {
   /**
    * Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Default: 0.
