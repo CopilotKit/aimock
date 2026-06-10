@@ -178,6 +178,174 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
     expect(data.error.message).toBe("rate limited");
   });
 
+  test("status poll after submit reaches completed with unsigned_urls and usage", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "poll me", endpoint: "video" },
+      response: { video: { id: "vid_p", status: "completed", cost: 0.05 } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "poll me" }),
+    });
+    const { id } = await submit.json();
+
+    const poll = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(poll.status).toBe(200);
+    const data = await poll.json();
+    expect(data.id).toBe(id);
+    expect(data.status).toBe("completed");
+    expect(data.unsigned_urls).toEqual([`${mock.url}/api/v1/videos/${id}/content?index=0`]);
+    expect(data.usage).toEqual({ cost: 0.05 });
+  });
+
+  test("usage.cost defaults to 0 when the fixture omits it", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "free", endpoint: "video" },
+      response: { video: { id: "vid_f", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "free" }),
+    });
+    const { id } = await submit.json();
+    const data = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(data.usage).toEqual({ cost: 0 });
+  });
+
+  test("failed fixture polls to failed with error message", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "doomed", endpoint: "video" },
+      response: { video: { id: "vid_x", status: "failed", error: "content policy violation" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "doomed" }),
+    });
+    const { id } = await submit.json();
+
+    const data = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(data.status).toBe("failed");
+    expect(data.error).toBe("content policy violation");
+    expect(data.unsigned_urls).toBeUndefined();
+  });
+
+  test("failed fixture without error message uses default", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "doomed quietly", endpoint: "video" },
+      response: { video: { id: "vid_q", status: "failed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "doomed quietly" }),
+    });
+    const { id } = await submit.json();
+    const data = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(data.status).toBe("failed");
+    expect(data.error).toBe("Video generation failed");
+  });
+
+  test("status poll for unknown job returns 404", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/nonexistent-job`);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error.code).toBe(404);
+  });
+
+  test("configured progression advances pending → in_progress → completed", async () => {
+    mock = new LLMock({
+      port: 0,
+      openRouterVideo: { pollsBeforeInProgress: 1, pollsBeforeCompleted: 2 },
+    });
+    mock.addFixture({
+      match: { userMessage: "staged", endpoint: "video" },
+      response: { video: { id: "vid_s", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "staged" }),
+    });
+    const { id, status } = await submit.json();
+    expect(status).toBe("pending");
+
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("completed");
+  });
+
+  test("equal thresholds still pass through in_progress for one poll", async () => {
+    mock = new LLMock({
+      port: 0,
+      openRouterVideo: { pollsBeforeInProgress: 2, pollsBeforeCompleted: 2 },
+    });
+    mock.addFixture({
+      match: { userMessage: "equal", endpoint: "video" },
+      response: { video: { id: "vid_e", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "equal" }),
+    });
+    const { id } = await submit.json();
+
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("pending");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("in_progress");
+    const poll3 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll3.status).toBe("completed");
+  });
+
+  test("progression applies to failed jobs too", async () => {
+    mock = new LLMock({
+      port: 0,
+      openRouterVideo: { pollsBeforeInProgress: 1, pollsBeforeCompleted: 2 },
+    });
+    mock.addFixture({
+      match: { userMessage: "staged fail", endpoint: "video" },
+      response: { video: { id: "vid_sf", status: "failed", error: "boom" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "staged fail" }),
+    });
+    const { id } = await submit.json();
+
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("failed");
+    expect(poll2.error).toBe("boom");
+  });
+
   test("non-video fixture response returns 500", async () => {
     mock = new LLMock({ port: 0 });
     mock.addFixture({
