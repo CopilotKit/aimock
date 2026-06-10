@@ -15,6 +15,7 @@ import {
 } from "../gemini-interactions.js";
 import { collapseGeminiInteractionsSSE } from "../stream-collapse.js";
 import { Logger } from "../logger.js";
+import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
 // --- helpers ---
 
@@ -1017,7 +1018,7 @@ describe("Gemini Interactions — non-streaming", () => {
     });
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
   });
 
   it("matches userMessage fixture when input is Step[] envelope (issue #228)", async () => {

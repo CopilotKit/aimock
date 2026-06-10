@@ -5,6 +5,7 @@ import { createServer, type ServerInstance } from "../server.js";
 import { cohereToCompletionRequest, handleCohere } from "../cohere.js";
 import { Journal } from "../journal.js";
 import { Logger } from "../logger.js";
+import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
 // --- helpers ---
 
@@ -871,7 +872,7 @@ describe("POST /v2/chat (strict mode)", () => {
     });
     expect(res.status).toBe(503);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toMatch(/candidate fixture\(s\) skipped by sequence\/turn state/);
+    expect(body.error.message).toMatch(SKIPPED_BY_STATE_RE);
   });
 });
 
