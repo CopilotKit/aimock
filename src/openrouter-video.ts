@@ -67,6 +67,8 @@ interface OpenRouterVideoEntry {
  * Per-testId job state for the OpenRouter video handler. Mirrors
  * FalQueueStateMap (fal.ts): lazy TTL eviction on `get`, FIFO eviction of the
  * oldest entries on `set` when over capacity, no background sweep timer.
+ * Deliberate lifetime divergence: this map is per-server-instance (cleared on
+ * server close/reset) while FalQueueStateMap is module-global.
  * Keys are `${testId}:${jobId}`.
  */
 export class OpenRouterVideoJobMap {
@@ -698,6 +700,8 @@ export async function handleOpenRouterVideoCreate(
   }
 
   const syntheticReq: ChatCompletionRequest = {
+    // Model-less submits assume the default model — a fixture restricted to
+    // DEFAULT_OPENROUTER_VIDEO_MODEL will match them.
     model: videoReq.model ?? DEFAULT_OPENROUTER_VIDEO_MODEL,
     messages: [{ role: "user", content: videoReq.prompt }],
     _endpointType: "video",

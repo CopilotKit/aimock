@@ -718,9 +718,10 @@ export interface FalQueueConfig {
    * Status polls before transitioning `IN_QUEUE → IN_PROGRESS`. Unset and an
    * explicit `0` differ: when BOTH fields are unset the job completes
    * synchronously on submit (no IN_QUEUE / IN_PROGRESS polls emitted), but
-   * explicitly setting this field — even to `0` — enables progression, with
-   * `pollsBeforeCompleted` defaulting to `pollsBeforeInProgress + 1` so the
-   * job passes through IN_PROGRESS.
+   * explicitly setting this field — even to `0` — enables progression when
+   * `pollsBeforeCompleted` is unset, with `pollsBeforeCompleted` defaulting
+   * to `pollsBeforeInProgress + 1` so the job passes through IN_PROGRESS
+   * (an explicit `pollsBeforeCompleted: 0` still completes on submit).
    */
   pollsBeforeInProgress?: number;
   /**
