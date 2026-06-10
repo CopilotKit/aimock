@@ -198,7 +198,7 @@ async function processMessage(
   if (!fixture) {
     if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
-      defaults.logger.warn(strictNoMatchLogLine("WS", "/v1/responses", skippedBySequenceOrTurn));
+      defaults.logger.error(strictNoMatchLogLine("WS", "/v1/responses", skippedBySequenceOrTurn));
       journal.add({
         method: "WS",
         path: "/v1/responses",

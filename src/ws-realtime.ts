@@ -720,7 +720,7 @@ async function handleResponseCreate(
   if (!fixture) {
     if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
       const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
-      defaults.logger.warn(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
+      defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
       journal.add({
         method: "WS",
         path: "/v1/realtime",
