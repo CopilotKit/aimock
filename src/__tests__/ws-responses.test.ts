@@ -490,11 +490,16 @@ describe("WebSocket /v1/responses", () => {
     instance = await createServer([seqFixture], { strict: true });
 
     // First connection consumes the sequenceIndex:0 fixture (count → 1).
+    // Collect events until response.completed arrives — the number of
+    // output_text.delta events depends on chunking, so no fixed message count.
     const ws1 = await connectWebSocket(instance.url, "/v1/responses");
     ws1.send(responseCreateMsg("hello"));
-    const firstRaw = await ws1.waitForMessages(9);
-    const firstEvents = parseEvents(firstRaw);
-    expect(firstEvents[firstEvents.length - 1].type).toBe("response.completed");
+    let firstEvents: WSEvent[] = [];
+    for (let count = 1; ; count++) {
+      firstEvents = parseEvents(await ws1.waitForMessages(count));
+      if (firstEvents[firstEvents.length - 1].type === "response.completed") break;
+    }
+    expect(firstEvents.map((e) => e.type)).toContain("response.output_text.delta");
     ws1.close();
 
     // Replay: shape still matches but the fixture is skipped by sequence state,

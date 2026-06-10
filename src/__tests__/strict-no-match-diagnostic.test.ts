@@ -123,6 +123,41 @@ describe("matchFixtureDiagnostic", () => {
     expect(result.skippedBySequenceOrTurn).toBe(0);
   });
 
+  it("matches a sequenceIndex fixture on every request (skipped 0) when matchCounts is omitted", () => {
+    // The sequenceIndex gate only engages when BOTH match.sequenceIndex AND a
+    // matchCounts map are provided. Without matchCounts there is no count state,
+    // so even an otherwise-unreachable index matches every request and never
+    // contributes to skippedBySequenceOrTurn.
+    const fixture: Fixture = {
+      match: { userMessage: "hello", sequenceIndex: 5 },
+      response: { content: "hi" },
+    };
+    const first = matchFixtureDiagnostic([fixture], chatRequest("hello"));
+    expect(first.fixture).toBe(fixture);
+    expect(first.skippedBySequenceOrTurn).toBe(0);
+    // Replay: still matches — no matchCounts means no state to exhaust.
+    const second = matchFixtureDiagnostic([fixture], chatRequest("hello"));
+    expect(second.fixture).toBe(fixture);
+    expect(second.skippedBySequenceOrTurn).toBe(0);
+  });
+
+  it("returns the later matching fixture AND a positive skip count when an earlier candidate was skipped by state", () => {
+    const exhausted: Fixture = {
+      match: { userMessage: "hello", sequenceIndex: 0 },
+      response: { content: "first" },
+    };
+    const fallback: Fixture = {
+      match: { userMessage: "hello" },
+      response: { content: "second" },
+    };
+    // The first candidate matched the shape but its sequence count moved on;
+    // the second candidate matches outright. Both facts surface in the result.
+    const matchCounts = new Map<Fixture, number>([[exhausted, 1]]);
+    const result = matchFixtureDiagnostic([exhausted, fallback], chatRequest("hello"), matchCounts);
+    expect(result.fixture).toBe(fallback);
+    expect(result.skippedBySequenceOrTurn).toBe(1);
+  });
+
   it("does NOT count a fixture that fails the hasToolResult shape predicate even when a state gate also fails", () => {
     // The fixture fails BOTH a SHAPE predicate (hasToolResult: true, but the
     // request has no tool message) AND a STATE gate (sequenceIndex: 1 while the
@@ -147,11 +182,12 @@ describe("matchFixtureDiagnostic", () => {
 // ---------------------------------------------------------------------------
 
 describe("strict-mode 503 sequence/turn disambiguation", () => {
-  let server: ServerInstance;
+  let server: ServerInstance | null = null;
 
   afterEach(async () => {
     if (server) {
-      await new Promise<void>((resolve) => server.server.close(() => resolve()));
+      await new Promise<void>((resolve) => server!.server.close(() => resolve()));
+      server = null;
     }
   });
 

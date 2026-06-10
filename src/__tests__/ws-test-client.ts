@@ -55,6 +55,7 @@ export function connectWebSocket(
       const messageResolvers: Array<() => void> = [];
       const closeResolvers: Array<() => void> = [];
       let closeInfo: WSCloseInfo | null = null;
+      let socketClosed = false;
       const closeFrameResolvers: Array<() => void> = [];
 
       socket.on("data", (data: Buffer) => {
@@ -148,10 +149,18 @@ export function connectWebSocket(
                   }
                 }, timeoutMs);
                 const check = () => {
-                  if (!settled && closeInfo) {
+                  if (settled) return;
+                  if (closeInfo) {
                     settled = true;
                     clearTimeout(timer);
                     resolve(closeInfo);
+                  } else if (socketClosed) {
+                    // Fail fast: the TCP socket is gone and no close frame can
+                    // ever arrive — don't sit out the timeout with a misleading
+                    // "timeout" message.
+                    settled = true;
+                    clearTimeout(timer);
+                    reject(new Error("socket closed without a close frame"));
                   }
                 };
                 check();
@@ -204,6 +213,10 @@ export function connectWebSocket(
       });
 
       socket.on("close", () => {
+        socketClosed = true;
+        // Settle any close-frame waiters: if a close frame already arrived they
+        // resolve with it; otherwise they reject (socket dropped frameless).
+        for (const r of closeFrameResolvers) r();
         for (const r of closeResolvers) r();
       });
 
