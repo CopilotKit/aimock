@@ -583,7 +583,7 @@ export function handleOpenRouterVideoModels(
     // Video fixtures are loaded but none has a string match.model (e.g. all
     // RegExp models or onVideo registrations) — the listing silently serves
     // the default set, which can surprise fixture authors.
-    defaults.logger.debug(
+    defaults.logger.warn(
       "No video fixture contributes a string model — serving the default video model set",
     );
   }
