@@ -222,6 +222,9 @@ const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings
 const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
 const VERTEX_RE =
   /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
+const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
+const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
+const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
 
 /**
  * Normalize parametric API paths to route patterns for use as metric labels.
@@ -255,6 +258,21 @@ export function normalizePathLabel(pathname: string): string {
   // ElevenLabs TTS: /v1/text-to-speech/{voice_id}
   if (ELEVENLABS_TTS_RE.test(pathname)) {
     return "/v1/text-to-speech/{voice_id}";
+  }
+
+  // OpenRouter video: /api/v1/videos/{jobId}[/content] — jobIds are random
+  // UUIDs, so raw paths would mint unbounded label cardinality. The static
+  // /api/v1/videos/models listing route must not collapse into {jobId}.
+  if (OPENROUTER_VIDEO_CONTENT_RE.test(pathname)) {
+    return "/api/v1/videos/{jobId}/content";
+  }
+  if (pathname !== "/api/v1/videos/models" && OPENROUTER_VIDEO_STATUS_RE.test(pathname)) {
+    return "/api/v1/videos/{jobId}";
+  }
+
+  // OpenAI video status: /v1/videos/{id}
+  if (OPENAI_VIDEO_STATUS_RE.test(pathname)) {
+    return "/v1/videos/{id}";
   }
 
   // Static path — return as-is

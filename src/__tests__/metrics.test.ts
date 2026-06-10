@@ -49,9 +49,10 @@ async function httpPost(
 
 async function httpGet(
   url: string,
+  headers?: Record<string, string>,
 ): Promise<{ status: number; body: string; headers: Record<string, string> }> {
   return new Promise((resolve, reject) => {
-    const req = http.request(url, { method: "GET" }, (res) => {
+    const req = http.request(url, { method: "GET", headers }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () =>
@@ -433,6 +434,30 @@ describe("normalizePathLabel", () => {
       ),
     ).toBe("/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:streamGenerateContent");
   });
+
+  it("normalizes OpenRouter video status path", () => {
+    expect(normalizePathLabel("/api/v1/videos/0b126396-2b78-4f08-a2a0-0e8de15c1b5a")).toBe(
+      "/api/v1/videos/{jobId}",
+    );
+  });
+
+  it("normalizes OpenRouter video content path", () => {
+    expect(normalizePathLabel("/api/v1/videos/0b126396-2b78-4f08-a2a0-0e8de15c1b5a/content")).toBe(
+      "/api/v1/videos/{jobId}/content",
+    );
+  });
+
+  it("leaves the OpenRouter video models listing path unchanged", () => {
+    expect(normalizePathLabel("/api/v1/videos/models")).toBe("/api/v1/videos/models");
+  });
+
+  it("leaves the OpenRouter video submit path unchanged", () => {
+    expect(normalizePathLabel("/api/v1/videos")).toBe("/api/v1/videos");
+  });
+
+  it("normalizes OpenAI video status path", () => {
+    expect(normalizePathLabel("/v1/videos/video_abc123")).toBe("/v1/videos/{id}");
+  });
 });
 
 describe("MetricsRegistry: all three types serialized together", () => {
@@ -628,6 +653,40 @@ describe("integration: /metrics endpoint", () => {
     expect(res.body).toMatch(
       /aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*source="fixture"[^}]*\} 1/,
     );
+  });
+
+  it("OpenRouter video lifecycle paths are templated (no per-job label cardinality)", async () => {
+    const fixtures: Fixture[] = [
+      {
+        match: { userMessage: "metrics video", endpoint: "video" },
+        response: { video: { id: "vid_mx", status: "completed", b64: "AAAA" } },
+      },
+    ];
+    instance = await createServer(fixtures, { metrics: true });
+
+    const submit = await httpPost(`${instance.url}/api/v1/videos`, {
+      model: "m/v",
+      prompt: "metrics video",
+    });
+    expect(submit.status).toBe(200);
+    const { id } = JSON.parse(submit.body) as { id: string };
+
+    // Default 0/0 progression: the first poll reports completed.
+    expect((await httpGet(`${instance.url}/api/v1/videos/${id}`)).status).toBe(200);
+    expect(
+      (
+        await httpGet(`${instance.url}/api/v1/videos/${id}/content?index=0`, {
+          Authorization: "Bearer test",
+        })
+      ).status,
+    ).toBe(200);
+
+    const res = await httpGet(`${instance.url}/metrics`);
+    expect(res.body).toContain('path="/api/v1/videos"');
+    expect(res.body).toContain('path="/api/v1/videos/{jobId}"');
+    expect(res.body).toContain('path="/api/v1/videos/{jobId}/content"');
+    // The job UUID must never appear as a label value.
+    expect(res.body).not.toContain(id);
   });
 
   it("tracks fixtures loaded gauge", async () => {
