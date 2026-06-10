@@ -692,6 +692,34 @@ describe("OpenRouter video — journal coverage", () => {
     expect(byPathStatus).toContain(`POST /api/v1/videos 404`);
     expect(byPathStatus).toContain(`POST /api/v1/videos 400`);
   });
+
+  test("a handler throw on submit journals a 500 entry", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "factory boom", endpoint: "video" },
+      response: () => {
+        throw new Error("factory boom");
+      },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "factory boom" }),
+    });
+    expect(res.status).toBe(500);
+    await res.arrayBuffer();
+
+    // Without catch-block journaling the request is invisible — and the
+    // throwing fixture's sequence slot was already consumed with no trace.
+    const entries = mock.journal.getAll();
+    expect(
+      entries.some(
+        (e) => e.method === "POST" && e.path === "/api/v1/videos" && e.response.status === 500,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("OpenRouter video — chaos injection", () => {
@@ -956,6 +984,65 @@ describe("OpenRouter video — logger observability", () => {
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.equals(Buffer.from([0x41]))).toBe(true);
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(false);
+  });
+
+  test("does not warn on concatenated base64 with interior padding", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "interior padding", endpoint: "video" },
+      // "QQ==QQ==" is two valid padded groups concatenated. Node's decoder
+      // treats the first "=" as a terminator and decodes only "QQ==" (one
+      // byte) — counting the post-padding characters as data chars would
+      // falsely flag the payload as corrupt.
+      response: { video: { id: "vid_ip", status: "completed", b64: "QQ==QQ==" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "interior padding" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(Buffer.from([0x41]))).toBe(true);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(false);
+  });
+
+  test("warns when sanitized b64 length is congruent to 1 mod 4", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "mod4 one", endpoint: "video" },
+      // "QQQQQ" is malformed base64: Node silently drops the trailing "Q"
+      // and the floor formula agrees with the truncated decode, so the
+      // length-mismatch check alone never fires.
+      response: { video: { id: "vid_m1", status: "completed", b64: "QQQQQ" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "mod4 one" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200); // the truncated decode is still served
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBe(3);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
   });
 
   test("warns when fixture sets video.url but no b64 (placeholder served)", async () => {
@@ -1501,6 +1588,27 @@ describe("OpenRouter video — x-forwarded-proto/host", () => {
     });
     const envelope = await submit.json();
     expect(envelope.polling_url.startsWith("https://mock.example.com/")).toBe(true);
+  });
+
+  test("junk x-forwarded-host values fall back to the Host header", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "junk host", endpoint: "video" },
+      response: { video: { id: "vid_jh", status: "completed" } },
+    });
+    await mock.start();
+
+    // Spaces, slashes (path smuggling), and userinfo are not valid in a bare
+    // host[:port] — each must be rejected in favor of the Host header.
+    for (const junk of ["mock example com", "evil.com/path", "user@evil.com"]) {
+      const submit = await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-Host": junk },
+        body: JSON.stringify({ model: "m/v", prompt: "junk host" }),
+      });
+      const envelope = await submit.json();
+      expect(envelope.polling_url.startsWith(`${mock.url}/api/v1/videos/`)).toBe(true);
+    }
   });
 });
 

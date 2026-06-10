@@ -143,6 +143,11 @@ function firstForwardedValue(header: string | string[] | undefined): string | un
   return raw?.split(",")[0]?.trim();
 }
 
+// Conservative host[:port] shape for x-forwarded-host. Spaces, slashes,
+// userinfo, or any other URL-structure character would corrupt (or smuggle
+// paths into) the generated URLs the value is interpolated into.
+const FORWARDED_HOST_RE = /^[a-zA-Z0-9.-]+(:\d+)?$/;
+
 function requestBase(req: http.IncomingMessage): string {
   // Honor x-forwarded-proto and x-forwarded-host so generated URLs survive a
   // TLS-terminating or host-rewriting proxy in front of the mock. First value
@@ -150,9 +155,13 @@ function requestBase(req: http.IncomingMessage): string {
   const candidate = firstForwardedValue(req.headers["x-forwarded-proto"])?.toLowerCase();
   // Allowlist http/https — any other value (ws, junk header data) falls back.
   const proto = candidate === "http" || candidate === "https" ? candidate : "http";
+  // Like the proto allowlist, a forwarded host that doesn't look like a bare
+  // host[:port] falls back to the Host header.
   const fwdHost = firstForwardedValue(req.headers["x-forwarded-host"]);
   const host =
-    fwdHost !== undefined && fwdHost !== "" ? fwdHost : (req.headers.host ?? "localhost");
+    fwdHost !== undefined && FORWARDED_HOST_RE.test(fwdHost)
+      ? fwdHost
+      : (req.headers.host ?? "localhost");
   return `${proto}://${host}`;
 }
 
@@ -368,11 +377,16 @@ export function handleOpenRouterVideoContent(
   let bytes: Buffer;
   if (job.video.b64) {
     bytes = Buffer.from(job.video.b64, "base64");
-    // Node's base64 decoder is lenient — invalid characters are skipped, so a
-    // corrupt payload silently truncates instead of erroring. Compare the
-    // decoded byte count against what the sanitized input length should yield
-    // (every 4 chars → 3 bytes, floor for a partial final group) and warn on
-    // mismatch. A length check — rather than byte-exact re-encode equality —
+    // Node's base64 decoder is lenient — invalid characters are skipped and
+    // the first "=" terminates the decode — so a corrupt payload silently
+    // truncates instead of erroring. Compare the decoded byte count against
+    // what the sanitized input length should yield (every 4 chars → 3 bytes,
+    // floor for a partial final group) and warn on mismatch. Sanitization
+    // mirrors the decoder: whitespace stripped, base64url normalized, and
+    // everything from the first "=" on dropped (counting post-padding
+    // characters as data chars would false-flag concatenated-but-valid
+    // payloads like "QQ==QQ==", which Node decodes as just their first
+    // group). A length check — rather than byte-exact re-encode equality —
     // tolerates valid non-canonical base64 whose final character carries
     // nonzero discarded trailing bits (e.g. "QR" re-encodes as "QQ") while
     // still catching skipped-character corruption. The decode is served as-is.
@@ -380,9 +394,16 @@ export function handleOpenRouterVideoContent(
       .replace(/\s+/g, "")
       .replace(/-/g, "+")
       .replace(/_/g, "/")
-      .replace(/=+$/, "");
+      .replace(/=.*$/, "");
     const expectedBytes = Math.floor((sanitized.length * 3) / 4);
-    if (bytes.length !== expectedBytes) {
+    if (sanitized.length % 4 === 1) {
+      // A length ≡ 1 (mod 4) is malformed base64 the mismatch check cannot
+      // catch: Node silently drops the trailing character and the floor
+      // formula agrees with the truncated decode.
+      defaults.logger.warn(
+        `Video fixture b64 for job ${jobId} has a sanitized length of ${sanitized.length} (≡ 1 mod 4) — malformed base64; the final character is silently dropped`,
+      );
+    } else if (bytes.length !== expectedBytes) {
       defaults.logger.warn(
         `Video fixture b64 for job ${jobId} decoded to ${bytes.length} bytes where its length implies ${expectedBytes} — likely corrupt base64`,
       );
