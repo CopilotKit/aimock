@@ -597,7 +597,8 @@ describe("integration: /metrics endpoint", () => {
     // Require both labels: action AND source. The source label is part of the
     // public metric contract (added when chaos was extended to proxy mode) and
     // an unasserted label is a regression hazard — future callers that forget
-    // to pass source would serialize `source=""` and pass a bare action match.
+    // to pass source would produce a series without the source label, which
+    // would pass a bare action match but fails this regex.
     expect(res.body).toMatch(
       /aimock_chaos_triggered_total\{[^}]*action="drop"[^}]*source="fixture"[^}]*\} 1/,
     );
