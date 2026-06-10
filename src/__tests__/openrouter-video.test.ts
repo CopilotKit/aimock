@@ -929,6 +929,71 @@ describe("OpenRouter video — logger observability", () => {
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
   });
 
+  test("does not warn on valid non-canonical base64 (nonzero trailing bits)", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "non canonical", endpoint: "video" },
+      // "QR" is valid base64 for the single byte 0x41, but non-canonical: its
+      // final character carries nonzero discarded trailing bits, so it
+      // re-encodes as "QQ". A byte-exact round-trip comparison would falsely
+      // flag it as corrupt.
+      response: { video: { id: "vid_nc", status: "completed", b64: "QR" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "non canonical" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(Buffer.from([0x41]))).toBe(true);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(false);
+  });
+
+  test("warns when fixture sets video.url but no b64 (placeholder served)", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "url only", endpoint: "video" },
+      // The author set a url expecting it to control the bytes — the
+      // OpenRouter content endpoint ignores it and serves the placeholder.
+      response: {
+        video: { id: "vid_uo", status: "completed", url: "https://example.com/v.mp4" },
+      },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "url only" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.subarray(4, 8).toString("ascii")).toBe("ftyp"); // placeholder
+    expect(
+      warnSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return line.includes("url is ignored") && line.includes("b64");
+      }),
+    ).toBe(true);
+  });
+
   test("warns on an unknown fixture status and treats the job as completed", async () => {
     mock = new LLMock({ port: 0, logLevel: "warn" });
     mock.addFixture({
@@ -1137,7 +1202,28 @@ describe("OpenRouter video — request body validation", () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error.type).toBe("invalid_request_error");
-    expect(data.error.message).toContain("prompt");
+    // Present-but-invalid prompt: "Missing required parameter" would be
+    // wrong — the parameter is there. Mirrors the model path's message style.
+    expect(data.error.message).toBe(
+      "Invalid type for parameter: 'prompt' must be a non-empty string",
+    );
+  });
+
+  test("empty-string prompt returns 400 with a non-empty-string message", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+    expect(data.error.message).toBe(
+      "Invalid type for parameter: 'prompt' must be a non-empty string",
+    );
   });
 
   test("non-string model returns 400", async () => {
@@ -1198,8 +1284,12 @@ describe("OpenRouter video — request body validation", () => {
 
     const entries = mock.journal.getAll().filter((e) => e.response.status === 400);
     expect(entries).toHaveLength(3);
-    expect(entries[0].body).toMatchObject({ model: 123, prompt: "a sunset" });
-    expect(entries[1].body).toMatchObject({ model: "m/v" });
+    // Field-validation 400s journal a structurally valid synthetic body
+    // (JournalEntry.body is ChatCompletionRequest | null): raw fields ride
+    // along, messages is always an array, and a non-string model is
+    // JSON-encoded so the field stays a string.
+    expect(entries[0].body).toMatchObject({ model: "123", prompt: "a sunset", messages: [] });
+    expect(entries[1].body).toMatchObject({ model: "m/v", messages: [] });
     expect(entries[2].body).toBeNull();
   });
 });
@@ -1304,9 +1394,9 @@ describe("OpenRouter video — testId scoping of generated URLs", () => {
   });
 });
 
-// ─── CR findings: x-forwarded-proto in generated URLs ──────────────────────
+// ─── CR findings: x-forwarded-proto/host in generated URLs ─────────────────
 
-describe("OpenRouter video — x-forwarded-proto scheme", () => {
+describe("OpenRouter video — x-forwarded-proto/host", () => {
   let mock: LLMock | undefined;
 
   afterEach(async () => {
@@ -1371,6 +1461,47 @@ describe("OpenRouter video — x-forwarded-proto scheme", () => {
     });
     const envelope = await submit.json();
     expect(envelope.polling_url.startsWith("http://")).toBe(true);
+  });
+
+  test("polling_url uses x-forwarded-host when present (first value wins)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "forwarded host", endpoint: "video" },
+      response: { video: { id: "vid_fh", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-Host": "mock.example.com, inner.proxy.local",
+      },
+      body: JSON.stringify({ model: "m/v", prompt: "forwarded host" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("http://mock.example.com/")).toBe(true);
+  });
+
+  test("x-forwarded-proto and x-forwarded-host combine in generated URLs", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "proxied host and proto", endpoint: "video" },
+      response: { video: { id: "vid_fhp", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "mock.example.com",
+      },
+      body: JSON.stringify({ model: "m/v", prompt: "proxied host and proto" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("https://mock.example.com/")).toBe(true);
   });
 });
 

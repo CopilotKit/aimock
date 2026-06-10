@@ -137,15 +137,23 @@ function advanceJob(job: OpenRouterVideoJob): void {
   }
 }
 
+/** First value of a possibly array-typed, possibly comma-joined header. */
+function firstForwardedValue(header: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(header) ? header[0] : header;
+  return raw?.split(",")[0]?.trim();
+}
+
 function requestBase(req: http.IncomingMessage): string {
-  // Honor x-forwarded-proto so generated URLs survive a TLS-terminating
-  // proxy in front of the mock. First value wins on comma-joined lists.
-  const fwdProto = req.headers["x-forwarded-proto"];
-  const protoRaw = Array.isArray(fwdProto) ? fwdProto[0] : fwdProto;
-  const candidate = protoRaw?.split(",")[0]?.trim().toLowerCase();
+  // Honor x-forwarded-proto and x-forwarded-host so generated URLs survive a
+  // TLS-terminating or host-rewriting proxy in front of the mock. First value
+  // wins on comma-joined lists.
+  const candidate = firstForwardedValue(req.headers["x-forwarded-proto"])?.toLowerCase();
   // Allowlist http/https — any other value (ws, junk header data) falls back.
   const proto = candidate === "http" || candidate === "https" ? candidate : "http";
-  return `${proto}://${req.headers.host ?? "localhost"}`;
+  const fwdHost = firstForwardedValue(req.headers["x-forwarded-host"]);
+  const host =
+    fwdHost !== undefined && fwdHost !== "" ? fwdHost : (req.headers.host ?? "localhost");
+  return `${proto}://${host}`;
 }
 
 /**
@@ -157,6 +165,27 @@ function requestBase(req: http.IncomingMessage): string {
  */
 function testIdSuffix(testId: string, sep: "?" | "&"): string {
   return testId === DEFAULT_TEST_ID ? "" : `${sep}testId=${encodeURIComponent(testId)}`;
+}
+
+/**
+ * Synthesizes a structurally valid journal body for field-validation 400s.
+ * JournalEntry.body is typed `ChatCompletionRequest | null`, so the raw
+ * parsed body cannot be journaled as-is — journal consumers may walk
+ * `body.messages`. Mirrors the submit success path's synthetic shape: raw
+ * request fields (including `prompt`) ride along via the index signature,
+ * `messages` is empty (there is no validated prompt to wrap), and a
+ * non-string `model` is JSON-encoded so the field stays a string without
+ * dropping what the caller sent.
+ */
+function validationJournalBody(videoReq: OpenRouterVideoRequest): ChatCompletionRequest {
+  const rawModel = videoReq.model;
+  const model =
+    typeof rawModel === "string"
+      ? rawModel
+      : rawModel === undefined
+        ? ""
+        : JSON.stringify(rawModel);
+  return { ...videoReq, model, messages: [] };
 }
 
 // ─── GET /api/v1/videos/{jobId} — status poll ───────────────────────────────
@@ -340,20 +369,33 @@ export function handleOpenRouterVideoContent(
   if (job.video.b64) {
     bytes = Buffer.from(job.video.b64, "base64");
     // Node's base64 decoder is lenient — invalid characters are skipped, so a
-    // corrupt payload silently truncates instead of erroring. Round-trip the
-    // decode (normalizing whitespace, padding, and the url-safe alphabet) and
-    // warn on mismatch. The decode is still served as-is.
-    const normalized = job.video.b64
+    // corrupt payload silently truncates instead of erroring. Compare the
+    // decoded byte count against what the sanitized input length should yield
+    // (every 4 chars → 3 bytes, floor for a partial final group) and warn on
+    // mismatch. A length check — rather than byte-exact re-encode equality —
+    // tolerates valid non-canonical base64 whose final character carries
+    // nonzero discarded trailing bits (e.g. "QR" re-encodes as "QQ") while
+    // still catching skipped-character corruption. The decode is served as-is.
+    const sanitized = job.video.b64
       .replace(/\s+/g, "")
       .replace(/-/g, "+")
       .replace(/_/g, "/")
       .replace(/=+$/, "");
-    if (bytes.toString("base64").replace(/=+$/, "") !== normalized) {
+    const expectedBytes = Math.floor((sanitized.length * 3) / 4);
+    if (bytes.length !== expectedBytes) {
       defaults.logger.warn(
-        `Video fixture b64 for job ${jobId} did not round-trip (decoded ${bytes.length} bytes) — likely corrupt base64`,
+        `Video fixture b64 for job ${jobId} decoded to ${bytes.length} bytes where its length implies ${expectedBytes} — likely corrupt base64`,
       );
     }
   } else {
+    if (job.video.url) {
+      // Every other coercion on this surface warns — so does dropping the
+      // author's url. The real OpenRouter content endpoint serves bytes, not
+      // a redirect, so the mock has nothing to do with a url-only fixture.
+      defaults.logger.warn(
+        `Video fixture for job ${jobId} sets video.url but no b64 — url is ignored on the OpenRouter content endpoint; use b64 to control the served bytes (serving the placeholder MP4)`,
+      );
+    }
     bytes = PLACEHOLDER_MP4;
   }
 
@@ -525,7 +567,7 @@ export async function handleOpenRouterVideoCreate(
 
   // Field-validation 400s journal the parsed body (unlike the malformed-JSON
   // and non-object paths above, where there is no meaningful object to log).
-  const parsedBody = videoReq as ChatCompletionRequest;
+  const parsedBody = validationJournalBody(videoReq);
 
   if (typeof videoReq.prompt !== "string" || !videoReq.prompt) {
     journal.add({
@@ -535,11 +577,18 @@ export async function handleOpenRouterVideoCreate(
       body: parsedBody,
       response: { status: 400, fixture: null },
     });
+    // Distinguish an absent prompt from one that is present but unusable
+    // (non-string or empty) — "missing" would be wrong for the latter. The
+    // invalid-type message mirrors the model check below.
+    const message =
+      videoReq.prompt === undefined
+        ? "Missing required parameter: 'prompt'"
+        : "Invalid type for parameter: 'prompt' must be a non-empty string";
     writeErrorResponse(
       res,
       400,
       JSON.stringify({
-        error: { message: "Missing required parameter: 'prompt'", type: "invalid_request_error" },
+        error: { message, type: "invalid_request_error" },
       }),
     );
     return;
