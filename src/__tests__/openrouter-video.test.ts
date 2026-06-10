@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach, vi } from "vitest";
 import { LLMock } from "../llmock.js";
+import { createServer } from "../server.js";
 import { resolveProgression } from "../fal.js";
 import type { VideoResponse } from "../types.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
@@ -1228,6 +1229,44 @@ describe("OpenRouter video — Bearer scheme validation", () => {
       headers: { Authorization: "Bearer k" },
     });
     expect(res.status).toBe(200);
+  });
+});
+
+// ─── CR findings: server close clears per-instance video state ─────────────
+
+describe("server close clears video job state", () => {
+  test("close() empties both videoStates and openRouterVideoJobs", async () => {
+    const fixtures = [
+      {
+        match: { userMessage: "openai close", endpoint: "video" as const },
+        response: { video: { id: "vid_close_oa", status: "completed" as const } },
+      },
+      {
+        match: { userMessage: "openrouter close", endpoint: "video" as const },
+        response: { video: { id: "vid_close_or", status: "completed" as const } },
+      },
+    ];
+    const instance = await createServer(fixtures, { port: 0 });
+
+    // Populate both per-instance maps.
+    await fetch(`${instance.url}/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "sora-2", prompt: "openai close" }),
+    });
+    await fetch(`${instance.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "openrouter close" }),
+    });
+    expect(instance.videoStates.size).toBeGreaterThan(0);
+    expect(instance.openRouterVideoJobs.size).toBeGreaterThan(0);
+
+    await new Promise<void>((resolve, reject) => {
+      instance.server.close((err) => (err ? reject(err) : resolve()));
+    });
+    expect(instance.openRouterVideoJobs.size).toBe(0);
+    expect(instance.videoStates.size).toBe(0);
   });
 });
 

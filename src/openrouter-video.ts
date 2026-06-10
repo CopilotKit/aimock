@@ -55,7 +55,6 @@ interface OpenRouterVideoJob {
   pollsBeforeCompleted: number;
   /** The matched fixture's video object (terminal status, bytes, cost, error). */
   video: VideoResponse["video"];
-  createdAt: number;
 }
 
 interface OpenRouterVideoEntry {
@@ -692,7 +691,6 @@ export async function handleOpenRouterVideoCreate(
     pollsBeforeInProgress: progression.pollsBeforeInProgress,
     pollsBeforeCompleted: progression.pollsBeforeCompleted,
     video: response.video,
-    createdAt: Date.now(),
   };
   // Default 0/0 progression reaches the terminal status on the first poll —
   // seed terminal directly (mirrors fal's COMPLETED-on-submit initial status);
