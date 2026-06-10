@@ -639,8 +639,8 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     expect(typeof data.data[0].id).toBe("string");
   });
 
-  test("debug-logs when video fixtures exist but none contribute a string model", async () => {
-    mock = new LLMock({ port: 0, logLevel: "debug" });
+  test("warns when video fixtures exist but none contribute a string model", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
     // RegExp-model video fixture: real video fixtures are loaded, yet the
     // listing silently falls back to the default model set.
     mock.addFixture({
