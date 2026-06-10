@@ -562,3 +562,315 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     expect(Array.isArray(data.data)).toBe(true);
   });
 });
+
+// ─── Task 6: cross-cutting conformance ──────────────────────────────────────
+
+describe("OpenRouter video — strict mode diagnostics", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("strict 503 reports sequence/turn skip via shared matcher", async () => {
+    mock = new LLMock({ port: 0, strict: true });
+    mock.addFixture({
+      match: { userMessage: "once only", endpoint: "video", sequenceIndex: 0 },
+      response: { video: { id: "vid_seq", status: "completed" } },
+    });
+    await mock.start();
+
+    const first = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "once only" }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "once only" }),
+    });
+    expect(second.status).toBe(503);
+    const data = await second.json();
+    expect(data.error.message).toMatch(SKIPPED_BY_STATE_RE);
+  });
+});
+
+describe("OpenRouter video — journal coverage", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("every lifecycle path journals an entry", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "journal me", endpoint: "video" },
+      response: { video: { id: "vid_j", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "journal me" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await fetch(`${mock.url}/api/v1/videos/${id}`);
+    await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`); // 401
+    await fetch(`${mock.url}/api/v1/videos/unknown-job`); // 404
+    await fetch(`${mock.url}/api/v1/videos/models`);
+    await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "no match here" }),
+    }); // 404 no-match
+    await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{nope",
+    }); // 400 malformed
+
+    const entries = mock.journal.getAll();
+    const byPathStatus = entries.map((e) => `${e.method} ${e.path} ${e.response.status}`);
+    expect(byPathStatus).toContain(`POST /api/v1/videos 200`);
+    expect(byPathStatus).toContain(`GET /api/v1/videos/${id} 200`);
+    expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 200`);
+    expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 401`);
+    expect(byPathStatus).toContain(`GET /api/v1/videos/unknown-job 404`);
+    expect(byPathStatus).toContain(`GET /api/v1/videos/models 200`);
+    expect(byPathStatus).toContain(`POST /api/v1/videos 404`);
+    expect(byPathStatus).toContain(`POST /api/v1/videos 400`);
+  });
+});
+
+describe("OpenRouter video — chaos injection", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("chaos drop header applies to submit, status, and content", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "chaotic", endpoint: "video" },
+      response: { video: { id: "vid_c", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    // Establish a real job first (no chaos)
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "chaotic" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    const chaosHeaders = { "x-aimock-chaos-drop": "1" };
+    const droppedSubmit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...chaosHeaders },
+      body: JSON.stringify({ model: "m/v", prompt: "chaotic" }),
+    });
+    expect(droppedSubmit.status).toBe(500);
+    expect((await droppedSubmit.json()).error.code).toBe("chaos_drop");
+
+    const droppedStatus = await fetch(`${mock.url}/api/v1/videos/${id}`, {
+      headers: chaosHeaders,
+    });
+    expect(droppedStatus.status).toBe(500);
+    expect((await droppedStatus.json()).error.code).toBe("chaos_drop");
+
+    const droppedContent = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test", ...chaosHeaders },
+    });
+    expect(droppedContent.status).toBe(500);
+    expect((await droppedContent.json()).error.code).toBe("chaos_drop");
+  });
+});
+
+describe("OpenRouter video — full lifecycle integration", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("submit → pending → in_progress → completed → download", async () => {
+    const bytes = Buffer.from("the generated video");
+    mock = new LLMock({
+      port: 0,
+      openRouterVideo: { pollsBeforeInProgress: 2, pollsBeforeCompleted: 3 },
+    });
+    mock.addFixture({
+      match: { userMessage: "full lifecycle", endpoint: "video" },
+      response: {
+        video: {
+          id: "vid_fl",
+          status: "completed",
+          b64: bytes.toString("base64"),
+          cost: 0.12,
+        },
+      },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "full lifecycle" }),
+    });
+    expect(submit.status).toBe(200);
+    const envelope = await submit.json();
+    expect(envelope.status).toBe("pending");
+
+    const poll1 = await (await fetch(envelope.polling_url)).json();
+    expect(poll1.status).toBe("pending");
+    const poll2 = await (await fetch(envelope.polling_url)).json();
+    expect(poll2.status).toBe("in_progress");
+    const poll3 = await (await fetch(envelope.polling_url)).json();
+    expect(poll3.status).toBe("completed");
+    expect(poll3.usage).toEqual({ cost: 0.12 });
+    expect(poll3.unsigned_urls).toHaveLength(1);
+
+    const download = await fetch(poll3.unsigned_urls[0], {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("video/mp4");
+    const body = Buffer.from(await download.arrayBuffer());
+    expect(body.equals(bytes)).toBe(true);
+  });
+
+  test("failed lifecycle: submit → poll failed → download rejected", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "fail lifecycle", endpoint: "video" },
+      response: { video: { id: "vid_flf", status: "failed", error: "nsfw content" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "fail lifecycle" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.status).toBe("pending");
+
+    const poll = await (await fetch(envelope.polling_url)).json();
+    expect(poll.status).toBe("failed");
+    expect(poll.error).toBe("nsfw content");
+    expect(poll.unsigned_urls).toBeUndefined();
+
+    const download = await fetch(`${mock.url}/api/v1/videos/${envelope.id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(download.status).toBe(400);
+  });
+
+  test("download without auth is rejected even for a completed job", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "auth lifecycle", endpoint: "video" },
+      response: { video: { id: "vid_al", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "auth lifecycle" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await fetch(`${mock.url}/api/v1/videos/${id}`); // completed
+
+    const unauthorized = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`);
+    expect(unauthorized.status).toBe(401);
+    expect((await unauthorized.json()).error.message).toBe("No auth credentials found");
+
+    const authorized = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(authorized.status).toBe(200);
+  });
+});
+
+describe("OpenRouter video — routing collision regression", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("Ollama /api/chat still routes to the Ollama handler", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "ollama hello" },
+      response: { content: "hello from ollama" },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3",
+        messages: [{ role: "user", content: "ollama hello" }],
+        stream: false,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.message.content).toBe("hello from ollama");
+  });
+
+  test("Ollama /api/embeddings still routes to the Ollama handler", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "nomic-embed-text", prompt: "embed me" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.embedding)).toBe(true);
+  });
+
+  test("OpenAI /v1/videos lifecycle is unaffected", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "openai video", endpoint: "video" },
+      response: {
+        video: { id: "vid_oa", status: "completed", url: "https://example.com/oa.mp4" },
+      },
+    });
+    await mock.start();
+
+    const create = await fetch(`${mock.url}/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "sora-2", prompt: "openai video" }),
+    });
+    expect(create.status).toBe(200);
+    const created = await create.json();
+    // OpenAI-shaped response: status/url on the video object, no polling_url
+    expect(created.id).toBe("vid_oa");
+    expect(created.polling_url).toBeUndefined();
+    expect(created.url).toBe("https://example.com/oa.mp4");
+
+    const status = await fetch(`${mock.url}/v1/videos/vid_oa`);
+    expect(status.status).toBe(200);
+    const statusBody = await status.json();
+    expect(statusBody.status).toBe("completed");
+  });
+});
