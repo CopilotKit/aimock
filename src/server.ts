@@ -1339,20 +1339,24 @@ export async function createServer(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         defaults.logger.error(`openrouter-video content: ${msg}`);
-        // Journal the failed request so it isn't invisible to consumers.
-        // Wrapped so journaling can never mask the 500 write below.
-        try {
-          journal.add({
-            method: req.method ?? "GET",
-            path: req.url ?? pathname,
-            headers: flattenHeaders(req.headers),
-            body: null,
-            response: { status: 500, fixture: null },
-          });
-        } catch {
-          /* never mask the 500 */
-        }
         if (!res.headersSent) {
+          // Journal the failed request so it isn't invisible to consumers —
+          // guarded on headersSent so a throw after a successful journal +
+          // response does not double-journal. Wrapped so journaling can
+          // never mask the 500 write below.
+          try {
+            journal.add({
+              method: req.method ?? "GET",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch {
+            defaults.logger.debug(
+              "openrouter-video content: journal write failed after handler error",
+            );
+          }
           writeErrorResponse(
             res,
             500,
@@ -1373,20 +1377,24 @@ export async function createServer(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         defaults.logger.error(`openrouter-video models: ${msg}`);
-        // Journal the failed request so it isn't invisible to consumers.
-        // Wrapped so journaling can never mask the 500 write below.
-        try {
-          journal.add({
-            method: req.method ?? "GET",
-            path: req.url ?? pathname,
-            headers: flattenHeaders(req.headers),
-            body: null,
-            response: { status: 500, fixture: null },
-          });
-        } catch {
-          /* never mask the 500 */
-        }
         if (!res.headersSent) {
+          // Journal the failed request so it isn't invisible to consumers —
+          // guarded on headersSent so a throw after a successful journal +
+          // response does not double-journal. Wrapped so journaling can
+          // never mask the 500 write below.
+          try {
+            journal.add({
+              method: req.method ?? "GET",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch {
+            defaults.logger.debug(
+              "openrouter-video models: journal write failed after handler error",
+            );
+          }
           writeErrorResponse(
             res,
             500,
@@ -1415,20 +1423,24 @@ export async function createServer(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         defaults.logger.error(`openrouter-video status: ${msg}`);
-        // Journal the failed request so it isn't invisible to consumers.
-        // Wrapped so journaling can never mask the 500 write below.
-        try {
-          journal.add({
-            method: req.method ?? "GET",
-            path: req.url ?? pathname,
-            headers: flattenHeaders(req.headers),
-            body: null,
-            response: { status: 500, fixture: null },
-          });
-        } catch {
-          /* never mask the 500 */
-        }
         if (!res.headersSent) {
+          // Journal the failed request so it isn't invisible to consumers —
+          // guarded on headersSent so a throw after a successful journal +
+          // response does not double-journal. Wrapped so journaling can
+          // never mask the 500 write below.
+          try {
+            journal.add({
+              method: req.method ?? "GET",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch {
+            defaults.logger.debug(
+              "openrouter-video status: journal write failed after handler error",
+            );
+          }
           writeErrorResponse(
             res,
             500,
@@ -1458,22 +1470,26 @@ export async function createServer(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         defaults.logger.error(`openrouter-video submit: ${msg}`);
-        // Journal the failed request so it isn't invisible to consumers — on
-        // submit a throw may have already consumed a fixture-sequence slot,
-        // which would otherwise leave no trace. Wrapped so journaling can
-        // never mask the 500 write below.
-        try {
-          journal.add({
-            method: req.method ?? "POST",
-            path: req.url ?? pathname,
-            headers: flattenHeaders(req.headers),
-            body: null,
-            response: { status: 500, fixture: null },
-          });
-        } catch {
-          /* never mask the 500 */
-        }
         if (!res.headersSent) {
+          // Journal the failed request so it isn't invisible to consumers —
+          // on submit a throw may have already consumed a fixture-sequence
+          // slot, which would otherwise leave no trace. Guarded on
+          // headersSent so a throw after a successful journal + response
+          // does not double-journal. Wrapped so journaling can never mask
+          // the 500 write below.
+          try {
+            journal.add({
+              method: req.method ?? "POST",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch {
+            defaults.logger.debug(
+              "openrouter-video submit: journal write failed after handler error",
+            );
+          }
           writeErrorResponse(
             res,
             500,

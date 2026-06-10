@@ -1,6 +1,7 @@
 import type * as http from "node:http";
 import crypto from "node:crypto";
 import type { ChatCompletionRequest, Fixture, HandlerDefaults, VideoResponse } from "./types.js";
+import type { Logger } from "./logger.js";
 import {
   isVideoResponse,
   isErrorResponse,
@@ -147,8 +148,11 @@ function firstForwardedValue(header: string | string[] | undefined): string | un
 // userinfo, or any other URL-structure character would corrupt (or smuggle
 // paths into) the generated URLs the value is interpolated into.
 const FORWARDED_HOST_RE = /^[a-zA-Z0-9.-]+(:\d+)?$/;
+// Bracketed IPv6 literal host[:port], e.g. [::1] or [::1]:8080 — the bare
+// RE above cannot admit ":" inside the host without also admitting junk.
+const FORWARDED_HOST_IPV6_RE = /^\[[0-9a-fA-F:.]+\](:\d+)?$/;
 
-function requestBase(req: http.IncomingMessage): string {
+function requestBase(req: http.IncomingMessage, logger: Logger): string {
   // Honor x-forwarded-proto and x-forwarded-host so generated URLs survive a
   // TLS-terminating or host-rewriting proxy in front of the mock. First value
   // wins on comma-joined lists.
@@ -156,12 +160,17 @@ function requestBase(req: http.IncomingMessage): string {
   // Allowlist http/https — any other value (ws, junk header data) falls back.
   const proto = candidate === "http" || candidate === "https" ? candidate : "http";
   // Like the proto allowlist, a forwarded host that doesn't look like a bare
-  // host[:port] falls back to the Host header.
+  // host[:port] (or a bracketed IPv6 literal) falls back to the Host header —
+  // with a warn, so a misconfigured proxy isn't silently ignored.
   const fwdHost = firstForwardedValue(req.headers["x-forwarded-host"]);
-  const host =
-    fwdHost !== undefined && FORWARDED_HOST_RE.test(fwdHost)
-      ? fwdHost
-      : (req.headers.host ?? "localhost");
+  let host = req.headers.host ?? "localhost";
+  if (fwdHost !== undefined) {
+    if (FORWARDED_HOST_RE.test(fwdHost) || FORWARDED_HOST_IPV6_RE.test(fwdHost)) {
+      host = fwdHost;
+    } else {
+      logger.warn("x-forwarded-host value rejected, falling back to Host header");
+    }
+  }
   return `${proto}://${host}`;
 }
 
@@ -261,7 +270,7 @@ export function handleOpenRouterVideoStatus(
   const body: Record<string, unknown> = { id: job.jobId, status: job.status };
   if (job.status === "completed") {
     body.unsigned_urls = [
-      `${requestBase(req)}/api/v1/videos/${job.jobId}/content?index=0${testIdSuffix(testId, "&")}`,
+      `${requestBase(req, defaults.logger)}/api/v1/videos/${job.jobId}/content?index=0${testIdSuffix(testId, "&")}`,
     ];
     body.usage = { cost: job.video.cost ?? 0 };
   } else if (job.status === "failed") {
@@ -399,11 +408,12 @@ export function handleOpenRouterVideoContent(
       .replace(/=.*$/, "");
     const expectedBytes = Math.floor((sanitized.length * 3) / 4);
     if (sanitized.length % 4 === 1) {
-      // A length ≡ 1 (mod 4) is malformed base64 the mismatch check cannot
-      // catch: Node silently drops the trailing character and the floor
-      // formula agrees with the truncated decode.
+      // A length ≡ 1 (mod 4) is base64 the mismatch check cannot catch: the
+      // floor formula agrees with Node's lenient decode whether the payload
+      // is genuinely truncated or merely contains invalid characters the
+      // sanitizer does not strip (e.g. "AAAA!" decodes fully).
       defaults.logger.warn(
-        `Video fixture b64 for job ${jobId} has a sanitized length of ${sanitized.length} (≡ 1 mod 4) — malformed base64; the final character is silently dropped`,
+        `Video fixture b64 for job ${jobId} has length ≡ 1 (mod 4) after sanitization (${sanitized.length} chars) — payload is malformed or contains invalid characters`,
       );
     } else if (bytes.length !== expectedBytes) {
       defaults.logger.warn(
@@ -411,6 +421,14 @@ export function handleOpenRouterVideoContent(
       );
     }
   } else {
+    if (job.video.b64 === "") {
+      // An explicit-but-empty b64 is indistinguishable from an absent one to
+      // the truthiness check above — warn so the author learns the fixture
+      // is not controlling the served bytes.
+      defaults.logger.warn(
+        `Video fixture for job ${jobId} has an empty b64 — serving the placeholder MP4`,
+      );
+    }
     if (job.video.url) {
       // Every other coercion on this surface warns — so does dropping the
       // author's url. The real OpenRouter content endpoint serves bytes, not
@@ -824,7 +842,7 @@ export async function handleOpenRouterVideoCreate(
   res.end(
     JSON.stringify({
       id: jobId,
-      polling_url: `${requestBase(req)}/api/v1/videos/${jobId}${testIdSuffix(testId, "?")}`,
+      polling_url: `${requestBase(req, defaults.logger)}/api/v1/videos/${jobId}${testIdSuffix(testId, "?")}`,
       status: "pending",
     }),
   );
