@@ -138,10 +138,20 @@ function advanceJob(job: OpenRouterVideoJob): void {
   }
 }
 
-/** First value of a possibly array-typed, possibly comma-joined header. */
+/**
+ * First non-empty value of a possibly array-typed, possibly comma-joined
+ * header. An empty header value or a leading-comma list (", host") would
+ * otherwise yield "" — triggering a spurious rejection warn and discarding
+ * valid later entries — so empty segments are skipped.
+ */
 function firstForwardedValue(header: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(header) ? header[0] : header;
-  return raw?.split(",")[0]?.trim();
+  if (raw === undefined) return undefined;
+  for (const segment of raw.split(",")) {
+    const trimmed = segment.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
 }
 
 // Conservative host[:port] shape for x-forwarded-host. Spaces, slashes,
@@ -154,8 +164,8 @@ const FORWARDED_HOST_IPV6_RE = /^\[[0-9a-fA-F:.]+\](:\d+)?$/;
 
 function requestBase(req: http.IncomingMessage, logger: Logger): string {
   // Honor x-forwarded-proto and x-forwarded-host so generated URLs survive a
-  // TLS-terminating or host-rewriting proxy in front of the mock. First value
-  // wins on comma-joined lists.
+  // TLS-terminating or host-rewriting proxy in front of the mock. First
+  // non-empty value wins on comma-joined lists.
   const candidate = firstForwardedValue(req.headers["x-forwarded-proto"])?.toLowerCase();
   // Allowlist http/https — any other value (ws, junk header data) falls back.
   const proto = candidate === "http" || candidate === "https" ? candidate : "http";
@@ -168,7 +178,9 @@ function requestBase(req: http.IncomingMessage, logger: Logger): string {
     if (FORWARDED_HOST_RE.test(fwdHost) || FORWARDED_HOST_IPV6_RE.test(fwdHost)) {
       host = fwdHost;
     } else {
-      logger.warn("x-forwarded-host value rejected, falling back to Host header");
+      logger.warn(
+        `x-forwarded-host value rejected, falling back to Host header: ${JSON.stringify(fwdHost.slice(0, 100))}`,
+      );
     }
   }
   return `${proto}://${host}`;
@@ -205,7 +217,13 @@ function validationJournalBody(videoReq: OpenRouterVideoRequest): ChatCompletion
       : rawModel === undefined
         ? ""
         : JSON.stringify(rawModel);
-  return { ...videoReq, model, messages: [] };
+  // Underscore-prefixed keys (`_endpointType`, `_context`, ...) are reserved
+  // for handler-set discriminators that journal consumers treat as trusted —
+  // strip them from the raw client body so a request cannot spoof them.
+  const sanitized = Object.fromEntries(
+    Object.entries(videoReq).filter(([key]) => !key.startsWith("_")),
+  );
+  return { ...sanitized, model, messages: [] };
 }
 
 // ─── GET /api/v1/videos/{jobId} — status poll ───────────────────────────────
@@ -385,6 +403,18 @@ export function handleOpenRouterVideoContent(
     return;
   }
 
+  // `index` is accepted but ignored (jobs are single-video) — warn when a
+  // present value asks for anything other than index 0, since the caller is
+  // silently getting index-0 bytes either way.
+  const queryIdx = path.indexOf("?");
+  const indexParam =
+    queryIdx === -1 ? null : new URLSearchParams(path.slice(queryIdx + 1)).get("index");
+  if (indexParam !== null && Number(indexParam) !== 0) {
+    defaults.logger.warn(
+      `Video content request for job ${jobId} asked for index=${indexParam} — the index param is ignored (jobs are single-video); serving index 0`,
+    );
+  }
+
   let bytes: Buffer;
   if (job.video.b64) {
     bytes = Buffer.from(job.video.b64, "base64");
@@ -407,6 +437,15 @@ export function handleOpenRouterVideoContent(
       .replace(/_/g, "/")
       .replace(/=.*$/, "");
     const expectedBytes = Math.floor((sanitized.length * 3) / 4);
+    if (bytes.length === 0) {
+      // Padding-only payloads (e.g. "=", "====") are truthy but sanitize to
+      // "" and decode to 0 bytes — dodging both the empty-string warn and
+      // the length-mismatch check below. Warn whenever a non-empty b64
+      // decodes to nothing; the zero-byte body is still served as-is.
+      defaults.logger.warn(
+        `Video fixture b64 for job ${jobId} decoded to zero bytes — the fixture is not controlling the served content`,
+      );
+    }
     if (sanitized.length % 4 === 1) {
       // A length ≡ 1 (mod 4) is base64 the mismatch check cannot catch: the
       // floor formula agrees with Node's lenient decode whether the payload
@@ -513,7 +552,7 @@ export function handleOpenRouterVideoModels(
   for (const f of fixtures) {
     if (f.match.endpoint === "video") {
       sawVideoFixture = true;
-      if (typeof f.match.model === "string") {
+      if (f.match.model && typeof f.match.model === "string") {
         modelIds.add(f.match.model);
       }
     }
@@ -827,7 +866,9 @@ export async function handleOpenRouterVideoCreate(
     pollCount: 0,
     pollsBeforeInProgress: progression.pollsBeforeInProgress,
     pollsBeforeCompleted: progression.pollsBeforeCompleted,
-    video: response.video,
+    // Shallow-copy so later mutation of the fixture/factory response object
+    // cannot retroactively change an in-flight job's stored video.
+    video: { ...response.video },
   };
   // Default 0/0 progression seeds the job terminal at submit (mirrors fal's
   // COMPLETED-on-submit initial status) — content is downloadable with zero

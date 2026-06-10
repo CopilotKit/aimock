@@ -29,6 +29,43 @@ describe("resolveProgression (shared with fal queue)", () => {
       pollsBeforeCompleted: 3,
     });
   });
+
+  test("treats non-finite thresholds as unset (NaN can never propagate)", () => {
+    // A NaN threshold would make advanceJob's `pollCount >= NaN` comparison
+    // permanently false — a polling client would never reach terminal.
+    expect(resolveProgression({ pollsBeforeCompleted: NaN })).toEqual({
+      pollsBeforeInProgress: 0,
+      pollsBeforeCompleted: 0,
+    });
+    expect(resolveProgression({ pollsBeforeInProgress: NaN })).toEqual({
+      pollsBeforeInProgress: 0,
+      pollsBeforeCompleted: 0,
+    });
+    expect(resolveProgression({ pollsBeforeCompleted: Infinity })).toEqual({
+      pollsBeforeInProgress: 0,
+      pollsBeforeCompleted: 0,
+    });
+  });
+
+  test("clamps negative thresholds to 0 (explicit-0 progression contract)", () => {
+    // {pollsBeforeInProgress: -1} must behave as an explicit 0 — progression
+    // enabled — not resolve completed to 0 (seed-terminal).
+    expect(resolveProgression({ pollsBeforeInProgress: -1 })).toEqual({
+      pollsBeforeInProgress: 0,
+      pollsBeforeCompleted: 1,
+    });
+    expect(resolveProgression({ pollsBeforeInProgress: 2, pollsBeforeCompleted: -5 })).toEqual({
+      pollsBeforeInProgress: 2,
+      pollsBeforeCompleted: 2,
+    });
+  });
+
+  test("floors fractional thresholds to integers", () => {
+    expect(resolveProgression({ pollsBeforeInProgress: 1.9 })).toEqual({
+      pollsBeforeInProgress: 1,
+      pollsBeforeCompleted: 2,
+    });
+  });
 });
 
 describe("VideoResponse extended fields", () => {
@@ -2310,5 +2347,330 @@ describe("OpenRouter video — pinned existing behavior", () => {
     expect(res.headers.get("content-type")).toBe("video/mp4");
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.equals(bytes)).toBe(true);
+  });
+});
+
+// ─── CR round 8: journal sanitization, threshold validation, header edge cases ─
+
+describe("OpenRouter video — validation journal body sanitization", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("validation-400 journal body strips underscore-prefixed client keys", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    // A client body carrying _endpointType/_context must not be able to
+    // plant values journal consumers treat as trusted handler-set
+    // discriminators.
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: 1, model: "m/v", _endpointType: "chat", _context: "x" }),
+    });
+    expect(res.status).toBe(400);
+    await res.arrayBuffer();
+
+    const entry = mock.journal
+      .getAll()
+      .find((e) => e.path === "/api/v1/videos" && e.response.status === 400);
+    expect(entry).toBeDefined();
+    const body = entry!.body as unknown as Record<string, unknown>;
+    expect(body._endpointType).toBeUndefined();
+    expect(body._context).toBeUndefined();
+    // The raw prompt field and the normalized model are still preserved.
+    expect(body.prompt).toBe(1);
+    expect(body.model).toBe("m/v");
+  });
+});
+
+describe("OpenRouter video — progression threshold sanitization (e2e)", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("NaN pollsBeforeCompleted cannot strand a job short of terminal", async () => {
+    mock = new LLMock({ port: 0, openRouterVideo: { pollsBeforeCompleted: NaN } });
+    mock.addFixture({
+      match: { userMessage: "nan threshold", endpoint: "video" },
+      response: { video: { id: "vid_nan", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "nan threshold" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    // Without sanitization `pollCount >= NaN` is always false — the job
+    // never terminates and a polling client hangs forever. The job must
+    // reach a terminal status within a bounded number of polls.
+    let status = "";
+    for (let i = 0; i < 5; i++) {
+      const poll = (await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json()) as {
+        status: string;
+      };
+      status = poll.status;
+      if (status === "completed" || status === "failed") break;
+    }
+    expect(status).toBe("completed");
+  });
+
+  test("negative pollsBeforeInProgress behaves as explicit 0 (progression enabled)", async () => {
+    mock = new LLMock({ port: 0, openRouterVideo: { pollsBeforeInProgress: -1 } });
+    mock.addFixture({
+      match: { userMessage: "negative threshold", endpoint: "video" },
+      response: { video: { id: "vid_neg", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "negative threshold" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    // -1 clamps to an explicit 0: progression is enabled (poll 1 is
+    // in_progress, poll 2 completed) instead of seed-terminal at submit.
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("completed");
+  });
+
+  test("createServer warns on non-finite/negative poll thresholds", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mock = new LLMock({
+      port: 0,
+      logLevel: "warn",
+      openRouterVideo: { pollsBeforeCompleted: NaN },
+      falQueue: { pollsBeforeInProgress: -1 },
+    });
+    await mock.start();
+
+    expect(
+      warnSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return (
+          line.includes("openRouterVideo.pollsBeforeCompleted") &&
+          line.includes("not a non-negative integer")
+        );
+      }),
+    ).toBe(true);
+    expect(
+      warnSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return (
+          line.includes("falQueue.pollsBeforeInProgress") &&
+          line.includes("not a non-negative integer")
+        );
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("OpenRouter video — CR round 8 content/header polish", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("warns when a padding-only b64 decodes to zero bytes", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "padding only", endpoint: "video" },
+      // "=" is truthy, sanitizes to "" (everything from the first "=" is
+      // dropped), and decodes to 0 bytes — dodging both the empty-string
+      // warn and the length-mismatch warn.
+      response: { video: { id: "vid_pad", status: "completed", b64: "=" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "padding only" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBe(0); // the zero-byte decode is still served
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("zero bytes"))).toBe(true);
+  });
+
+  test("empty x-forwarded-host header is ignored without a rejection warn", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "empty fwd host", endpoint: "video" },
+      response: { video: { id: "vid_efh", status: "completed" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-Host": "" },
+      body: JSON.stringify({ model: "m/v", prompt: "empty fwd host" }),
+    });
+    const envelope = await submit.json();
+    // An empty value is treated as absent: Host is used, no spurious warn.
+    expect(envelope.polling_url.startsWith(`${mock.url}/api/v1/videos/`)).toBe(true);
+    expect(
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("x-forwarded-host value rejected")),
+    ).toBe(false);
+  });
+
+  test("leading-comma x-forwarded-host list honors the first non-empty entry", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "comma fwd host", endpoint: "video" },
+      response: { video: { id: "vid_cfh", status: "completed" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-Host": ", real.example.com:8080",
+      },
+      body: JSON.stringify({ model: "m/v", prompt: "comma fwd host" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("http://real.example.com:8080/api/v1/videos/")).toBe(
+      true,
+    );
+    expect(
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("x-forwarded-host value rejected")),
+    ).toBe(false);
+  });
+
+  test("rejected x-forwarded-host warn includes the offending value", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "named bad host", endpoint: "video" },
+      response: { video: { id: "vid_nbh", status: "completed" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-Host": "evil.com/path" },
+        body: JSON.stringify({ model: "m/v", prompt: "named bad host" }),
+      })
+    ).arrayBuffer();
+
+    expect(
+      warnSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return line.includes("x-forwarded-host value rejected") && line.includes('"evil.com/path"');
+      }),
+    ).toBe(true);
+  });
+
+  test("warns when a non-zero content index is requested (still serves index 0)", async () => {
+    const bytes = Buffer.from("only video");
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "indexed", endpoint: "video" },
+      response: { video: { id: "vid_idx", status: "completed", b64: bytes.toString("base64") } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "indexed" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=3`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200); // behavior unchanged — index-0 bytes served
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(bytes)).toBe(true);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("index"))).toBe(true);
+
+    // index=0 (the canonical generated URL) must stay warn-free.
+    warnSpy.mockClear();
+    await (
+      await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+        headers: { Authorization: "Bearer test" },
+      })
+    ).arrayBuffer();
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("index"))).toBe(false);
+  });
+
+  test("mutating the fixture's video object after submit does not affect the job", async () => {
+    const original = Buffer.from("original bytes");
+    const video: VideoResponse["video"] = {
+      id: "vid_mut",
+      status: "completed",
+      b64: original.toString("base64"),
+    };
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "mutate me", endpoint: "video" },
+      // A factory returning a shared object — later mutation must not
+      // retroactively change an in-flight job's stored video.
+      response: () => ({ video }),
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "mutate me" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    video.b64 = Buffer.from("tampered bytes").toString("base64");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(original)).toBe(true);
+  });
+
+  test("models listing excludes an empty-string match.model", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "", endpoint: "video" },
+      response: { video: { id: "vid_em", status: "completed" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { data: Array<{ id: string }> };
+    expect(data.data.some((m) => m.id === "")).toBe(false);
+    // With no usable string model the listing falls back to the default set.
+    expect(data.data.length).toBeGreaterThan(0);
   });
 });

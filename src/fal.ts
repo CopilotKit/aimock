@@ -169,17 +169,27 @@ export function resolveProgression(config: FalQueueConfig | undefined): {
   pollsBeforeInProgress: number;
   pollsBeforeCompleted: number;
 } {
-  const pollsBeforeInProgress = config?.pollsBeforeInProgress ?? 0;
-  const explicitCompleted = config?.pollsBeforeCompleted;
+  // Thresholds must resolve to non-negative integers: a NaN would make
+  // advanceJob's `pollCount >= threshold` comparison permanently false (a
+  // polling client never reaches terminal), and a negative would break the
+  // documented "explicit 0 enables progression" contract. Non-finite values
+  // are treated as unset; anything else is floored and clamped to >= 0.
+  const sanitize = (value: number | undefined): number | undefined =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.max(0, Math.floor(value))
+      : undefined;
+  const explicitInProgress = sanitize(config?.pollsBeforeInProgress);
+  const explicitCompleted = sanitize(config?.pollsBeforeCompleted);
+  const pollsBeforeInProgress = explicitInProgress ?? 0;
   // When only pollsBeforeInProgress is set, default pollsBeforeCompleted to one
   // poll later so the job actually passes through IN_PROGRESS. When the caller
   // sets both explicitly, clamp completed >= inProgress so a misconfigured
   // pair (e.g. completed < inProgress) can't silently skip the IN_PROGRESS
   // transition. When neither is set, both stay 0 (completes on submit).
   let pollsBeforeCompleted: number;
-  if (explicitCompleted != null) {
+  if (explicitCompleted !== undefined) {
     pollsBeforeCompleted = Math.max(pollsBeforeInProgress, explicitCompleted);
-  } else if (config?.pollsBeforeInProgress != null) {
+  } else if (explicitInProgress !== undefined) {
     pollsBeforeCompleted = pollsBeforeInProgress + 1;
   } else {
     pollsBeforeCompleted = 0;

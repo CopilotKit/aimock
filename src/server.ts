@@ -1121,6 +1121,21 @@ export async function createServer(
     }
   }
 
+  // Validate poll-progression thresholds (resolveProgression treats
+  // non-finite values as unset and floors/clamps the rest to >= 0 integers)
+  for (const { name, config } of [
+    { name: "falQueue", config: options?.falQueue },
+    { name: "openRouterVideo", config: options?.openRouterVideo },
+  ]) {
+    if (!config) continue;
+    for (const field of ["pollsBeforeInProgress", "pollsBeforeCompleted"] as const) {
+      const value = config[field];
+      if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+        logger.warn(`${name}.${field} (${value}) is not a non-negative integer — clamping`);
+      }
+    }
+  }
+
   // Programmatic default: finite caps so long-running embedders don't inherit
   // an unbounded journal / fixture-count map. Callers that need unbounded
   // retention (e.g. short-lived test harnesses) can opt in by passing 0.
@@ -1352,9 +1367,9 @@ export async function createServer(
               body: null,
               response: { status: 500, fixture: null },
             });
-          } catch {
+          } catch (jErr) {
             defaults.logger.debug(
-              "openrouter-video content: journal write failed after handler error",
+              `openrouter-video content: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
             );
           }
           writeErrorResponse(
@@ -1390,9 +1405,9 @@ export async function createServer(
               body: null,
               response: { status: 500, fixture: null },
             });
-          } catch {
+          } catch (jErr) {
             defaults.logger.debug(
-              "openrouter-video models: journal write failed after handler error",
+              `openrouter-video models: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
             );
           }
           writeErrorResponse(
@@ -1436,9 +1451,9 @@ export async function createServer(
               body: null,
               response: { status: 500, fixture: null },
             });
-          } catch {
+          } catch (jErr) {
             defaults.logger.debug(
-              "openrouter-video status: journal write failed after handler error",
+              `openrouter-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
             );
           }
           writeErrorResponse(
@@ -1485,9 +1500,9 @@ export async function createServer(
               body: null,
               response: { status: 500, fixture: null },
             });
-          } catch {
+          } catch (jErr) {
             defaults.logger.debug(
-              "openrouter-video submit: journal write failed after handler error",
+              `openrouter-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
             );
           }
           writeErrorResponse(
