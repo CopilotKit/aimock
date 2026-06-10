@@ -443,6 +443,32 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
     expect(data.error.message).toContain("not completed");
   });
 
+  test("content fetches never advance job state (no poll budget consumed)", async () => {
+    mock = new LLMock({ port: 0, openRouterVideo: { pollsBeforeCompleted: 1 } });
+    mock.addFixture({
+      match: { userMessage: "no advance", endpoint: "video" },
+      response: { video: { id: "vid_na", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await submitJob("no advance");
+
+    // Two content fetches against the not-yet-completed job: both must 400
+    // (API fidelity; diverges from fal's advance-on-result queue semantics).
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+        headers: { Authorization: "Bearer test" },
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.message).toContain("not completed");
+    }
+
+    // First real status poll: had the content fetches advanced the job, it
+    // would already be past the pollsBeforeCompleted: 1 threshold. Instead
+    // poll 1 reports in_progress — content fetches consumed no poll budget.
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+  });
+
   test("serves base64 fixture bytes as video/mp4", async () => {
     const bytes = Buffer.from("mock video bytes");
     mock = new LLMock({ port: 0 });
@@ -916,7 +942,7 @@ describe("OpenRouter video — logger observability", () => {
     const { id } = (await submit.json()) as { id: string };
     // Status poll mirrors the client flow; under default 0/0 the job is
     // already seeded terminal at submit, so this poll doesn't complete it.
-    await fetch(`${mock.url}/api/v1/videos/${id}`);
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer();
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
@@ -1705,7 +1731,7 @@ describe("OpenRouter video — Bearer scheme validation", () => {
     const { id } = (await submit.json()) as { id: string };
     // Status poll mirrors the client flow; under default 0/0 the job is
     // already seeded terminal (completed) at submit.
-    await fetch(`${mock.url}/api/v1/videos/${id}`);
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer();
     return id;
   }
 
@@ -1803,17 +1829,22 @@ describe("server close clears video job state", () => {
     };
 
     try {
-      // Populate both per-instance maps.
-      await fetch(`${instance.url}/v1/videos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "sora-2", prompt: "openai close" }),
-      });
-      await fetch(`${instance.url}/api/v1/videos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "m/v", prompt: "openrouter close" }),
-      });
+      // Populate both per-instance maps (consume both bodies so no
+      // connection is left dangling across the close below).
+      await (
+        await fetch(`${instance.url}/v1/videos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "sora-2", prompt: "openai close" }),
+        })
+      ).arrayBuffer();
+      await (
+        await fetch(`${instance.url}/api/v1/videos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "m/v", prompt: "openrouter close" }),
+        })
+      ).arrayBuffer();
       expect(instance.videoStates.size).toBeGreaterThan(0);
       expect(instance.openRouterVideoJobs.size).toBeGreaterThan(0);
 
@@ -2039,6 +2070,30 @@ describe("OpenRouter video — config and header overrides", () => {
 
     // pollsBeforeInProgress defaults to 0, so the first poll is already
     // in_progress; the second crosses the explicit completed threshold.
+    const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll1.status).toBe("in_progress");
+    const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll2.status).toBe("completed");
+  });
+
+  test("{pollsBeforeCompleted: 1} lands terminal on poll 2 (in_progress consumes poll 1)", async () => {
+    mock = new LLMock({ port: 0, openRouterVideo: { pollsBeforeCompleted: 1 } });
+    mock.addFixture({
+      match: { userMessage: "late by one", endpoint: "video" },
+      response: { video: { id: "vid_lbo", status: "completed" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "late by one" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+
+    // pollsBeforeInProgress is unset (0), so the in_progress branch consumes
+    // poll 1 even though the configured completed threshold is 1 — the
+    // terminal status lands one poll later than configured.
     const poll1 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
     expect(poll1.status).toBe("in_progress");
     const poll2 = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
