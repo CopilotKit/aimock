@@ -205,6 +205,120 @@ export function handleOpenRouterVideoStatus(
   res.end(JSON.stringify(body));
 }
 
+// ─── GET /api/v1/videos/{jobId}/content — download ──────────────────────────
+
+// Minimal valid-prefix MP4 placeholder served when a completed fixture has no
+// `b64` payload: a bare 24-byte `ftyp` box (major brand isom, minor 0x200,
+// compatible brands isom + mp42). Enough for clients that sniff the container
+// signature without requiring real video bytes in every fixture.
+const PLACEHOLDER_MP4 = Buffer.from([
+  0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00,
+  0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32,
+]);
+
+export function handleOpenRouterVideoContent(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  jobId: string,
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+  jobs: OpenRouterVideoJobMap,
+): void {
+  setCorsHeaders(res);
+  const path = req.url ?? `/api/v1/videos/${jobId}/content`;
+  const method = req.method ?? "GET";
+
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: null },
+      "internal",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  // The real endpoint requires Bearer auth even though the unsigned URL is
+  // otherwise self-contained — the @openrouter/sdk fetches it with the key.
+  if (!req.headers.authorization) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 401, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      401,
+      JSON.stringify({ error: { message: "No auth credentials found", code: 401 } }),
+    );
+    return;
+  }
+
+  const testId = getTestId(req);
+  const job = jobs.get(`${testId}:${jobId}`);
+
+  if (!job) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 404, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      404,
+      JSON.stringify({ error: { message: `Video job ${jobId} not found`, code: 404 } }),
+    );
+    return;
+  }
+
+  if (job.status !== "completed") {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: `Video job ${jobId} is not completed (status: ${job.status})`,
+          code: 400,
+        },
+      }),
+    );
+    return;
+  }
+
+  const bytes = job.video.b64 ? Buffer.from(job.video.b64, "base64") : PLACEHOLDER_MP4;
+
+  journal.add({
+    method,
+    path,
+    headers: flattenHeaders(req.headers),
+    body: null,
+    response: { status: 200, fixture: null },
+  });
+
+  // Always video/mp4 — the real endpoint serves video/mp4 even when the
+  // client (e.g. the Speakeasy-generated @openrouter/sdk) sends
+  // Accept: application/octet-stream.
+  res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": bytes.length });
+  res.end(bytes);
+}
+
 // ─── POST /api/v1/videos — submit ───────────────────────────────────────────
 
 export async function handleOpenRouterVideoCreate(
