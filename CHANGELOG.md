@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter async video lifecycle** — mocks OpenRouter's dedicated video-generation job API alongside the existing OpenAI-shaped `/v1/videos` handler. `POST /api/v1/videos` matches fixtures on `prompt`/`model` (endpoint `video`) and returns a `{ id, polling_url, status: "pending" }` job envelope; `GET /api/v1/videos/{jobId}` advances `pending → in_progress → completed | failed` per the new `openRouterVideo` poll-threshold config (same semantics as `falQueue`; by default the job reaches its terminal status on the first poll), adding `unsigned_urls` + `usage.cost` on completion and the fixture's `error` message on failure; `GET /api/v1/videos/{jobId}/content?index=0` requires Bearer auth (401 otherwise) and serves the fixture's `b64` bytes — or a built-in minimal MP4 `ftyp` placeholder — always as `Content-Type: video/mp4` (matching production even when the client sends `Accept: application/octet-stream`); `GET /api/v1/videos/models` synthesizes the video-model listing from loaded video fixtures. Video fixtures gain optional `error`, `b64`, and `cost` fields. Replay/strict-only for now — record-mode proxying for this surface is a follow-up.
+
 ## [1.30.0] - 2026-06-09
 
 ### Added
