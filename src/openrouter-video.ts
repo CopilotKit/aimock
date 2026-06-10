@@ -785,9 +785,10 @@ export async function handleOpenRouterVideoCreate(
     pollsBeforeCompleted: progression.pollsBeforeCompleted,
     video: response.video,
   };
-  // Default 0/0 progression reaches the terminal status on the first poll —
-  // seed terminal directly (mirrors fal's COMPLETED-on-submit initial status);
-  // the submit envelope still reports "pending" like the real API.
+  // Default 0/0 progression seeds the job terminal at submit (mirrors fal's
+  // COMPLETED-on-submit initial status) — content is downloadable with zero
+  // polls; the first poll merely reports the already-terminal status. The
+  // submit envelope still reports "pending" like the real API.
   if (progression.pollsBeforeCompleted === 0) {
     job.status = terminalStatus(job);
   }
