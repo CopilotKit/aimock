@@ -61,6 +61,7 @@ import {
   handleOpenRouterVideoCreate,
   handleOpenRouterVideoStatus,
   handleOpenRouterVideoContent,
+  handleOpenRouterVideoModels,
   OpenRouterVideoJobMap,
 } from "./openrouter-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
@@ -1328,6 +1329,13 @@ export async function createServer(
         setCorsHeaders,
         openRouterVideoJobs,
       );
+      return;
+    }
+
+    // GET /api/v1/videos/models — video model listing (must precede the
+    // status RE, whose [^/]+ segment would otherwise capture "models")
+    if (pathname === OPENROUTER_VIDEO_MODELS_PATH && req.method === "GET") {
+      handleOpenRouterVideoModels(req, res, fixtures, journal, setCorsHeaders);
       return;
     }
 

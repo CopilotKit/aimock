@@ -426,7 +426,7 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
       headers: { Authorization: "Bearer test" },
     });
     expect(res.status).toBe(400);
-    expect((res.headers.get("content-type") ?? "")).toContain("application/json");
+    expect(res.headers.get("content-type") ?? "").toContain("application/json");
     const data = await res.json();
     expect(data.error.message).toContain("not completed");
   });
@@ -491,5 +491,74 @@ describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("video/mp4");
   });
+});
 
+// ─── Task 5: GET /api/v1/videos/models — model listing ──────────────────────
+
+describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("synthesizes the listing from video fixtures with string models", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "bytedance/seedance-2.0", endpoint: "video" },
+      response: { video: { id: "v1", status: "completed" } },
+    });
+    mock.addFixture({
+      match: { model: "openai/sora-2", endpoint: "video" },
+      response: { video: { id: "v2", status: "completed" } },
+    });
+    // Non-video fixture model must NOT appear
+    mock.addFixture({
+      match: { model: "gpt-4o", userMessage: "hi" },
+      response: { content: "hello" },
+    });
+    // Regex-model video fixture must NOT appear (string models only)
+    mock.addFixture({
+      match: { model: /kling/, endpoint: "video" },
+      response: { video: { id: "v3", status: "completed" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const ids = data.data.map((m: { id: string }) => m.id);
+    expect(ids).toEqual(["bytedance/seedance-2.0", "openai/sora-2"]);
+    for (const entry of data.data) {
+      expect(typeof entry.name).toBe("string");
+      expect(Array.isArray(entry.supported_durations)).toBe(true);
+      expect(Array.isArray(entry.supported_resolutions)).toBe(true);
+      expect(Array.isArray(entry.supported_aspect_ratios)).toBe(true);
+    }
+  });
+
+  test("returns sensible defaults when no video fixtures are loaded", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data.data)).toBe(true);
+    expect(data.data.length).toBeGreaterThan(0);
+    expect(typeof data.data[0].id).toBe("string");
+  });
+
+  test("models path is not swallowed by the status handler", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    // If the status RE matched first, this would be a 404 "Video job models
+    // not found" — it must instead return the model listing envelope.
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.error).toBeUndefined();
+    expect(Array.isArray(data.data)).toBe(true);
+  });
 });

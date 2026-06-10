@@ -319,6 +319,63 @@ export function handleOpenRouterVideoContent(
   res.end(bytes);
 }
 
+// ─── GET /api/v1/videos/models — model listing ──────────────────────────────
+
+const DEFAULT_OPENROUTER_VIDEO_MODELS = [DEFAULT_OPENROUTER_VIDEO_MODEL, "openai/sora-2"];
+
+function modelEntry(id: string): Record<string, unknown> {
+  return {
+    id,
+    name: id,
+    supported_durations: [4, 8],
+    supported_resolutions: ["720p", "1080p"],
+    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
+    supported_frame_images: [],
+    supported_sizes: [],
+    generate_audio: false,
+    seed: true,
+    pricing_skus: [],
+  };
+}
+
+/**
+ * Synthesizes the OpenRouter video model listing from loaded fixtures —
+ * video-endpoint fixtures with a string `match.model` (mirrors the Ollama
+ * `/api/tags` synthesis in server.ts). Falls back to a default model set when
+ * no video fixtures are loaded. Note video models do not appear in the plain
+ * `/api/v1/models` listing on the real API, hence the dedicated route.
+ */
+export function handleOpenRouterVideoModels(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  fixtures: Fixture[],
+  journal: Journal,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+): void {
+  setCorsHeaders(res);
+  const path = req.url ?? "/api/v1/videos/models";
+  const method = req.method ?? "GET";
+
+  const modelIds = new Set<string>();
+  for (const f of fixtures) {
+    if (f.match.endpoint === "video" && typeof f.match.model === "string") {
+      modelIds.add(f.match.model);
+    }
+  }
+  const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_OPENROUTER_VIDEO_MODELS;
+
+  journal.add({
+    method,
+    path,
+    headers: flattenHeaders(req.headers),
+    body: null,
+    response: { status: 200, fixture: null },
+  });
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ data: ids.map((id) => modelEntry(id)) }));
+}
+
 // ─── POST /api/v1/videos — submit ───────────────────────────────────────────
 
 export async function handleOpenRouterVideoCreate(
