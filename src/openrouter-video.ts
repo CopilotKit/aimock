@@ -158,8 +158,11 @@ function firstForwardedValue(header: string | string[] | undefined): string | un
 
 // Conservative host[:port] shape for x-forwarded-host. Spaces, slashes,
 // userinfo, or any other URL-structure character would corrupt (or smuggle
-// paths into) the generated URLs the value is interpolated into.
-const FORWARDED_HOST_RE = /^[a-zA-Z0-9.-]+(:\d+)?$/;
+// paths into) the generated URLs the value is interpolated into. Underscores
+// are admitted: the value feeds URL-string interpolation, not DNS validation,
+// and underscore hostnames are routine in docker-compose/k8s networks
+// (e.g. my_project_aimock:4010).
+const FORWARDED_HOST_RE = /^[a-zA-Z0-9._-]+(:\d+)?$/;
 // Bracketed IPv6 literal host[:port], e.g. [::1] or [::1]:8080 — the bare
 // RE above cannot admit ":" inside the host without also admitting junk.
 const FORWARDED_HOST_IPV6_RE = /^\[[0-9a-fA-F:.]+\](:\d+)?$/;

@@ -1269,6 +1269,31 @@ describe("OpenRouter video — logger observability", () => {
       true,
     );
   });
+
+  test("submit error 500s carry CORS headers", async () => {
+    mock = new LLMock({ port: 0, logLevel: "error" });
+    mock.addFixture({
+      match: { userMessage: "cors boom", endpoint: "video" },
+      response: () => {
+        throw new Error("factory boom");
+      },
+    });
+    await mock.start();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // CORS headers are set on the submit route before the body is read, so
+    // even a failure thrown from readBody (or the handler) produces a 500
+    // that a browser client can actually inspect rather than an opaque
+    // CORS-blocked failure. The readBody rejection paths destroy the socket
+    // (no observable response), so the assertable proxy is a handler throw.
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "cors boom" }),
+    });
+    expect(res.status).toBe(500);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
 });
 
 describe("OpenRouter video — full lifecycle integration", () => {
@@ -1812,6 +1837,46 @@ describe("OpenRouter video — x-forwarded-proto/host", () => {
     // The smuggled path segment must not survive into the generated URL.
     expect(envelope.polling_url.includes("/x/")).toBe(false);
     expect(envelope.polling_url.startsWith("http://localhost/api/v1/videos/")).toBe(true);
+  });
+
+  test("an underscore Host header is accepted (docker-compose/k8s service names)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "underscore Host", endpoint: "video" },
+      response: { video: { id: "vid_uH", status: "completed" } },
+    });
+    await mock.start();
+
+    // fetch forbids overriding the Host header, so issue a raw http.request.
+    // Underscore hostnames are routine in docker-compose/k8s networks
+    // (e.g. my_project_aimock); rejecting them would silently produce dead
+    // "localhost" URLs.
+    const port = Number(new URL(mock.url).port);
+    const envelope = await new Promise<{ polling_url: string }>((resolve, reject) => {
+      const data = JSON.stringify({ model: "m/v", prompt: "underscore Host" });
+      const req = http.request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path: "/api/v1/videos",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+            Host: "ai_mock:4010",
+          },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk: Buffer) => (body += chunk));
+          res.on("end", () => resolve(JSON.parse(body) as { polling_url: string }));
+        },
+      );
+      req.on("error", reject);
+      req.write(data);
+      req.end();
+    });
+    expect(envelope.polling_url.startsWith("http://ai_mock:4010/api/v1/videos/")).toBe(true);
   });
 });
 

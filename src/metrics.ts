@@ -222,10 +222,11 @@ const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings
 const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
 const VERTEX_RE =
   /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
-// Exported: server.ts route dispatch matches the same OpenRouter video paths.
+// Exported: server.ts route dispatch matches the same OpenRouter and OpenAI
+// video paths.
 export const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
 export const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
-const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
+export const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
 
 /**
  * Normalize parametric API paths to route patterns for use as metric labels.

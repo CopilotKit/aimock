@@ -81,6 +81,7 @@ import { applyChaosAction, evaluateChaos } from "./chaos.js";
 import {
   createMetricsRegistry,
   normalizePathLabel,
+  OPENAI_VIDEO_STATUS_RE,
   OPENROUTER_VIDEO_CONTENT_RE,
   OPENROUTER_VIDEO_STATUS_RE,
 } from "./metrics.js";
@@ -114,7 +115,6 @@ const SPEECH_PATH = "/v1/audio/speech";
 const TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions";
 const TRANSLATIONS_PATH = "/v1/audio/translations";
 const VIDEOS_PATH = "/v1/videos";
-const VIDEOS_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
 const GEMINI_PREDICT_RE = /^\/v1beta\/models\/([^:]+):predict$/;
 const ELEVENLABS_SOUND_GENERATION_PATH = "/v1/sound-generation";
 const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
@@ -1135,7 +1135,7 @@ export async function createServer(
         logger.warn(`${name}.${field} (${value}) is not a finite number — treating as unset`);
       } else if (!Number.isInteger(value) || value < 0) {
         logger.warn(
-          `${name}.${field} (${value}) is not a non-negative integer — clamping to a non-negative integer`,
+          `${name}.${field} (${value}) is not a non-negative integer — flooring/clamping to a non-negative integer`,
         );
       }
     }
@@ -1475,6 +1475,11 @@ export async function createServer(
 
     // POST /api/v1/videos — submit a video generation job
     if (pathname === OPENROUTER_VIDEOS_PATH && req.method === "POST") {
+      // CORS headers before the body is read: a readBody throw (e.g. the
+      // body-size cap) lands in the catch below, which must not write a 500
+      // that is opaque to browser clients. The handler re-applies the same
+      // headers (setHeader is idempotent).
+      setCorsHeaders(res);
       try {
         const raw = await readBody(req);
         await handleOpenRouterVideoCreate(
@@ -1946,7 +1951,7 @@ export async function createServer(
     }
 
     // GET /v1/videos/{id} — Video Status Check
-    const videoStatusMatch = pathname.match(VIDEOS_STATUS_RE);
+    const videoStatusMatch = pathname.match(OPENAI_VIDEO_STATUS_RE);
     if (videoStatusMatch && req.method === "GET") {
       const videoId = videoStatusMatch[1];
       handleVideoStatus(req, res, videoId, journal, defaults, setCorsHeaders, videoStates);
