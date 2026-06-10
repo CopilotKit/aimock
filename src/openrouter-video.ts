@@ -246,7 +246,7 @@ export function handleOpenRouterVideoContent(
 
   // The real endpoint requires Bearer auth even though the unsigned URL is
   // otherwise self-contained — the @openrouter/sdk fetches it with the key.
-  if (!req.headers.authorization) {
+  if (!req.headers.authorization?.startsWith("Bearer ")) {
     journal.add({
       method,
       path,
@@ -418,7 +418,31 @@ export async function handleOpenRouterVideoCreate(
     return;
   }
 
-  if (!videoReq.prompt) {
+  // Reject bodies that parsed but are not a JSON object (null, arrays,
+  // numbers, strings) before touching any fields — mirrors fal's parseBody
+  // guard so callers get a 400 instead of a raw TypeError 500.
+  if (videoReq === null || typeof videoReq !== "object" || Array.isArray(videoReq)) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Request body must be a JSON object",
+          type: "invalid_request_error",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (typeof videoReq.prompt !== "string" || !videoReq.prompt) {
     journal.add({
       method,
       path,
@@ -431,6 +455,27 @@ export async function handleOpenRouterVideoCreate(
       400,
       JSON.stringify({
         error: { message: "Missing required parameter: 'prompt'", type: "invalid_request_error" },
+      }),
+    );
+    return;
+  }
+
+  if (videoReq.model !== undefined && typeof videoReq.model !== "string") {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: "Invalid type for parameter: 'model' must be a string",
+          type: "invalid_request_error",
+        },
       }),
     );
     return;
