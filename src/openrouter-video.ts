@@ -202,10 +202,11 @@ function requestBase(req: http.IncomingMessage, logger: Logger): string {
 
 /**
  * Query-string suffix embedding the request's testId into generated URLs
- * (polling_url, unsigned_urls). The @openrouter/sdk fetches these URLs bare —
- * no custom headers — so the testId must travel in the URL for getTestId's
- * `?testId=` fallback to resolve the right job scope. The default testId is
- * omitted to keep single-tenant URLs clean.
+ * (polling_url, unsigned_urls). The @openrouter/sdk fetches these URLs with
+ * standard Authorization but no aimock-specific headers (no x-test-id) — so
+ * the testId must travel in the URL for getTestId's `?testId=` fallback to
+ * resolve the right job scope. The default testId is omitted to keep
+ * single-tenant URLs clean.
  */
 function testIdSuffix(testId: string, sep: "?" | "&"): string {
   return testId === DEFAULT_TEST_ID ? "" : `${sep}testId=${encodeURIComponent(testId)}`;
