@@ -65,7 +65,11 @@ export function connectWebSocket(
           const headerEnd = buffer.indexOf("\r\n\r\n");
           if (headerEnd === -1) return;
           const headerStr = buffer.subarray(0, headerEnd).toString();
-          if (!headerStr.includes("101")) {
+          // Check the status LINE, not the whole header block — a non-upgrade
+          // response that merely contains "101" in some header (e.g. a
+          // Content-Length) must not be misparsed as a successful handshake.
+          if (!/^HTTP\/1\.1 101 /.test(headerStr)) {
+            socket.destroy();
             reject(new Error(`Upgrade failed: ${headerStr.split("\r\n")[0]}`));
             return;
           }
@@ -120,10 +124,23 @@ export function connectWebSocket(
                   }
                 }, timeoutMs);
                 const check = () => {
-                  if (!settled && messages.length >= count) {
+                  if (settled) return;
+                  if (messages.length >= count) {
                     settled = true;
                     clearTimeout(timer);
                     resolve(messages.slice(0, count));
+                  } else if (socketClosed) {
+                    // Fail fast: the TCP socket is gone, the buffered messages
+                    // can't satisfy this waiter, and no more can ever arrive —
+                    // mirror the close-frame waiter instead of sitting out the
+                    // timeout with a misleading "timeout" message.
+                    settled = true;
+                    clearTimeout(timer);
+                    reject(
+                      new Error(
+                        `socket closed while waiting for ${count} messages, got ${messages.length}`,
+                      ),
+                    );
                   }
                 };
                 check();
@@ -217,6 +234,9 @@ export function connectWebSocket(
         // Settle any close-frame waiters: if a close frame already arrived they
         // resolve with it; otherwise they reject (socket dropped frameless).
         for (const r of closeFrameResolvers) r();
+        // Symmetrically settle message waiters: resolve if the buffer already
+        // satisfies them, reject otherwise (no more messages can ever arrive).
+        for (const r of messageResolvers) r();
         for (const r of closeResolvers) r();
       });
 

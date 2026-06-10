@@ -494,8 +494,17 @@ describe("WebSocket /v1/responses", () => {
     // output_text.delta events depends on chunking, so no fixed message count.
     const ws1 = await connectWebSocket(instance.url, "/v1/responses");
     ws1.send(responseCreateMsg("hello"));
+    // Bounded so a missing terminal event fails with a clear message instead
+    // of burning the waitForMessages timeout on an ever-growing count.
+    const maxEvents = 50;
     let firstEvents: WSEvent[] = [];
     for (let count = 1; ; count++) {
+      if (count > maxEvents) {
+        throw new Error(
+          `response.completed never arrived within ${maxEvents} events ` +
+            `(last event type: ${firstEvents[firstEvents.length - 1]?.type})`,
+        );
+      }
       firstEvents = parseEvents(await ws1.waitForMessages(count));
       if (firstEvents[firstEvents.length - 1].type === "response.completed") break;
     }
