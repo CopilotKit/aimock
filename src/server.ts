@@ -57,7 +57,11 @@ import { handleImages, handleImageEdit, handleImageVariations } from "./images.j
 import { handleSpeech } from "./speech.js";
 import { handleTranscription } from "./transcription.js";
 import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
-import { handleOpenRouterVideoCreate, OpenRouterVideoJobMap } from "./openrouter-video.js";
+import {
+  handleOpenRouterVideoCreate,
+  handleOpenRouterVideoStatus,
+  OpenRouterVideoJobMap,
+} from "./openrouter-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
 import { handleFal, falQueueStates } from "./fal.js";
@@ -1310,6 +1314,21 @@ export async function createServer(
     // /api/* routes above, dispatched before normalizeCompatPath. Order:
     // content RE → models exact → status RE → submit exact (the status RE
     // would otherwise swallow /models and /content).
+
+    // GET /api/v1/videos/{jobId} — poll job status
+    const openRouterVideoStatusMatch = pathname.match(OPENROUTER_VIDEO_STATUS_RE);
+    if (openRouterVideoStatusMatch && req.method === "GET") {
+      handleOpenRouterVideoStatus(
+        req,
+        res,
+        openRouterVideoStatusMatch[1],
+        journal,
+        defaults,
+        setCorsHeaders,
+        openRouterVideoJobs,
+      );
+      return;
+    }
 
     // POST /api/v1/videos — submit a video generation job
     if (pathname === OPENROUTER_VIDEOS_PATH && req.method === "POST") {

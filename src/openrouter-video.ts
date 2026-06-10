@@ -134,6 +134,77 @@ function requestBase(req: http.IncomingMessage): string {
   return `http://${req.headers.host ?? "localhost"}`;
 }
 
+// ─── GET /api/v1/videos/{jobId} — status poll ───────────────────────────────
+
+export function handleOpenRouterVideoStatus(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  jobId: string,
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+  jobs: OpenRouterVideoJobMap,
+): void {
+  setCorsHeaders(res);
+  const path = req.url ?? `/api/v1/videos/${jobId}`;
+  const method = req.method ?? "GET";
+
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: null },
+      "internal",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  const testId = getTestId(req);
+  const job = jobs.get(`${testId}:${jobId}`);
+
+  if (!job) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 404, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      404,
+      JSON.stringify({ error: { message: `Video job ${jobId} not found`, code: 404 } }),
+    );
+    return;
+  }
+
+  advanceJob(job);
+
+  journal.add({
+    method,
+    path,
+    headers: flattenHeaders(req.headers),
+    body: null,
+    response: { status: 200, fixture: null },
+  });
+
+  const body: Record<string, unknown> = { id: job.jobId, status: job.status };
+  if (job.status === "completed") {
+    body.unsigned_urls = [`${requestBase(req)}/api/v1/videos/${job.jobId}/content?index=0`];
+    body.usage = { cost: job.video.cost ?? 0 };
+  } else if (job.status === "failed") {
+    body.error = job.video.error ?? "Video generation failed";
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
 // ─── POST /api/v1/videos — submit ───────────────────────────────────────────
 
 export async function handleOpenRouterVideoCreate(
