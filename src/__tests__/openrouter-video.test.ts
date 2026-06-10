@@ -362,3 +362,134 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
     expect(res.status).toBe(500);
   });
 });
+
+// ─── Task 4: GET /api/v1/videos/{jobId}/content — download ──────────────────
+
+describe("GET /api/v1/videos/{jobId}/content (OpenRouter download)", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  async function submitJob(prompt: string): Promise<string> {
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    return id;
+  }
+
+  test("requires Authorization header (401 OpenRouter shape)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "auth me", endpoint: "video" },
+      response: { video: { id: "vid_a", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await submitJob("auth me");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`);
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error.message).toBe("No auth credentials found");
+    expect(data.error.code).toBe(401);
+  });
+
+  test("404 for unknown job", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/nope/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error.code).toBe(404);
+  });
+
+  test("non-completed job returns a JSON error", async () => {
+    mock = new LLMock({
+      port: 0,
+      openRouterVideo: { pollsBeforeInProgress: 5, pollsBeforeCompleted: 10 },
+    });
+    mock.addFixture({
+      match: { userMessage: "slow", endpoint: "video" },
+      response: { video: { id: "vid_sl", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await submitJob("slow");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(400);
+    expect((res.headers.get("content-type") ?? "")).toContain("application/json");
+    const data = await res.json();
+    expect(data.error.message).toContain("not completed");
+  });
+
+  test("serves base64 fixture bytes as video/mp4", async () => {
+    const bytes = Buffer.from("mock video bytes");
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "bytes", endpoint: "video" },
+      response: {
+        video: { id: "vid_b", status: "completed", b64: bytes.toString("base64") },
+      },
+    });
+    await mock.start();
+    const id = await submitJob("bytes");
+    // Reach completed via a status poll first (lifecycle order).
+    await fetch(`${mock.url}/api/v1/videos/${id}`);
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(bytes)).toBe(true);
+  });
+
+  test("serves built-in mp4 placeholder when fixture has no b64", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "placeholder", endpoint: "video" },
+      response: { video: { id: "vid_ph", status: "completed" } },
+    });
+    await mock.start();
+    const id = await submitJob("placeholder");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBeGreaterThan(0);
+    // ftyp box marker at byte offset 4
+    expect(body.subarray(4, 8).toString("ascii")).toBe("ftyp");
+  });
+
+  test("replies video/mp4 even when the client sends Accept: application/octet-stream", async () => {
+    // The @openrouter/sdk (Speakeasy-generated) sends Accept:
+    // application/octet-stream but the real endpoint replies video/mp4.
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "accept octet", endpoint: "video" },
+      response: { video: { id: "vid_ao", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await submitJob("accept octet");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test", Accept: "application/octet-stream" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+  });
+
+});
