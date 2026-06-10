@@ -515,6 +515,7 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
   let mock: LLMock | undefined;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await mock?.stop();
     mock = undefined;
   });
@@ -572,6 +573,29 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     expect(Array.isArray(data.data)).toBe(true);
     expect(data.data.length).toBeGreaterThan(0);
     expect(typeof data.data[0].id).toBe("string");
+  });
+
+  test("debug-logs when video fixtures exist but none contribute a string model", async () => {
+    mock = new LLMock({ port: 0, logLevel: "debug" });
+    // RegExp-model video fixture: real video fixtures are loaded, yet the
+    // listing silently falls back to the default model set.
+    mock.addFixture({
+      match: { model: /kling/, endpoint: "video" },
+      response: { video: { id: "vid_rx", status: "completed" } },
+    });
+    await mock.start();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.data.length).toBeGreaterThan(0);
+    expect(
+      logSpy.mock.calls.some((c) => {
+        const line = c.join(" ");
+        return line.includes("default") && line.includes("video");
+      }),
+    ).toBe(true);
   });
 });
 
@@ -872,6 +896,81 @@ describe("OpenRouter video — logger observability", () => {
     expect(body.length).toBe(0); // the decode is served as-is, just warned about
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
   });
+
+  test("warns when b64 contains invalid characters even if the decode is non-empty", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "partial corrupt", endpoint: "video" },
+      // Node's lenient decoder skips the "!!!" run and still yields bytes —
+      // a zero-byte-only guard misses this silently-truncating corruption.
+      response: { video: { id: "vid_pc", status: "completed", b64: "AAAA!!!tail" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "partial corrupt" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBeGreaterThan(0); // the lossy decode is still served
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
+  });
+
+  test("warns on an unknown fixture status and treats the job as completed", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "typo status", endpoint: "video" },
+      response: {
+        // JSON-authored fixtures bypass the compile-time union — simulate a typo.
+        video: { id: "vid_ts", status: "FAILED" as VideoResponse["video"]["status"] },
+      },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "typo status" }),
+    });
+    expect(submit.status).toBe(200);
+    const { id } = (await submit.json()) as { id: string };
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes('"FAILED"'))).toBe(true);
+
+    const poll = await (await fetch(`${mock.url}/api/v1/videos/${id}`)).json();
+    expect(poll.status).toBe("completed");
+  });
+
+  test("submit handler throw is logged via logger.error and returns 500", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "boom", endpoint: "video" },
+      response: () => {
+        throw new Error("factory boom");
+      },
+    });
+    await mock.start();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "boom" }),
+    });
+    expect(res.status).toBe(500);
+    expect(errorSpy.mock.calls.some((c) => c.join(" ").includes("openrouter-video submit"))).toBe(
+      true,
+    );
+  });
 });
 
 describe("OpenRouter video — full lifecycle integration", () => {
@@ -1048,6 +1147,54 @@ describe("OpenRouter video — request body validation", () => {
     expect(data.error.type).toBe("invalid_request_error");
     expect(data.error.message).toContain("model");
   });
+
+  test("empty-string model returns 400 invalid_request_error", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "", prompt: "a sunset" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.type).toBe("invalid_request_error");
+    expect(data.error.message).toContain("model");
+  });
+
+  test("validation 400s journal the parsed request body (malformed JSON stays null)", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: 123, prompt: "a sunset" }),
+      })
+    ).arrayBuffer(); // non-string model
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "m/v" }),
+      })
+    ).arrayBuffer(); // missing prompt
+    await (
+      await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{nope",
+      })
+    ).arrayBuffer(); // malformed JSON
+
+    const entries = mock.journal.getAll().filter((e) => e.response.status === 400);
+    expect(entries).toHaveLength(3);
+    expect(entries[0].body).toMatchObject({ model: 123, prompt: "a sunset" });
+    expect(entries[1].body).toMatchObject({ model: "m/v" });
+    expect(entries[2].body).toBeNull();
+  });
 });
 
 // ─── CR findings: testId embedded in generated URLs ────────────────────────
@@ -1198,6 +1345,23 @@ describe("OpenRouter video — x-forwarded-proto scheme", () => {
     const envelope = await submit.json();
     expect(envelope.polling_url.startsWith("http://")).toBe(true);
   });
+
+  test("non-http(s) x-forwarded-proto values fall back to http", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "weird proto", endpoint: "video" },
+      response: { video: { id: "vid_wp", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-Proto": "ws" },
+      body: JSON.stringify({ model: "m/v", prompt: "weird proto" }),
+    });
+    const envelope = await submit.json();
+    expect(envelope.polling_url.startsWith("http://")).toBe(true);
+  });
 });
 
 // ─── CR findings: Bearer scheme validation on /content ─────────────────────
@@ -1251,6 +1415,39 @@ describe("OpenRouter video — Bearer scheme validation", () => {
       headers: { Authorization: "Bearer k" },
     });
     expect(res.status).toBe(200);
+  });
+
+  test("lowercase bearer scheme is accepted (RFC 7235 schemes are case-insensitive)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "lower bearer", endpoint: "video" },
+      response: { video: { id: "vid_lb", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await completedJob("lower bearer");
+
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "bearer sk-x" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("Bearer with an empty credential is rejected with 401", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "empty bearer", endpoint: "video" },
+      response: { video: { id: "vid_eb", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+    const id = await completedJob("empty bearer");
+
+    // fetch trims header whitespace, so "Bearer " arrives as "Bearer" — a
+    // scheme with no credential either way.
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer" },
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.message).toBe("No auth credentials found");
   });
 });
 
