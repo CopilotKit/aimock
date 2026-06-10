@@ -1042,7 +1042,11 @@ describe("OpenRouter video — logger observability", () => {
     expect(res.status).toBe(200); // the truncated decode is still served
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.length).toBe(3);
-    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
+    expect(
+      warnSpy.mock.calls.some((c) =>
+        c.join(" ").includes("payload is malformed or contains invalid characters"),
+      ),
+    ).toBe(true);
   });
 
   test("warns when fixture sets video.url but no b64 (placeholder served)", async () => {
@@ -1077,6 +1081,56 @@ describe("OpenRouter video — logger observability", () => {
         const line = c.join(" ");
         return line.includes("url is ignored") && line.includes("b64");
       }),
+    ).toBe(true);
+  });
+
+  test("warns when fixture b64 is the empty string (placeholder served)", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "empty b64", endpoint: "video" },
+      // b64: "" is falsy — without a dedicated warn the handler silently
+      // serves the placeholder as if b64 were absent entirely.
+      response: { video: { id: "vid_e64", status: "completed", b64: "" } },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "m/v", prompt: "empty b64" }),
+    });
+    const { id } = (await submit.json()) as { id: string };
+    await (await fetch(`${mock.url}/api/v1/videos/${id}`)).arrayBuffer(); // completed
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await fetch(`${mock.url}/api/v1/videos/${id}/content?index=0`, {
+      headers: { Authorization: "Bearer test" },
+    });
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.subarray(4, 8).toString("ascii")).toBe("ftyp"); // placeholder
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("empty b64"))).toBe(true);
+  });
+
+  test("warns when a rejected x-forwarded-host falls back to the Host header", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "rejected host", endpoint: "video" },
+      response: { video: { id: "vid_rj", status: "completed" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-Host": "evil.com/path" },
+      body: JSON.stringify({ model: "m/v", prompt: "rejected host" }),
+    });
+    const envelope = await submit.json();
+    // Still falls back to the Host header (pre-existing junk-host behavior).
+    expect(envelope.polling_url.startsWith(`${mock.url}/api/v1/videos/`)).toBe(true);
+    expect(
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("x-forwarded-host value rejected")),
     ).toBe(true);
   });
 
@@ -1588,6 +1642,25 @@ describe("OpenRouter video — x-forwarded-proto/host", () => {
     });
     const envelope = await submit.json();
     expect(envelope.polling_url.startsWith("https://mock.example.com/")).toBe(true);
+  });
+
+  test("bracketed IPv6 x-forwarded-host literals are honored", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "v6 host", endpoint: "video" },
+      response: { video: { id: "vid_v6", status: "completed" } },
+    });
+    await mock.start();
+
+    for (const host of ["[::1]", "[::1]:8080"]) {
+      const submit = await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-Host": host },
+        body: JSON.stringify({ model: "m/v", prompt: "v6 host" }),
+      });
+      const envelope = await submit.json();
+      expect(envelope.polling_url.startsWith(`http://${host}/api/v1/videos/`)).toBe(true);
+    }
   });
 
   test("junk x-forwarded-host values fall back to the Host header", async () => {
