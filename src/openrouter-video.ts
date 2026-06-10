@@ -369,11 +369,27 @@ export function handleOpenRouterVideoModels(
   res: http.ServerResponse,
   fixtures: Fixture[],
   journal: Journal,
+  defaults: HandlerDefaults,
   setCorsHeaders: (res: http.ServerResponse) => void,
 ): void {
   setCorsHeaders(res);
   const path = req.url ?? "/api/v1/videos/models";
   const method = req.method ?? "GET";
+
+  if (
+    applyChaos(
+      res,
+      null,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: null },
+      "internal",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
 
   const modelIds = new Set<string>();
   for (const f of fixtures) {
@@ -530,7 +546,9 @@ export async function handleOpenRouterVideoCreate(
       req.headers,
       journal,
       { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
-      fixture ? "fixture" : "proxy",
+      // This surface never proxies (replay/strict-only) — the no-fixture
+      // chaos path is still served internally.
+      fixture ? "fixture" : "internal",
       defaults.registry,
       defaults.logger,
     )

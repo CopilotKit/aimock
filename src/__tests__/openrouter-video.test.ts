@@ -696,6 +696,48 @@ describe("OpenRouter video — chaos injection", () => {
   });
 });
 
+describe("OpenRouter video — chaos source label and models route", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("submit chaos with no fixture journals source internal (surface never proxies)", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const dropped = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-aimock-chaos-drop": "1" },
+      body: JSON.stringify({ model: "m/v", prompt: "no fixture here" }),
+    });
+    expect(dropped.status).toBe(500);
+    expect((await dropped.json()).error.code).toBe("chaos_drop");
+
+    const entry = mock.journal
+      .getAll()
+      .find((e) => e.path === "/api/v1/videos" && e.response.chaosAction === "drop");
+    expect(entry).toBeDefined();
+    expect(entry!.response.source).toBe("internal");
+  });
+
+  test("chaos drop header applies to the models route", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const dropped = await fetch(`${mock.url}/api/v1/videos/models`, {
+      headers: { "x-aimock-chaos-drop": "1" },
+    });
+    expect(dropped.status).toBe(500);
+    expect((await dropped.json()).error.code).toBe("chaos_drop");
+
+    // Without the header the route still serves the listing.
+    const ok = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(ok.status).toBe(200);
+  });
+});
+
 describe("OpenRouter video — full lifecycle integration", () => {
   let mock: LLMock;
 

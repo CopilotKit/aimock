@@ -1335,7 +1335,7 @@ export async function createServer(
     // GET /api/v1/videos/models — video model listing (must precede the
     // status RE, whose [^/]+ segment would otherwise capture "models")
     if (pathname === OPENROUTER_VIDEO_MODELS_PATH && req.method === "GET") {
-      handleOpenRouterVideoModels(req, res, fixtures, journal, setCorsHeaders);
+      handleOpenRouterVideoModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       return;
     }
 
