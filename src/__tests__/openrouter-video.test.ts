@@ -648,14 +648,14 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
       response: { video: { id: "vid_rx", status: "completed" } },
     });
     await mock.start();
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const res = await fetch(`${mock.url}/api/v1/videos/models`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.data.length).toBeGreaterThan(0);
     expect(
-      logSpy.mock.calls.some((c) =>
+      warnSpy.mock.calls.some((c) =>
         c.join(" ").includes("No video fixture contributes a string model"),
       ),
     ).toBe(true);
@@ -989,7 +989,9 @@ describe("OpenRouter video — logger observability", () => {
     expect(res.status).toBe(200);
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.length).toBe(0); // the decode is served as-is, just warned about
-    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("base64"))).toBe(true);
+    // "!!!!" also trips the invalid-character length-mismatch warn — assert the
+    // zero-byte warn specifically rather than any base64-related warn.
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("zero bytes"))).toBe(true);
   });
 
   test("warns when b64 contains invalid characters even if the decode is non-empty", async () => {
@@ -1271,7 +1273,7 @@ describe("OpenRouter video — logger observability", () => {
   });
 
   test("submit error 500s carry CORS headers", async () => {
-    mock = new LLMock({ port: 0, logLevel: "error" });
+    mock = new LLMock({ port: 0, logLevel: "silent" });
     mock.addFixture({
       match: { userMessage: "cors boom", endpoint: "video" },
       response: () => {
