@@ -386,6 +386,7 @@ export class LLMock {
     if (this.serverInstance) {
       this.serverInstance.journal.clear();
       this.serverInstance.videoStates.clear();
+      this.serverInstance.openRouterVideoJobs.clear();
     }
     return this;
   }
