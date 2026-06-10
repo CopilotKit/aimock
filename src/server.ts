@@ -57,6 +57,7 @@ import { handleImages, handleImageEdit, handleImageVariations } from "./images.j
 import { handleSpeech } from "./speech.js";
 import { handleTranscription } from "./transcription.js";
 import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
+import { handleOpenRouterVideoCreate, OpenRouterVideoJobMap } from "./openrouter-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
 import { handleFal, falQueueStates } from "./fal.js";
@@ -80,6 +81,7 @@ export interface ServerInstance {
   url: string;
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
+  openRouterVideoJobs: OpenRouterVideoJobMap;
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
@@ -172,6 +174,14 @@ const OLLAMA_EMBEDDINGS_PATH = "/api/embeddings";
 const OLLAMA_EMBED_PATH = "/api/embed";
 const OLLAMA_TAGS_PATH = "/api/tags";
 
+// OpenRouter async video lifecycle (/api/v1/videos). Dispatch order matters:
+// content RE → models exact → status RE → submit exact. The status RE's
+// `[^/]+` segment would otherwise swallow the `models` listing path.
+const OPENROUTER_VIDEOS_PATH = "/api/v1/videos";
+const OPENROUTER_VIDEO_MODELS_PATH = "/api/v1/videos/models";
+const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
+const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
+
 const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
 const MODELS_PATH = "/v1/models";
@@ -226,11 +236,13 @@ function performFixturesReset(
   fixtures: Fixture[],
   journal: Journal,
   videoStates: VideoStateMap,
+  openRouterVideoJobs: OpenRouterVideoJobMap,
   defaults: HandlerDefaults,
 ): void {
   fixtures.length = 0;
   journal.clear();
   videoStates.clear();
+  openRouterVideoJobs.clear();
   falJobs.clear();
   falQueueStates.clear();
   resetInteractionCounter();
@@ -251,6 +263,7 @@ async function handleControlAPI(
   fixtures: Fixture[],
   journal: Journal,
   videoStates: VideoStateMap,
+  openRouterVideoJobs: OpenRouterVideoJobMap,
   defaults: HandlerDefaults,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
@@ -333,7 +346,7 @@ async function handleControlAPI(
 
   // POST /__aimock/reset/fixtures — full reset (fixtures + journal + match counts)
   if (subPath === "/reset/fixtures" && req.method === "POST") {
-    performFixturesReset(fixtures, journal, videoStates, defaults);
+    performFixturesReset(fixtures, journal, videoStates, openRouterVideoJobs, defaults);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -350,7 +363,7 @@ async function handleControlAPI(
 
   // POST /__aimock/reset — DEPRECATED alias for /reset/fixtures (full reset)
   if (subPath === "/reset" && req.method === "POST") {
-    performFixturesReset(fixtures, journal, videoStates, defaults);
+    performFixturesReset(fixtures, journal, videoStates, openRouterVideoJobs, defaults);
     const deprecation =
       "POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)";
     defaults.logger.warn(
@@ -1105,6 +1118,7 @@ export async function createServer(
     fixtureCountsMaxTestIds: options?.fixtureCountsMaxTestIds ?? 500,
   });
   const videoStates = new VideoStateMap();
+  const openRouterVideoJobs = new OpenRouterVideoJobMap();
 
   // Share journal and metrics registry with mounted services
   if (mounts) {
@@ -1178,7 +1192,16 @@ export async function createServer(
 
     // Control API — must be checked before mounts and path rewrites
     if (pathname.startsWith(CONTROL_PREFIX)) {
-      await handleControlAPI(req, res, pathname, fixtures, journal, videoStates, defaults);
+      await handleControlAPI(
+        req,
+        res,
+        pathname,
+        fixtures,
+        journal,
+        videoStates,
+        openRouterVideoJobs,
+        defaults,
+      );
       return;
     }
 
@@ -1280,6 +1303,40 @@ export async function createServer(
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ models }));
+      return;
+    }
+
+    // OpenRouter async video lifecycle (/api/v1/videos). Like the Ollama
+    // /api/* routes above, dispatched before normalizeCompatPath. Order:
+    // content RE → models exact → status RE → submit exact (the status RE
+    // would otherwise swallow /models and /content).
+
+    // POST /api/v1/videos — submit a video generation job
+    if (pathname === OPENROUTER_VIDEOS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleOpenRouterVideoCreate(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          openRouterVideoJobs,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -2448,6 +2505,7 @@ export async function createServer(
       ws.close(1001, "Server shutting down");
     }
     activeConnections.clear();
+    openRouterVideoJobs.clear();
     originalClose(callback);
     return this;
   } as typeof server.close;
@@ -2469,7 +2527,7 @@ export async function createServer(
         }
       }
 
-      resolve({ server, journal, url, defaults, videoStates });
+      resolve({ server, journal, url, defaults, videoStates, openRouterVideoJobs });
     });
   });
 }

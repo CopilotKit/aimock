@@ -1,0 +1,353 @@
+import type * as http from "node:http";
+import crypto from "node:crypto";
+import type { ChatCompletionRequest, Fixture, HandlerDefaults, VideoResponse } from "./types.js";
+import {
+  isVideoResponse,
+  isErrorResponse,
+  serializeErrorResponse,
+  flattenHeaders,
+  getTestId,
+  resolveResponse,
+  resolveStrictMode,
+  strictOverrideField,
+  getContext,
+  strictNoMatchMessage,
+  strictNoMatchLogLine,
+} from "./helpers.js";
+import { matchFixtureDiagnostic } from "./router.js";
+import { writeErrorResponse } from "./sse-writer.js";
+import type { Journal } from "./journal.js";
+import { applyChaos } from "./chaos.js";
+import { resolveProgression } from "./fal.js";
+
+/**
+ * OpenRouter async video lifecycle mock (`/api/v1/videos`). Mirrors the
+ * dedicated OpenRouter video-generation API: submit returns a job envelope,
+ * status polls advance `pending → in_progress → completed | failed`, and a
+ * `/content` endpoint serves the bytes. Replay/strict-only — record mode is
+ * not wired for this surface.
+ */
+
+interface OpenRouterVideoRequest {
+  model?: string;
+  prompt?: string;
+  [key: string]: unknown;
+}
+
+const DEFAULT_OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0";
+
+// ─── OpenRouterVideoJobMap (TTL + bounded) ──────────────────────────────────
+
+const OPENROUTER_VIDEO_MAX_ENTRIES = 10_000;
+const OPENROUTER_VIDEO_TTL_MS = 3_600_000; // 1 hour
+
+type OpenRouterVideoStatus = "pending" | "in_progress" | "completed" | "failed";
+
+interface OpenRouterVideoJob {
+  jobId: string;
+  status: OpenRouterVideoStatus;
+  /** Number of status polls the caller has made against this job. */
+  pollCount: number;
+  /** Poll-count threshold for `pending → in_progress` transition. */
+  pollsBeforeInProgress: number;
+  /** Poll-count threshold for the transition to the terminal status. */
+  pollsBeforeCompleted: number;
+  /** The matched fixture's video object (terminal status, bytes, cost, error). */
+  video: VideoResponse["video"];
+  createdAt: number;
+}
+
+interface OpenRouterVideoEntry {
+  job: OpenRouterVideoJob;
+  createdAt: number;
+}
+
+/**
+ * Per-testId job state for the OpenRouter video handler. Mirrors
+ * FalQueueStateMap (fal.ts): lazy TTL eviction on `get`, FIFO eviction of the
+ * oldest entries on `set` when over capacity, no background sweep timer.
+ * Keys are `${testId}:${jobId}`.
+ */
+export class OpenRouterVideoJobMap {
+  private readonly entries = new Map<string, OpenRouterVideoEntry>();
+
+  get(key: string): OpenRouterVideoJob | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.createdAt > OPENROUTER_VIDEO_TTL_MS) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return entry.job;
+  }
+
+  set(key: string, job: OpenRouterVideoJob): void {
+    this.entries.set(key, { job, createdAt: Date.now() });
+    if (this.entries.size > OPENROUTER_VIDEO_MAX_ENTRIES) {
+      const excess = this.entries.size - OPENROUTER_VIDEO_MAX_ENTRIES;
+      const iter = this.entries.keys();
+      for (let i = 0; i < excess; i++) {
+        const next = iter.next();
+        if (!next.done) this.entries.delete(next.value);
+      }
+    }
+  }
+
+  delete(key: string): boolean {
+    return this.entries.delete(key);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
+
+// ─── Job progression ────────────────────────────────────────────────────────
+
+function terminalStatus(job: OpenRouterVideoJob): OpenRouterVideoStatus {
+  return job.video.status === "failed" ? "failed" : "completed";
+}
+
+/**
+ * Mutates a job in place to advance its state on a status poll.
+ * `pending → in_progress → completed | failed` based on poll-count thresholds.
+ * No-op once terminal. The in_progress threshold is checked first so a job
+ * whose thresholds are equal still spends one poll in in_progress instead of
+ * jumping straight to the terminal status (fal advanceJob semantics).
+ */
+function advanceJob(job: OpenRouterVideoJob): void {
+  if (job.status === "completed" || job.status === "failed") return;
+
+  job.pollCount += 1;
+  if (job.status === "pending" && job.pollCount >= job.pollsBeforeInProgress) {
+    job.status = "in_progress";
+  } else if (job.pollCount >= job.pollsBeforeCompleted) {
+    job.status = terminalStatus(job);
+  }
+}
+
+function requestBase(req: http.IncomingMessage): string {
+  return `http://${req.headers.host ?? "localhost"}`;
+}
+
+// ─── POST /api/v1/videos — submit ───────────────────────────────────────────
+
+export async function handleOpenRouterVideoCreate(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  raw: string,
+  fixtures: Fixture[],
+  journal: Journal,
+  defaults: HandlerDefaults,
+  setCorsHeaders: (res: http.ServerResponse) => void,
+  jobs: OpenRouterVideoJobMap,
+): Promise<void> {
+  setCorsHeaders(res);
+  const path = req.url ?? "/api/v1/videos";
+  const method = req.method ?? "POST";
+
+  let videoReq: OpenRouterVideoRequest;
+  try {
+    videoReq = JSON.parse(raw) as OpenRouterVideoRequest;
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : "unknown";
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: {
+          message: `Malformed JSON: ${detail}`,
+          type: "invalid_request_error",
+          code: "invalid_json",
+        },
+      }),
+    );
+    return;
+  }
+
+  if (!videoReq.prompt) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: { message: "Missing required parameter: 'prompt'", type: "invalid_request_error" },
+      }),
+    );
+    return;
+  }
+
+  const syntheticReq: ChatCompletionRequest = {
+    model: videoReq.model ?? DEFAULT_OPENROUTER_VIDEO_MODEL,
+    messages: [{ role: "user", content: videoReq.prompt }],
+    _endpointType: "video",
+    _context: getContext(req),
+  };
+
+  const testId = getTestId(req);
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    syntheticReq,
+    journal.getFixtureMatchCountsForTest(testId),
+    defaults.requestTransform,
+  );
+
+  if (fixture) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+    defaults.logger.debug(`Fixture matched: ${JSON.stringify(fixture.match).slice(0, 120)}`);
+  } else {
+    defaults.logger.debug(`No fixture matched for request`);
+  }
+
+  if (
+    applyChaos(
+      res,
+      fixture,
+      defaults.chaos,
+      req.headers,
+      journal,
+      { method, path, headers: flattenHeaders(req.headers), body: syntheticReq },
+      fixture ? "fixture" : "proxy",
+      defaults.registry,
+      defaults.logger,
+    )
+  )
+    return;
+
+  if (!fixture) {
+    const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
+    if (effectiveStrict) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine(method, path, skippedBySequenceOrTurn));
+      journal.add({
+        method,
+        path,
+        headers: flattenHeaders(req.headers),
+        body: syntheticReq,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, req.headers),
+        },
+      });
+      writeErrorResponse(
+        res,
+        503,
+        JSON.stringify({
+          error: {
+            message: strictMessage,
+            type: "invalid_request_error",
+            code: "no_fixture_match",
+          },
+        }),
+      );
+      return;
+    }
+
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, req.headers),
+      },
+    });
+    writeErrorResponse(
+      res,
+      404,
+      JSON.stringify({ error: { message: "No fixture matched", code: 404 } }),
+    );
+    return;
+  }
+
+  const response = await resolveResponse(fixture, syntheticReq);
+
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status, fixture },
+    });
+    writeErrorResponse(res, status, serializeErrorResponse(response), {
+      retryAfter: response.retryAfter,
+    });
+    return;
+  }
+
+  if (!isVideoResponse(response)) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: syntheticReq,
+      response: { status: 500, fixture },
+    });
+    writeErrorResponse(
+      res,
+      500,
+      JSON.stringify({
+        error: { message: "Fixture response is not a video type", type: "server_error" },
+      }),
+    );
+    return;
+  }
+
+  journal.add({
+    method,
+    path,
+    headers: flattenHeaders(req.headers),
+    body: syntheticReq,
+    response: { status: 200, fixture },
+  });
+
+  const jobId = crypto.randomUUID();
+  const progression = resolveProgression(defaults.openRouterVideo);
+  const job: OpenRouterVideoJob = {
+    jobId,
+    status: "pending",
+    pollCount: 0,
+    pollsBeforeInProgress: progression.pollsBeforeInProgress,
+    pollsBeforeCompleted: progression.pollsBeforeCompleted,
+    video: response.video,
+    createdAt: Date.now(),
+  };
+  // Default 0/0 progression reaches the terminal status on the first poll —
+  // seed terminal directly (mirrors fal's COMPLETED-on-submit initial status);
+  // the submit envelope still reports "pending" like the real API.
+  if (progression.pollsBeforeCompleted === 0) {
+    job.status = terminalStatus(job);
+  }
+  jobs.set(`${testId}:${jobId}`, job);
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      id: jobId,
+      polling_url: `${requestBase(req)}/api/v1/videos/${jobId}`,
+      status: "pending",
+    }),
+  );
+}
