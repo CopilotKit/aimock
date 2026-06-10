@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import * as metricsModule from "../metrics.js";
 import { createMetricsRegistry, normalizePathLabel, type MetricsRegistry } from "../metrics.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -608,13 +611,14 @@ describe("integration: /metrics endpoint", () => {
       [{ match: { userMessage: "hi" }, response: { content: "upstream" } }],
       { port: 0 },
     );
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-metrics-proxy-source-"));
     try {
       instance = await createServer([], {
         metrics: true,
         chaos: { dropRate: 1.0 },
         record: {
           providers: { openai: upstream.url },
-          fixturePath: "/tmp/aimock-metrics-proxy-source",
+          fixturePath: fixtureDir,
           proxyOnly: true,
         },
       });
@@ -627,6 +631,7 @@ describe("integration: /metrics endpoint", () => {
       );
     } finally {
       await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
   });
 
@@ -682,7 +687,9 @@ describe("integration: /metrics endpoint", () => {
     ).toBe(200);
 
     const res = await httpGet(`${instance.url}/metrics`);
-    expect(res.body).toContain('path="/api/v1/videos"');
+    // Boundary-aware: a bare toContain would be substring-satisfied by the
+    // {jobId} line.
+    expect(res.body).toMatch(/path="\/api\/v1\/videos"[,}]/);
     expect(res.body).toContain('path="/api/v1/videos/{jobId}"');
     expect(res.body).toContain('path="/api/v1/videos/{jobId}/content"');
     // The job UUID must never appear as a label value.

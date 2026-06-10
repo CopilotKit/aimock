@@ -845,7 +845,7 @@ describe("OpenRouter video — logger observability", () => {
     mock = new LLMock({
       port: 0,
       logLevel: "warn",
-      record: { providers: { openai: "sk-test" } },
+      record: { providers: { openai: "http://127.0.0.1:9" } },
     });
     await mock.start();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1718,26 +1718,40 @@ describe("server close clears video job state", () => {
       },
     ];
     const instance = await createServer(fixtures, { port: 0 });
+    // Idempotent close so the finally block can't double-close (which would
+    // reject with ERR_SERVER_NOT_RUNNING) after a successful in-test close.
+    let closed = false;
+    const closeServer = (): Promise<void> => {
+      if (closed) return Promise.resolve();
+      closed = true;
+      return new Promise<void>((resolve, reject) => {
+        instance.server.close((err) => (err ? reject(err) : resolve()));
+      });
+    };
 
-    // Populate both per-instance maps.
-    await fetch(`${instance.url}/v1/videos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "sora-2", prompt: "openai close" }),
-    });
-    await fetch(`${instance.url}/api/v1/videos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "m/v", prompt: "openrouter close" }),
-    });
-    expect(instance.videoStates.size).toBeGreaterThan(0);
-    expect(instance.openRouterVideoJobs.size).toBeGreaterThan(0);
+    try {
+      // Populate both per-instance maps.
+      await fetch(`${instance.url}/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "sora-2", prompt: "openai close" }),
+      });
+      await fetch(`${instance.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "m/v", prompt: "openrouter close" }),
+      });
+      expect(instance.videoStates.size).toBeGreaterThan(0);
+      expect(instance.openRouterVideoJobs.size).toBeGreaterThan(0);
 
-    await new Promise<void>((resolve, reject) => {
-      instance.server.close((err) => (err ? reject(err) : resolve()));
-    });
-    expect(instance.openRouterVideoJobs.size).toBe(0);
-    expect(instance.videoStates.size).toBe(0);
+      await closeServer();
+      expect(instance.openRouterVideoJobs.size).toBe(0);
+      expect(instance.videoStates.size).toBe(0);
+    } finally {
+      // No-op when the test already closed; prevents a leaked server when a
+      // mid-test assertion fails.
+      await closeServer();
+    }
   });
 });
 
