@@ -2548,6 +2548,7 @@ export async function createServer(
       ws.close(1001, "Server shutting down");
     }
     activeConnections.clear();
+    videoStates.clear();
     openRouterVideoJobs.clear();
     originalClose(callback);
     return this;
