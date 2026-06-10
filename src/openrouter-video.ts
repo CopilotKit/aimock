@@ -241,6 +241,10 @@ const PLACEHOLDER_MP4 = Buffer.from([
   0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32,
 ]);
 
+// The `index` query param is accepted but ignored (jobs are single-video), and
+// fetching content deliberately does NOT advance job state — clients only
+// learn the content URL from a completed status poll (API fidelity; diverges
+// from fal's advance-on-result queue semantics).
 export function handleOpenRouterVideoContent(
   req: http.IncomingMessage,
   res: http.ServerResponse,
