@@ -165,7 +165,7 @@ export function videoResponseToFalJson(response: VideoResponse): Record<string, 
 
 // ─── Queue progression ─────────────────────────────────────────────────
 
-function resolveProgression(config: FalQueueConfig | undefined): {
+export function resolveProgression(config: FalQueueConfig | undefined): {
   pollsBeforeInProgress: number;
   pollsBeforeCompleted: number;
 } {

@@ -255,6 +255,12 @@ export interface VideoResponse {
     id: string;
     status: "processing" | "completed" | "failed";
     url?: string;
+    /** Failure message surfaced by async video jobs (e.g. OpenRouter `error`). */
+    error?: string;
+    /** Base64-encoded video bytes served by content-download endpoints. */
+    b64?: string;
+    /** Generation cost surfaced in usage envelopes (e.g. OpenRouter `usage.cost`). */
+    cost?: number;
   };
 }
 
@@ -688,6 +694,13 @@ export interface MockServerOptions {
    * legacy `/fal/queue/...` audio handler is unaffected.
    */
   falQueue?: FalQueueConfig;
+  /**
+   * Configure OpenRouter async video job polling progression
+   * (`pending → in_progress → completed | failed` on `GET /api/v1/videos/{id}`).
+   * Same threshold semantics as `falQueue`. By default a job reaches its
+   * terminal status on the first poll.
+   */
+  openRouterVideo?: FalQueueConfig;
 }
 
 export interface FalQueueConfig {
@@ -720,4 +733,5 @@ export interface HandlerDefaults {
   strict?: boolean;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   falQueue?: FalQueueConfig;
+  openRouterVideo?: FalQueueConfig;
 }

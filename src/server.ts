@@ -1078,6 +1078,9 @@ export async function createServer(
     get falQueue() {
       return serverOptions.falQueue;
     },
+    get openRouterVideo() {
+      return serverOptions.openRouterVideo;
+    },
   };
 
   // Validate chaos config rates
