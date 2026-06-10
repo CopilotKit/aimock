@@ -14,6 +14,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { DEFAULT_TEST_ID } from "./constants.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
@@ -131,7 +132,23 @@ function advanceJob(job: OpenRouterVideoJob): void {
 }
 
 function requestBase(req: http.IncomingMessage): string {
-  return `http://${req.headers.host ?? "localhost"}`;
+  // Honor x-forwarded-proto so generated URLs survive a TLS-terminating
+  // proxy in front of the mock. First value wins on comma-joined lists.
+  const fwdProto = req.headers["x-forwarded-proto"];
+  const protoRaw = Array.isArray(fwdProto) ? fwdProto[0] : fwdProto;
+  const proto = protoRaw?.split(",")[0]?.trim() || "http";
+  return `${proto}://${req.headers.host ?? "localhost"}`;
+}
+
+/**
+ * Query-string suffix embedding the request's testId into generated URLs
+ * (polling_url, unsigned_urls). The @openrouter/sdk fetches these URLs bare —
+ * no custom headers — so the testId must travel in the URL for getTestId's
+ * `?testId=` fallback to resolve the right job scope. The default testId is
+ * omitted to keep single-tenant URLs clean.
+ */
+function testIdSuffix(testId: string, sep: "?" | "&"): string {
+  return testId === DEFAULT_TEST_ID ? "" : `${sep}testId=${encodeURIComponent(testId)}`;
 }
 
 // ─── GET /api/v1/videos/{jobId} — status poll ───────────────────────────────
@@ -195,7 +212,9 @@ export function handleOpenRouterVideoStatus(
 
   const body: Record<string, unknown> = { id: job.jobId, status: job.status };
   if (job.status === "completed") {
-    body.unsigned_urls = [`${requestBase(req)}/api/v1/videos/${job.jobId}/content?index=0`];
+    body.unsigned_urls = [
+      `${requestBase(req)}/api/v1/videos/${job.jobId}/content?index=0${testIdSuffix(testId, "&")}`,
+    ];
     body.usage = { cost: job.video.cost ?? 0 };
   } else if (job.status === "failed") {
     body.error = job.video.error ?? "Video generation failed";
@@ -633,7 +652,7 @@ export async function handleOpenRouterVideoCreate(
   res.end(
     JSON.stringify({
       id: jobId,
-      polling_url: `${requestBase(req)}/api/v1/videos/${jobId}`,
+      polling_url: `${requestBase(req)}/api/v1/videos/${jobId}${testIdSuffix(testId, "?")}`,
       status: "pending",
     }),
   );
