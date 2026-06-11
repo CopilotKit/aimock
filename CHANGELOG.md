@@ -22,13 +22,109 @@
   always as `Content-Type: video/mp4` (matching production even when the client sends
   `Accept: application/octet-stream`). Status polls and the models listing are served without auth
   — only the content endpoint enforces Bearer (a deliberate, documented divergence). The `index`
-  query param is accepted but ignored (jobs are single-video), and the content endpoint does not
-  advance job state — content URLs are only learned from a completed status poll (API fidelity;
-  diverges from fal's advance-on-result). `GET /api/v1/videos/models` synthesizes the video-model
+  query param is accepted but ignored (jobs are single-video) — except when the content endpoint
+  live-proxies an upstream (record mode's proxy-only operation, or the in-flight capture window
+  below), where it selects the position-aligned upstream `unsigned_urls` entry — and the content
+  endpoint does not advance job state — content URLs are only learned from a completed status poll
+  (API fidelity; diverges from fal's advance-on-result). `GET /api/v1/videos/models` synthesizes
+  the video-model
   listing from loaded video fixtures that specify a string `match.model` (falling back to a
   built-in default set otherwise). Video fixtures gain optional `error`, `b64`, and `cost` fields.
-  Replay-only for now (no record/proxy mode yet — lenient mode 404s on a miss instead of
-  proxying); record-mode proxying for this surface is a follow-up.
+  Record mode is supported via the `"openrouter"` provider key
+  (`record.providers.openrouter` / `--provider-openrouter <url>`) as a live interactive proxy: an
+  unmatched submit is forwarded upstream and answered with a mock-rewritten envelope (fresh aimock
+  jobId, `polling_url` pointing back at the mock with the testId embedded), and each client poll
+  is proxied upstream and relayed with the mock identifiers substituted — `id`, a present
+  `polling_url`, and a present `unsigned_urls` array (same length, one mock content URL per index)
+  are rewritten (a non-array `unsigned_urls` cannot be index-rewritten and is stripped from the
+  relay with a warning instead of leaking the upstream value); every other field (including
+  `usage`, untouched — a non-number `usage.cost` warns but passes through) is relayed verbatim.
+  When the upstream reports `completed`, the poll is relayed immediately and the eager capture
+  runs in the background: `unsigned_urls[0]` is origin-checked against the configured provider
+  and fetched server-side after the first completed poll has been answered — an SDK poller is
+  never blocked on a multi-minute video download; the polling client's Bearer is forwarded only
+  same-origin (off-origin content hosts are fetched without auth, with a warning) — and the
+  bytes are persisted as a normal video fixture (`match.userMessage` = prompt, `match.model` =
+  the submitted model as recorded by the standard model-normalization rules — date suffixes
+  stripped unless `recordFullModelVersion`; model-less submits record the assumed default model
+  — `video.id` = the upstream job id) that replays in-session and across sessions. While the
+  capture is in flight, the job is already observable as completed: status polls relay the
+  upstream body and the content endpoint live-proxies downloads (no 400 window). A capture
+  FAILURE — no usable `unsigned_urls`, an invalid content URL, or a content fetch that errors on
+  headers, status, or body — persists NOTHING and leaves the job a live proxy, so the next
+  completed poll retries the capture (each failure warns); the only degraded persist (fixture
+  written without `b64`) is the over-cap path below, where a retry would always re-exceed the cap.
+  `failed` jobs persist `{ status: "failed", error }` fixtures; `cancelled`/`expired` upstream
+  statuses (not representable in `video.status`) pass through verbatim with a warning and are
+  never recorded; an upstream `failed` body whose `error` is the canonical
+  `{ message, code }` object records the extracted message (an unusable non-null `error` value
+  warns and is omitted from the fixture; an explicit `null` is omitted without the warn).
+  Recorded `b64` is capped at `record.openRouterVideo.maxContentBytes`
+  (default 32 MB decoded, `0` = unlimited, negative/non-integer values are treated as the default
+  with a `createServer` warning; exported as `OPENROUTER_VIDEO_DEFAULT_MAX_CONTENT_BYTES`): the
+  cap guards memory as well as disk — a capture whose upstream response declares an over-cap
+  `Content-Length` is skipped without downloading, an undeclared-length capture is streamed with
+  the byte count enforced during the read (on exceed the download aborts and nothing oversized is
+  retained), and in both cases the fixture is persisted without `b64` (with a `_warning` in the
+  fixture file) and the placeholder is served even same-session. `GET /api/v1/videos/models` is
+  relayed verbatim from the upstream in record mode (journaled `source: "proxy"`, never recorded
+  as a fixture), falling back to the fixture-driven synthesis on upstream failure; strict mode
+  disables the models proxy entirely. Strict mode wins over record (503 on a no-match, nothing
+  proxied — a chaos roll on a strict no-fixture submit is labeled `source: "internal"`), and an
+  effective-strict request also 503s a record job's status polls and live-proxied content
+  downloads ("strict means nothing reaches an upstream", honoring per-request `X-AIMock-Strict`
+  overrides). A missing provider URL warns and falls through to 404; upstream failures return 502
+  `proxy_error` (a hung models fetch instead falls back 200 to the synthesized listing). The
+  small-JSON upstream fetches (submit, poll, models) honor `record.upstreamTimeoutMs` (default
+  30s) as a total deadline; the byte-bearing content fetches (eager capture, content relay) gate
+  only the response headers on `upstreamTimeoutMs` and stream the body under
+  `record.bodyTimeoutMs` idle semantics (re-armed per chunk), so a steadily-downloading long
+  render never times out — only a mid-body stall aborts. Every proxied journal entry carries
+  `source: "proxy"` (the synthesized models fallback after a failed proxy attempt is labeled
+  `source: "internal"`), a fixture-write failure surfaces as an `X-AIMock-Record-Error` header on
+  the relayed poll on the failed branch (the completed branch's capture is detached from the
+  relay, so its persist failures are logged instead), and each successful (2xx) proxied poll, each
+  replay-job poll, AND each successful content serve/relay refreshes the job's 1-hour TTL so long
+  generations — and long download sessions — are not evicted mid-recording (or mid-polling); a
+  relayed upstream 401/403 does NOT refresh the TTL.
+  Upstream `401`/`403` rejections pass through to the client verbatim on all three proxied
+  surfaces — submit, status poll, and content download — for real-API fidelity (the relayed
+  401/403 bodies deliberately bypass the mock's identifier/URL rewriting: auth-error envelopes
+  carry no job URLs, and fidelity of the provider's error body wins). Disabling recording
+  mid-flight (`disableRecording()`) makes
+  every later poll of an orphaned record job fail loudly with 502 before contacting the upstream —
+  and content downloads too, when the job is completed (a pending/in_progress orphan's download
+  still 400s as not-completed first; the 502 gate sits behind the completed check). Under
+  `record.proxyOnly` nothing is persisted or cached: jobs stay
+  live proxies after terminal polls and content downloads are live-proxied from the stored
+  upstream `unsigned_urls[index]` on every fetch, with the bytes STREAMED to the client as they
+  arrive — the video is never buffered in memory and the first bytes reach the client while the
+  upstream is still sending (the same streamed relay serves capture-window downloads;
+  position-aligned with the relayed array; an out-of-range or unusable index warns and falls back
+  to index 0; same same-origin Bearer gate as the capture path; an upstream 401/403 on the
+  content fetch passes through to the client for real-API fidelity). The four
+  `handleOpenRouterVideo*` handlers,
+  `OpenRouterVideoJobMap`, and `OPENROUTER_VIDEO_MAX_ENTRIES` are exported from the package root
+  (matching the sibling video/fal surfaces). The CLI warns when
+  `--upstream-timeout-ms`/`--body-timeout-ms` — or any `--provider-*` flag — are passed without
+  `--record`/`--proxy-only` (previously parsed and silently dropped).
+
+### Changed
+
+- **Proxy header forwarding (all providers)** — requests forwarded to a recording upstream now
+  strip the mock-internal control headers `x-test-id`, `x-aimock-strict`, `x-aimock-context`, and
+  the `x-aimock-chaos-*` prefix family on every provider proxy path (not just the new OpenRouter
+  video surface). These headers are meaningless — and potentially confusing or leaky — on a real
+  provider's wire; everything else still passes through as before. Note that because `x-test-id`
+  is now stripped upstream, recording THROUGH a second aimock instance loses testId scoping on
+  the inner instance.
+- **fal queue walk: same-origin envelope URLs** — the recording queue walk (fal and the legacy
+  fal-audio path) now adopts the `status_url`/`response_url` an upstream submit envelope nominates
+  only when they are same-origin with the configured upstream (the gate the OpenRouter video proxy
+  applies to envelope `polling_url`s). Every walk fetch forwards the client's headers — including
+  `Authorization` — so an envelope nominating a foreign host must never receive them; off-origin,
+  unparseable, or absent envelope URLs fall back to the constructed canonical paths on the
+  upstream origin, with a warning.
 
 ### Fixed
 
@@ -38,6 +134,17 @@
   of stranding jobs short of a terminal status, negative/fractional values are floored and clamped
   to non-negative integers, and `createServer` now warns on invalid `falQueue`/`openRouterVideo`
   threshold values.
+- **fal queue walk: per-fetch timeout** — each of the walk's submit/status/result fetches is now
+  bounded by `record.upstreamTimeoutMs` (30s default, additionally clamped to the walk's remaining
+  `record.fal.timeoutMs` budget). Previously the walk-level timeout only fired BETWEEN polls, so a
+  hung upstream socket could pin the walk indefinitely; it now surfaces through the existing
+  502/no-fixture failure handling.
+- **fal queue walk: `pollIntervalMs: 0`** — a zero poll interval no longer produces a spurious
+  "Queue walk timed out" on the first non-terminal poll; the walk only times out when the
+  `timeoutMs` budget is actually exhausted ("poll as fast as possible" is a valid configuration).
+- **fal/fal-audio queue-walk persist failures** — a fixture-write failure on the queue-walk record
+  paths now surfaces as an `X-AIMock-Record-Error` header on the synthesized envelope (parity with
+  the generic recorder relay and the OpenRouter video failed branch).
 
 ## [1.30.0] - 2026-06-09
 
