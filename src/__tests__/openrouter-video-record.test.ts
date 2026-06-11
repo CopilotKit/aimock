@@ -3363,6 +3363,45 @@ describe("OpenRouter video record — round 2 contract pins", () => {
     expect(((await poll.json()) as { status: string }).status).toBe("failed");
     expect(poll.headers.get("x-aimock-record-error")).toBeTruthy();
   });
+
+  test("a persist failure with non-Latin-1 characters in the error still relays (sanitized header, no 500)", async () => {
+    // The fs error message embeds the fixture path verbatim — a path with
+    // characters outside Latin-1 (e.g. a Unicode project directory) would
+    // make res.setHeader throw ERR_INVALID_CHAR and turn a recoverable
+    // record-path failure into a 500. The header must ride sanitized instead.
+    upstream = await startOpenRouterVideoUpstream({
+      finalStatus: "failed",
+      error: "doomed render",
+    });
+    blockerDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-or-video-latin1-"));
+    const blockerFile = path.join(blockerDir, "not-a-dir-日本語-héllo");
+    fs.writeFileSync(blockerFile, "in the way");
+    mock = new LLMock({
+      port: 0,
+      logLevel: "silent",
+      record: { providers: { openrouter: upstream.url }, fixturePath: blockerFile },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer sk-l1" },
+      body: JSON.stringify({ model: "m/v", prompt: "unsaveable unicode failure" }),
+    });
+    const envelope = (await submit.json()) as { polling_url: string };
+
+    const poll = await fetch(envelope.polling_url, {
+      headers: { Authorization: "Bearer sk-l1" },
+    });
+    expect(poll.status).toBe(200);
+    expect(((await poll.json()) as { status: string }).status).toBe("failed");
+    const header = poll.headers.get("x-aimock-record-error");
+    expect(header).toBeTruthy();
+    // Sanitized: nothing outside what Node accepts in a header value, but the
+    // useful (Latin-1) part of the message survives.
+    expect(header).toMatch(/^[\t\x20-\x7e\x80-\xff]*$/);
+    expect(header).toContain("not-a-dir-");
+  });
 });
 
 // ─── Round 3 CR: stale-reference resurrection (A1), failed-branch concurrency

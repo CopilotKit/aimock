@@ -33,6 +33,7 @@ import {
   clampTimeout,
   persistFixture,
   proxyAndRecord,
+  sanitizeHeaderValue,
 } from "./recorder.js";
 import { resolveUpstreamUrl } from "./url.js";
 import type { Journal } from "./journal.js";
@@ -1043,7 +1044,7 @@ async function proxyAndRecordFalQueueSubmit(args: {
   // recorder relay and the OpenRouter failed branch) — the synthesized
   // envelope below has not been written yet, so the header can still ride it.
   if (persistResult.kind === "failed" && !res.headersSent) {
-    res.setHeader("X-AIMock-Record-Error", persistResult.error);
+    res.setHeader("X-AIMock-Record-Error", sanitizeHeaderValue(persistResult.error));
   }
 
   // ── 5. Synthesise envelope + seed state (same shape as the replay path) ──

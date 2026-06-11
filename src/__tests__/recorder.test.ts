@@ -9,6 +9,7 @@ import {
   proxyAndRecord,
   buildFixtureMatch,
   persistFixture,
+  sanitizeHeaderValue,
   type ProxyCapturedResponse,
 } from "../recorder.js";
 import type { RecordConfig } from "../types.js";
@@ -6710,5 +6711,17 @@ describe("persistFixture snapshot merge — _warning carry-forward", () => {
       warnSpy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("sanitizeHeaderValue", () => {
+  it("replaces characters Node rejects in header values and keeps Latin-1 intact", () => {
+    // Multibyte (>0xFF) and control characters become "?"; tab, printable
+    // ASCII, and the 0x80-0xFF Latin-1 range pass through untouched.
+    expect(sanitizeHeaderValue("ENOTDIR: not a directory, mkdir '/tmp/日本語/héllo'")).toBe(
+      "ENOTDIR: not a directory, mkdir '/tmp/???/héllo'",
+    );
+    expect(sanitizeHeaderValue("line1\nline2\x7f")).toBe("line1?line2?");
+    expect(sanitizeHeaderValue("plain ascii\twith tab")).toBe("plain ascii\twith tab");
   });
 });
