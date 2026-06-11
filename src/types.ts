@@ -505,12 +505,14 @@ export interface JournalEntry {
     /**
      * What was going to serve this request. "fixture" = a fixture matched (or
      * would have, before chaos intervened). "proxy" = no fixture matched and
-     * proxy was configured. "internal" = chaos-path entries where the request
-     * was served by aimock's own synthetic logic — neither a matched fixture
-     * nor a configured proxy (e.g. chaos on the OpenRouter video lifecycle
-     * endpoints; their normal 200/400/401/404 entries omit source). Absent
-     * when the distinction doesn't apply (e.g. 404/503 fallback where nothing
-     * was going to serve).
+     * proxy was configured. "internal" = entries where the request was served
+     * by aimock's own synthetic logic — neither a matched fixture nor a
+     * configured proxy: chaos-path entries (e.g. chaos on the OpenRouter
+     * video lifecycle endpoints; in REPLAY mode their normal 200/400/401/404
+     * entries omit source, while record-mode 200s on those endpoints carry
+     * source:"proxy") AND the OpenRouter video models listing synthesized as
+     * the fallback after a FAILED proxy attempt. Absent when the distinction
+     * doesn't apply (e.g. 404/503 fallback where nothing was going to serve).
      */
     source?: "fixture" | "proxy" | "internal";
     interrupted?: boolean;
@@ -594,7 +596,8 @@ export type RecordProviderKey =
   | "ollama"
   | "cohere"
   | "elevenlabs"
-  | "fal";
+  | "fal"
+  | "openrouter";
 
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
@@ -615,10 +618,29 @@ export interface RecordConfig {
    */
   fal?: FalRecordConfig;
   /**
+   * OpenRouter-video-specific recording knobs for the live lifecycle proxy on
+   * `/api/v1/videos` (submit/poll proxied 1:1; completed jobs are captured
+   * eagerly as fixtures).
+   */
+  openRouterVideo?: OpenRouterVideoRecordConfig;
+  /**
    * Connection idle timeout (ms) on the upstream request socket — fires if the
    * socket is inactive for this duration at any point before the response body
    * begins. Default: 30_000 (30s). Increase for upstreams with slow initial
    * responses (reasoning models, queue-backed providers).
+   *
+   * Nuance on the OpenRouter video surface: the small-JSON lifecycle fetches
+   * (submit, status poll, models listing) apply this value as a TOTAL
+   * deadline on the whole fetch — indistinguishable from an idle timeout for
+   * envelope-sized bodies. The byte-bearing content fetches (eager capture,
+   * proxy-only content relay) gate only the response HEADERS on this value;
+   * their body progress is governed by `bodyTimeoutMs` idle semantics.
+   *
+   * Ceiling note: the fetch-based OpenRouter proxy paths run on Node's
+   * built-in undici dispatcher, which carries its own ~300s
+   * headers/body-timeout defaults — values above that ceiling do not take
+   * effect on those paths without installing a custom undici dispatcher
+   * (out of aimock's scope).
    */
   upstreamTimeoutMs?: number;
   /**
@@ -626,9 +648,28 @@ export interface RecordConfig {
    * goes silent (no bytes) for this long after the response has started.
    * Default: 30_000 (30s). Reasoning models under concurrent load can leave
    * 30s+ gaps between streaming chunks while the model is thinking; lift this
-   * to e.g. 180_000 in those setups.
+   * to e.g. 180_000 in those setups. The OpenRouter video content fetches use
+   * the same idle semantics: the timer re-arms on every chunk, so a steadily
+   * downloading multi-minute video never times out — only a silent stall does.
    */
   bodyTimeoutMs?: number;
+}
+
+export interface OpenRouterVideoRecordConfig {
+  /**
+   * Maximum decoded video size (bytes) embedded as `b64` in a recorded
+   * fixture. Captures larger than the cap are persisted WITHOUT `b64` (with a
+   * `_warning` in the fixture file) so a multi-hundred-MB video cannot bloat
+   * the fixture directory. The cap is also a memory guard: an upstream
+   * response that DECLARES an over-cap Content-Length is skipped without
+   * downloading, and a response with no declared length is streamed with the
+   * byte count enforced during the read — on exceed the download is aborted
+   * and nothing oversized is retained in memory. In both cases the
+   * same-session job serves the placeholder MP4. Default: 33554432 (32 MB
+   * decoded). Set 0 for unlimited. Negative or non-integer values are treated
+   * as the default (createServer warns at startup).
+   */
+  maxContentBytes?: number;
 }
 
 export interface FalRecordConfig {

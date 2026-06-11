@@ -91,6 +91,15 @@ export { handleImages } from "./images.js";
 export { handleSpeech } from "./speech.js";
 export { handleTranscription } from "./transcription.js";
 export { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
+export {
+  handleOpenRouterVideoCreate,
+  handleOpenRouterVideoStatus,
+  handleOpenRouterVideoContent,
+  handleOpenRouterVideoModels,
+  OpenRouterVideoJobMap,
+  OPENROUTER_VIDEO_MAX_ENTRIES,
+  OPENROUTER_VIDEO_DEFAULT_MAX_CONTENT_BYTES,
+} from "./openrouter-video.js";
 export { handleElevenLabsAudio } from "./elevenlabs-audio.js";
 export { handleFalQueue } from "./fal-audio.js";
 export { handleFal, FalQueueStateMap } from "./fal.js";
