@@ -39,6 +39,7 @@ Options:
       --provider-azure <url>      Upstream URL for Azure OpenAI
       --provider-ollama <url>     Upstream URL for Ollama
       --provider-cohere <url>     Upstream URL for Cohere
+      --provider-openrouter <url> Upstream URL for OpenRouter (video record proxy)
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
@@ -74,6 +75,7 @@ const { values } = parseArgs({
     "provider-azure": { type: "string" },
     "provider-ollama": { type: "string" },
     "provider-cohere": { type: "string" },
+    "provider-openrouter": { type: "string" },
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
     "agui-record": { type: "boolean", default: false },
@@ -135,7 +137,7 @@ if (Number.isNaN(replaySpeed) || replaySpeed <= 0) {
 const journalMax = Number(values["journal-max"]);
 if (Number.isNaN(journalMax) || !Number.isInteger(journalMax) || journalMax < 0) {
   console.error(
-    `Invalid journal-max: ${values["journal-max"]} (must be a non-negative integer; 0 or omitted = unbounded)`,
+    `Invalid journal-max: ${values["journal-max"]} (must be a non-negative integer; 0 = unbounded)`,
   );
   process.exit(1);
 }
@@ -223,6 +225,7 @@ if (values.record || values["proxy-only"]) {
   if (values["provider-azure"]) providers.azure = values["provider-azure"];
   if (values["provider-ollama"]) providers.ollama = values["provider-ollama"];
   if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
+  if (values["provider-openrouter"]) providers.openrouter = values["provider-openrouter"];
 
   if (Object.keys(providers).length === 0) {
     console.error(
@@ -254,6 +257,33 @@ if (values.record || values["proxy-only"]) {
     upstreamTimeoutMs,
     bodyTimeoutMs,
   };
+} else {
+  // These flags configure upstream proxying — without --record or
+  // --proxy-only they would be parsed and then silently dropped. Routed
+  // through the constructed logger so --log-level is respected.
+  const droppedProviderFlags = (
+    [
+      "provider-openai",
+      "provider-anthropic",
+      "provider-gemini",
+      "provider-vertexai",
+      "provider-bedrock",
+      "provider-azure",
+      "provider-ollama",
+      "provider-cohere",
+      "provider-openrouter",
+    ] as const
+  ).filter((flag) => values[flag] !== undefined);
+  if (droppedProviderFlags.length > 0) {
+    logger.warn(
+      `--${droppedProviderFlags.join("/--")} only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.`,
+    );
+  }
+  if (upstreamTimeoutMs !== undefined || bodyTimeoutMs !== undefined) {
+    logger.warn(
+      "--upstream-timeout-ms/--body-timeout-ms only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.",
+    );
+  }
 }
 
 // Parse AG-UI record/proxy config from CLI flags
