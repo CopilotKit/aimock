@@ -1,16 +1,31 @@
-import { describe, test, expect, afterEach, vi } from "vitest";
+import { describe, test, expect, afterAll, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { LLMock } from "../llmock.js";
 import { createServer } from "../server.js";
 import { resolveProgression } from "../fal.js";
-import { OpenRouterVideoJobMap, OPENROUTER_VIDEO_MAX_ENTRIES } from "../openrouter-video.js";
-import type { VideoResponse } from "../types.js";
+import {
+  OpenRouterVideoJobMap,
+  OPENROUTER_VIDEO_MAX_ENTRIES,
+  handleOpenRouterVideoStatus,
+  type OpenRouterVideoJob,
+} from "../openrouter-video.js";
+import { Journal } from "../journal.js";
+import { Logger } from "../logger.js";
+import { DEFAULT_TEST_ID } from "../constants.js";
+import type { HandlerDefaults, VideoResponse } from "../types.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
+import { startRefusingUpstream } from "./helpers/refusing-upstream.js";
+
+// Deterministically-failing upstream: the port is held by a live
+// connection-destroying server for the whole suite (no TOCTOU re-bind window).
+const refusingUpstream = await startRefusingUpstream();
+const UPSTREAM_DOWN_URL = refusingUpstream.url;
+afterAll(() => refusingUpstream.close());
 
 // ─── Task 1: shared progression resolver + extended video fixture fields ───
 
 describe("resolveProgression (shared with fal queue)", () => {
-  test("is exported and defaults to 0/0 (complete on first poll)", () => {
+  test("is exported and defaults to 0/0 (seeded terminal at submit)", () => {
     expect(resolveProgression(undefined)).toEqual({
       pollsBeforeInProgress: 0,
       pollsBeforeCompleted: 0,
@@ -841,7 +856,7 @@ describe("OpenRouter video — chaos source label and models route", () => {
     mock = undefined;
   });
 
-  test("submit chaos with no fixture journals source internal (surface never proxies)", async () => {
+  test("submit chaos with no fixture journals source internal when record is not configured", async () => {
     mock = new LLMock({ port: 0 });
     await mock.start();
 
@@ -902,14 +917,21 @@ describe("OpenRouter video — logger observability", () => {
       body: JSON.stringify({ model: "m/v", prompt: "still processing" }),
     });
     expect(res.status).toBe(200);
-    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("processing"))).toBe(true);
+    // Assert the coercion warn specifically — the fixture text itself contains
+    // "processing", so a bare includes("processing") could match any log line
+    // that echoes the prompt.
+    expect(
+      warnSpy.mock.calls.some((c) =>
+        c.join(" ").includes('status "processing" — treated as completed'),
+      ),
+    ).toBe(true);
   });
 
-  test("warns about the record-mode gap on no-match when record is configured", async () => {
+  test("record-gap warn is retired: record without an openrouter upstream warns about the missing provider URL", async () => {
     mock = new LLMock({
       port: 0,
       logLevel: "warn",
-      record: { providers: { openai: "http://127.0.0.1:9" } },
+      record: { providers: { openai: UPSTREAM_DOWN_URL } },
     });
     await mock.start();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -920,8 +942,15 @@ describe("OpenRouter video — logger observability", () => {
       body: JSON.stringify({ model: "m/v", prompt: "unrecorded prompt" }),
     });
     expect(res.status).toBe(404);
+    // Record mode IS supported on this surface now — the old gap warn is gone;
+    // the actionable warn is the missing provider URL (fal convention).
     expect(
       warnSpy.mock.calls.some((c) => c.join(" ").includes("record mode is not supported")),
+    ).toBe(false);
+    expect(
+      warnSpy.mock.calls.some((c) =>
+        c.join(" ").includes('No upstream URL configured for provider "openrouter"'),
+      ),
     ).toBe(true);
   });
 
@@ -938,6 +967,9 @@ describe("OpenRouter video — logger observability", () => {
     expect(
       warnSpy.mock.calls.some((c) => c.join(" ").includes("record mode is not supported")),
     ).toBe(false);
+    expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("No upstream URL configured"))).toBe(
+      false,
+    );
   });
 
   test("no-match debug log includes model and prompt snippet", async () => {
@@ -1350,6 +1382,47 @@ describe("OpenRouter video — full lifecycle integration", () => {
     expect(download.headers.get("content-type")).toBe("video/mp4");
     const body = Buffer.from(await download.arrayBuffer());
     expect(body.equals(bytes)).toBe(true);
+  });
+
+  test("each replay status poll refreshes the job TTL — long polled generations survive", async () => {
+    // Round-3 B3: mirrors the record-job TTL-refresh guarantee on the replay
+    // path. Without the refresh, the second poll below finds the job evicted
+    // (110 minutes after submit) and 404s, even though the client polled only
+    // 55 minutes ago.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      mock = new LLMock({
+        port: 0,
+        openRouterVideo: { pollsBeforeInProgress: 5, pollsBeforeCompleted: 10 },
+      });
+      mock.addFixture({
+        match: { userMessage: "slow replay gen", endpoint: "video" },
+        response: { video: { id: "vid_ttl", status: "completed" } },
+      });
+      await mock.start();
+
+      const submit = await fetch(`${mock.url}/api/v1/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "slow replay gen" }),
+      });
+      const envelope = (await submit.json()) as { polling_url: string };
+
+      // 55 minutes later (inside the 1h TTL): poll succeeds and refreshes.
+      vi.setSystemTime(Date.now() + 55 * 60_000);
+      const refresh = await fetch(envelope.polling_url);
+      expect(refresh.status).toBe(200);
+      await refresh.arrayBuffer(); // consume the body so the socket is released
+
+      // Another 55 minutes: 110min since submit, 55min since the last poll —
+      // the job must still be alive.
+      vi.setSystemTime(Date.now() + 55 * 60_000);
+      const res = await fetch(envelope.polling_url);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { status: string }).status).toBe("pending");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("failed lifecycle: submit → poll failed → download rejected", async () => {
@@ -2112,6 +2185,7 @@ describe("OpenRouterVideoJobMap (unit)", () => {
 
   function makeJob(id: string) {
     return {
+      kind: "replay" as const,
       jobId: id,
       status: "pending" as const,
       pollCount: 0,
@@ -2150,6 +2224,27 @@ describe("OpenRouterVideoJobMap (unit)", () => {
     expect(map.get("t:job0")).toBeUndefined(); // oldest entry evicted FIFO
     expect(map.get("t:job1")).toBeDefined();
     expect(map.get(`t:job${CAP}`)).toBeDefined(); // newest entry retained
+  });
+
+  test("set() refreshes insertion order — a TTL-refreshed key survives FIFO eviction", () => {
+    // The record path documents that each successful proxied poll refreshes
+    // the job's TTL via set(). For that guarantee to hold under capacity
+    // pressure, a refreshed key must move to the BACK of the Map's insertion
+    // order — otherwise FIFO eviction still treats it as the oldest entry.
+    const map = new OpenRouterVideoJobMap();
+    const CAP = OPENROUTER_VIDEO_MAX_ENTRIES;
+    const job = makeJob("shared");
+    for (let i = 0; i < CAP; i++) {
+      map.set(`t:job${i}`, job);
+    }
+    // Refresh the oldest key, then overflow by one.
+    map.set("t:job0", job);
+    expect(map.size).toBe(CAP);
+    map.set(`t:job${CAP}`, job);
+    expect(map.size).toBe(CAP);
+    expect(map.get("t:job0")).toBeDefined(); // refreshed — must survive
+    expect(map.get("t:job1")).toBeUndefined(); // now the true oldest — evicted
+    expect(map.get(`t:job${CAP}`)).toBeDefined();
   });
 });
 
@@ -2877,5 +2972,262 @@ describe("OpenRouter video — CR round 8 contract pins", () => {
       .find((e) => e.path === "/api/v1/videos/some-job" && e.response.chaosAction === "drop");
     expect(entry).toBeDefined();
     expect(entry!.response.source).toBe("internal");
+  });
+});
+
+// ─── Round 5 CR: disconnected replay polls + once-per-job empty-error warn ───
+
+describe("OpenRouter video status — disconnected replay poll (round 5)", () => {
+  function fakeReq(): http.IncomingMessage {
+    return {
+      method: "GET",
+      url: "/api/v1/videos/job-r5",
+      headers: { host: "127.0.0.1:4010" },
+    } as unknown as http.IncomingMessage;
+  }
+
+  function fakeRes(opts: { destroyed: boolean }): {
+    res: http.ServerResponse;
+    body: () => string;
+  } {
+    const chunks: Buffer[] = [];
+    const res = {
+      statusCode: 200,
+      headersSent: false,
+      destroyed: opts.destroyed,
+      writableEnded: false,
+      writeHead(status: number) {
+        res.statusCode = status;
+        (res as unknown as { headersSent: boolean }).headersSent = true;
+        return res;
+      },
+      write(data: string | Buffer) {
+        chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+        return true;
+      },
+      end(data?: string | Buffer) {
+        if (data) chunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+        (res as unknown as { writableEnded: boolean }).writableEnded = true;
+      },
+      setHeader() {
+        return res;
+      },
+      on() {
+        return res;
+      },
+      once() {
+        return res;
+      },
+      off() {
+        return res;
+      },
+    } as unknown as http.ServerResponse;
+    return { res, body: () => Buffer.concat(chunks).toString() };
+  }
+
+  test("an aborted poll consumes no progression step — the next live poll observes it", async () => {
+    const jobs = new OpenRouterVideoJobMap();
+    const job: OpenRouterVideoJob = {
+      kind: "replay",
+      jobId: "job-r5",
+      status: "pending",
+      pollCount: 0,
+      pollsBeforeInProgress: 1,
+      pollsBeforeCompleted: 2,
+      video: { id: "v-r5", status: "completed" },
+    };
+    jobs.set(`${DEFAULT_TEST_ID}:job-r5`, job);
+    const journal = new Journal();
+    const defaults: HandlerDefaults = {
+      latency: 0,
+      chunkSize: 20,
+      replaySpeed: 1,
+      logger: new Logger("silent"),
+    };
+
+    // A poll whose client disconnected while it was queued: no write, no
+    // journal entry — and no progression step consumed.
+    const dead = fakeRes({ destroyed: true });
+    await handleOpenRouterVideoStatus(
+      fakeReq(),
+      dead.res,
+      "job-r5",
+      [],
+      journal,
+      defaults,
+      () => {},
+      jobs,
+    );
+    expect(dead.body()).toBe("");
+    expect(journal.getAll()).toHaveLength(0);
+
+    // The next LIVE poll gets the progression step the aborted one would
+    // have consumed: first actual poll → in_progress (an aborted poll that
+    // advanced the job would make this read "completed").
+    const live = fakeRes({ destroyed: false });
+    await handleOpenRouterVideoStatus(
+      fakeReq(),
+      live.res,
+      "job-r5",
+      [],
+      journal,
+      defaults,
+      () => {},
+      jobs,
+    );
+    expect((JSON.parse(live.body()) as { status: string }).status).toBe("in_progress");
+  });
+});
+
+describe("OpenRouter video status — empty-error warn fires once per job (round 5)", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await mock?.stop();
+  });
+
+  test("a polling loop on an empty-error failed fixture warns once, not per poll", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "warn once render", endpoint: "video" },
+      response: { video: { id: "v-warn-once", status: "failed", error: "" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "warn once render" }),
+    });
+    const envelope = (await submit.json()) as { polling_url: string };
+
+    for (let i = 0; i < 3; i++) {
+      const poll = await fetch(envelope.polling_url);
+      expect(poll.status).toBe(200);
+      expect(((await poll.json()) as { status: string }).status).toBe("failed");
+    }
+
+    const emptyErrorWarns = warnSpy.mock.calls.filter((c) =>
+      c.join(" ").includes("empty error message"),
+    );
+    expect(emptyErrorWarns).toHaveLength(1);
+  });
+});
+
+// ─── Round 6 CR: mid-await reset on the replay submit + content-warn latch ──
+
+describe("OpenRouter video submit — fixtures reset during a slow ResponseFactory (round 6)", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    await mock?.stop();
+  });
+
+  test("a reset landing while the factory is awaited never seeds the new world", async () => {
+    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.addFixture({
+      match: { userMessage: "slow factory render", endpoint: "video" },
+      response: async () => {
+        await new Promise<void>((r) => setTimeout(r, 400));
+        return { video: { id: "v-slow", status: "completed" as const } };
+      },
+    });
+    await mock.start();
+
+    const submitPromise = fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "slow factory render" }),
+    });
+    // The factory is mid-await — reset the world underneath it.
+    await new Promise<void>((r) => setTimeout(r, 150));
+    const reset = await fetch(`${mock.url}/__aimock/reset/fixtures`, { method: "POST" });
+    expect(reset.status).toBe(200);
+    await reset.arrayBuffer();
+
+    // The envelope still relays (mirrors the record-submit guard's
+    // documented choice)...
+    const res = await submitPromise;
+    expect(res.status).toBe(200);
+    const envelope = (await res.json()) as { polling_url: string };
+
+    // ...but the job was NOT inserted into the new world — its poll 404s
+    // instead of resurrecting pre-reset state.
+    const poll = await fetch(envelope.polling_url);
+    expect(poll.status).toBe(404);
+    await poll.arrayBuffer();
+  });
+});
+
+describe("OpenRouter video content — fixture-defect warns fire once per job (round 6)", () => {
+  let mock: LLMock;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await mock?.stop();
+  });
+
+  test("re-downloading an empty-b64 fixture warns once, not per download", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "empty b64 render", endpoint: "video" },
+      response: { video: { id: "v-empty-b64", status: "completed", b64: "", url: "https://x/v" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "empty b64 render" }),
+    });
+    const envelope = (await submit.json()) as { id: string };
+
+    for (let i = 0; i < 2; i++) {
+      const dl = await fetch(`${mock.url}/api/v1/videos/${envelope.id}/content?index=0`, {
+        headers: { Authorization: "Bearer sk-warn" },
+      });
+      expect(dl.status).toBe(200);
+      await dl.arrayBuffer();
+    }
+
+    const emptyWarns = warnSpy.mock.calls.filter((c) => c.join(" ").includes("empty b64"));
+    expect(emptyWarns).toHaveLength(1);
+    const urlWarns = warnSpy.mock.calls.filter((c) => c.join(" ").includes("url is ignored"));
+    expect(urlWarns).toHaveLength(1);
+  });
+
+  test("re-downloading a corrupt-b64 fixture warns once, not per download", async () => {
+    mock = new LLMock({ port: 0, logLevel: "warn" });
+    mock.addFixture({
+      match: { userMessage: "corrupt b64 render", endpoint: "video" },
+      // Invalid characters Node's lenient decoder skips — decoded byte count
+      // falls short of what the length implies.
+      response: { video: { id: "v-corrupt-b64", status: "completed", b64: "AA!!AA!!" } },
+    });
+    await mock.start();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const submit = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "corrupt b64 render" }),
+    });
+    const envelope = (await submit.json()) as { id: string };
+
+    for (let i = 0; i < 2; i++) {
+      const dl = await fetch(`${mock.url}/api/v1/videos/${envelope.id}/content?index=0`, {
+        headers: { Authorization: "Bearer sk-warn" },
+      });
+      expect(dl.status).toBe(200);
+      await dl.arrayBuffer();
+    }
+
+    const corruptWarns = warnSpy.mock.calls.filter((c) =>
+      c.join(" ").includes("likely corrupt base64"),
+    );
+    expect(corruptWarns).toHaveLength(1);
   });
 });
