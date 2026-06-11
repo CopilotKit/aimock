@@ -32,6 +32,7 @@ import {
   buildForwardHeaders,
   clampTimeout,
   persistFixture,
+  sanitizeHeaderValue,
 } from "./recorder.js";
 import { resolveUpstreamUrl } from "./url.js";
 
@@ -2409,7 +2410,7 @@ async function proxyOpenRouterVideoRecordPoll(args: {
       logger,
     });
     if (persistResult.kind === "failed" && !res.headersSent) {
-      res.setHeader("X-AIMock-Record-Error", persistResult.error);
+      res.setHeader("X-AIMock-Record-Error", sanitizeHeaderValue(persistResult.error));
     }
     jobs.set(key, {
       kind: "replay",

@@ -29,6 +29,7 @@ import {
   buildForwardHeaders,
   persistFixture,
   proxyAndRecord,
+  sanitizeHeaderValue,
 } from "./recorder.js";
 import { walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
@@ -643,7 +644,7 @@ async function tryRecordAudioQueueWalk(args: {
   // queue-walk record path and the generic recorder relay) — the synthesized
   // envelope below has not been written yet, so the header can still ride it.
   if (persistResult.kind === "failed" && !res.headersSent) {
-    res.setHeader("X-AIMock-Record-Error", persistResult.error);
+    res.setHeader("X-AIMock-Record-Error", sanitizeHeaderValue(persistResult.error));
   }
 
   const requestId = crypto.randomUUID();

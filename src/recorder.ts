@@ -134,6 +134,18 @@ export type PersistFixtureResult =
   | { kind: "failed"; error: string };
 
 /**
+ * Make an arbitrary string safe to set as an HTTP header value. Node's
+ * `res.setHeader` throws ERR_INVALID_CHAR on anything outside Latin-1 (plus
+ * control characters) — and persist errors embed filesystem paths verbatim,
+ * so a Unicode fixture path would turn a recoverable record failure into a
+ * 500. Out-of-range characters are replaced with `?` rather than stripped so
+ * the value's shape stays legible.
+ */
+export function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[^\t\x20-\x7e\x80-\xff]/g, "?");
+}
+
+/**
  * Write a built fixture to disk (snapshot vs. timestamp file layout) and, when
  * the match is non-empty, register it in the in-memory cache so subsequent
  * identical requests match. Extracted from `proxyAndRecord` so the fal
@@ -636,7 +648,7 @@ export async function proxyAndRecord(
   });
   if (persistResult.kind === "failed") {
     if (!res.headersSent) {
-      res.setHeader("X-AIMock-Record-Error", persistResult.error);
+      res.setHeader("X-AIMock-Record-Error", sanitizeHeaderValue(persistResult.error));
     } else {
       defaults.logger.warn(`Cannot set X-AIMock-Record-Error header — headers already sent`);
     }
