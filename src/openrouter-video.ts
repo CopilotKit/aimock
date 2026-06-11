@@ -2318,7 +2318,13 @@ async function proxyOpenRouterVideoRecordPoll(args: {
     // live-proxied download instead of a 400.
     job.capturing = true;
     job.status = "completed";
-    job.upstreamUnsignedUrls = Array.isArray(urls) ? [...urls] : undefined;
+    // Refresh the stash only from an array body (the proxyOnly and
+    // capture-window siblings above guard this exact case): a later completed
+    // poll that omits or corrupts unsigned_urls must not clobber a usable
+    // stash with undefined.
+    if (Array.isArray(urls)) {
+      job.upstreamUnsignedUrls = [...urls];
+    }
     jobs.set(key, job); // TTL refresh — identity-checked above, no await since
 
     // Relay the completed body IMMEDIATELY: a real video download can take
