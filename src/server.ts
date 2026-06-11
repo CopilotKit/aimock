@@ -63,6 +63,7 @@ import {
   handleOpenRouterVideoContent,
   handleOpenRouterVideoModels,
   OpenRouterVideoJobMap,
+  OPENROUTER_VIDEO_DEFAULT_MAX_CONTENT_BYTES,
 } from "./openrouter-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
@@ -1141,6 +1142,18 @@ export async function createServer(
     }
   }
 
+  // Validate the recorded-b64 cap: the capture path treats a negative or
+  // non-integer record.openRouterVideo.maxContentBytes as the default rather
+  // than letting `cap > 0` checks misbehave on negatives or NaN.
+  {
+    const cap = options?.record?.openRouterVideo?.maxContentBytes;
+    if (cap !== undefined && (!Number.isInteger(cap) || cap < 0)) {
+      logger.warn(
+        `record.openRouterVideo.maxContentBytes (${cap}) is not a non-negative integer — using the default cap (${OPENROUTER_VIDEO_DEFAULT_MAX_CONTENT_BYTES})`,
+      );
+    }
+  }
+
   // Programmatic default: finite caps so long-running embedders don't inherit
   // an unbounded journal / fixture-count map. Callers that need unbounded
   // retention (e.g. short-lived test harnesses) can opt in by passing 0.
@@ -1347,7 +1360,7 @@ export async function createServer(
     const openRouterVideoContentMatch = pathname.match(OPENROUTER_VIDEO_CONTENT_RE);
     if (openRouterVideoContentMatch && req.method === "GET") {
       try {
-        handleOpenRouterVideoContent(
+        await handleOpenRouterVideoContent(
           req,
           res,
           openRouterVideoContentMatch[1],
@@ -1393,7 +1406,7 @@ export async function createServer(
     // status RE, whose [^/]+ segment would otherwise capture "models")
     if (pathname === OPENROUTER_VIDEO_MODELS_PATH && req.method === "GET") {
       try {
-        handleOpenRouterVideoModels(req, res, fixtures, journal, defaults, setCorsHeaders);
+        await handleOpenRouterVideoModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         defaults.logger.error(`openrouter-video models: ${msg}`);
@@ -1431,10 +1444,11 @@ export async function createServer(
     const openRouterVideoStatusMatch = pathname.match(OPENROUTER_VIDEO_STATUS_RE);
     if (openRouterVideoStatusMatch && req.method === "GET") {
       try {
-        handleOpenRouterVideoStatus(
+        await handleOpenRouterVideoStatus(
           req,
           res,
           openRouterVideoStatusMatch[1],
+          fixtures,
           journal,
           defaults,
           setCorsHeaders,
