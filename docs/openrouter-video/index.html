@@ -88,8 +88,9 @@
               <td>GET</td>
               <td><code>/api/v1/videos/{jobId}/content</code></td>
               <td>
-                The video bytes as <code>video/mp4</code> (Bearer auth required; 400 before the job
-                completes)
+                The video bytes as <code>video/mp4</code> (Bearer auth required &mdash; 401 without
+                it; 404 for an unknown or TTL-expired job; 400 before the job completes &mdash; and
+                permanently for a failed job, whose content is never downloadable)
               </td>
             </tr>
             <tr>
@@ -114,12 +115,13 @@
             openrouter-video.test.ts <span class="lang-tag">ts</span>
           </div>
           <pre><code><span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"a cat playing piano"</span>, {
-  <span class="prop">video</span>: { <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">b64</span>: <span class="str">"AAAAGGZ0eXBpc29t..."</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
+  <span class="cm">// `id` is required by the type but ignored on this surface (see below)</span>
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">b64</span>: <span class="str">"AAAAGGZ0eXBpc29t..."</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
 });
 
 <span class="cm">// A failed job:</span>
 <span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"impossible prompt"</span>, {
-  <span class="prop">video</span>: { <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_2"</span>, <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
 });</code></pre>
         </div>
 
@@ -175,12 +177,16 @@
           <p>
             Unset and an explicit <code>0</code> differ: with both fields unset the job is terminal
             at submit, but explicitly setting <code>pollsBeforeInProgress</code> &mdash; even to
-            <code>0</code> &mdash; enables progression, with
+            <code>0</code> &mdash; enables progression
+            <em>when <code>pollsBeforeCompleted</code> is unset</em>, with
             <code>pollsBeforeCompleted</code> defaulting to
             <code>pollsBeforeInProgress + 1</code> so the job passes through
-            <code>in_progress</code>. An explicit <code>pollsBeforeCompleted</code> lower than
+            <code>in_progress</code>. An explicit
+            <code>{ pollsBeforeInProgress: 0, pollsBeforeCompleted: 0 }</code> still seeds the job
+            terminal at submit. An explicit <code>pollsBeforeCompleted</code> lower than
             <code>pollsBeforeInProgress</code> is clamped up so <code>in_progress</code> is never
-            skipped.
+            skipped &mdash; once a job enters the progression at all (the explicit
+            <code>{0,&nbsp;0}</code> case above seeds terminal and never polls through it).
           </p>
         </div>
 
@@ -205,9 +211,12 @@
           built-in minimal MP4 <code>ftyp</code> placeholder otherwise &mdash; always as
           <code>Content-Type: video/mp4</code>, even when the client sends
           <code>Accept: application/octet-stream</code> (matching production). The
-          <code>index</code> query param is accepted but ignored (jobs are single-video), and
-          fetching content never advances job state &mdash; clients learn the content URL only from
-          a completed status poll.
+          <code>index</code> query param is accepted but ignored (jobs are single-video) &mdash;
+          except when the content endpoint live-proxies an upstream (under
+          <a href="#record-mode">record mode's</a> proxy-only operation, or during the brief capture
+          window while an eager capture is in flight), where the index selects the position-aligned
+          upstream <code>unsigned_urls</code> entry. Fetching content never advances job state
+          &mdash; clients learn the content URL only from a completed status poll.
         </p>
 
         <h2>Test Isolation</h2>
@@ -224,23 +233,146 @@
           <code>GET /api/v1/videos/models</code> synthesizes the listing from loaded video fixtures
           that specify a string <code>match.model</code>. When no video fixture contributes a string
           model, a built-in default set is served instead (with a warning if video fixtures are
-          loaded but none has a string model).
+          loaded but none has a string model). In record mode the listing is relayed verbatim from
+          the upstream instead (journaled <code>source: "proxy"</code>, never recorded as a
+          fixture), falling back to the synthesis if the upstream is unreachable. Strict mode
+          disables the proxy &mdash; a strict request is always served the synthesized listing.
         </p>
 
         <h2>Chaos &amp; Metrics</h2>
         <p>
-          <a href="/chaos-testing">Chaos injection</a> applies to all four routes; journal entries
-          for chaos served without a matched fixture carry <code>source: "internal"</code>. In
+          <a href="/chaos-testing">Chaos injection</a> applies to all four routes. Journal entries
+          for no-fixture submit chaos carry <code>source: "proxy"</code> when a record-mode
+          openrouter upstream is configured and strict mode would not win (the request would have
+          been proxied); a strict no-match &mdash; which 503s before any proxy attempt &mdash; and
+          the no-record case stay <code>source: "internal"</code>; chaos on the status and content
+          routes rolls before the job lookup (the models route has no lookup) and chaos on all three
+          GET routes always stays <code>source: "internal"</code>. In
           <a href="/metrics">Prometheus metrics</a>, per-job paths are templated as
           <code>/api/v1/videos/{jobId}</code> and <code>/api/v1/videos/{jobId}/content</code> to
           keep label cardinality bounded.
         </p>
 
+        <h2 id="record-mode">Record Mode</h2>
+        <p>
+          With <a href="/record-replay">record mode</a> and the <code>openrouter</code> provider
+          configured, an unmatched submit becomes a <em>live interactive proxy</em>: the submit is
+          forwarded to the real API and answered with a mock-rewritten envelope &mdash; a fresh
+          aimock jobId and a <code>polling_url</code> pointing back at the mock (testId embedded)
+          &mdash; and each client status poll is proxied upstream 1:1 with the mock jobId
+          substituted. Unlike the fal recorder there is no server-side queue walk; the client's own
+          polling drives the upstream lifecycle.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">aimock.config.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"llm"</span>: {
+    <span class="key">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="key">"record"</span>: {
+      <span class="key">"providers"</span>: { <span class="key">"openrouter"</span>: <span class="str">"https://openrouter.ai"</span> }
+    }
+  }
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">CLI usage <span class="lang-tag">shell</span></div>
+          <pre><code>$ npx -p @copilotkit/aimock aimock -c aimock.config.json
+
+<span class="cm"># or with the legacy llmock bin's flag interface:</span>
+$ npx -p @copilotkit/aimock llmock -f ./fixtures \
+  --record \
+  --provider-openrouter https://openrouter.ai</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">Programmatic config <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">record</span>: {
+    <span class="prop">providers</span>: { <span class="prop">openrouter</span>: <span class="str">"https://openrouter.ai"</span> },
+    <span class="cm">// optional: cap recorded b64 (decoded bytes; default 32 MB, 0 = unlimited)</span>
+    <span class="prop">openRouterVideo</span>: { <span class="prop">maxContentBytes</span>: <span class="num">8</span> * <span class="num">1024</span> * <span class="num">1024</span> },
+  },
+});</code></pre>
+        </div>
+
+        <p>
+          When the upstream reports <code>completed</code>, the poll is relayed immediately and the
+          eager capture runs <em>in the background</em>: aimock fetches
+          <code>unsigned_urls[0]</code> server-side after the first completed poll has been answered
+          &mdash; a poller is never blocked on a multi-minute video download &mdash; and persists
+          the bytes as a normal video fixture (<code>match.userMessage</code> = the prompt,
+          <code>match.model</code> = the submitted model as recorded by the standard
+          model-normalization rules &mdash; date suffixes stripped unless
+          <code>recordFullModelVersion</code>; model-less submits record the assumed default model
+          &mdash; <code>video.id</code> = the upstream job id, plus <code>b64</code> and
+          <code>cost</code>), so the same submit replays in-session and across sessions. While the
+          capture is in flight the job is already observable as completed: status polls relay the
+          upstream body and the content endpoint live-proxies downloads. Relayed poll bodies are
+          otherwise faithful: every upstream field passes through verbatim (including
+          <code>usage</code>, untouched) with only the identifiers rewritten &mdash;
+          <code>id</code>, a present <code>polling_url</code>, and a present
+          <code>unsigned_urls</code> array (same length, one mock content URL per index; only index
+          0 is captured, and the mock content endpoint serves the index-0 bytes for every index on
+          post-capture replays &mdash; during the capture window and under proxy-only the index
+          selects the live-proxied upstream URL). A non-array <code>unsigned_urls</code> cannot be
+          index-rewritten and is stripped from the relay with a warning rather than passed through
+          verbatim. The <code>maxContentBytes</code> cap protects disk <em>and</em> memory: a
+          capture whose upstream response declares an over-cap <code>Content-Length</code> is
+          skipped without downloading, and a response with no declared length is streamed with the
+          byte count enforced during the read &mdash; on exceed the download is aborted and nothing
+          oversized is retained. In both cases the fixture is persisted <em>without</em>
+          <code>b64</code> (with a <code>_warning</code> in the fixture file) and the placeholder is
+          served even same-session. The small-JSON upstream fetches (submit, poll, models) honor
+          <code>record.upstreamTimeoutMs</code> (default 30s) as a total deadline &mdash; a hung
+          upstream surfaces as a 502 <code>proxy_error</code> on submit and poll, while the models
+          listing instead falls back to the fixture-driven synthesis with a 200 (and a warning). The
+          byte-bearing content fetches (eager capture, proxy-only relay) gate only the response
+          headers on <code>upstreamTimeoutMs</code> and stream the body under
+          <code>record.bodyTimeoutMs</code> <em>idle</em> semantics (default 30s, re-armed per
+          chunk) &mdash; a steadily-downloading long render never times out. A capture-fetch failure
+          (connection error, error status, or a mid-body stall) persists <em>nothing</em>: the job
+          stays a live proxy and the next completed poll retries the capture &mdash; only the
+          over-cap path persists the <code>b64</code>-less fixture described above.
+          <code>failed</code> jobs persist <code>{ status: "failed", error }</code>;
+          <code>cancelled</code> and <code>expired</code> upstream statuses are not representable in
+          <code>video.status</code> &mdash; they pass through verbatim with a warning and are never
+          recorded.
+        </p>
+
+        <p>
+          The polling client's Bearer credential is forwarded only to the configured provider
+          origin: the upstream's <code>polling_url</code> is adopted only when same-origin (an
+          off-origin URL falls back to the constructed path on the provider origin), and an
+          off-origin <code>unsigned_urls[0]</code> (e.g. a CDN host) is fetched <em>without</em>
+          the Authorization header, with a warning. Strict mode wins over record: a strict no-match
+          returns 503 and nothing is proxied. Without a configured
+          <code>openrouter</code> provider URL, <code>--record</code> warns and serves the normal
+          no-match 404.
+        </p>
+
+        <p>
+          Under proxy-only mode (<code>record.proxyOnly</code> / <code>--proxy-only</code>) nothing
+          is persisted and nothing is cached: no fixture file is written, no in-memory fixture is
+          registered, and a completed job is never converted to a local replay job &mdash; every
+          status poll keeps proxying upstream, and every content download live-proxies the stored
+          upstream <code>unsigned_urls[index]</code> (same same-origin Bearer gate as the capture
+          path; the bytes are streamed to the client as they arrive &mdash; never buffered, never
+          cached &mdash; so repeated downloads hit the upstream each time). The
+          jobId&nbsp;&harr;&nbsp;upstream mapping itself is inherently stateful &mdash; the mock
+          still tracks it in memory so the rewritten URLs resolve.
+        </p>
+
         <div class="info-box">
           <p>
-            <strong>Replay-only:</strong> this surface does not support record/proxy mode yet
-            &mdash; with <code>--record</code>, an unmatched submit warns and returns the normal
-            no-match response instead of proxying. Record-mode support is a follow-up.
+            <strong>TTL caveat:</strong> record-mode jobs live in the same bounded job map as replay
+            jobs (1-hour TTL, 10,000 entries). Each successful proxied poll refreshes a record job's
+            TTL, and successful content downloads refresh it too (replay and record jobs alike), so
+            an actively-polled or actively-downloading long generation is never evicted
+            mid-recording &mdash; but a poll arriving more than an hour after the <em>last</em>
+            successful poll or download finds the job evicted and returns 404 (the upstream
+            lifecycle is then unreachable through the mock).
           </p>
         </div>
       </main>

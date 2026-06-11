@@ -201,8 +201,8 @@
             <tr>
               <td><code>--log-level &lt;level&gt;</code></td>
               <td>
-                Log verbosity: <code>silent</code>, <code>info</code>, <code>debug</code> (default:
-                <code>info</code>)
+                Log verbosity: <code>silent</code>, <code>warn</code>, <code>info</code>,
+                <code>debug</code> (default: <code>info</code>)
               </td>
             </tr>
             <tr>
@@ -258,11 +258,22 @@
               <td>Upstream URL for Cohere</td>
             </tr>
             <tr>
+              <td><code>--provider-openrouter &lt;url&gt;</code></td>
+              <td>
+                Upstream URL for OpenRouter (the <a href="/openrouter-video">video lifecycle</a>
+                record proxy)
+              </td>
+            </tr>
+            <tr>
               <td><code>--upstream-timeout-ms &lt;ms&gt;</code></td>
               <td>
                 Connection idle timeout (ms) on the upstream request socket before the response body
                 begins (default: <code>30000</code>). Increase for upstreams with slow initial
-                responses (reasoning models, queue-backed providers).
+                responses (reasoning models, queue-backed providers). Nuance: the OpenRouter video
+                surface's small-JSON lifecycle fetches (submit, status poll, models listing) apply
+                this value as a <em>total</em> deadline rather than a socket-idle timeout &mdash;
+                indistinguishable for envelope-sized bodies; the byte-bearing content fetches gate
+                only the response headers on it.
               </td>
             </tr>
             <tr>
@@ -420,12 +431,12 @@
 
         <h2>Header Forwarding</h2>
         <p>
-          When proxying to upstream providers, aimock forwards <strong>every header</strong> from
-          the original request except hop-by-hop headers (per RFC 2616 §13.5.1) and headers the
-          upstream HTTP client must set from the target URL or body. This pass-through behavior (in
-          place since v1.6.1) means custom gateway headers, <code>openai-organization</code>,
-          <code>anthropic-version</code>, and any other provider-specific auth or routing header all
-          reach the upstream as-is.
+          When proxying to upstream providers, aimock forwards the original request's headers except
+          for a small, fixed strip list: hop-by-hop headers (per RFC 2616 §13.5.1), headers the
+          upstream HTTP client must set from the target URL or body, and aimock's own mock-internal
+          control headers. Everything else passes through — custom gateway headers,
+          <code>openai-organization</code>, <code>anthropic-version</code>, and any other
+          provider-specific auth or routing header all reach the upstream as-is.
         </p>
         <p>The following headers are stripped before proxying:</p>
         <ul>
@@ -443,18 +454,29 @@
             <strong>Not relevant for LLM APIs (avoid leaking or mismatched encoding):</strong>
             <code>cookie</code>, <code>accept-encoding</code>
           </li>
+          <li>
+            <strong
+              >Mock-internal control headers (meaningless — and potentially confusing or leaky — on
+              a real provider's wire):</strong
+            >
+            <code>x-test-id</code>, <code>x-aimock-strict</code>, <code>x-aimock-context</code>, and
+            the <code>x-aimock-chaos-*</code> prefix family
+          </li>
         </ul>
         <p>
-          <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture only
-          contains the match criteria (derived from the last user message) and the response content.
+          <strong>Auth headers are never saved in recorded fixtures.</strong> The fixture contains
+          the match criteria (derived from the last user message) and the response content — plus,
+          when applicable, a <code>metadata</code> block (drift-detection hashes, below) and a
+          <code>recordedTimings</code> block (streaming frame timings) — never the request headers.
         </p>
 
         <h2>Strict Mode</h2>
         <p>
-          When <code>--strict</code> is enabled, unmatched requests that cannot be proxied (no
-          upstream configured for that provider) return <strong>503 Service Unavailable</strong>
-          instead of the default 404. This is useful for CI environments where you want to catch
-          unexpected API calls.
+          When <code>--strict</code> is enabled, an unmatched request returns
+          <strong>503 Service Unavailable</strong> <em>before any proxy attempt</em> &mdash; even
+          when an upstream is configured for that provider, nothing is forwarded and nothing is
+          recorded. Strict mode wins over record mode. This is useful for CI environments where you
+          want to catch unexpected API calls instead of silently recording new fixtures.
         </p>
 
         <h2>Fixture Auto-Generation</h2>
@@ -464,11 +486,17 @@
           <div class="code-block-header">
             Recorded fixture file <span class="lang-tag">json</span>
           </div>
-          <pre><code><span class="cm">// fixtures/recorded/openai-&lt;YYYY-MM-DD&gt;T&lt;HH-MM-SS&gt;-000Z-0.json</span>
+          <pre><code><span class="cm">// fixtures/recorded/openai-&lt;YYYY-MM-DD&gt;T&lt;HH-MM-SS&gt;-&lt;ms&gt;Z-&lt;8-hex&gt;.json (e.g. openai-2026-05-18T10-30-00-000Z-a1b2c3d4.json)</span>
 {
   "fixtures": [
     {
-      "match": { "userMessage": "What is the weather?" },
+      "match": {
+        "userMessage": "What is the weather?",
+        "model": "gpt-4o",
+        "turnIndex": 0,
+        "hasToolResult": false
+      },
+      "metadata": { "systemHash": "a7f3c291" },
       "response": { "content": "I don't have real-time weather data..." }
     }
   ]
@@ -477,9 +505,13 @@
 
         <p>
           Match criteria are derived from the original request: the last user message becomes
-          <code>userMessage</code>, or for embedding requests, the input becomes
-          <code>inputText</code>. If no match criteria can be derived (e.g., empty messages), the
-          fixture is saved to disk with a warning but not registered in memory.
+          <code>userMessage</code> (or, for embedding requests, the input becomes
+          <code>inputText</code>), the normalized model becomes <code>model</code>, and for chat
+          requests the recorder also writes the multi-turn disambiguators
+          <code>turnIndex</code> (the number of assistant messages already in the conversation) and
+          <code>hasToolResult</code> (whether a tool-result message is present). If no match
+          criteria can be derived (e.g., empty messages), the fixture is saved to disk with a
+          warning but not registered in memory.
         </p>
 
         <h2 id="model-aware-recording">Model-Aware Recording</h2>
@@ -538,7 +570,7 @@
           <pre><code>{
   <span class="key">"llm"</span>: {
     <span class="key">"record"</span>: {
-      <span class="key">"providers"</span>: { <span class="key">"openai"</span>: <span class="str">"sk-..."</span> },
+      <span class="key">"providers"</span>: { <span class="key">"openai"</span>: <span class="str">"https://api.openai.com"</span> },
       <span class="key">"recordFullModelVersion"</span>: <span class="kw">true</span>
     }
   }
@@ -691,7 +723,7 @@
           When you re-run a test, the new fixture is <strong>appended</strong> to the existing
           <code>&lt;provider&gt;.json</code> file rather than overwriting it. This preserves
           multi-turn conversations in a single file. If the existing file is corrupted (invalid
-          JSON), it is silently replaced.
+          JSON, or a non-array <code>fixtures</code> field), it is replaced with a logged warning.
         </p>
 
         <h3>Sending <code>X-Test-Id</code> from test frameworks</h3>
@@ -728,7 +760,8 @@ describe(<span class="str">"agent chat"</span>, () => {
         <p>
           When no <code>X-Test-Id</code> header is present (or the value is
           <code>__default__</code>), recording falls back to the standard timestamp-based filename:
-          <code>&lt;provider&gt;-&lt;timestamp&gt;-&lt;uuid&gt;.json</code>.
+          <code>&lt;provider&gt;-&lt;timestamp&gt;-&lt;8-hex&gt;.json</code> (the suffix is the
+          first 8 hex characters of a random UUID).
         </p>
 
         <h2>Fixture Lifecycle</h2>
@@ -876,18 +909,15 @@ await mock.start();</code></pre>
           The recorder is <strong>stateless across turns</strong>. Every incoming request is treated
           as an independent unit: aimock derives fixture match criteria from a
           <em>single</em> request at a time, and it doesn&rsquo;t remember or hash prior turns of
-          the same test session. Two post-record remedies handle the two flavors of collision: add
-          <a href="/multi-turn"><code>toolCallId</code></a> for tool-round follow-ups (covered on
-          the <a href="/multi-turn">Multi-Turn Conversations</a> page), or add
-          <code>sequenceIndex</code> for the same user prompt repeating (covered below).
-        </p>
-
-        <p>
-          Specifically, for chat requests the recorder reads only the
-          <strong>last user message</strong> of the request and saves it as
-          <code>match.userMessage</code>. For embedding requests it uses the input text. There is no
-          history-based keying &mdash; unlike VCR-style recorders that fingerprint the full request
-          body, aimock keys fixtures purely on the last user message.
+          the same test session. For chat requests the derived key combines the
+          <strong>last user message</strong> (<code>match.userMessage</code>), the normalized
+          <code>model</code>, and two shape disambiguators read off the request itself:
+          <code>turnIndex</code> (how many assistant messages the conversation already contains) and
+          <code>hasToolResult</code> (whether a tool-result message is present). Embedding requests
+          key on the input text instead. There is no history-based fingerprinting of the full
+          request body &mdash; but because a growing conversation carries a growing
+          <code>turnIndex</code>, successive turns that happen to end with the same user message
+          still record as <em>distinct</em> fixtures.
         </p>
 
         <div class="code-block">
@@ -899,41 +929,49 @@ await mock.start();</code></pre>
   <span class="kw">if</span> (request.embeddingInput) {
     <span class="kw">return</span> { <span class="prop">inputText</span>: request.embeddingInput };
   }
-  <span class="cm">// Chat/multimedia — key on the LAST user message only</span>
+  <span class="cm">// Chat — key on the LAST user message, the normalized model, and the</span>
+  <span class="cm">// multi-turn disambiguators derived from the request shape</span>
   <span class="kw">const</span> lastUser = <span class="fn">getLastMessageByRole</span>(request.messages, <span class="str">"user"</span>);
-  <span class="kw">const</span> match = { <span class="prop">userMessage</span>: <span class="fn">getTextContent</span>(lastUser.content) };
+  <span class="kw">const</span> match = {
+    <span class="prop">userMessage</span>: <span class="fn">getTextContent</span>(lastUser.content),
+    <span class="prop">model</span>: <span class="fn">normalizeModelName</span>(request.model),
+    <span class="prop">turnIndex</span>: request.messages.filter((m) => m.role === <span class="str">"assistant"</span>).length,
+    <span class="prop">hasToolResult</span>: request.messages.some((m) => m.role === <span class="str">"tool"</span>),
+  };
   <span class="cm">// Capture context from X-AIMock-Context header if present</span>
   <span class="kw">if</span> (request._context) match.<span class="prop">context</span> = request._context;
   <span class="kw">return</span> match;
 }</code></pre>
         </div>
 
-        <h3>Consequence: identical final prompts collide</h3>
+        <h3>What still collides: byte-identical repeats</h3>
         <p>
-          Two turns of the same conversation that happen to end with the same user message produce
-          two fixture entries that share the same <code>match.userMessage</code>. On replay, the
+          Because <code>turnIndex</code> and <code>hasToolResult</code> come from the request shape,
+          shadowing only happens when the <em>same request shape</em> repeats &mdash; e.g. a test
+          that replays the identical conversation twice (retries, re-runs, or a loop that re-sends
+          the same turn). Those produce fixture entries with identical match keys; on replay, the
           router picks the <strong>first fixture that matches</strong> (first-wins by file load
-          order), and the second fixture is effectively shadowed. This matters whenever a test says
-          &ldquo;continue&rdquo;, &ldquo;yes&rdquo;, &ldquo;retry&rdquo;, or any other short prompt
-          twice in a row.
+          order) and the later entries are shadowed. For such true repeats, add
+          <a href="/sequential-responses"><code>sequenceIndex</code></a> (<code>0</code>,
+          <code>1</code>, &hellip;) post-record to differentiate them by call order.
         </p>
 
         <h3>Recommended workflow</h3>
         <ol>
           <li>
             Run the test once under <code>--record</code> and let aimock capture one fixture per
-            turn as usual.
+            turn &mdash; the recorded <code>turnIndex</code>/<code>hasToolResult</code> keys keep
+            ordinary multi-turn flows (including tool rounds) apart automatically.
           </li>
           <li>
-            Review the recorded fixtures. For turns whose purpose is answering a tool call, rewrite
-            the match to key on
-            <a href="/multi-turn"><code>toolCallId</code></a> instead of
-            <code>userMessage</code> &mdash; this is the canonical tool-round idiom.
+            Review the recorded fixtures. For turns whose purpose is answering a tool call, you can
+            additionally key on
+            <a href="/multi-turn"><code>toolCallId</code></a> &mdash; the canonical tool-round idiom
+            when you want the match tied to a specific call rather than a turn position.
           </li>
           <li>
-            For genuine repeats of the same user prompt, add
-            <a href="/sequential-responses"><code>sequenceIndex</code></a> (<code>0</code>,
-            <code>1</code>, &hellip;) to each fixture to differentiate them by call order.
+            For genuine byte-identical repeats of the same turn, add
+            <a href="/sequential-responses"><code>sequenceIndex</code></a> to each fixture.
           </li>
           <li>
             Move the hand-edited fixtures into your organized
@@ -941,17 +979,6 @@ await mock.start();</code></pre>
             in CI.
           </li>
         </ol>
-
-        <h3>Gotcha: shadowed repeats</h3>
-        <p>
-          If you record a conversation that sends &ldquo;continue&rdquo; twice, you will get two
-          fixtures with identical <code>match.userMessage: "continue"</code>. On replay, the second
-          one will never fire until you add <code>sequenceIndex</code> post-record. See
-          <a href="/sequential-responses">Sequential / Stateful Responses</a> for the mechanics. For
-          tool-round conversations where each post-tool turn carries a distinct
-          <code>tool_call_id</code>, prefer keying by <code>toolCallId</code> &mdash; see
-          <a href="/multi-turn">Multi-Turn Conversations</a>.
-        </p>
 
         <h2>Cross-Language Testing</h2>
         <p>
