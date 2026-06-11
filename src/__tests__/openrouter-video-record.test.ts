@@ -1002,6 +1002,67 @@ describe("OpenRouter video record — poll proxy and eager capture", () => {
     expect(Buffer.from(await download.arrayBuffer()).equals(bytes)).toBe(true);
   });
 
+  test("a completed re-poll without unsigned_urls preserves the stash from the prior poll", async () => {
+    // Capture-entry stash guard (red-green): poll #1 completes WITH
+    // unsigned_urls but its capture fails (content 500), leaving the job a
+    // live proxy with a usable stash. Poll #2 completes WITHOUT unsigned_urls
+    // and re-enters the capture branch — that entry must not clobber the
+    // poll-#1 stash with undefined (the proxyOnly and capture-window siblings
+    // already guard this), or the content live-proxy 502s despite a
+    // known-good upstream URL.
+    const bytes = Buffer.from("stash survives the defective re-poll");
+    const stubOpts: Parameters<typeof startOpenRouterVideoUpstream>[0] = {
+      contentStatus: 500,
+      videoBytes: bytes,
+    };
+    upstream = await startOpenRouterVideoUpstream(stubOpts);
+    tmpDir = makeTmpDir();
+    mock = new LLMock({
+      port: 0,
+      logLevel: "warn",
+      record: { providers: { openrouter: upstream.url }, fixturePath: tmpDir },
+    });
+    await mock.start();
+    const envelope = await submitRecordJob(mock, "stash survives re-poll");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const poll = await (
+      await fetch(envelope.polling_url, { headers: { Authorization: "Bearer poll-key" } })
+    ).json();
+    expect(poll.status).toBe("completed");
+    await waitUntil(() =>
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("content capture failed")),
+    );
+    expect(readRecordedFixtureFiles(tmpDir!)).toHaveLength(0);
+
+    // The upstream's content endpoint recovers, but the NEXT completed poll
+    // body is defective: completed with no unsigned_urls at all. The capture
+    // re-entry skips (nothing to fetch) and persists nothing.
+    stubOpts.contentStatus = 200;
+    stubOpts.statusBody = (_selfUrl, jobId) => ({
+      id: jobId,
+      status: "completed",
+      usage: { cost: 0.25 },
+    });
+    const again = await (
+      await fetch(envelope.polling_url, { headers: { Authorization: "Bearer poll-key" } })
+    ).json();
+    expect(again.status).toBe("completed");
+    await waitUntil(() =>
+      warnSpy.mock.calls.some((c) => c.join(" ").includes("completed without unsigned_urls")),
+    );
+    expect(readRecordedFixtureFiles(tmpDir!)).toHaveLength(0);
+
+    // The content download must still live-proxy via the poll-#1 stash
+    // (today it 502s: the capture re-entry clobbered the stash with
+    // undefined).
+    const download = await fetch(poll.unsigned_urls[0], {
+      headers: { Authorization: "Bearer poll-key" },
+    });
+    expect(download.status).toBe(200);
+    expect(Buffer.from(await download.arrayBuffer()).equals(bytes)).toBe(true);
+  });
+
   test("cancelled upstream status passes through, warns, and records no fixture", async () => {
     upstream = await startOpenRouterVideoUpstream({ finalStatus: "cancelled" });
     tmpDir = makeTmpDir();
