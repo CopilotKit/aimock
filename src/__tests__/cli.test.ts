@@ -762,3 +762,149 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --proxy-only with URL-only --fixtures", ()
     }
   });
 });
+
+/* ================================================================== */
+/* --provider-openrouter (OpenRouter video record upstream)            */
+/* ================================================================== */
+
+describe.skipIf(!CLI_AVAILABLE)("CLI: --provider-openrouter", () => {
+  it("--help lists --provider-openrouter", async () => {
+    const { stdout, code } = await runCli(["--help"]);
+    expect(stdout).toContain("--provider-openrouter");
+    expect(code).toBe(0);
+  });
+
+  it("--record --provider-openrouter satisfies the provider gate and boots", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      const child = spawnCli([
+        "--record",
+        "--provider-openrouter",
+        "http://127.0.0.1:59997",
+        "--fixtures",
+        tmp,
+        "--port",
+        "0",
+      ]);
+      await child.waitForOutput(/listening on/i, 8000);
+      expect(child.stderr()).not.toMatch(/requires at least one --provider-\* flag/);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(!CLI_AVAILABLE)("CLI: timeout flags without record/proxy-only", () => {
+  it("warns when --upstream-timeout-ms is passed without --record/--proxy-only", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      const child = spawnCli(["--upstream-timeout-ms", "5000", "--fixtures", tmp, "--port", "0"]);
+      await child.waitForOutput(/upstream-timeout-ms.*--record/i, 8000);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when --body-timeout-ms is passed without --record/--proxy-only", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      const child = spawnCli(["--body-timeout-ms", "5000", "--fixtures", tmp, "--port", "0"]);
+      await child.waitForOutput(/body-timeout-ms.*--record/i, 8000);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when a --provider-* flag is passed without --record/--proxy-only", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      // Same parsed-then-dropped class as the timeout flags: a provider URL
+      // without --record/--proxy-only configures nothing.
+      const child = spawnCli([
+        "--provider-openrouter",
+        "http://127.0.0.1:59995",
+        "--fixtures",
+        tmp,
+        "--port",
+        "0",
+      ]);
+      await child.waitForOutput(/provider-openrouter.*--record/i, 8000);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when a --provider-* flag accompanies --record", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      const child = spawnCli([
+        "--record",
+        "--provider-openrouter",
+        "http://127.0.0.1:59994",
+        "--fixtures",
+        tmp,
+        "--port",
+        "0",
+      ]);
+      await child.waitForOutput(/listening on/i, 8000);
+      // Absence asserted with the SAME pattern the positive test uses.
+      expect(child.stderr() + child.stdout()).not.toMatch(/provider-openrouter.*--record/i);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when the timeout flags accompany --record", async () => {
+    const tmp = makeTmpDir();
+    try {
+      writeFixture(tmp, "fx.json");
+      const child = spawnCli([
+        "--record",
+        "--provider-openrouter",
+        "http://127.0.0.1:59996",
+        "--upstream-timeout-ms",
+        "5000",
+        "--fixtures",
+        tmp,
+        "--port",
+        "0",
+      ]);
+      await child.waitForOutput(/listening on/i, 8000);
+      // Absence asserted with the SAME pattern family the positive tests
+      // use, so a reworded warn cannot silently pass this negative check.
+      expect(child.stderr() + child.stdout()).not.toMatch(/upstream-timeout-ms.*--record/i);
+      expect(child.stderr() + child.stdout()).not.toMatch(/body-timeout-ms.*--record/i);
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        child.cp.on("close", () => resolve());
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

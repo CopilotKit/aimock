@@ -5,7 +5,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Fixture, FixtureFile } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
-import { proxyAndRecord, buildFixtureMatch, type ProxyCapturedResponse } from "../recorder.js";
+import {
+  proxyAndRecord,
+  buildFixtureMatch,
+  persistFixture,
+  type ProxyCapturedResponse,
+} from "../recorder.js";
 import type { RecordConfig } from "../types.js";
 import { Logger } from "../logger.js";
 import { LLMock } from "../llmock.js";
@@ -3068,6 +3073,57 @@ describe("recorder auth header handling", () => {
 
     await new Promise<void>((resolve) => echoServer.close(() => resolve()));
   });
+
+  it("mock-internal control headers never reach a generic upstream", async () => {
+    // Pins the CHANGELOG claim that x-test-id / x-aimock-strict /
+    // x-aimock-context / x-aimock-chaos-* are stripped on every provider
+    // proxy path — this is the generic proxyAndRecord walk (STRIP_HEADERS +
+    // the chaos prefix family in buildForwardHeaders).
+    let receivedHeaders: http.IncomingHttpHeaders = {};
+    const echoServer = http.createServer((req, res) => {
+      receivedHeaders = req.headers;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "echo" }, index: 0 }],
+          model: "gpt-4",
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => echoServer.listen(0, "127.0.0.1", resolve));
+    const echoAddr = echoServer.address() as { port: number };
+    const echoUrl = `http://127.0.0.1:${echoAddr.port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-"));
+    recorder = await createServer([], {
+      port: 0,
+      record: { providers: { openai: echoUrl }, fixturePath: tmpDir },
+    });
+
+    await post(
+      `${recorder.url}/v1/chat/completions`,
+      {
+        model: "gpt-4",
+        messages: [{ role: "user", content: "internal header strip" }],
+      },
+      {
+        Authorization: "Bearer sk-test",
+        "X-Test-Id": "generic-hdr-strip",
+        "X-AIMock-Strict": "false",
+        "X-AIMock-Context": "ctx-strip",
+        "X-AIMock-Chaos-Drop": "0",
+      },
+    );
+
+    expect(receivedHeaders["x-test-id"]).toBeUndefined();
+    expect(receivedHeaders["x-aimock-strict"]).toBeUndefined();
+    expect(receivedHeaders["x-aimock-context"]).toBeUndefined();
+    expect(receivedHeaders["x-aimock-chaos-drop"]).toBeUndefined();
+    // Auth still forwarded.
+    expect(receivedHeaders["authorization"]).toBe("Bearer sk-test");
+
+    await new Promise<void>((resolve) => echoServer.close(() => resolve()));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5159,39 +5215,41 @@ describe("makeUpstreamRequest body timeout", () => {
     await new Promise<void>((resolve) => fastRawServer!.listen(0, "127.0.0.1", resolve));
     const port2 = (fastRawServer!.address() as { port: number }).port;
 
+    // try/finally so a failing assertion cannot leak the extra tmpDir.
     const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-record-clamp-neg-"));
-    const record2: RecordConfig = {
-      providers: { openai: `http://127.0.0.1:${port2}` },
-      fixturePath: tmpDir2,
-      bodyTimeoutMs: -500,
-    };
+    try {
+      const record2: RecordConfig = {
+        providers: { openai: `http://127.0.0.1:${port2}` },
+        fixturePath: tmpDir2,
+        bodyTimeoutMs: -500,
+      };
 
-    const { req: req2, res: res2 } = createMockReqRes();
-    const chunks2: Buffer[] = [];
-    Object.assign(res2, {
-      writeHead: () => res2,
-      end: (data?: Buffer | string) => {
-        if (data) chunks2.push(typeof data === "string" ? Buffer.from(data) : data);
-        return res2;
-      },
-      setHeader: () => res2,
-    });
+      const { req: req2, res: res2 } = createMockReqRes();
+      const chunks2: Buffer[] = [];
+      Object.assign(res2, {
+        writeHead: () => res2,
+        end: (data?: Buffer | string) => {
+          if (data) chunks2.push(typeof data === "string" ? Buffer.from(data) : data);
+          return res2;
+        },
+        setHeader: () => res2,
+      });
 
-    await proxyAndRecord(
-      req2,
-      res2,
-      { model: "gpt-4", messages: [{ role: "user", content: "hello" }] },
-      "openai",
-      "/v1/chat/completions",
-      fixtures,
-      { record: record2, logger },
-    );
+      await proxyAndRecord(
+        req2,
+        res2,
+        { model: "gpt-4", messages: [{ role: "user", content: "hello" }] },
+        "openai",
+        "/v1/chat/completions",
+        fixtures,
+        { record: record2, logger },
+      );
 
-    // Negative values should also be clamped to 30_000
-    expect(setTimeoutSpy).toHaveBeenCalledWith(30_000, expect.any(Function));
-
-    // Clean up the extra tmpDir
-    fs.rmSync(tmpDir2, { recursive: true, force: true });
+      // Negative values should also be clamped to 30_000
+      expect(setTimeoutSpy).toHaveBeenCalledWith(30_000, expect.any(Function));
+    } finally {
+      fs.rmSync(tmpDir2, { recursive: true, force: true });
+    }
   });
 });
 
@@ -5750,8 +5808,9 @@ describe("multi-call fixture disambiguation (issue #185)", () => {
 
     // Calls 2 and 3 share identical match criteria (model + userMessage +
     // turnIndex + hasToolResult). systemHash is metadata for drift detection,
-    // not a match discriminator — so the second haiku call overwrites the first
-    // in the recorder cache. Only 2 distinct files are produced.
+    // not a match discriminator — so call 3 MATCHES the in-memory fixture
+    // call 2 just recorded and replays it (no second proxy, no overwrite).
+    // Only 2 distinct files are produced.
     const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
     expect(files.length).toBe(2);
 
@@ -6515,5 +6574,141 @@ describe("recorder frame-timing: CRLF delimiters", () => {
     expect(timings!.interChunkDelaysMs.length).toBe(2);
 
     await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+  });
+});
+
+describe("persistFixture snapshot merge — _warning carry-forward", () => {
+  it("a later clean capture into the same snapshot file retains the existing _warning", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-persist-warn-"));
+    try {
+      const record: RecordConfig = {
+        providers: { openai: "http://127.0.0.1:1" },
+        fixturePath: dir,
+      };
+      const logger = new Logger("silent");
+      const fixtures: Fixture[] = [];
+
+      const first = persistFixture({
+        record,
+        providerKey: "openai",
+        testId: "warn-merge",
+        fixture: { match: { userMessage: "first capture" }, response: { content: "a" } },
+        fixtures,
+        warnings: ["W1 original over-cap warning"],
+        logger,
+      });
+      expect(first.kind).toBe("written");
+
+      // Second, clean capture for the same testId + provider merges into the
+      // same snapshot file — the original _warning must survive the rewrite.
+      const second = persistFixture({
+        record,
+        providerKey: "openai",
+        testId: "warn-merge",
+        fixture: { match: { userMessage: "second capture" }, response: { content: "b" } },
+        fixtures,
+        logger,
+      });
+      expect(second.kind).toBe("written");
+
+      const file = JSON.parse(
+        fs.readFileSync(path.join(dir, "warn-merge", "openai.json"), "utf-8"),
+      ) as { fixtures: unknown[]; _warning?: string };
+      expect(file.fixtures).toHaveLength(2);
+      expect(file._warning).toContain("W1 original over-cap warning");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a re-emitted warning does not accumulate into the carried-forward _warning (round 6)", () => {
+    // The existing _warning is a "; "-joined string — it must be split back
+    // into its elements before deduping, or "A; B" + "A" becomes "A; B; A".
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-persist-warn-dedupe-"));
+    try {
+      const record: RecordConfig = {
+        providers: { openai: "http://127.0.0.1:1" },
+        fixturePath: dir,
+      };
+      const logger = new Logger("silent");
+      const fixtures: Fixture[] = [];
+
+      const first = persistFixture({
+        record,
+        providerKey: "openai",
+        testId: "warn-dedupe",
+        fixture: { match: { userMessage: "first capture" }, response: { content: "a" } },
+        fixtures,
+        warnings: ["W-A repeated warning", "W-B other warning"],
+        logger,
+      });
+      expect(first.kind).toBe("written");
+
+      // The second capture re-emits W-A — the merged _warning must stay
+      // exactly the two original entries.
+      const second = persistFixture({
+        record,
+        providerKey: "openai",
+        testId: "warn-dedupe",
+        fixture: { match: { userMessage: "second capture" }, response: { content: "b" } },
+        fixtures,
+        warnings: ["W-A repeated warning"],
+        logger,
+      });
+      expect(second.kind).toBe("written");
+
+      const file = JSON.parse(
+        fs.readFileSync(path.join(dir, "warn-dedupe", "openai.json"), "utf-8"),
+      ) as { fixtures: unknown[]; _warning?: string };
+      expect(file._warning).toBe("W-A repeated warning; W-B other warning");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a non-array `fixtures` in the existing snapshot file is discarded with a warn, not spread", () => {
+    // Spreading a string `fixtures` would silently mangle the file into an
+    // array of single characters plus the new fixture.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-persist-nonarray-"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const record: RecordConfig = {
+        providers: { openai: "http://127.0.0.1:1" },
+        fixturePath: dir,
+      };
+      const logger = new Logger("warn");
+      const fixtures: Fixture[] = [];
+
+      const fileDir = path.join(dir, "nonarray-merge");
+      fs.mkdirSync(fileDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(fileDir, "openai.json"),
+        JSON.stringify({ fixtures: "oops not an array" }),
+        "utf-8",
+      );
+
+      const result = persistFixture({
+        record,
+        providerKey: "openai",
+        testId: "nonarray-merge",
+        fixture: { match: { userMessage: "fresh capture" }, response: { content: "a" } },
+        fixtures,
+        logger,
+      });
+      expect(result.kind).toBe("written");
+      expect(warnSpy.mock.calls.some((c) => c.join(" ").includes("non-array"))).toBe(true);
+
+      const file = JSON.parse(fs.readFileSync(path.join(fileDir, "openai.json"), "utf-8")) as {
+        fixtures: unknown[];
+      };
+      expect(Array.isArray(file.fixtures)).toBe(true);
+      expect(file.fixtures).toHaveLength(1);
+      expect(file.fixtures[0]).toMatchObject({ match: { userMessage: "fresh capture" } });
+    } finally {
+      // Restore in the finally: a failing assertion above must not leak the
+      // console spy into later tests.
+      warnSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

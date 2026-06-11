@@ -1,4 +1,8 @@
 import { describe, test, expect, afterEach } from "vitest";
+import * as http from "node:http";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { LLMock } from "../llmock.js";
 
 describe("fal.ai audio queue", () => {
@@ -268,5 +272,87 @@ describe("fal.ai audio queue", () => {
       headers: { "X-Test-Id": "testB" },
     });
     expect(bLookup.status).toBe(200);
+  });
+});
+
+describe("fal.ai audio queue — record walk (round 5)", () => {
+  let mock: LLMock;
+  let upstream: { url: string; close: () => Promise<void> } | undefined;
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    await upstream?.close();
+    upstream = undefined;
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  test("a persist failure on the legacy audio queue-walk sets X-AIMock-Record-Error", async () => {
+    // Parity with fal.ts's queue-walk record path (and the generic recorder):
+    // the synthesized envelope's headers have not been sent when
+    // persistFixture fails, so the failure can ride the response.
+    let selfUrl = "http://stub";
+    upstream = await new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          const url = new URL(req.url ?? "/", selfUrl);
+          const send = (status: number, body: unknown): void => {
+            res.writeHead(status, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(body));
+          };
+          if (req.method === "POST") {
+            send(200, {
+              request_id: "aud-1",
+              status_url: `${selfUrl}/fal/queue/requests/aud-1/status`,
+              response_url: `${selfUrl}/fal/queue/requests/aud-1`,
+            });
+            return;
+          }
+          if (url.pathname.endsWith("/status")) {
+            send(200, { status: "COMPLETED", request_id: "aud-1" });
+            return;
+          }
+          send(200, { audio: { url: "https://example.com/unsaveable.mp3" } });
+        });
+      });
+      // A listen failure must reject instead of leaving the returned promise
+      // pending forever.
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address() as { port: number };
+        selfUrl = `http://127.0.0.1:${port}`;
+        resolve({
+          url: selfUrl,
+          close: () => new Promise<void>((r) => server.close(() => r())),
+        });
+      });
+    });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-fal-audio-persistfail-"));
+    const blockerFile = path.join(tmpDir, "not-a-dir");
+    fs.writeFileSync(blockerFile, "in the way");
+    mock = new LLMock({
+      port: 0,
+      logLevel: "silent",
+      record: {
+        providers: { fal: upstream.url },
+        fixturePath: blockerFile,
+        fal: { pollIntervalMs: 5, timeoutMs: 5000 },
+      },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/queue/submit/fal-ai/stable-audio`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "unsaveable loop" }),
+    });
+    expect(submit.status).toBe(200);
+    expect(submit.headers.get("x-aimock-record-error")).toBeTruthy();
+    await submit.arrayBuffer();
   });
 });
