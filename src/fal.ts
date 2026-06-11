@@ -26,7 +26,14 @@ import {
 } from "./helpers.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
+import type { Logger } from "./logger.js";
+import {
+  buildFixtureMatch,
+  buildForwardHeaders,
+  clampTimeout,
+  persistFixture,
+  proxyAndRecord,
+} from "./recorder.js";
 import { resolveUpstreamUrl } from "./url.js";
 import type { Journal } from "./journal.js";
 import { audioToFalFile } from "./fal-audio.js";
@@ -597,7 +604,8 @@ export async function handleFal(
               journal,
             });
             if (outcome === "handled") return "handled";
-            // outcome === "no_upstream" — fall through to strict/404
+            // outcome === "no_upstream" — fall through to 404 (strict was
+            // already handled above)
           } else {
             const outcome = await proxyAndRecord(
               req,
@@ -775,33 +783,16 @@ const DEFAULT_FAL_POLL_INTERVAL_MS = 1000;
 // on the upstream queue; 15 min gives headroom without trapping a genuinely
 // hung job indefinitely.
 const DEFAULT_FAL_TIMEOUT_MS = 900_000;
+// Per-fetch upstream timeout default for the walk's submit/status/result
+// fetches — same value and clamp conventions as the rest of the recording
+// surfaces (recorder.ts / openrouter-video.ts).
+const DEFAULT_FAL_FETCH_TIMEOUT_MS = 30_000;
 
-// Hop-by-hop and client-set headers excluded from upstream forwarding.
-// Mirrors STRIP_HEADERS in recorder.ts.
-const FAL_STRIP_FORWARD_HEADERS = new Set([
-  "connection",
-  "keep-alive",
-  "transfer-encoding",
-  "te",
-  "trailer",
-  "upgrade",
-  "proxy-authorization",
-  "proxy-authenticate",
-  "host",
-  "content-length",
-  "cookie",
-  "accept-encoding",
-]);
-
-export function buildFalForwardHeaders(req: http.IncomingMessage): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, val] of Object.entries(req.headers)) {
-    if (val === undefined) continue;
-    if (FAL_STRIP_FORWARD_HEADERS.has(name.toLowerCase())) continue;
-    out[name] = Array.isArray(val) ? val.join(", ") : val;
-  }
-  return out;
-}
+// Upstream header forwarding uses buildForwardHeaders (recorder.ts) — the
+// shared strip list (hop-by-hop, client-set, and the mock-internal x-test-id
+// / x-aimock-strict / x-aimock-context / x-aimock-chaos-* family), so the
+// fal queue walk never leaks control headers onto a real provider's wire
+// (one shared list, not a per-surface copy, so the surfaces cannot drift).
 
 /**
  * Walk a fal-shaped queue protocol upstream: POST submit, poll status until
@@ -819,6 +810,15 @@ export async function walkFalQueue(args: {
   pollIntervalMs?: number;
   timeoutMs?: number;
   /**
+   * Per-fetch upstream timeout (`record.upstreamTimeoutMs` clamp conventions,
+   * 30s default) applied to each of the walk's submit/status/result fetches
+   * via AbortSignal — a hung upstream socket must not pin the walk past its
+   * budget. Each fetch's signal is additionally clamped to the walk's
+   * remaining deadline; an abort surfaces through the caller's existing
+   * failure handling (502, no fixture persisted).
+   */
+  upstreamTimeoutMs?: number;
+  /**
    * Build the status-poll URL from `request_id` when upstream's submit
    * response doesn't return a usable `status_url`. The legacy path uses
    * aimock-internal `/fal/queue/requests/<id>/status` rather than fal.ai's
@@ -826,6 +826,8 @@ export async function walkFalQueue(args: {
    */
   fallbackStatusPath: (requestId: string) => string;
   fallbackResultPath: (requestId: string) => string;
+  /** Warn sink for the same-origin envelope-URL gate (omitting it only mutes the warns). */
+  logger?: Logger;
 }): Promise<unknown> {
   const {
     upstreamBase,
@@ -834,62 +836,112 @@ export async function walkFalQueue(args: {
     headers,
     pollIntervalMs = DEFAULT_FAL_POLL_INTERVAL_MS,
     timeoutMs = DEFAULT_FAL_TIMEOUT_MS,
+    upstreamTimeoutMs,
     fallbackStatusPath,
     fallbackResultPath,
+    logger,
   } = args;
 
   const deadline = Date.now() + timeoutMs;
+  const perFetchTimeoutMs = clampTimeout(upstreamTimeoutMs, DEFAULT_FAL_FETCH_TIMEOUT_MS);
+  // Bound every upstream fetch: the per-fetch timeout, additionally clamped
+  // to the walk's remaining budget so a fetch can never outlive the deadline
+  // (floored at 1ms — AbortSignal.timeout rejects non-positive values; the
+  // deadline check in the poll loop is the authoritative expiry).
+  const fetchSignal = (): AbortSignal =>
+    AbortSignal.timeout(Math.max(1, Math.min(perFetchTimeoutMs, deadline - Date.now())));
 
   // ── 1. POST submit ────────────────────────────────────────────────
   const submitUrl = resolveUpstreamUrl(upstreamBase, submitPath);
-  const submitRes = await fetch(submitUrl, { method: "POST", headers, body });
+  const submitRes = await fetch(submitUrl, {
+    method: "POST",
+    headers,
+    body,
+    signal: fetchSignal(),
+  });
   const submitText = await submitRes.text();
   if (!submitRes.ok) {
     throw new Error(`Submit ${submitRes.status}: ${submitText.slice(0, 200)}`);
   }
   const submitJson = parseJsonOrThrow(submitText, "Submit");
+  // JSON.parse admits null/arrays/scalars — reject non-object envelopes with
+  // a clean error instead of TypeError-ing on the field reads below (the
+  // OpenRouter video proxies apply the same guard).
+  if (submitJson === null || typeof submitJson !== "object" || Array.isArray(submitJson)) {
+    throw new Error("Submit response is not a JSON object");
+  }
   const env = submitJson as Record<string, unknown>;
   const upstreamRequestId = String(env.request_id ?? "").trim();
   if (!upstreamRequestId) {
     throw new Error("Submit response missing request_id");
   }
 
-  // Prefer the URLs upstream returned — a proxy in front of fal.ai may sit on
-  // a different host than the canonical `queue.fal.run` — and only fall back
-  // to constructed paths if the envelope omits them.
-  const envStatusUrl = env.status_url;
-  const envResponseUrl = env.response_url;
-  const statusUrl =
-    typeof envStatusUrl === "string" && envStatusUrl
-      ? new URL(envStatusUrl)
-      : resolveUpstreamUrl(upstreamBase, fallbackStatusPath(upstreamRequestId));
-  const resultUrl =
-    typeof envResponseUrl === "string" && envResponseUrl
-      ? new URL(envResponseUrl)
-      : resolveUpstreamUrl(upstreamBase, fallbackResultPath(upstreamRequestId));
+  // Prefer the URLs upstream returned — but ONLY same-origin with the
+  // configured upstream (mirroring the OpenRouter video proxy's
+  // polling_url gate): every status/result fetch below forwards the client's
+  // headers — including Authorization — so an envelope nominating a foreign
+  // host must never receive them. Same-origin still covers the documented
+  // proxy-in-front case (the configured upstream IS that proxy); off-origin,
+  // unparseable, or absent envelope URLs fall back to the constructed
+  // canonical paths on the upstream origin, with a warn.
+  const upstreamOrigin = submitUrl.origin;
+  const adoptSameOrigin = (value: unknown, label: string, fallbackPath: string): URL => {
+    if (typeof value === "string" && value) {
+      try {
+        const parsed = new URL(value);
+        if (parsed.origin === upstreamOrigin) return parsed;
+        logger?.warn(
+          `Upstream ${label} origin ${parsed.origin} differs from the upstream origin ${upstreamOrigin} — using the constructed canonical path instead`,
+        );
+      } catch {
+        logger?.warn(
+          `Upstream ${label} is not a valid URL (${value.slice(0, 100)}) — using the constructed canonical path instead`,
+        );
+      }
+    }
+    return resolveUpstreamUrl(upstreamBase, fallbackPath);
+  };
+  const statusUrl = adoptSameOrigin(
+    env.status_url,
+    "status_url",
+    fallbackStatusPath(upstreamRequestId),
+  );
+  const resultUrl = adoptSameOrigin(
+    env.response_url,
+    "response_url",
+    fallbackResultPath(upstreamRequestId),
+  );
 
   // ── 2. Poll status until COMPLETED ───────────────────────────────
   while (true) {
     if (Date.now() > deadline) throw new Error(`Queue walk timed out after ${timeoutMs}ms`);
-    const statusRes = await fetch(statusUrl, { headers });
+    const statusRes = await fetch(statusUrl, { headers, signal: fetchSignal() });
     const statusText = await statusRes.text();
     if (!statusRes.ok) {
       throw new Error(`Status ${statusRes.status}: ${statusText.slice(0, 200)}`);
     }
-    const statusJson = parseJsonOrThrow(statusText, "Status") as Record<string, unknown>;
+    const statusParsed = parseJsonOrThrow(statusText, "Status");
+    // Same non-object guard as the submit envelope above.
+    if (statusParsed === null || typeof statusParsed !== "object" || Array.isArray(statusParsed)) {
+      throw new Error("Status response is not a JSON object");
+    }
+    const statusJson = statusParsed as Record<string, unknown>;
     const s = String(statusJson.status ?? "");
     if (s === "COMPLETED") break;
     if (s === "FAILED" || s === "ERROR" || s === "CANCELLED") {
       throw new Error(`Upstream job terminated with status ${s}`);
     }
     const remaining = deadline - Date.now();
-    const sleep = Math.min(pollIntervalMs, Math.max(0, remaining));
-    if (sleep <= 0) throw new Error(`Queue walk timed out after ${timeoutMs}ms`);
-    await new Promise<void>((r) => setTimeout(r, sleep));
+    // Time out only when the budget is actually exhausted — a zero
+    // pollIntervalMs is a valid "poll as fast as possible" configuration,
+    // not an instant expiry (setTimeout(0) still yields the event loop).
+    if (remaining <= 0) throw new Error(`Queue walk timed out after ${timeoutMs}ms`);
+    const sleep = Math.min(pollIntervalMs, remaining);
+    await new Promise<void>((r) => setTimeout(r, Math.max(0, sleep)));
   }
 
   // ── 3. GET final result ──────────────────────────────────────────
-  const resultRes = await fetch(resultUrl, { headers });
+  const resultRes = await fetch(resultUrl, { headers, signal: fetchSignal() });
   const resultText = await resultRes.text();
   if (!resultRes.ok) {
     throw new Error(`Result ${resultRes.status}: ${resultText.slice(0, 200)}`);
@@ -940,15 +992,21 @@ async function proxyAndRecordFalQueueSubmit(args: {
       upstreamBase,
       submitPath: strippedPath,
       body,
-      headers: buildFalForwardHeaders(req),
+      headers: buildForwardHeaders(req),
       pollIntervalMs: record.fal?.pollIntervalMs,
       timeoutMs: record.fal?.timeoutMs,
+      upstreamTimeoutMs: record.upstreamTimeoutMs,
       fallbackStatusPath: (id) => `${modelId}/requests/${id}/status`,
       fallbackResultPath: (id) => `${modelId}/requests/${id}`,
+      logger: defaults.logger,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown queue-walk error";
     defaults.logger.error(`fal queue-walk proxy failed: ${msg}`);
+    // Guard BEFORE journaling (openrouter-video convention): a client that
+    // disconnected during the multi-second walk gets neither a write nor a
+    // journal entry.
+    if (res.destroyed || res.writableEnded) return "handled";
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
@@ -973,7 +1031,7 @@ async function proxyAndRecordFalQueueSubmit(args: {
     match: buildFixtureMatch(matchRequest, record),
     response: { json: finalBody, status: 200 },
   };
-  persistFixture({
+  const persistResult = persistFixture({
     record,
     providerKey: "fal",
     testId: getTestId(req),
@@ -981,6 +1039,12 @@ async function proxyAndRecordFalQueueSubmit(args: {
     fixtures,
     logger: defaults.logger,
   });
+  // Surface a persist failure on the envelope (parity with the generic
+  // recorder relay and the OpenRouter failed branch) — the synthesized
+  // envelope below has not been written yet, so the header can still ride it.
+  if (persistResult.kind === "failed" && !res.headersSent) {
+    res.setHeader("X-AIMock-Record-Error", persistResult.error);
+  }
 
   // ── 5. Synthesise envelope + seed state (same shape as the replay path) ──
   const newRequestId = crypto.randomUUID();
@@ -1009,6 +1073,11 @@ async function proxyAndRecordFalQueueSubmit(args: {
     cancel_url: `https://${FAL_HOSTS.queue}/${modelId}/requests/${newRequestId}/cancel`,
     queue_position: queuePosition(job),
   };
+  // Guard BEFORE journaling (openrouter-video convention): a client that
+  // disconnected during the multi-second walk gets neither a write nor a
+  // journal entry. The persisted fixture and seeded state above stay — the
+  // captured upstream response is valuable regardless.
+  if (res.destroyed || res.writableEnded) return "handled";
   journal.add({
     method: req.method ?? "POST",
     path: pathname,

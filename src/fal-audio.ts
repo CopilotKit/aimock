@@ -24,8 +24,13 @@ import {
 } from "./helpers.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { buildFixtureMatch, persistFixture, proxyAndRecord } from "./recorder.js";
-import { buildFalForwardHeaders, walkFalQueue } from "./fal.js";
+import {
+  buildFixtureMatch,
+  buildForwardHeaders,
+  persistFixture,
+  proxyAndRecord,
+} from "./recorder.js";
+import { walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 
@@ -509,7 +514,7 @@ async function handleQueueSubmit(
  *
  * Returns `true` if the request has been handled (response written and
  * journaled); `false` if recording wasn't configured for this provider and the
- * caller should fall through to strict/404.
+ * caller should fall through to 404 (strict is gated before recording).
  */
 async function tryRecordAudioQueueWalk(args: {
   req: http.IncomingMessage;
@@ -567,16 +572,22 @@ async function tryRecordAudioQueueWalk(args: {
       upstreamBase,
       submitPath: pathname,
       body,
-      headers: buildFalForwardHeaders(req),
+      headers: buildForwardHeaders(req),
       pollIntervalMs: record.fal?.pollIntervalMs,
       timeoutMs: record.fal?.timeoutMs,
+      upstreamTimeoutMs: record.upstreamTimeoutMs,
       // Legacy aimock-style paths, not the model-prefixed fal.ai layout.
       fallbackStatusPath: (id) => `/fal/queue/requests/${id}/status`,
       fallbackResultPath: (id) => `/fal/queue/requests/${id}`,
+      logger: defaults.logger,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown queue-walk error";
     defaults.logger.error(`fal-audio queue-walk proxy failed: ${msg}`);
+    // Guard BEFORE journaling (openrouter-video convention): a client that
+    // disconnected during the multi-second walk gets neither a write nor a
+    // journal entry.
+    if (res.destroyed || res.writableEnded) return true;
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
@@ -595,6 +606,8 @@ async function tryRecordAudioQueueWalk(args: {
 
   if (!finalBody || typeof finalBody !== "object") {
     defaults.logger.error("fal-audio queue-walk produced non-object result");
+    // Same disconnect guard as the catch above.
+    if (res.destroyed || res.writableEnded) return true;
     journal.add({
       method: req.method ?? "POST",
       path: pathname,
@@ -618,7 +631,7 @@ async function tryRecordAudioQueueWalk(args: {
     match: buildFixtureMatch(matchRequest, record),
     response: { json: finalBody, status: 200 },
   };
-  persistFixture({
+  const persistResult = persistFixture({
     record,
     providerKey: "fal",
     testId,
@@ -626,6 +639,12 @@ async function tryRecordAudioQueueWalk(args: {
     fixtures,
     logger: defaults.logger,
   });
+  // Surface a persist failure on the envelope (parity with fal.ts's
+  // queue-walk record path and the generic recorder relay) — the synthesized
+  // envelope below has not been written yet, so the header can still ride it.
+  if (persistResult.kind === "failed" && !res.headersSent) {
+    res.setHeader("X-AIMock-Record-Error", persistResult.error);
+  }
 
   const requestId = crypto.randomUUID();
   const job: FalJob = {
@@ -636,6 +655,11 @@ async function tryRecordAudioQueueWalk(args: {
   };
   falJobs.set(`${testId}:${requestId}`, job);
 
+  // Guard BEFORE journaling (openrouter-video convention): a client that
+  // disconnected during the multi-second walk gets neither a write nor a
+  // journal entry. The persisted fixture and seeded job above stay — the
+  // captured upstream response is valuable regardless.
+  if (res.destroyed || res.writableEnded) return true;
   journal.add({
     method: req.method ?? "POST",
     path: pathname,

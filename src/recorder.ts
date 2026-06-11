@@ -40,7 +40,32 @@ const STRIP_HEADERS = new Set([
   // Not relevant for LLM APIs; avoid leaking or mismatched encoding
   "cookie",
   "accept-encoding",
+  // Mock-internal control headers — meaningless (and potentially confusing
+  // or leaky) on a real provider's wire. x-aimock-chaos-* is stripped by
+  // prefix in buildForwardHeaders below.
+  "x-test-id",
+  "x-aimock-strict",
+  "x-aimock-context",
 ]);
+
+/**
+ * Build the header set forwarded to an upstream provider from an incoming
+ * request: everything except hop-by-hop, client-set, and mock-internal
+ * headers (STRIP_HEADERS, plus the x-aimock-chaos-* prefix family). Shared
+ * by the generic recorder proxy and the OpenRouter-video live lifecycle
+ * proxy.
+ */
+export function buildForwardHeaders(req: http.IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, val] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (val === undefined || STRIP_HEADERS.has(lower) || lower.startsWith("x-aimock-chaos-")) {
+      continue;
+    }
+    out[name] = Array.isArray(val) ? val.join(", ") : val;
+  }
+  return out;
+}
 
 /**
  * Captured upstream response, exposed to the `beforeWriteResponse` hook so
@@ -134,13 +159,16 @@ export function persistFixture(opts: {
   const m = fixture.match;
   const isEmptyMatch =
     m.userMessage === undefined && m.inputText === undefined && m.endpoint === undefined;
-  if (isEmptyMatch) {
-    logger.warn("Recorded fixture has empty match criteria — skipping in-memory registration");
-  }
 
   if (record.proxyOnly) {
     logger.info(`Proxied ${providerKey} request (proxy-only mode)`);
     return { kind: "skipped" };
+  }
+
+  // Warned only past the proxy-only early-return: under proxy-only nothing is
+  // persisted or registered, so an empty match has no consequence there.
+  if (isEmptyMatch) {
+    logger.warn("Recorded fixture has empty match criteria — skipping in-memory registration");
   }
 
   const fixturePath = record.fixturePath ?? "./fixtures/recorded";
@@ -186,7 +214,26 @@ export function persistFixture(opts: {
     if (mergeExisting && fs.existsSync(filepath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-        fileContent = { fixtures: [...(existing.fixtures ?? []), fixture] };
+        // Guard the spread: a non-array `fixtures` (e.g. a string from a
+        // hand-edited file) would silently spread into single characters and
+        // mangle the merged file. Treat it like the corrupt-JSON case below.
+        const existingFixtures = Array.isArray(existing.fixtures)
+          ? (existing.fixtures as unknown[])
+          : undefined;
+        if (existingFixtures === undefined && existing.fixtures !== undefined) {
+          logger.warn(
+            `Existing fixture file ${filepath} has a non-array "fixtures" — discarding it and starting fresh`,
+          );
+        }
+        fileContent = { fixtures: [...(existingFixtures ?? []), fixture] };
+        // Carry an existing _warning forward — a later clean capture merging
+        // into the same snapshot file must not erase an earlier capture's
+        // warning (e.g. an over-cap b64 omission). Split the "; "-joined
+        // string back into its elements first so a re-emitted warning dedupes
+        // against them ("A; B" + "A" must stay "A; B", not "A; B; A").
+        if (typeof existing._warning === "string" && existing._warning) {
+          fileWarnings.unshift(...existing._warning.split("; "));
+        }
       } catch (mergeErr) {
         const msg = mergeErr instanceof Error ? mergeErr.message : "unknown";
         logger.warn(`Could not read existing fixture file ${filepath} (${msg}) — overwriting`);
@@ -196,7 +243,9 @@ export function persistFixture(opts: {
       fileContent = { fixtures: [fixture] };
     }
     if (fileWarnings.length > 0) {
-      fileContent._warning = fileWarnings.join("; ");
+      // Exact-duplicate warnings (e.g. repeated over-cap captures merging into
+      // the same snapshot file) collapse to one entry.
+      fileContent._warning = [...new Set(fileWarnings)].join("; ");
     }
     // Atomic write: write to temp file then rename to avoid read-modify-write
     // races. Keep synchronous — for streamed responses the HTTP reply is
@@ -273,12 +322,7 @@ export async function proxyAndRecord(
   defaults.logger.warn(`NO FIXTURE MATCH — proxying to ${upstreamUrl}${pathname}`);
 
   // Forward all request headers except hop-by-hop and client-set ones.
-  const forwardHeaders: Record<string, string> = {};
-  for (const [name, val] of Object.entries(req.headers)) {
-    if (val !== undefined && !STRIP_HEADERS.has(name)) {
-      forwardHeaders[name] = Array.isArray(val) ? val.join(", ") : val;
-    }
-  }
+  const forwardHeaders = buildForwardHeaders(req);
 
   const requestBody = rawBody ?? JSON.stringify(request);
 
@@ -686,7 +730,12 @@ export class StreamingFrameDecoder {
   }
 }
 
-function clampTimeout(value: number | undefined, fallback: number): number {
+/**
+ * Sanitize a configured timeout: non-finite or non-positive values fall back
+ * to the default. Shared with the OpenRouter-video live lifecycle proxy so
+ * `record.upstreamTimeoutMs` is clamped identically on every proxy path.
+ */
+export function clampTimeout(value: number | undefined, fallback: number): number {
   if (value == null || !Number.isFinite(value) || value <= 0) return fallback;
   return value;
 }
