@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- fal queue `status`/`result` responses now emit `x-fal-request-id`, and a `billableUnits` fixture field (e.g. `onFalQueue(model, json, { billableUnits })`) emits `x-fal-billable-units` on the completed result so adapters like `@tanstack/ai-fal` can surface `usage.unitsBilled` on replay. Record mode captures the upstream `x-fal-billable-units` header automatically, so recorded fixtures round-trip billing with no hand-editing (#269)
+
 ## [1.31.0] - 2026-06-10
 
 ### Added

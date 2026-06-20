@@ -569,7 +569,10 @@ async function tryRecordAudioQueueWalk(args: {
 
   let finalBody: unknown;
   try {
-    finalBody = await walkFalQueue({
+    // The legacy audio queue stores an AudioResponse and serves its own
+    // headers, so the walk's captured billableUnits doesn't apply here — take
+    // the body only.
+    ({ body: finalBody } = await walkFalQueue({
       upstreamBase,
       submitPath: pathname,
       body,
@@ -581,7 +584,7 @@ async function tryRecordAudioQueueWalk(args: {
       fallbackStatusPath: (id) => `/fal/queue/requests/${id}/status`,
       fallbackResultPath: (id) => `/fal/queue/requests/${id}`,
       logger: defaults.logger,
-    });
+    }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown queue-walk error";
     defaults.logger.error(`fal-audio queue-walk proxy failed: ${msg}`);

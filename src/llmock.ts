@@ -2,6 +2,7 @@ import type {
   AudioResponse,
   ChaosConfig,
   EmbeddingFixtureOpts,
+  FalQueueOpts,
   Fixture,
   FixtureFileEntry,
   FixtureFileResponse,
@@ -226,15 +227,22 @@ export class LLMock {
   }
 
   // fal.queue.* is the dominant client API; onFalRun is a sync alias.
-  onFalQueue(modelOrPrompt: string | RegExp, response: unknown, opts?: FixtureOpts): this {
+  //
+  // `opts.billableUnits` rides through to the completed `queue-result`
+  // response's `x-fal-billable-units` header (alongside the always-present
+  // `x-fal-request-id`), letting consumers like `@tanstack/ai-fal` surface
+  // `result.usage.unitsBilled` on replay. Omit it to preserve the header-less
+  // default.
+  onFalQueue(modelOrPrompt: string | RegExp, response: unknown, opts?: FalQueueOpts): this {
+    const { billableUnits, ...fixtureOpts } = opts ?? {};
     return this.addFixture({
       match: { model: modelOrPrompt, endpoint: "fal" },
-      response: { json: response },
-      ...opts,
+      response: { json: response, ...(billableUnits != null ? { billableUnits } : {}) },
+      ...fixtureOpts,
     });
   }
 
-  onFalRun(modelOrPrompt: string | RegExp, response: unknown, opts?: FixtureOpts): this {
+  onFalRun(modelOrPrompt: string | RegExp, response: unknown, opts?: FalQueueOpts): this {
     return this.onFalQueue(modelOrPrompt, response, opts);
   }
 
@@ -244,7 +252,7 @@ export class LLMock {
    * before storing it as a `RawJSONResponse`. Defaults `width`/`height` to
    * 1024 when the fixture's `ImageItem` doesn't carry them.
    */
-  onFalImage(modelOrPrompt: string | RegExp, response: ImageResponse, opts?: FixtureOpts): this {
+  onFalImage(modelOrPrompt: string | RegExp, response: ImageResponse, opts?: FalQueueOpts): this {
     return this.onFalQueue(modelOrPrompt, imageResponseToFalJson(response), opts);
   }
 
@@ -253,7 +261,7 @@ export class LLMock {
    * envelope (`{ video: { url, content_type, file_name, file_size }, seed }`)
    * before storing it as a `RawJSONResponse`.
    */
-  onFalVideo(modelOrPrompt: string | RegExp, response: VideoResponse, opts?: FixtureOpts): this {
+  onFalVideo(modelOrPrompt: string | RegExp, response: VideoResponse, opts?: FalQueueOpts): this {
     return this.onFalQueue(modelOrPrompt, videoResponseToFalJson(response), opts);
   }
 

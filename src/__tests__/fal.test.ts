@@ -47,6 +47,90 @@ describe("fal.ai general handler — fixture lookup", () => {
     expect(resultBody).toEqual({ images: [{ url: "https://example.com/cat.png" }] });
   });
 
+  test("queue status/result responses carry x-fal-request-id", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalQueue(/flux/, { images: [{ url: "https://example.com/cat.png" }] });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a cat" } }),
+    });
+    const envelope = await submit.json();
+
+    const status = await fetch(
+      `${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}/status`,
+      { headers: { "x-fal-target-host": "queue.fal.run" } },
+    );
+    expect(status.headers.get("x-fal-request-id")).toBe(envelope.request_id);
+
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(result.headers.get("x-fal-request-id")).toBe(envelope.request_id);
+    // No billableUnits configured → no x-fal-billable-units header.
+    expect(result.headers.get("x-fal-billable-units")).toBeNull();
+  });
+
+  test("billableUnits opt-in emits x-fal-billable-units on completed result only", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.onFalQueue(
+      /flux/,
+      { images: [{ url: "https://example.com/cat.png" }] },
+      {
+        billableUnits: 42,
+      },
+    );
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a cat" } }),
+    });
+    const envelope = await submit.json();
+
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(result.status).toBe(200);
+    expect(result.headers.get("x-fal-request-id")).toBe(envelope.request_id);
+    expect(result.headers.get("x-fal-billable-units")).toBe("42");
+  });
+
+  test("billableUnits header is withheld until the result completes", async () => {
+    // Progression keeps the job IN_QUEUE on the first result poll, so the
+    // billable-units header must not ride the 202 — only the completed 200.
+    mock = new LLMock({ port: 0, falQueue: { pollsBeforeCompleted: 2 } });
+    mock.onFalQueue(
+      /flux/,
+      { images: [{ url: "https://example.com/cat.png" }] },
+      {
+        billableUnits: 7,
+      },
+    );
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a cat" } }),
+    });
+    const envelope = await submit.json();
+    const url = `${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`;
+    const headers = { "x-fal-target-host": "queue.fal.run" };
+
+    const pending = await fetch(url, { headers });
+    expect(pending.status).toBe(202);
+    expect(pending.headers.get("x-fal-request-id")).toBe(envelope.request_id);
+    expect(pending.headers.get("x-fal-billable-units")).toBeNull();
+
+    const done = await fetch(url, { headers });
+    expect(done.status).toBe(200);
+    expect(done.headers.get("x-fal-billable-units")).toBe("7");
+  });
+
   test("body extraction handles input.prompt nesting (fal-client default shape)", async () => {
     mock = new LLMock({ port: 0 });
     mock.onFalQueue(/flux/, { images: [{ url: "https://example.com/x.png" }] });
@@ -211,6 +295,8 @@ function startFalQueueUpstream(opts: {
   finalBody: unknown;
   pollsBeforeCompleted?: number;
   upstreamRequestId?: string;
+  /** When set, the GET result response carries this x-fal-billable-units header. */
+  billableUnits?: string;
 }): Promise<{
   url: string;
   close: () => Promise<void>;
@@ -255,7 +341,12 @@ function startFalQueueUpstream(opts: {
         }
         if (req.method === "GET" && resultMatch && !statusMatch) {
           counts.result++;
-          send(200, opts.finalBody);
+          const resultHeaders: Record<string, string> = { "Content-Type": "application/json" };
+          if (opts.billableUnits !== undefined) {
+            resultHeaders["x-fal-billable-units"] = opts.billableUnits;
+          }
+          res.writeHead(200, resultHeaders);
+          res.end(JSON.stringify(opts.finalBody));
           return;
         }
         if (req.method === "POST") {
@@ -376,6 +467,46 @@ describe("fal.ai general handler — record and replay", () => {
     const recorded = JSON.parse(fs.readFileSync(path.join(tmpDir, falFixtures[0]), "utf-8"));
     expect(recorded.fixtures[0].match.endpoint).toBe("fal");
     expect(recorded.fixtures[0].response.json).toEqual(FINAL_BODY);
+  });
+
+  test("captures upstream x-fal-billable-units during recording → persists + replays it", async () => {
+    const FINAL_BODY = { images: [{ url: "https://mock.fal.media/files/billed.png" }] };
+    queueUpstream = await startFalQueueUpstream({
+      finalBody: FINAL_BODY,
+      pollsBeforeCompleted: 2,
+      billableUnits: "13",
+    });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-fal-queue-billed-"));
+
+    mock = new LLMock({
+      port: 0,
+      record: {
+        providers: { fal: queueUpstream.url },
+        fixturePath: tmpDir,
+        fal: { pollIntervalMs: 5, timeoutMs: 5000 },
+      },
+    });
+    await mock.start();
+
+    const submit = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-fal-target-host": "queue.fal.run" },
+      body: JSON.stringify({ input: { prompt: "a cat" } }),
+    });
+    const envelope = await submit.json();
+
+    // Same-session replay surfaces the captured units without reloading the fixture.
+    const result = await fetch(`${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}`, {
+      headers: { "x-fal-target-host": "queue.fal.run" },
+    });
+    expect(result.status).toBe(200);
+    expect(result.headers.get("x-fal-billable-units")).toBe("13");
+
+    // Persisted fixture carries response.billableUnits so a fresh load also replays it.
+    const files = fs.readdirSync(tmpDir).filter((f) => f.startsWith("fal-") && f.endsWith(".json"));
+    expect(files.length).toBe(1);
+    const recorded = JSON.parse(fs.readFileSync(path.join(tmpDir, files[0]), "utf-8"));
+    expect(recorded.fixtures[0].response.billableUnits).toBe(13);
   });
 
   test("mock-internal headers never reach the upstream on the recorded queue walk", async () => {

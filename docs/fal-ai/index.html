@@ -145,6 +145,27 @@
           <code>file_size: 0</code>, <code>seed: 0</code>.
         </p>
 
+        <h2>Billing Headers: <code>x-fal-request-id</code> / <code>x-fal-billable-units</code></h2>
+        <p>
+          aimock always sets <code>x-fal-request-id</code> on queue <code>status</code> and
+          <code>result</code> responses, matching real fal. To exercise a consumer's cost accounting
+          (e.g. <code>@tanstack/ai-fal</code>'s <code>usage.unitsBilled</code>), pass
+          <code>billableUnits</code> — it rides the completed <code>result</code> response as
+          <code>x-fal-billable-units</code>. Omit it to keep the header-less default. In record mode
+          the upstream <code>x-fal-billable-units</code> header is captured automatically and
+          written into the fixture's <code>response.billableUnits</code>, so recorded fixtures
+          round-trip billing with no hand-editing.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">billing.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onFalImage</span>(<span class="str">/flux/</span>, {
+  <span class="prop">images</span>: [{ <span class="prop">url</span>: <span class="str">"https://mock.fal.media/x.png"</span> }],
+}, { <span class="prop">billableUnits</span>: <span class="num">42</span> });
+
+<span class="cm">// completed queue-result now carries: x-fal-billable-units: 42</span></code></pre>
+        </div>
+
         <h2>Client Configuration</h2>
         <p>
           Point the <code>@fal-ai/client</code> at aimock using <code>requestMiddleware</code> to
