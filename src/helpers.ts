@@ -1033,6 +1033,24 @@ export function slugifyTestId(testId: string): string {
     .toLowerCase();
 }
 
+/**
+ * Make a request context (the `X-AIMock-Context` header value) safe to use as
+ * a single directory segment in a recorded-fixture path. The header is
+ * attacker-controllable, so a raw value containing `../`, path separators, or
+ * an absolute-path prefix would let the written fixture escape the configured
+ * fixtures base directory. Mirrors `slugifyTestId`: non-word characters
+ * (including `/`, `\`, and `.`) collapse to dashes, so the result is always a
+ * single flat segment with no traversal semantics. Returns "" when the value
+ * sanitizes to nothing (caller treats that as "no context segment").
+ */
+export function slugifyContext(context: string): string {
+  return context
+    .replace(/[^\w-]/g, "-") // non-word chars (incl. / \ . :) → dash
+    .replace(/-{3,}/g, "--") // collapse 3+ dashes to double
+    .replace(/^-+|-+$/g, "") // trim leading/trailing dashes
+    .toLowerCase();
+}
+
 // ─── Embedding helpers ─────────────────────────────────────────────────────
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
