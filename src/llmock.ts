@@ -81,7 +81,18 @@ export class LLMock {
    * Validates all fixtures and throws if any have severity "error".
    */
   addFixturesFromJSON(input: string | FixtureFileEntry[]): this {
-    const entries: FixtureFileEntry[] = typeof input === "string" ? JSON.parse(input) : input;
+    let entries: FixtureFileEntry[];
+    if (typeof input === "string") {
+      try {
+        entries = JSON.parse(input);
+      } catch (err) {
+        throw new Error(
+          `addFixturesFromJSON: invalid JSON — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else {
+      entries = input;
+    }
     const converted = entries.map((e) => entryToFixture(e));
     const issues = validateFixtures(converted);
     const errors = issues.filter((i) => i.severity === "error");
@@ -299,13 +310,38 @@ export class LLMock {
       },
       status,
     };
+    // An injected error is only a valid response for endpoints that can carry
+    // an error envelope. Mirror the router's endpoint-compat table
+    // (matchFixtureDiagnostic in router.ts): error responses are compatible
+    // with chat / embedding / realtime* / fal and with requests that carry no
+    // endpoint type, but NOT with multimedia endpoints (image, speech, video,
+    // transcription, …). Gating consumption on this prevents an incompatible
+    // request from matching the predicate and splicing — and thereby
+    // destroying — a one-shot error intended for a different endpoint before
+    // the router's own compat check would have skipped it.
+    const errorEndpointCompatible = (req: import("./types.js").ChatCompletionRequest) => {
+      const reqEndpoint = req._endpointType as string | undefined;
+      if (
+        reqEndpoint === undefined ||
+        reqEndpoint === "chat" ||
+        reqEndpoint === "embedding" ||
+        reqEndpoint.startsWith("realtime") ||
+        reqEndpoint === "fal"
+      ) {
+        return true;
+      }
+      return false;
+    };
     const fixture: Fixture = {
-      match: { predicate: () => true },
+      match: { predicate: errorEndpointCompatible },
       response: errorResponse,
     };
     // Insert at front so it matches before everything else
     this.fixtures.unshift(fixture);
-    // Remove after first match — the journal records it so tests can assert
+    // Remove after first match — the journal records it so tests can assert.
+    // Only consume (and splice) when the request endpoint is compatible; an
+    // incompatible request returns false here, falls through to other
+    // fixtures, and leaves this error pending for its intended endpoint.
     const original = fixture.match.predicate!;
     fixture.match.predicate = (req) => {
       const result = original(req);

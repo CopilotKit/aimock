@@ -37,6 +37,37 @@ function post(url: string, body: object): Promise<{ status: number; data: string
   });
 }
 
+function postTo(
+  url: string,
+  path: string,
+  body: object,
+): Promise<{ status: number; data: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => resolve({ status: res.statusCode!, data }));
+      },
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 function chatBody(userMessage: string, stream = true) {
   return {
     model: "gpt-4",
@@ -107,6 +138,11 @@ describe("LLMock", () => {
         },
       ]);
       expect(result).toBe(mock);
+    });
+
+    it("addFixturesFromJSON throws a contextful error on malformed JSON", () => {
+      mock = new LLMock();
+      expect(() => mock.addFixturesFromJSON("{ not valid json")).toThrow(/addFixturesFromJSON/);
     });
 
     it("chaining API works across multiple calls", () => {
@@ -818,6 +854,34 @@ describe("LLMock", () => {
       const res3 = await post(mock.url, chatBody("hello"));
       expect(res3.status).toBe(200);
       expect(res3.data).toContain("Normal response");
+    });
+
+    it("does not let an incompatible (multimedia) endpoint consume a chat-bound one-shot error", async () => {
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi!" });
+      mock.onImage("draw a cat", { image: { b64Json: "aW1n" } });
+      await mock.start();
+
+      // Queue a one-shot error. Conceptually intended for the chat endpoint;
+      // an error response is incompatible with the image endpoint (mirrors the
+      // router's endpoint-compat table, where only `fal` accepts errors).
+      mock.nextRequestError(503, { message: "Overloaded", type: "server_error" });
+
+      // Issue an INCOMPATIBLE image request FIRST. It must NOT consume the
+      // error: the image fixture should serve normally and the error stays
+      // pending for a compatible endpoint.
+      const img = await postTo(mock.url, "/v1/images/generations", {
+        model: "dall-e-3",
+        prompt: "draw a cat",
+      });
+      expect(img.status).toBe(200);
+      expect(img.data).toContain("aW1n");
+
+      // The one-shot error must STILL be pending → the next chat request gets it.
+      const chat = await post(mock.url, chatBody("hello"));
+      expect(chat.status).toBe(503);
+      const body = JSON.parse(chat.data);
+      expect(body.error.message).toBe("Overloaded");
     });
   });
 
