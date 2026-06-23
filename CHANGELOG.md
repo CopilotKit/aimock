@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-06-23
+
+### Added
+
+- `--max-proxy-buffer-bytes` / `--max-proxy-buffer-frames` flags to cap proxy buffering (#275)
+
+### Fixed
+
+- Proxy path no longer leaks memory on long-lived upstream streams (#275)
+- Oversized proxied responses no longer crash with `RangeError: Invalid string length` (#275)
+
 ## [1.32.0] - 2026-06-22
 
 ### Added
