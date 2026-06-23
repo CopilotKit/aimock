@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createServer, type ServerInstance } from "../server.js";
 import { Logger } from "../logger.js";
+import { setProxyBufferHardCeilingForTests } from "../recorder.js";
 
 // ---------------------------------------------------------------------------
 // Proxy-path buffer cap ENFORCEMENT (per-frame + binary + non-streamed relay).
@@ -32,6 +33,8 @@ afterEach(async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
   }
+  // Restore the real hard ceiling after any test that lowered it.
+  setProxyBufferHardCeilingForTests(undefined);
   vi.restoreAllMocks();
 });
 
@@ -117,6 +120,59 @@ function createLargeJsonUpstream(totalBytes: number): Promise<string> {
       const filler = "x".repeat(Math.max(0, totalBytes - 32));
       const body = JSON.stringify({ id: "resp_1", big: filler });
       res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      res.end(body);
+    });
+    upstream.listen(0, "127.0.0.1", () => {
+      const { port } = upstream!.address() as { port: number };
+      resolve(`http://127.0.0.1:${port}`);
+    });
+  });
+}
+
+/**
+ * Binary EventStream upstream that emits `frameCount` COMPLETE, well-formed
+ * frames (4-byte big-endian totalLen prefix >= 12) packed into a SINGLE socket
+ * write of exactly `frameCount * frameLen` bytes. Delivering the whole body in
+ * one write means the recorder's `binaryFrameBuffer` concats it once and the
+ * splitter drains every complete frame, leaving binaryFrameBuffer back at 0 —
+ * isolating the byte-cap accounting (`bufferedBytes`) so the redundant
+ * `+ chunk.length` double-count is the ONLY thing that can trip the cap early.
+ */
+function createCompleteBinaryFrameUpstream(frameCount: number, frameLen: number): Promise<string> {
+  return new Promise((resolve) => {
+    upstream = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        "Content-Type": "application/vnd.amazon.eventstream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      const frame = Buffer.alloc(frameLen, 0x41);
+      frame.writeUInt32BE(frameLen, 0); // totalLen prefix == whole frame length
+      // One write of the entire body so the recorder sees a single coalesced
+      // chunk whose binary frames all complete (binaryFrameBuffer drains to 0).
+      res.end(Buffer.concat(Array.from({ length: frameCount }, () => frame)));
+    });
+    upstream.listen(0, "127.0.0.1", () => {
+      const { port } = upstream!.address() as { port: number };
+      resolve(`http://127.0.0.1:${port}`);
+    });
+  });
+}
+
+/**
+ * Non-streamed (plain JSON) upstream returning a body of `totalBytes` with a
+ * caller-chosen status code. Used to prove the over-cap relay normalizes the
+ * upstream status (success→200 / error→502) like every other relay path.
+ */
+function createLargeJsonUpstreamWithStatus(totalBytes: number, status: number): Promise<string> {
+  return new Promise((resolve) => {
+    upstream = http.createServer((_req, res) => {
+      const filler = "x".repeat(Math.max(0, totalBytes - 32));
+      const body = JSON.stringify({ id: "resp_1", big: filler });
+      res.writeHead(status, {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(body),
       });
@@ -227,10 +283,7 @@ describe("proxy buffer cap enforcement", () => {
     // The frame cap tripped and recording was skipped.
     const truncationWarn = warnings.find((w) => /frame cap/i.test(w));
     expect(truncationWarn).toBeDefined();
-    if (fs.existsSync(tmpDir)) {
-      const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
-      expect(files).toHaveLength(0);
-    }
+    expect(noFixtureWritten(tmpDir)).toBe(true);
 
     // RED on the buggy code: the cap is only checked at the TOP of the data
     // callback, so the single coalesced chunk's splitter loop pushes a
@@ -314,10 +367,7 @@ describe("proxy buffer cap enforcement", () => {
     expect(truncationWarn).toBeDefined();
 
     // Recording skipped under truncation: no fixture written.
-    if (fs.existsSync(tmpDir)) {
-      const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
-      expect(files).toHaveLength(0);
-    }
+    expect(noFixtureWritten(tmpDir)).toBe(true);
   });
 
   // A3 — non-streamed over-cap must RELAY the received body, not 502.
@@ -351,9 +401,161 @@ describe("proxy buffer cap enforcement", () => {
     expect(resp.bytesReceived).toBeGreaterThan(TOTAL - 1024);
 
     // Recording skipped (truncated), so no fixture written.
-    if (fs.existsSync(tmpDir)) {
-      const files = fs.readdirSync(tmpDir).filter((f) => f.endsWith(".json"));
-      expect(files).toHaveLength(0);
-    }
+    expect(noFixtureWritten(tmpDir)).toBe(true);
+  });
+
+  // R2-B — the binary byte-cap must NOT double-count the current chunk.
+  // `bufferedBytes` already includes `chunk.length` by the time the binary
+  // guard runs, so the original `bufferedBytes + binaryFrameBuffer.length +
+  // chunk.length > maxBufferBytes` trips ONE CHUNK EARLY. With complete frames
+  // (binaryFrameBuffer drains to ~0 each tick) and a total exactly equal to the
+  // cap, the corrected accounting must NOT trip, but the double-count does.
+  //   RED: byte cap trips though total bytes == cap (off by one chunk);
+  //        recording is skipped.
+  //   GREEN: does NOT trip; the stream records normally (no byte-cap warning).
+  it("R2-B: does not trip the binary byte cap one chunk early (no chunk double-count)", async () => {
+    const FRAME_LEN = 64 * 1024; // 64 KiB complete frames
+    const FRAMES = 7; // total == 448 KiB
+    const BYTE_CAP = 512 * 1024; // 512 KiB — total (448 KiB) sits one full frame under the cap
+    const FRAME_CAP = 5_000_000; // generous: frame cap cannot trip
+
+    const upstreamUrl = await createCompleteBinaryFrameUpstream(FRAMES, FRAME_LEN);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-r2b-"));
+
+    const warnings: string[] = [];
+    vi.spyOn(Logger.prototype, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+
+    recorder = await createServer([], {
+      port: 0,
+      logLevel: "warn",
+      record: {
+        providers: { openai: upstreamUrl },
+        fixturePath: tmpDir,
+        proxyOnly: true,
+        maxProxyBufferBytes: BYTE_CAP,
+        maxProxyBufferFrames: FRAME_CAP,
+      },
+    });
+
+    const resp = await postStreaming(recorder.url, CHAT_REQUEST);
+
+    console.log(
+      `[R2-B] status=${resp.status} bytesReceived=${resp.bytesReceived} cap=${BYTE_CAP} byteCapTripped=${warnings.some((w) => /byte cap/i.test(w))}`,
+    );
+    expect(resp.status).toBe(200);
+    // RED: double-count trips the byte cap at the last chunk even though total
+    // == cap. GREEN: the configured cap is reached exactly, not exceeded, so no
+    // byte-cap truncation fires.
+    expect(warnings.some((w) => /byte cap/i.test(w))).toBe(false);
+
+    // Frame cap is generous and never trips either.
+    expect(warnings.some((w) => /frame cap/i.test(w))).toBe(false);
+  });
+
+  // R2-A — a non-progressive body LARGER than the hard ceiling must NOT be
+  // relayed as a truncated-but-2xx response. Lower the hard ceiling to a tiny
+  // value so a small JSON body exceeds it (keeping the test fast). The
+  // non-progressive buffer stops growing at the hard ceiling, so the buffered
+  // copy is PARTIAL.
+  //   RED: client receives a 2xx whose body is SHORTER than what upstream sent
+  //        (truncated, presented as success) — the silent-truncation bug.
+  //   GREEN: client receives a loud 502 ("exceeds proxy ceiling"), never a
+  //        truncated 2xx. (A full pass-through relay would be the other
+  //        acceptable outcome, but this fix chose fail-loud.)
+  it("R2-A: never relays a truncated body as 2xx when upstream exceeds the hard ceiling", async () => {
+    const HARD_CEILING = 64 * 1024; // tiny test-only ceiling
+    const TOTAL = 1 * 1024 * 1024; // 1 MB body — far over the ceiling
+    const BYTE_CAP = 16 * 1024; // soft cap below the ceiling too
+
+    setProxyBufferHardCeilingForTests(HARD_CEILING);
+    const upstreamUrl = await createLargeJsonUpstream(TOTAL);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-r2a-"));
+
+    recorder = await createServer([], {
+      port: 0,
+      logLevel: "warn",
+      record: {
+        providers: { openai: upstreamUrl },
+        fixturePath: tmpDir,
+        proxyOnly: true,
+        maxProxyBufferBytes: BYTE_CAP,
+      },
+    });
+
+    const resp = await postStreaming(recorder.url, NONSTREAM_REQUEST);
+
+    console.log(`[R2-A] status=${resp.status} bytesReceived=${resp.bytesReceived} (sent=${TOTAL})`);
+    // GREEN invariant: never a truncated body presented as success. Either the
+    // full body (>= TOTAL) or a loud error status. A 2xx with a body shorter
+    // than upstream sent is the forbidden state.
+    const truncatedAsSuccess =
+      resp.status >= 200 && resp.status < 300 && resp.bytesReceived < TOTAL - 1024;
+    expect(truncatedAsSuccess).toBe(false);
+    // This fix chose fail-loud: a body over the ceiling returns 502.
+    expect(resp.status).toBe(502);
+
+    expect(noFixtureWritten(tmpDir)).toBe(true);
+  });
+
+  // R2-C — over-cap (under-ceiling) relay must NORMALIZE the upstream status
+  // (success→200 / error→502) like every other relay path, not leak the raw
+  // upstream code. Upstream returns a 503 body large enough to trip the soft
+  // cap but small enough to stay under the hard ceiling.
+  //   RED: client receives 503 verbatim.
+  //   GREEN: client receives a normalized 502.
+  it("R2-C: normalizes upstream status on the over-cap relay (503 -> 502)", async () => {
+    const TOTAL = 2 * 1024 * 1024; // 2 MB — over the soft cap, under the ceiling
+    const BYTE_CAP = 256 * 1024;
+
+    const upstreamUrl = await createLargeJsonUpstreamWithStatus(TOTAL, 503);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "aimock-r2c-"));
+
+    recorder = await createServer([], {
+      port: 0,
+      logLevel: "warn",
+      record: {
+        providers: { openai: upstreamUrl },
+        fixturePath: tmpDir,
+        proxyOnly: true,
+        maxProxyBufferBytes: BYTE_CAP,
+      },
+    });
+
+    const resp = await postStreaming(recorder.url, NONSTREAM_REQUEST);
+
+    console.log(
+      `[R2-C] upstream=503 relayedStatus=${resp.status} bytesReceived=${resp.bytesReceived}`,
+    );
+    // RED: 503 leaked verbatim. GREEN: normalized to 502.
+    expect(resp.status).toBe(502);
+    // Body is still relayed (full real upstream body, under the ceiling).
+    expect(resp.bytesReceived).toBeGreaterThan(TOTAL - 1024);
+
+    expect(noFixtureWritten(tmpDir)).toBe(true);
   });
 });
+
+/**
+ * Walk `dir` recursively and return true when NO `.json` fixture exists
+ * anywhere beneath it. persistFixture can write into `slug/` or `context/`
+ * subdirectories, so a non-recursive readdir would go vacuously true even if a
+ * fixture WERE written into a subdir.
+ */
+function noFixtureWritten(dir: string): boolean {
+  if (!fs.existsSync(dir)) return true;
+  const stack: string[] = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const full = path.join(cur, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.name.endsWith(".json")) {
+        return false;
+      }
+    }
+  }
+  return true;
+}

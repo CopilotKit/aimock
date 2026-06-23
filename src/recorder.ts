@@ -62,6 +62,24 @@ export const DEFAULT_MAX_PROXY_BUFFER_FRAMES = 5_000_000;
  */
 export const PROXY_BUFFER_HARD_CEILING = 256 * 1024 * 1024; // 256 MiB
 
+/**
+ * Test-only override of the effective hard ceiling. Lets the proxy-buffer
+ * enforcement suite exercise the >hard-ceiling fail-loud path with a small
+ * body instead of streaming 256 MiB. `undefined` (the default) uses the real
+ * `PROXY_BUFFER_HARD_CEILING`. NEVER set from production code.
+ */
+let proxyBufferHardCeilingOverride: number | undefined;
+
+/** @internal test-only — see `proxyBufferHardCeilingOverride`. */
+export function setProxyBufferHardCeilingForTests(value: number | undefined): void {
+  proxyBufferHardCeilingOverride = value;
+}
+
+/** Effective hard ceiling, honoring any active test-only override. */
+function effectiveHardCeiling(): number {
+  return proxyBufferHardCeilingOverride ?? PROXY_BUFFER_HARD_CEILING;
+}
+
 const STRIP_HEADERS = new Set([
   // Hop-by-hop (RFC 2616 §13.5.1)
   "connection",
@@ -384,6 +402,7 @@ export async function proxyAndRecord(
   let bufferTruncated = false;
   let truncationCap: "byte" | "frame" | undefined;
   let totalBytes = 0;
+  let hardCeilingExceeded = false;
 
   // Track whether we streamed SSE progressively to the client; if so,
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
@@ -416,6 +435,7 @@ export async function proxyAndRecord(
     bufferTruncated = result.bufferTruncated;
     truncationCap = result.truncationCap;
     totalBytes = result.totalBytes;
+    hardCeilingExceeded = result.hardCeilingExceeded;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -434,29 +454,54 @@ export async function proxyAndRecord(
   }
 
   // Buffer cap tripped: skip collapse + recording (the in-memory buffer can't
-  // be safely/faithfully journaled), but ALWAYS deliver the real response to
+  // be safely/faithfully journaled), but ALWAYS deliver a faithful response to
   // the client. The cap means "don't journal", not "don't answer".
   //  - PROGRESSIVE stream: the bytes were already teed to the client live, so
   //    nothing more to write — just end if still open.
-  //  - NON-progressive response: makeUpstreamRequest kept the full body
-  //    (bounded by PROXY_BUFFER_HARD_CEILING) precisely so we can relay it
-  //    here. Relay the real upstream status + headers + body rather than
-  //    synthesizing a 502 — a large single-shot JSON (embeddings / fal /
-  //    image-b64) must reach the client intact.
+  //  - NON-progressive response, UNDER the hard ceiling: makeUpstreamRequest
+  //    kept the FULL body (bounded by PROXY_BUFFER_HARD_CEILING) precisely so we
+  //    can relay it here. Relay the real body so a large single-shot JSON
+  //    (embeddings / fal / image-b64) reaches the client intact — but NORMALIZE
+  //    the status (success→200 / error→502) exactly like every other relay path
+  //    so upstream provider details don't leak through this branch alone.
+  //  - NON-progressive response, OVER the hard ceiling: the retained buffer is
+  //    PARTIAL (we stopped buffering at the ceiling and there is no live tee),
+  //    so relaying it would present a truncated body as success. FAIL LOUD with
+  //    a 502 instead — never deliver a silently-truncated body as 2xx.
   if (bufferTruncated) {
     const capDetail =
       truncationCap === "frame"
         ? `the ${maxProxyBufferFrames}-frame cap`
         : `the ${maxProxyBufferBytes}-byte cap`;
+    if (!streamedToClient && hardCeilingExceeded && !res.headersSent) {
+      const ceilingMiB = Math.round(PROXY_BUFFER_HARD_CEILING / (1024 * 1024));
+      defaults.logger.error(
+        `Upstream response exceeded the ${ceilingMiB} MiB proxy hard ceiling (saw ${totalBytes} bytes) on a non-progressive body — cannot relay the full body and refusing to relay a truncated one; returning 502`,
+      );
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: `Upstream response exceeds ${ceilingMiB}MiB proxy ceiling`,
+            type: "proxy_error",
+          },
+        }),
+      );
+      return "relayed";
+    }
     defaults.logger.warn(
       `Upstream response exceeded ${capDetail} (saw ${totalBytes} bytes) — relayed to client, recording skipped`,
     );
     if (!streamedToClient && !res.headersSent) {
+      // Normalize the relayed status like the under-cap relay paths
+      // (success→200, error→502) so this branch does not leak a raw upstream
+      // 429/503/etc. The full real body (under the hard ceiling) is relayed.
+      const clientStatus = upstreamStatus >= 200 && upstreamStatus < 300 ? 200 : 502;
       const relayHeaders: Record<string, string> = {};
       const ct = upstreamHeaders["content-type"];
       const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
       relayHeaders["Content-Type"] = ctStr || "application/json";
-      res.writeHead(upstreamStatus, relayHeaders);
+      res.writeHead(clientStatus, relayHeaders);
       res.end(rawBuffer);
     } else if (!res.writableEnded) {
       res.end();
@@ -895,6 +940,12 @@ function makeUpstreamRequest(
   truncationCap?: "byte" | "frame";
   /** Total bytes seen from upstream (may exceed the buffered amount when capped). */
   totalBytes: number;
+  /**
+   * True when a NON-progressive (non-teed) upstream body exceeded the proxy
+   * hard ceiling, so the retained `rawBuffer` is PARTIAL. The caller MUST fail
+   * loud (502) rather than relay this truncated body as a success status.
+   */
+  hardCeilingExceeded: boolean;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -990,6 +1041,18 @@ function makeUpstreamRequest(
         let bufferTruncated = false;
         /** Which cap tripped truncation — surfaced to the caller for an accurate warning. */
         let truncationCap: "byte" | "frame" | undefined;
+        // Snapshot the effective hard ceiling once for this request (honors the
+        // test-only override). Bounds the non-progressive relay buffer; when the
+        // body would exceed it we can neither buffer the full copy nor safely
+        // relay the partial one, so the caller fails loud instead of truncating.
+        const hardCeiling = effectiveHardCeiling();
+        /**
+         * True when a NON-progressive upstream body exceeded `hardCeiling`, so
+         * the buffered `rawBuffer` is a PARTIAL copy that must NOT be relayed as
+         * success. Distinct from `bufferTruncated` (which also covers the
+         * under-ceiling over-soft-cap case where the full body IS retained).
+         */
+        let hardCeilingExceeded = false;
         // Trip truncation: mark the response over-cap so the caller skips
         // collapse/recording, and eagerly drop the accumulated PARSE state
         // (frameTimestamps + frame/binary parse buffers) which only ever feeds
@@ -1012,6 +1075,10 @@ function makeUpstreamRequest(
           truncationCap = cap;
           frameTimestamps.length = 0;
           frameBuffer = "";
+          // Intentional: the returned flush string is discarded (frameBuffer was
+          // just cleared and recording is skipped), but `.end()` releases any
+          // partial-multibyte bytes the StringDecoder is internally holding — so
+          // this frees decoder state rather than being dead cleanup.
           frameDecoder.end();
           binaryFrameBuffer = Buffer.alloc(0);
           if (isProgressiveStream) {
@@ -1053,12 +1120,17 @@ function makeUpstreamRequest(
           if (!bufferTruncated) {
             chunks.push(chunk);
             bufferedBytes += chunk.length;
-          } else if (
-            !isProgressiveStream &&
-            bufferedBytes + chunk.length <= PROXY_BUFFER_HARD_CEILING
-          ) {
-            chunks.push(chunk);
-            bufferedBytes += chunk.length;
+          } else if (!isProgressiveStream) {
+            if (bufferedBytes + chunk.length <= hardCeiling) {
+              chunks.push(chunk);
+              bufferedBytes += chunk.length;
+            } else {
+              // The non-progressive relay copy would exceed the hard ceiling.
+              // We CANNOT relay the full body (it can't be buffered safely) and
+              // MUST NOT relay the partial buffer as a success — flag it so the
+              // caller fails loud (502) instead of presenting a truncated 2xx.
+              hardCeilingExceeded = true;
+            }
           }
 
           // Capture per-frame timestamps for SSE/NDJSON streams. Gated on
@@ -1110,7 +1182,12 @@ function makeUpstreamRequest(
             // no frameTimestamps — would let a full second copy accumulate up
             // to the byte cap, peaking at ~2× the configured cap. Trip on the
             // COMBINED footprint so the byte cap bounds both copies together.
-            if (bufferedBytes + binaryFrameBuffer.length + chunk.length > maxBufferBytes) {
+            // NOTE: `bufferedBytes` ALREADY includes the current `chunk.length`
+            // (added in the raw-buffer accumulation above), so the combined
+            // footprint is `bufferedBytes + binaryFrameBuffer.length`. Adding
+            // `chunk.length` again would double-count it and trip the cap one
+            // chunk early (matching the L<byte-guard> accounting at the top).
+            if (bufferedBytes + binaryFrameBuffer.length > maxBufferBytes) {
               tripTruncation("byte");
             } else {
               binaryFrameBuffer = Buffer.concat([binaryFrameBuffer, chunk]);
@@ -1202,6 +1279,7 @@ function makeUpstreamRequest(
             bufferTruncated,
             truncationCap,
             totalBytes,
+            hardCeilingExceeded,
           });
         });
       },
