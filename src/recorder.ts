@@ -24,6 +24,62 @@ import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
+/**
+ * Default ceiling (bytes) for the in-memory proxy-path buffer. Chosen well
+ * under V8's ~512 MiB max string length so `rawBuffer.toString()` /
+ * stream-collapse never throws `RangeError: Invalid string length`, and so a
+ * single huge proxied response cannot spike the heap unbounded. Overridable
+ * via `RecordConfig.maxProxyBufferBytes` / `--max-proxy-buffer-bytes`.
+ */
+export const DEFAULT_MAX_PROXY_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MiB
+
+/**
+ * Default ceiling for the number of SSE/NDJSON/EventStream frames whose
+ * per-frame state (`frameTimestamps`, parse buffers) aimock retains for a
+ * single proxied response. Frame state is count-indexed, not byte-sized, so a
+ * long-lived / never-ending stream accumulates `frameTimestamps` entries (and,
+ * if a frame never completes, parse-buffer bytes) UNBOUNDED even when the byte
+ * cap is generous — observed as multi-GB heap growth over many hours from a few
+ * long nested-sub-agent streams. Tripping truncation on EITHER bytes OR frame
+ * count bounds both. 5M frames is generous for any real response (a normal
+ * completion is hundreds-to-thousands of frames) while still bounding a runaway
+ * stream to ~tens of MB of frame state. Overridable via
+ * `RecordConfig.maxProxyBufferFrames` / `--max-proxy-buffer-frames`.
+ */
+export const DEFAULT_MAX_PROXY_BUFFER_FRAMES = 5_000_000;
+
+/**
+ * Absolute hard ceiling (bytes) for any in-memory proxy buffer, independent of
+ * the configurable `maxProxyBufferBytes`. V8's maximum STRING length on 64-bit
+ * is 2^29 - 1 (~512 MiB of UTF-16 code units), and the proxy buffer is
+ * eventually stringified via `rawBuffer.toString()` for collapse/relay — so the
+ * BYTE buffer must stay safely under that string limit or the toString throws
+ * `RangeError: Invalid string length`. 256 MiB of bytes is well under the
+ * ~512 MiB string-length boundary (these are different units — bytes vs UTF-16
+ * code units — but 256 MiB of bytes can never decode to more than 256 Mi code
+ * units, comfortably below 2^29 - 1). Used to clamp the configurable cap AND to
+ * bound the non-progressive relay buffer that must be retained past a cap trip.
+ */
+export const PROXY_BUFFER_HARD_CEILING = 256 * 1024 * 1024; // 256 MiB
+
+/**
+ * Test-only override of the effective hard ceiling. Lets the proxy-buffer
+ * enforcement suite exercise the >hard-ceiling fail-loud path with a small
+ * body instead of streaming 256 MiB. `undefined` (the default) uses the real
+ * `PROXY_BUFFER_HARD_CEILING`. NEVER set from production code.
+ */
+let proxyBufferHardCeilingOverride: number | undefined;
+
+/** @internal test-only — see `proxyBufferHardCeilingOverride`. */
+export function setProxyBufferHardCeilingForTests(value: number | undefined): void {
+  proxyBufferHardCeilingOverride = value;
+}
+
+/** Effective hard ceiling, honoring any active test-only override. */
+function effectiveHardCeiling(): number {
+  return proxyBufferHardCeilingOverride ?? PROXY_BUFFER_HARD_CEILING;
+}
+
 const STRIP_HEADERS = new Set([
   // Hop-by-hop (RFC 2616 §13.5.1)
   "connection",
@@ -382,6 +438,10 @@ export async function proxyAndRecord(
   let upstreamHeaders: http.IncomingHttpHeaders;
   let upstreamBody: string;
   let rawBuffer: Buffer;
+  let bufferTruncated = false;
+  let truncationCap: "byte" | "frame" | undefined;
+  let totalBytes = 0;
+  let hardCeilingExceeded = false;
 
   // Track whether we streamed SSE progressively to the client; if so,
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
@@ -389,6 +449,8 @@ export async function proxyAndRecord(
   let clientDisconnected = false;
   let frameTimestamps: number[] = [];
   let streamStartTime = 0;
+  const maxProxyBufferBytes = clampMaxBufferBytes(record.maxProxyBufferBytes);
+  const maxProxyBufferFrames = clampMaxBufferFrames(record.maxProxyBufferFrames);
   try {
     const result = await makeUpstreamRequest(
       target,
@@ -398,6 +460,8 @@ export async function proxyAndRecord(
       req.method,
       defaults.logger,
       { upstreamTimeoutMs: record.upstreamTimeoutMs, bodyTimeoutMs: record.bodyTimeoutMs },
+      maxProxyBufferBytes,
+      maxProxyBufferFrames,
     );
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
@@ -407,6 +471,10 @@ export async function proxyAndRecord(
     clientDisconnected = result.clientDisconnected;
     frameTimestamps = result.frameTimestamps;
     streamStartTime = result.streamStartTime;
+    bufferTruncated = result.bufferTruncated;
+    truncationCap = result.truncationCap;
+    totalBytes = result.totalBytes;
+    hardCeilingExceeded = result.hardCeilingExceeded;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -428,11 +496,66 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
+  // Buffer cap tripped: skip collapse + recording (the in-memory buffer can't
+  // be safely/faithfully journaled), but ALWAYS deliver a faithful response to
+  // the client. The cap means "don't journal", not "don't answer".
+  //  - PROGRESSIVE stream: the bytes were already teed to the client live, so
+  //    nothing more to write — just end if still open.
+  //  - NON-progressive response, UNDER the hard ceiling: makeUpstreamRequest
+  //    kept the FULL body (bounded by PROXY_BUFFER_HARD_CEILING) precisely so we
+  //    can relay it here. Relay the real body so a large single-shot JSON
+  //    (embeddings / fal / image-b64) reaches the client intact — but NORMALIZE
+  //    the status (success→200 / error→502) exactly like every other relay path
+  //    so upstream provider details don't leak through this branch alone.
+  //  - NON-progressive response, OVER the hard ceiling: the retained buffer is
+  //    PARTIAL (we stopped buffering at the ceiling and there is no live tee),
+  //    so relaying it would present a truncated body as success. FAIL LOUD with
+  //    a 502 instead — never deliver a silently-truncated body as 2xx.
+  if (bufferTruncated) {
+    const capDetail =
+      truncationCap === "frame"
+        ? `the ${maxProxyBufferFrames}-frame cap`
+        : `the ${maxProxyBufferBytes}-byte cap`;
+    if (!streamedToClient && hardCeilingExceeded && !res.headersSent) {
+      const ceilingMiB = Math.round(PROXY_BUFFER_HARD_CEILING / (1024 * 1024));
+      defaults.logger.error(
+        `Upstream response exceeded the ${ceilingMiB} MiB proxy hard ceiling (saw ${totalBytes} bytes) on a non-progressive body — cannot relay the full body and refusing to relay a truncated one; returning 502`,
+      );
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: `Upstream response exceeds ${ceilingMiB}MiB proxy ceiling`,
+            type: "proxy_error",
+          },
+        }),
+      );
+      return "relayed";
+    }
+    defaults.logger.warn(
+      `Upstream response exceeded ${capDetail} (saw ${totalBytes} bytes) — relayed to client, recording skipped`,
+    );
+    if (!streamedToClient && !res.headersSent) {
+      // Normalize the relayed status like the under-cap relay paths
+      // (success→200, error→502) so this branch does not leak a raw upstream
+      // 429/503/etc. The full real body (under the hard ceiling) is relayed.
+      const clientStatus = upstreamStatus >= 200 && upstreamStatus < 300 ? 200 : 502;
+      const relayHeaders: Record<string, string> = {};
+      const ct = upstreamHeaders["content-type"];
+      const ctStr = Array.isArray(ct) ? ct.join(", ") : (ct ?? "");
+      relayHeaders["Content-Type"] = ctStr || "application/json";
+      res.writeHead(clientStatus, relayHeaders);
+      res.end(rawBuffer);
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+    return "relayed";
+  }
+
   // Detect streaming response and collapse if necessary.
-  // NOTE: collapse buffers the entire upstream body in memory. Fine for
-  // current chat-completions traffic (responses are small), but revisit if
-  // this path ever proxies long-lived or large streams — both the buffer
-  // here and the hook below receive the full payload.
+  // NOTE: collapse buffers the upstream body in memory up to maxProxyBufferBytes
+  // (see makeUpstreamRequest). Over-cap responses short-circuit above, so the
+  // buffer reaching here is bounded and safe to stringify/collapse.
   const contentType = upstreamHeaders["content-type"];
   const ctString = pickContentType(contentType);
   const isBinaryStream = ctString.toLowerCase().includes("application/vnd.amazon.eventstream");
@@ -796,6 +919,37 @@ export function clampTimeout(value: number | undefined, fallback: number): numbe
   return value;
 }
 
+/**
+ * Sanitize the configured proxy-buffer cap: non-finite or non-positive values
+ * fall back to the default. Also hard-clamps to just under V8's max string
+ * length so a misconfigured large value can never permit an over-string-limit
+ * buffer to reach `.toString()`.
+ */
+export function clampMaxBufferBytes(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_MAX_PROXY_BUFFER_BYTES;
+  }
+  return Math.min(value, PROXY_BUFFER_HARD_CEILING);
+}
+
+/**
+ * Sanitize the configured proxy-buffer frame cap: non-finite or non-positive
+ * values fall back to the default. Bounds the count-indexed per-frame state
+ * (`frameTimestamps` + parse buffers) that the byte cap cannot bound on its own.
+ */
+export function clampMaxBufferFrames(value: number | undefined): number {
+  // INTENTIONAL DIVERGENCE from journal-max's `0 = unbounded` convention: here
+  // 0 (and any non-positive / non-finite value) maps to the DEFAULT cap, never
+  // "unbounded". The frame cap exists as leak-safety for never-ending proxy
+  // streams; allowing 0 to disable it would reintroduce the exact unbounded
+  // per-frame-state growth this cap guards against. Do NOT make 0 mean
+  // unbounded.
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_MAX_PROXY_BUFFER_FRAMES;
+  }
+  return Math.floor(value);
+}
+
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
@@ -804,6 +958,8 @@ function makeUpstreamRequest(
   method: string = "POST",
   logger?: Logger,
   timeouts?: Pick<RecordConfig, "upstreamTimeoutMs" | "bodyTimeoutMs">,
+  maxBufferBytes: number = DEFAULT_MAX_PROXY_BUFFER_BYTES,
+  maxBufferFrames: number = DEFAULT_MAX_PROXY_BUFFER_FRAMES,
 ): Promise<{
   status: number;
   headers: http.IncomingHttpHeaders;
@@ -813,6 +969,27 @@ function makeUpstreamRequest(
   clientDisconnected: boolean;
   frameTimestamps: number[];
   streamStartTime: number;
+  /**
+   * True when the upstream response exceeded `maxBufferBytes`. The client still
+   * received every byte (the relay is independent of this buffer), but the
+   * in-memory buffer was capped, so `body`/`rawBuffer` are partial and the
+   * caller MUST skip collapse/recording.
+   */
+  bufferTruncated: boolean;
+  /**
+   * Which cap tripped truncation (`"byte"` or `"frame"`), or `undefined` when
+   * not truncated. Lets the caller log accurately which budget was exceeded
+   * rather than conflating the two.
+   */
+  truncationCap?: "byte" | "frame";
+  /** Total bytes seen from upstream (may exceed the buffered amount when capped). */
+  totalBytes: number;
+  /**
+   * True when a NON-progressive (non-teed) upstream body exceeded the proxy
+   * hard ceiling, so the retained `rawBuffer` is PARTIAL. The caller MUST fail
+   * loud (502) rather than relay this truncated body as a success status.
+   */
+  hardCeilingExceeded: boolean;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -890,17 +1067,130 @@ function makeUpstreamRequest(
             if (!clientRes.writableFinished) {
               clientDisconnected = true;
               req.destroy();
+              // Stop in-flight buffering immediately rather than draining the
+              // upstream socket under backpressure: detach the data listener so
+              // no further chunks accumulate, and free what's already buffered.
+              // The promise still settles via the 'end'/'error'/'close' the
+              // destroyed request emits; collapse/recording is skipped because
+              // the client disconnected.
+              res.removeListener("data", onUpstreamData);
+              chunks.length = 0;
+              bufferedBytes = 0;
+              frameTimestamps.length = 0;
+              frameBuffer = "";
+              binaryFrameBuffer = Buffer.alloc(0);
             }
           });
         }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => {
-          chunks.push(chunk);
+        // Bound the in-memory buffer used to collapse/journal the response so a
+        // single huge proxied stream can neither spike the heap nor build a
+        // string past V8's ~512 MiB limit (RangeError: Invalid string length).
+        // The client relay below is independent of this buffer, so capping it
+        // does NOT truncate what the client receives.
+        let bufferedBytes = 0;
+        let totalBytes = 0;
+        let bufferTruncated = false;
+        /** Which cap tripped truncation — surfaced to the caller for an accurate warning. */
+        let truncationCap: "byte" | "frame" | undefined;
+        // Snapshot the effective hard ceiling once for this request (honors the
+        // test-only override). Bounds the non-progressive relay buffer; when the
+        // body would exceed it we can neither buffer the full copy nor safely
+        // relay the partial one, so the caller fails loud instead of truncating.
+        const hardCeiling = effectiveHardCeiling();
+        /**
+         * True when a NON-progressive upstream body exceeded `hardCeiling`, so
+         * the buffered `rawBuffer` is a PARTIAL copy that must NOT be relayed as
+         * success. Distinct from `bufferTruncated` (which also covers the
+         * under-ceiling over-soft-cap case where the full body IS retained).
+         */
+        let hardCeilingExceeded = false;
+        // Trip truncation: mark the response over-cap so the caller skips
+        // collapse/recording, and eagerly drop the accumulated PARSE state
+        // (frameTimestamps + frame/binary parse buffers) which only ever feeds
+        // recording. Reused by the top-of-callback byte guard AND the per-frame
+        // guards inside the SSE/NDJSON and binary splitter loops, so a single
+        // coalesced chunk carrying many complete frames cannot overshoot the
+        // frame cap before the next data event re-checks.
+        //
+        // The raw `chunks` array is handled differently by stream shape:
+        //  - progressive streams (SSE/NDJSON/binary) are teed to the client
+        //    live, so the bytes are already on the wire — `chunks` is freed
+        //    immediately and the partial buffer is never relayed.
+        //  - non-progressive responses (a single non-stream body) are NOT teed;
+        //    the only copy the client can receive is `chunks`, so we KEEP
+        //    accumulating it (bounded by HARD_CEILING below) and relay it in
+        //    full. We still skip recording — the cap means "don't journal", not
+        //    "don't answer the client".
+        const tripTruncation = (cap: "byte" | "frame") => {
+          bufferTruncated = true;
+          truncationCap = cap;
+          frameTimestamps.length = 0;
+          frameBuffer = "";
+          // Intentional: the returned flush string is discarded (frameBuffer was
+          // just cleared and recording is skipped), but `.end()` releases any
+          // partial-multibyte bytes the StringDecoder is internally holding — so
+          // this frees decoder state rather than being dead cleanup.
+          frameDecoder.end();
+          binaryFrameBuffer = Buffer.alloc(0);
+          if (isProgressiveStream) {
+            chunks.length = 0;
+            bufferedBytes = 0;
+          }
+          // State which cap tripped accurately (do not conflate the two caps),
+          // and report the relay truthfully — the client received every byte on
+          // the streamed path and, post-fix, on the non-streamed path too.
+          const detail =
+            cap === "byte"
+              ? `byte cap (${maxBufferBytes} bytes)`
+              : `frame cap (${maxBufferFrames} frames)`;
+          logger?.warn(
+            `Upstream response exceeded the proxy buffer ${detail} — relaying full body to client, but skipping in-memory collapse/recording to bound memory`,
+          );
+        };
+        const onUpstreamData = (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          // Trip truncation on EITHER bytes OR frame count. The byte cap alone
+          // never bounds `frameTimestamps` (count-indexed, not byte-sized) nor a
+          // never-completing parse buffer, so a long-lived / never-ending stream
+          // would otherwise grow per-frame state forever. `frameTimestamps.length`
+          // is the running complete-frame count. `>=` (not `>`) so we never
+          // retain MORE than `maxBufferFrames` frames — see the "maximum N
+          // frames retained" contract on DEFAULT_MAX_PROXY_BUFFER_FRAMES.
+          if (!bufferTruncated && bufferedBytes + chunk.length > maxBufferBytes) {
+            tripTruncation("byte");
+          } else if (!bufferTruncated && frameTimestamps.length >= maxBufferFrames) {
+            tripTruncation("frame");
+          }
+          // Buffer the raw bytes. Under cap: always. Over cap on a progressive
+          // stream: never (bytes are already teed live; chunks was freed). Over
+          // cap on a NON-progressive response: keep buffering for the relay —
+          // it has no live tee, so `chunks` is the only copy the client can get
+          // — but hard-cap it at HARD_CEILING (well under V8's max string
+          // length) so the eventual rawBuffer.toString() relay can never throw
+          // RangeError: Invalid string length.
+          if (!bufferTruncated) {
+            chunks.push(chunk);
+            bufferedBytes += chunk.length;
+          } else if (!isProgressiveStream) {
+            if (bufferedBytes + chunk.length <= hardCeiling) {
+              chunks.push(chunk);
+              bufferedBytes += chunk.length;
+            } else {
+              // The non-progressive relay copy would exceed the hard ceiling.
+              // We CANNOT relay the full body (it can't be buffered safely) and
+              // MUST NOT relay the partial buffer as a success — flag it so the
+              // caller fails loud (502) instead of presenting a truncated 2xx.
+              hardCeilingExceeded = true;
+            }
+          }
 
-          // Capture per-frame timestamps for SSE/NDJSON streams.
+          // Capture per-frame timestamps for SSE/NDJSON streams. Gated on
+          // !bufferTruncated so per-frame parse/timing state stops growing once
+          // the cap trips (the byte/frame guard above already freed it).
           // TCP data events don't align with SSE frames — buffer and
           // split on the protocol delimiter to timestamp each complete frame.
-          if (isSSE || isNDJSON) {
+          if (!bufferTruncated && (isSSE || isNDJSON)) {
             frameBuffer += frameDecoder.write(chunk);
             // Split on the protocol delimiter, tolerating CRLF line endings.
             // The SSE spec permits CRLF, and some upstreams/proxies emit
@@ -911,26 +1201,60 @@ function makeUpstreamRequest(
             const delimiter = isNDJSON ? /\r?\n/ : /\r?\n\r?\n/;
             const parts = frameBuffer.split(delimiter);
             // All complete frames (everything except the last part which
-            // may be incomplete).
+            // may be incomplete). Enforce the frame cap PER-FRAME: a single
+            // coalesced chunk can carry many complete frames, so checking only
+            // at the top of the callback would let one event push them all and
+            // overshoot the cap unbounded. Trip + bail mid-loop instead.
             for (let fi = 0; fi < parts.length - 1; fi++) {
+              if (frameTimestamps.length >= maxBufferFrames) {
+                tripTruncation("frame");
+                break;
+              }
               if (parts[fi].trim().length > 0) {
                 frameTimestamps.push(Date.now());
               }
             }
-            // Last part stays in buffer (may be incomplete)
-            frameBuffer = parts[parts.length - 1];
+            // Last part stays in buffer (may be incomplete). Skip when the
+            // per-frame guard just tripped — tripTruncation already cleared it.
+            if (!bufferTruncated) {
+              frameBuffer = parts[parts.length - 1];
+            }
           }
 
           // Binary EventStream frame boundary detection — parse the 4-byte
           // total-length prefix to detect complete frames without decoding
           // frame contents (CRC validation happens in stream-collapse).
-          if (isBinaryEventStream) {
-            binaryFrameBuffer = Buffer.concat([binaryFrameBuffer, chunk]);
-            while (binaryFrameBuffer.length >= 4) {
-              const totalLen = binaryFrameBuffer.readUInt32BE(0);
-              if (totalLen < 12 || binaryFrameBuffer.length < totalLen) break;
-              frameTimestamps.push(Date.now());
-              binaryFrameBuffer = binaryFrameBuffer.subarray(totalLen);
+          // Also gated on !bufferTruncated so binaryFrameBuffer stops growing
+          // once the cap trips.
+          if (!bufferTruncated && isBinaryEventStream) {
+            // Count the binary parse buffer's growth toward the byte cap.
+            // binaryFrameBuffer is a SECOND, parallel copy of the bytes (the
+            // raw `chunks` array also holds them), so without this a
+            // never-completing / malformed (`totalLen<12`) frame — which pushes
+            // no frameTimestamps — would let a full second copy accumulate up
+            // to the byte cap, peaking at ~2× the configured cap. Trip on the
+            // COMBINED footprint so the byte cap bounds both copies together.
+            // NOTE: `bufferedBytes` ALREADY includes the current `chunk.length`
+            // (added in the raw-buffer accumulation above), so the combined
+            // footprint is `bufferedBytes + binaryFrameBuffer.length`. Adding
+            // `chunk.length` again would double-count it and trip the cap one
+            // chunk early (matching the L<byte-guard> accounting at the top).
+            if (bufferedBytes + binaryFrameBuffer.length > maxBufferBytes) {
+              tripTruncation("byte");
+            } else {
+              binaryFrameBuffer = Buffer.concat([binaryFrameBuffer, chunk]);
+              while (binaryFrameBuffer.length >= 4) {
+                if (frameTimestamps.length >= maxBufferFrames) {
+                  // Per-frame cap: a single chunk can complete many binary
+                  // frames; trip mid-loop rather than overshoot.
+                  tripTruncation("frame");
+                  break;
+                }
+                const totalLen = binaryFrameBuffer.readUInt32BE(0);
+                if (totalLen < 12 || binaryFrameBuffer.length < totalLen) break;
+                frameTimestamps.push(Date.now());
+                binaryFrameBuffer = binaryFrameBuffer.subarray(totalLen);
+              }
             }
           }
 
@@ -950,15 +1274,18 @@ function makeUpstreamRequest(
               clientDisconnected = true;
             }
           }
-        });
+        };
+        res.on("data", onUpstreamData);
         res.on("error", reject);
         res.on("end", () => {
           if (res.socket) res.setTimeout(0);
           // Flush remaining text frame buffer — captures the last frame if
           // the stream ended without a trailing delimiter. Binary EventStream
           // frames are length-prefixed so partial frames at end-of-stream are
-          // genuinely incomplete and should not be timestamped.
-          if (isSSE || isNDJSON) {
+          // genuinely incomplete and should not be timestamped. Skipped when
+          // truncated: the decoder/parse buffer were already drained+cleared on
+          // the trip, and recording is skipped, so there is nothing to flush.
+          if (!bufferTruncated && (isSSE || isNDJSON)) {
             // Drain any bytes the decoder buffered for an incomplete multibyte
             // sequence so the final frame text is complete before we test it.
             frameBuffer += frameDecoder.end();
@@ -982,15 +1309,29 @@ function makeUpstreamRequest(
               );
             }
           }
+          // Decide the string `body`:
+          //  - not truncated: stringify the full buffer as usual.
+          //  - truncated PROGRESSIVE stream: `chunks` was freed on the trip, so
+          //    rawBuffer is empty; skip toString to keep the path allocation-free
+          //    (the client already got every byte via the live tee).
+          //  - truncated NON-progressive response: we deliberately kept the full
+          //    bytes (bounded by HARD_CEILING) so they can be relayed — stringify
+          //    them so proxyAndRecord can `res.end(body)` the real response.
+          const bodyString =
+            !bufferTruncated || (bufferTruncated && !streamedToClient) ? rawBuffer.toString() : "";
           resolve({
             status: res.statusCode ?? 500,
             headers: res.headers,
-            body: rawBuffer.toString(),
+            body: bodyString,
             rawBuffer,
             streamedToClient,
             clientDisconnected,
             frameTimestamps,
             streamStartTime,
+            bufferTruncated,
+            truncationCap,
+            totalBytes,
+            hardCeilingExceeded,
           });
         });
       },
