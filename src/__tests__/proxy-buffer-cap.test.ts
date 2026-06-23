@@ -148,6 +148,9 @@ function postStreaming(
           bytesReceived += c.length;
         });
         res.on("end", () => resolve({ status: res.statusCode ?? 0, bytesReceived }));
+        // A mid-stream relay error must fail fast — without a res-side error
+        // handler the unhandled 'error' would hang the request to timeout.
+        res.on("error", reject);
       },
     );
     req.on("error", reject);
@@ -199,9 +202,13 @@ describe("proxy-path upstream buffer cap", () => {
 
     // The server must NOT have crashed with Invalid string length — if it had,
     // the relay would have been interrupted (already asserted above) and the
-    // truncation warning would be absent.
-    const truncationWarn = warnings.find((w) => /exceeded.*bytes/i.test(w));
+    // truncation warning would be absent. Assert the BYTE cap specifically:
+    // the warning must name the byte cap, not the frame cap (the two are no
+    // longer conflated).
+    const truncationWarn = warnings.find((w) => /byte cap/i.test(w));
     expect(truncationWarn).toBeDefined();
+    // And the frame cap must NOT be the one reported here.
+    expect(warnings.some((w) => /frame cap/i.test(w))).toBe(false);
 
     // Recording skipped under proxy-only + truncation: no fixture written.
     if (fs.existsSync(tmpDir)) {
@@ -276,10 +283,15 @@ describe("proxy-path upstream buffer cap", () => {
     expect(resp.status).toBe(200);
     expect(resp.bytesReceived).toBeGreaterThan(FRAMES * 10); // ~20 bytes/frame
 
-    // The frame cap (not the byte cap) tripped: the warning fires and mentions
-    // the frame budget.
-    const truncationWarn = warnings.find((w) => /exceeded.*frames/i.test(w));
+    // The FRAME cap (not the byte cap) tripped. The previous assertion
+    // (/exceeded.*frames/i) was a tautology — the old conflated warning ALWAYS
+    // contained the word "frames" regardless of which cap fired, so it passed
+    // even if the frame-cap branch were deleted. Assert the specific
+    // cap-tripped indicator instead: the warning must name the FRAME cap, and
+    // the byte cap must NOT be the one reported (total bytes are far under it).
+    const truncationWarn = warnings.find((w) => /frame cap/i.test(w));
     expect(truncationWarn).toBeDefined();
+    expect(warnings.some((w) => /byte cap/i.test(w))).toBe(false);
 
     // Recording skipped under proxy-only + truncation: no fixture written
     // (proves the accumulated frame state was dropped, not journaled).
