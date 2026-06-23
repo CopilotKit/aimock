@@ -669,6 +669,28 @@ export interface RecordConfig {
    * downloading multi-minute video never times out — only a silent stall does.
    */
   bodyTimeoutMs?: number;
+  /**
+   * Maximum number of bytes aimock will accumulate in memory from a single
+   * proxied upstream response on the record/proxy path. The full response is
+   * still relayed to the client byte-for-byte; this cap only bounds the
+   * in-memory buffer used to collapse/journal the response. Once the cap is
+   * exceeded aimock stops appending to the buffer, marks the response as
+   * truncated, and skips collapse/recording — preventing both unbounded heap
+   * growth and the `RangeError: Invalid string length` that a >512MB string
+   * would otherwise throw. Default: 64 MiB.
+   */
+  maxProxyBufferBytes?: number;
+  /**
+   * Maximum number of SSE/NDJSON/EventStream frames whose per-frame state
+   * (`frameTimestamps`, parse buffers) aimock retains for a single proxied
+   * response. Frame state is count-indexed, not byte-sized, so a long-lived or
+   * never-ending stream accumulates it unbounded even when `maxProxyBufferBytes`
+   * is generous. Tripping truncation on EITHER bytes OR frame count bounds both;
+   * on the trip the accumulated frame state is freed and collapse/recording is
+   * skipped (the full response is still relayed to the client byte-for-byte).
+   * Default: 5,000,000 frames.
+   */
+  maxProxyBufferFrames?: number;
 }
 
 export interface OpenRouterVideoRecordConfig {
