@@ -33,6 +33,21 @@ import { DEFAULT_TEST_ID } from "./constants.js";
  */
 export const DEFAULT_MAX_PROXY_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MiB
 
+/**
+ * Default ceiling for the number of SSE/NDJSON/EventStream frames whose
+ * per-frame state (`frameTimestamps`, parse buffers) aimock retains for a
+ * single proxied response. Frame state is count-indexed, not byte-sized, so a
+ * long-lived / never-ending stream accumulates `frameTimestamps` entries (and,
+ * if a frame never completes, parse-buffer bytes) UNBOUNDED even when the byte
+ * cap is generous — observed as multi-GB heap growth over many hours from a few
+ * long nested-sub-agent streams. Tripping truncation on EITHER bytes OR frame
+ * count bounds both. 5M frames is generous for any real response (a normal
+ * completion is hundreds-to-thousands of frames) while still bounding a runaway
+ * stream to ~tens of MB of frame state. Overridable via
+ * `RecordConfig.maxProxyBufferFrames` / `--max-proxy-buffer-frames`.
+ */
+export const DEFAULT_MAX_PROXY_BUFFER_FRAMES = 5_000_000;
+
 const STRIP_HEADERS = new Set([
   // Hop-by-hop (RFC 2616 §13.5.1)
   "connection",
@@ -362,6 +377,7 @@ export async function proxyAndRecord(
   let frameTimestamps: number[] = [];
   let streamStartTime = 0;
   const maxProxyBufferBytes = clampMaxBufferBytes(record.maxProxyBufferBytes);
+  const maxProxyBufferFrames = clampMaxBufferFrames(record.maxProxyBufferFrames);
   try {
     const result = await makeUpstreamRequest(
       target,
@@ -372,6 +388,7 @@ export async function proxyAndRecord(
       defaults.logger,
       { upstreamTimeoutMs: record.upstreamTimeoutMs, bodyTimeoutMs: record.bodyTimeoutMs },
       maxProxyBufferBytes,
+      maxProxyBufferFrames,
     );
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
@@ -410,7 +427,7 @@ export async function proxyAndRecord(
   // corrupt body.
   if (bufferTruncated) {
     defaults.logger.warn(
-      `Upstream response exceeded ${maxProxyBufferBytes} bytes (saw ${totalBytes} bytes) — relayed to client, recording skipped`,
+      `Upstream response exceeded ${maxProxyBufferBytes} bytes / ${maxProxyBufferFrames} frames (saw ${totalBytes} bytes) — relayed to client, recording skipped`,
     );
     if (!streamedToClient && !res.headersSent) {
       res.writeHead(502, { "Content-Type": "application/json" });
@@ -809,6 +826,18 @@ export function clampMaxBufferBytes(value: number | undefined): number {
   return Math.min(value, HARD_CEILING);
 }
 
+/**
+ * Sanitize the configured proxy-buffer frame cap: non-finite or non-positive
+ * values fall back to the default. Bounds the count-indexed per-frame state
+ * (`frameTimestamps` + parse buffers) that the byte cap cannot bound on its own.
+ */
+export function clampMaxBufferFrames(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_MAX_PROXY_BUFFER_FRAMES;
+  }
+  return Math.floor(value);
+}
+
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
@@ -818,6 +847,7 @@ function makeUpstreamRequest(
   logger?: Logger,
   timeouts?: Pick<RecordConfig, "upstreamTimeoutMs" | "bodyTimeoutMs">,
   maxBufferBytes: number = DEFAULT_MAX_PROXY_BUFFER_BYTES,
+  maxBufferFrames: number = DEFAULT_MAX_PROXY_BUFFER_FRAMES,
 ): Promise<{
   status: number;
   headers: http.IncomingHttpHeaders;
@@ -905,6 +935,18 @@ function makeUpstreamRequest(
             if (!clientRes.writableFinished) {
               clientDisconnected = true;
               req.destroy();
+              // Stop in-flight buffering immediately rather than draining the
+              // upstream socket under backpressure: detach the data listener so
+              // no further chunks accumulate, and free what's already buffered.
+              // The promise still settles via the 'end'/'error'/'close' the
+              // destroyed request emits; collapse/recording is skipped because
+              // the client disconnected.
+              res.removeListener("data", onUpstreamData);
+              chunks.length = 0;
+              bufferedBytes = 0;
+              frameTimestamps.length = 0;
+              frameBuffer = "";
+              binaryFrameBuffer = Buffer.alloc(0);
             }
           });
         }
@@ -917,16 +959,33 @@ function makeUpstreamRequest(
         let bufferedBytes = 0;
         let totalBytes = 0;
         let bufferTruncated = false;
-        res.on("data", (chunk: Buffer) => {
+        const onUpstreamData = (chunk: Buffer) => {
           totalBytes += chunk.length;
-          if (!bufferTruncated && bufferedBytes + chunk.length > maxBufferBytes) {
+          // Trip truncation on EITHER bytes OR frame count. The byte cap alone
+          // never bounds `frameTimestamps` (count-indexed, not byte-sized) nor a
+          // never-completing parse buffer, so a long-lived / never-ending stream
+          // would otherwise grow per-frame state forever. `frameTimestamps.length`
+          // is the running complete-frame count.
+          if (
+            !bufferTruncated &&
+            (bufferedBytes + chunk.length > maxBufferBytes ||
+              frameTimestamps.length > maxBufferFrames)
+          ) {
             bufferTruncated = true;
-            // Drop the accumulated buffer eagerly — once truncated the caller
-            // skips collapse/recording, so retaining it only wastes heap.
+            // Drop ALL accumulated per-stream state eagerly — once truncated the
+            // caller skips collapse/recording, so retaining any of it only wastes
+            // heap. This FREES the memory a long stream already accumulated, not
+            // just freezes further growth. frameBuffer/binaryFrameBuffer are
+            // parse buffers; clearing them is safe because no further frames are
+            // timestamped or recorded after truncation.
             chunks.length = 0;
             bufferedBytes = 0;
+            frameTimestamps.length = 0;
+            frameBuffer = "";
+            frameDecoder.end();
+            binaryFrameBuffer = Buffer.alloc(0);
             logger?.warn(
-              `Upstream response exceeded ${maxBufferBytes} bytes — relaying full body to client, but skipping in-memory collapse/recording to bound memory`,
+              `Upstream response exceeded ${maxBufferBytes} bytes / ${maxBufferFrames} frames — relaying full body to client, but skipping in-memory collapse/recording to bound memory`,
             );
           }
           if (!bufferTruncated) {
@@ -934,10 +993,12 @@ function makeUpstreamRequest(
             bufferedBytes += chunk.length;
           }
 
-          // Capture per-frame timestamps for SSE/NDJSON streams.
+          // Capture per-frame timestamps for SSE/NDJSON streams. Gated on
+          // !bufferTruncated so per-frame parse/timing state stops growing once
+          // the cap trips (the byte/frame guard above already freed it).
           // TCP data events don't align with SSE frames — buffer and
           // split on the protocol delimiter to timestamp each complete frame.
-          if (isSSE || isNDJSON) {
+          if (!bufferTruncated && (isSSE || isNDJSON)) {
             frameBuffer += frameDecoder.write(chunk);
             // Split on the protocol delimiter, tolerating CRLF line endings.
             // The SSE spec permits CRLF, and some upstreams/proxies emit
@@ -961,7 +1022,9 @@ function makeUpstreamRequest(
           // Binary EventStream frame boundary detection — parse the 4-byte
           // total-length prefix to detect complete frames without decoding
           // frame contents (CRC validation happens in stream-collapse).
-          if (isBinaryEventStream) {
+          // Also gated on !bufferTruncated so binaryFrameBuffer stops growing
+          // once the cap trips.
+          if (!bufferTruncated && isBinaryEventStream) {
             binaryFrameBuffer = Buffer.concat([binaryFrameBuffer, chunk]);
             while (binaryFrameBuffer.length >= 4) {
               const totalLen = binaryFrameBuffer.readUInt32BE(0);
@@ -987,15 +1050,18 @@ function makeUpstreamRequest(
               clientDisconnected = true;
             }
           }
-        });
+        };
+        res.on("data", onUpstreamData);
         res.on("error", reject);
         res.on("end", () => {
           if (res.socket) res.setTimeout(0);
           // Flush remaining text frame buffer — captures the last frame if
           // the stream ended without a trailing delimiter. Binary EventStream
           // frames are length-prefixed so partial frames at end-of-stream are
-          // genuinely incomplete and should not be timestamped.
-          if (isSSE || isNDJSON) {
+          // genuinely incomplete and should not be timestamped. Skipped when
+          // truncated: the decoder/parse buffer were already drained+cleared on
+          // the trip, and recording is skipped, so there is nothing to flush.
+          if (!bufferTruncated && (isSSE || isNDJSON)) {
             // Drain any bytes the decoder buffered for an incomplete multibyte
             // sequence so the final frame text is complete before we test it.
             frameBuffer += frameDecoder.end();

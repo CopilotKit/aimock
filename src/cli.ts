@@ -43,6 +43,7 @@ Options:
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --max-proxy-buffer-bytes <n> Cap (bytes) on in-memory proxy-path buffer; full body still relayed (default: 67108864)
+      --max-proxy-buffer-frames <n> Cap (frames) on in-memory proxy-path per-frame state; full body still relayed (default: 5000000)
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
@@ -80,6 +81,7 @@ const { values } = parseArgs({
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
     "max-proxy-buffer-bytes": { type: "string" },
+    "max-proxy-buffer-frames": { type: "string" },
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
@@ -189,6 +191,18 @@ if (maxProxyBufferBytesStr !== undefined) {
   }
 }
 
+const maxProxyBufferFramesStr = values["max-proxy-buffer-frames"];
+let maxProxyBufferFrames: number | undefined;
+if (maxProxyBufferFramesStr !== undefined) {
+  maxProxyBufferFrames = Number(maxProxyBufferFramesStr);
+  if (!Number.isFinite(maxProxyBufferFrames) || maxProxyBufferFrames <= 0) {
+    console.error(
+      `Invalid max-proxy-buffer-frames: ${maxProxyBufferFramesStr} (must be a positive finite number)`,
+    );
+    process.exit(1);
+  }
+}
+
 const logger = new Logger(logLevel);
 
 // Parse chaos config from CLI flags
@@ -271,6 +285,7 @@ if (values.record || values["proxy-only"]) {
     upstreamTimeoutMs,
     bodyTimeoutMs,
     maxProxyBufferBytes,
+    maxProxyBufferFrames,
   };
 } else {
   // These flags configure upstream proxying — without --record or
@@ -297,10 +312,11 @@ if (values.record || values["proxy-only"]) {
   if (
     upstreamTimeoutMs !== undefined ||
     bodyTimeoutMs !== undefined ||
-    maxProxyBufferBytes !== undefined
+    maxProxyBufferBytes !== undefined ||
+    maxProxyBufferFrames !== undefined
   ) {
     logger.warn(
-      "--upstream-timeout-ms/--body-timeout-ms/--max-proxy-buffer-bytes only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.",
+      "--upstream-timeout-ms/--body-timeout-ms/--max-proxy-buffer-bytes/--max-proxy-buffer-frames only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.",
     );
   }
 }
