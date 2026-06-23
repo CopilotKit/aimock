@@ -24,6 +24,15 @@ import { getTestId, slugifyTestId } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
+/**
+ * Default ceiling (bytes) for the in-memory proxy-path buffer. Chosen well
+ * under V8's ~512 MiB max string length so `rawBuffer.toString()` /
+ * stream-collapse never throws `RangeError: Invalid string length`, and so a
+ * single huge proxied response cannot spike the heap unbounded. Overridable
+ * via `RecordConfig.maxProxyBufferBytes` / `--max-proxy-buffer-bytes`.
+ */
+export const DEFAULT_MAX_PROXY_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MiB
+
 const STRIP_HEADERS = new Set([
   // Hop-by-hop (RFC 2616 §13.5.1)
   "connection",
@@ -343,6 +352,8 @@ export async function proxyAndRecord(
   let upstreamHeaders: http.IncomingHttpHeaders;
   let upstreamBody: string;
   let rawBuffer: Buffer;
+  let bufferTruncated = false;
+  let totalBytes = 0;
 
   // Track whether we streamed SSE progressively to the client; if so,
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
@@ -350,6 +361,7 @@ export async function proxyAndRecord(
   let clientDisconnected = false;
   let frameTimestamps: number[] = [];
   let streamStartTime = 0;
+  const maxProxyBufferBytes = clampMaxBufferBytes(record.maxProxyBufferBytes);
   try {
     const result = await makeUpstreamRequest(
       target,
@@ -359,6 +371,7 @@ export async function proxyAndRecord(
       req.method,
       defaults.logger,
       { upstreamTimeoutMs: record.upstreamTimeoutMs, bodyTimeoutMs: record.bodyTimeoutMs },
+      maxProxyBufferBytes,
     );
     upstreamStatus = result.status;
     upstreamHeaders = result.headers;
@@ -368,6 +381,8 @@ export async function proxyAndRecord(
     clientDisconnected = result.clientDisconnected;
     frameTimestamps = result.frameTimestamps;
     streamStartTime = result.streamStartTime;
+    bufferTruncated = result.bufferTruncated;
+    totalBytes = result.totalBytes;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown proxy error";
     defaults.logger.error(`Proxy request failed: ${msg}`);
@@ -385,11 +400,38 @@ export async function proxyAndRecord(
     return "relayed";
   }
 
+  // Buffer cap tripped: the client already received every byte (the relay is
+  // independent of the in-memory buffer), but the buffer is partial so we
+  // cannot safely collapse/record it. Skip collapse + recording entirely to
+  // bound memory and avoid `RangeError: Invalid string length`. When the
+  // response was streamed progressively the body is already on the wire; if it
+  // was NOT streamed (a single huge non-stream body), the partial buffer cannot
+  // be faithfully relayed, so close the connection cleanly rather than emit a
+  // corrupt body.
+  if (bufferTruncated) {
+    defaults.logger.warn(
+      `Upstream response exceeded ${maxProxyBufferBytes} bytes (saw ${totalBytes} bytes) — relayed to client, recording skipped`,
+    );
+    if (!streamedToClient && !res.headersSent) {
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: `Upstream response exceeded the ${maxProxyBufferBytes}-byte proxy buffer cap and could not be relayed`,
+            type: "proxy_error",
+          },
+        }),
+      );
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+    return "relayed";
+  }
+
   // Detect streaming response and collapse if necessary.
-  // NOTE: collapse buffers the entire upstream body in memory. Fine for
-  // current chat-completions traffic (responses are small), but revisit if
-  // this path ever proxies long-lived or large streams — both the buffer
-  // here and the hook below receive the full payload.
+  // NOTE: collapse buffers the upstream body in memory up to maxProxyBufferBytes
+  // (see makeUpstreamRequest). Over-cap responses short-circuit above, so the
+  // buffer reaching here is bounded and safe to stringify/collapse.
   const contentType = upstreamHeaders["content-type"];
   const ctString = Array.isArray(contentType) ? contentType.join(", ") : (contentType ?? "");
   const isBinaryStream = ctString.toLowerCase().includes("application/vnd.amazon.eventstream");
@@ -752,6 +794,21 @@ export function clampTimeout(value: number | undefined, fallback: number): numbe
   return value;
 }
 
+/**
+ * Sanitize the configured proxy-buffer cap: non-finite or non-positive values
+ * fall back to the default. Also hard-clamps to just under V8's max string
+ * length so a misconfigured large value can never permit an over-string-limit
+ * buffer to reach `.toString()`.
+ */
+export function clampMaxBufferBytes(value: number | undefined): number {
+  // V8 max string length is 2^29 - 1 (~512 MiB) on 64-bit; stay safely under it.
+  const HARD_CEILING = 256 * 1024 * 1024; // 256 MiB
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_MAX_PROXY_BUFFER_BYTES;
+  }
+  return Math.min(value, HARD_CEILING);
+}
+
 function makeUpstreamRequest(
   target: URL,
   headers: Record<string, string>,
@@ -760,6 +817,7 @@ function makeUpstreamRequest(
   method: string = "POST",
   logger?: Logger,
   timeouts?: Pick<RecordConfig, "upstreamTimeoutMs" | "bodyTimeoutMs">,
+  maxBufferBytes: number = DEFAULT_MAX_PROXY_BUFFER_BYTES,
 ): Promise<{
   status: number;
   headers: http.IncomingHttpHeaders;
@@ -769,6 +827,15 @@ function makeUpstreamRequest(
   clientDisconnected: boolean;
   frameTimestamps: number[];
   streamStartTime: number;
+  /**
+   * True when the upstream response exceeded `maxBufferBytes`. The client still
+   * received every byte (the relay is independent of this buffer), but the
+   * in-memory buffer was capped, so `body`/`rawBuffer` are partial and the
+   * caller MUST skip collapse/recording.
+   */
+  bufferTruncated: boolean;
+  /** Total bytes seen from upstream (may exceed the buffered amount when capped). */
+  totalBytes: number;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -842,8 +909,30 @@ function makeUpstreamRequest(
           });
         }
         const chunks: Buffer[] = [];
+        // Bound the in-memory buffer used to collapse/journal the response so a
+        // single huge proxied stream can neither spike the heap nor build a
+        // string past V8's ~512 MiB limit (RangeError: Invalid string length).
+        // The client relay below is independent of this buffer, so capping it
+        // does NOT truncate what the client receives.
+        let bufferedBytes = 0;
+        let totalBytes = 0;
+        let bufferTruncated = false;
         res.on("data", (chunk: Buffer) => {
-          chunks.push(chunk);
+          totalBytes += chunk.length;
+          if (!bufferTruncated && bufferedBytes + chunk.length > maxBufferBytes) {
+            bufferTruncated = true;
+            // Drop the accumulated buffer eagerly — once truncated the caller
+            // skips collapse/recording, so retaining it only wastes heap.
+            chunks.length = 0;
+            bufferedBytes = 0;
+            logger?.warn(
+              `Upstream response exceeded ${maxBufferBytes} bytes — relaying full body to client, but skipping in-memory collapse/recording to bound memory`,
+            );
+          }
+          if (!bufferTruncated) {
+            chunks.push(chunk);
+            bufferedBytes += chunk.length;
+          }
 
           // Capture per-frame timestamps for SSE/NDJSON streams.
           // TCP data events don't align with SSE frames — buffer and
@@ -933,12 +1022,17 @@ function makeUpstreamRequest(
           resolve({
             status: res.statusCode ?? 500,
             headers: res.headers,
-            body: rawBuffer.toString(),
+            // When truncated, the buffer is partial and collapse/recording is
+            // skipped downstream — avoid even the partial toString() to keep
+            // the truncated path allocation-free.
+            body: bufferTruncated ? "" : rawBuffer.toString(),
             rawBuffer,
             streamedToClient,
             clientDisconnected,
             frameTimestamps,
             streamStartTime,
+            bufferTruncated,
+            totalBytes,
           });
         });
       },

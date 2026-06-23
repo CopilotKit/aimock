@@ -42,6 +42,7 @@ Options:
       --provider-openrouter <url> Upstream URL for OpenRouter (video record proxy)
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
+      --max-proxy-buffer-bytes <n> Cap (bytes) on in-memory proxy-path buffer; full body still relayed (default: 67108864)
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
@@ -78,6 +79,7 @@ const { values } = parseArgs({
     "provider-openrouter": { type: "string" },
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
+    "max-proxy-buffer-bytes": { type: "string" },
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
@@ -175,6 +177,18 @@ if (bodyTimeoutMsStr !== undefined) {
   }
 }
 
+const maxProxyBufferBytesStr = values["max-proxy-buffer-bytes"];
+let maxProxyBufferBytes: number | undefined;
+if (maxProxyBufferBytesStr !== undefined) {
+  maxProxyBufferBytes = Number(maxProxyBufferBytesStr);
+  if (!Number.isFinite(maxProxyBufferBytes) || maxProxyBufferBytes <= 0) {
+    console.error(
+      `Invalid max-proxy-buffer-bytes: ${maxProxyBufferBytesStr} (must be a positive finite number)`,
+    );
+    process.exit(1);
+  }
+}
+
 const logger = new Logger(logLevel);
 
 // Parse chaos config from CLI flags
@@ -256,6 +270,7 @@ if (values.record || values["proxy-only"]) {
     recordFullModelVersion: values["record-full-model-version"],
     upstreamTimeoutMs,
     bodyTimeoutMs,
+    maxProxyBufferBytes,
   };
 } else {
   // These flags configure upstream proxying — without --record or
@@ -279,9 +294,13 @@ if (values.record || values["proxy-only"]) {
       `--${droppedProviderFlags.join("/--")} only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.`,
     );
   }
-  if (upstreamTimeoutMs !== undefined || bodyTimeoutMs !== undefined) {
+  if (
+    upstreamTimeoutMs !== undefined ||
+    bodyTimeoutMs !== undefined ||
+    maxProxyBufferBytes !== undefined
+  ) {
     logger.warn(
-      "--upstream-timeout-ms/--body-timeout-ms only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.",
+      "--upstream-timeout-ms/--body-timeout-ms/--max-proxy-buffer-bytes only apply to --record/--proxy-only upstream proxying — ignored without one of those flags.",
     );
   }
 }
