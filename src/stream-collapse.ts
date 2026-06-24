@@ -1215,6 +1215,10 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
     number,
     { id?: string; name: string; argsObj?: unknown; argsStr: string }
   >();
+  // Synthetic keys for function_call step.start events that arrive without an
+  // index (matches the sibling collapsers); seeded high to avoid colliding with
+  // real step indices.
+  let nextSyntheticStepIndex = 1_000_000;
 
   for (const line of lines) {
     const data = extractSSEData(splitSSELines(line));
@@ -1242,8 +1246,12 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
     if (eventType === "step.start") {
       // 2.x — tool-call identity lives on step.start, not in a delta.
       const step = parsed.step as Record<string, unknown> | undefined;
-      if (step && step.type === "function_call" && index !== undefined) {
-        stepToolCalls.set(index, {
+      if (step && step.type === "function_call") {
+        // An index-less start can't correlate later arguments_delta fragments,
+        // but minting a synthetic key preserves the call's identity instead of
+        // dropping it silently.
+        const key = index ?? nextSyntheticStepIndex++;
+        stepToolCalls.set(key, {
           id: step.id ? String(step.id) : undefined,
           name: String(step.name ?? ""),
           // step.start may carry a fully-populated `arguments` object (non-
@@ -1298,12 +1306,27 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
 
   // Finalize 2.x tool calls in step-index order.
   for (const [, tc] of Array.from(stepToolCalls.entries()).sort(([a], [b]) => a - b)) {
-    const args =
-      tc.argsStr !== ""
-        ? tc.argsStr
-        : typeof tc.argsObj === "string"
-          ? tc.argsObj
-          : JSON.stringify(tc.argsObj ?? {});
+    let args: string;
+    if (tc.argsStr !== "") {
+      args = tc.argsStr;
+      // The arguments_delta fragments must concatenate into valid JSON by
+      // step.stop. A truncated/interrupted stream can leave them malformed;
+      // surface that via droppedChunks rather than writing a corrupt fixture
+      // silently (mirrors the per-chunk parse guard above).
+      try {
+        JSON.parse(args);
+      } catch {
+        droppedChunks++;
+        if (droppedChunks === 1) {
+          firstDroppedSample = `assembled arguments_delta not valid JSON for "${tc.name}": ${surrogateSafeSlice(
+            args,
+            200,
+          )}`;
+        }
+      }
+    } else {
+      args = typeof tc.argsObj === "string" ? tc.argsObj : JSON.stringify(tc.argsObj ?? {});
+    }
     toolCalls.push({ name: tc.name, arguments: args, ...(tc.id ? { id: tc.id } : {}) });
   }
 

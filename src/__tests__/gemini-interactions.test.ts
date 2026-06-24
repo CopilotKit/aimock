@@ -870,6 +870,28 @@ describe("SSE event builders", () => {
     expect(JSON.parse(delta.arguments as string)).toEqual({ city: "NYC" });
   });
 
+  it("assigns sequential step indices for multiple tool calls (SDK 2.x)", () => {
+    const events = buildInteractionsToolCallSSEEvents(
+      [
+        { name: "get_weather", arguments: '{"city":"NYC"}', id: "call_1" },
+        { name: "get_time", arguments: '{"tz":"UTC"}', id: "call_2" },
+      ],
+      "aimock-int-0",
+      logger,
+    );
+    const stepStarts = events.filter((e) => e.event_type === "step.start");
+    expect(stepStarts.map((e) => e.index)).toEqual([0, 1]);
+    expect((stepStarts[0].step as Record<string, unknown>).name).toBe("get_weather");
+    expect((stepStarts[1].step as Record<string, unknown>).name).toBe("get_time");
+    // Each call's arguments_delta is keyed to its own index.
+    const argDeltas = events.filter(
+      (e) =>
+        e.event_type === "step.delta" &&
+        (e.delta as Record<string, unknown>).type === "arguments_delta",
+    );
+    expect(argDeltas.map((e) => e.index)).toEqual([0, 1]);
+  });
+
   it("builds content+tools SSE with correct indices (SDK 2.x)", () => {
     const events = buildInteractionsContentWithToolCallsSSEEvents(
       "Text",
@@ -1347,6 +1369,58 @@ describe("collapseGeminiInteractionsSSE", () => {
     // Fragments concatenate into valid JSON by step.stop.
     expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("call_1");
+  });
+
+  it("collapses multiple interleaved tool calls in step-index order (SDK 2.x)", () => {
+    const sse = [
+      'data: {"event_type":"step.start","index":1,"step":{"type":"function_call","id":"call_a","name":"get_weather","arguments":{}},"event_id":"evt_1"}',
+      'data: {"event_type":"step.start","index":2,"step":{"type":"function_call","id":"call_b","name":"get_time","arguments":{}},"event_id":"evt_2"}',
+      // Interleaved argument fragments for both calls.
+      'data: {"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"{\\"tz\\":"},"event_id":"evt_3"}',
+      'data: {"event_type":"step.delta","index":1,"delta":{"type":"arguments_delta","arguments":"{\\"city\\":\\"NYC\\"}"},"event_id":"evt_4"}',
+      'data: {"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"\\"UTC\\"}"},"event_id":"evt_5"}',
+      'data: {"event_type":"step.stop","index":1,"event_id":"evt_6"}',
+      'data: {"event_type":"step.stop","index":2,"event_id":"evt_7"}',
+    ].join("\n\n");
+    const result = collapseGeminiInteractionsSSE(sse);
+    expect(result.toolCalls).toHaveLength(2);
+    // Sorted by step index regardless of step.stop / delta arrival order.
+    expect(result.toolCalls![0]).toEqual({
+      name: "get_weather",
+      arguments: '{"city":"NYC"}',
+      id: "call_a",
+    });
+    expect(result.toolCalls![1]).toEqual({
+      name: "get_time",
+      arguments: '{"tz":"UTC"}',
+      id: "call_b",
+    });
+  });
+
+  it("flags assembled arguments_delta that is not valid JSON by step.stop", () => {
+    const sse = [
+      'data: {"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call_1","name":"fn","arguments":{}},"event_id":"evt_1"}',
+      // Truncated/interrupted stream — fragment never closes into valid JSON.
+      'data: {"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\\"city\\":\\"NY"},"event_id":"evt_2"}',
+      'data: {"event_type":"step.stop","index":0,"event_id":"evt_3"}',
+    ].join("\n\n");
+    const result = collapseGeminiInteractionsSSE(sse);
+    // The (corrupt) call is still surfaced, but flagged so the recorder warns.
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].arguments).toBe('{"city":"NY');
+    expect(result.droppedChunks).toBe(1);
+    expect(result.firstDroppedSample).toMatch(/not valid JSON/);
+  });
+
+  it("preserves identity of a function_call step.start that arrives without an index", () => {
+    const sse = [
+      'data: {"event_type":"step.start","step":{"type":"function_call","id":"call_1","name":"fn","arguments":{"x":1}},"event_id":"evt_1"}',
+      'data: {"event_type":"step.stop","event_id":"evt_2"}',
+    ].join("\n\n");
+    const result = collapseGeminiInteractionsSSE(sse);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].name).toBe("fn");
+    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
   });
 
   it("uses step.start arguments object when no arguments_delta streams (SDK 2.x)", () => {

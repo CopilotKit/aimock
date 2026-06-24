@@ -545,8 +545,10 @@ export function buildInteractionsToolCallSSEEvents(
       event_id: nextEventId(),
     });
 
-    // arguments_delta.arguments is a string fragment; emitting the full
-    // serialized object as one fragment keeps the concatenation valid JSON.
+    // arguments_delta.arguments is a string fragment. The real SDK may split
+    // the args across several fragments that concatenate into valid JSON; the
+    // mock emits the whole serialized object as one fragment (a valid
+    // degenerate case the collapser handles identically).
     events.push({
       event_type: "step.delta",
       index: idx,
