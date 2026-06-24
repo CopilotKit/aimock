@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-06-24
+
 ### Changed
 
 - Replay matching is content-anchored: `turnIndex` disambiguates, no longer a hard reject gate (#276)
