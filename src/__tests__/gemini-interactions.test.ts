@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import * as http from "node:http";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -937,6 +937,63 @@ describe("SSE event builders", () => {
     expect((deltas[1].delta as Record<string, unknown>).text).toBe("DEF");
     expect((deltas[2].delta as Record<string, unknown>).text).toBe("GH");
   });
+
+  it("falls back to empty args and warns on malformed tool-call arguments (streaming)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const events = buildInteractionsToolCallSSEEvents(
+        [{ name: "fn", arguments: "not-json", id: "call_1" }],
+        "aimock-int-0",
+        new Logger("warn"),
+      );
+      const argDelta = events.find(
+        (e) =>
+          e.event_type === "step.delta" &&
+          (e.delta as Record<string, unknown>).type === "arguments_delta",
+      )!;
+      // Malformed args degrade to a valid empty-object fragment, not garbage.
+      expect((argDelta.delta as Record<string, unknown>).arguments).toBe("{}");
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("emits usage and requires_action status on interaction.completed for tool calls", () => {
+    const events = buildInteractionsToolCallSSEEvents(
+      [{ name: "fn", arguments: '{"a":1}', id: "call_1" }],
+      "aimock-int-0",
+      logger,
+      { usage: { input_tokens: 3, output_tokens: 7 } },
+    );
+    const completed = events.find((e) => e.event_type === "interaction.completed")!;
+    const interaction = completed.interaction as Record<string, unknown>;
+    expect(interaction.status).toBe("requires_action");
+    expect(interaction.usage).toEqual({
+      total_input_tokens: 3,
+      total_output_tokens: 7,
+      total_tokens: 10,
+    });
+  });
+
+  it("emits usage and requires_action status on interaction.completed for content+tools", () => {
+    const events = buildInteractionsContentWithToolCallsSSEEvents(
+      "Text",
+      [{ name: "fn", arguments: "{}", id: "call_1" }],
+      "aimock-int-0",
+      100,
+      logger,
+      { usage: { input_tokens: 2, output_tokens: 4 } },
+    );
+    const completed = events.find((e) => e.event_type === "interaction.completed")!;
+    const interaction = completed.interaction as Record<string, unknown>;
+    expect(interaction.status).toBe("requires_action");
+    expect(interaction.usage).toEqual({
+      total_input_tokens: 2,
+      total_output_tokens: 4,
+      total_tokens: 6,
+    });
+  });
 });
 
 // ─── Integration tests: non-streaming ───────────────────────────────────
@@ -1155,6 +1212,10 @@ describe("Gemini Interactions — streaming", () => {
     expect(argDeltas).toHaveLength(1);
     const argsStr = (argDeltas[0].delta as Record<string, unknown>).arguments as string;
     expect(JSON.parse(argsStr)).toEqual({ city: "NYC" });
+
+    // The streamed interaction terminates in requires_action for a tool call.
+    const completed = events.find((e) => e.event_type === "interaction.completed")!;
+    expect((completed.interaction as Record<string, unknown>).status).toBe("requires_action");
   });
 
   it("assigns correct indices for content+tools stream", async () => {
@@ -1410,6 +1471,23 @@ describe("collapseGeminiInteractionsSSE", () => {
     expect(result.toolCalls![0].arguments).toBe('{"city":"NY');
     expect(result.droppedChunks).toBe(1);
     expect(result.firstDroppedSample).toMatch(/not valid JSON/);
+  });
+
+  it("drops an arguments_delta that arrives before its step.start (ordering)", () => {
+    // The SDK emits step.start before its arguments_delta fragments; a fragment
+    // arriving first can't correlate, so it is flagged rather than mis-attributed.
+    const sse = [
+      'data: {"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\\"x\\":1}"},"event_id":"evt_1"}',
+      'data: {"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call_1","name":"fn","arguments":{}},"event_id":"evt_2"}',
+      'data: {"event_type":"step.stop","index":0,"event_id":"evt_3"}',
+    ].join("\n\n");
+    const result = collapseGeminiInteractionsSSE(sse);
+    expect(result.droppedChunks).toBe(1);
+    expect(result.firstDroppedSample).toMatch(/no correlating step\.start/);
+    // The call still surfaces (identity preserved), opening with empty args.
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].name).toBe("fn");
+    expect(result.toolCalls![0].arguments).toBe("{}");
   });
 
   it("preserves identity of a function_call step.start that arrives without an index", () => {
