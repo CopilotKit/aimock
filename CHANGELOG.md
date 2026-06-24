@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini Interactions mock now emits the SDK 2.x event protocol on both paths — streamed SSE (`step.*`, `interaction.created`/`completed`, tool args via `arguments_delta`) and non-streaming responses (`steps`/`output_text`); legacy 1.x recorded fixtures still parse (#279)
+
 ## [1.33.0] - 2026-06-23
 
 ### Added
