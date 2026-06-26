@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grok Imagine Video — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Grok Imagine Video</h1>
+        <p class="lead">
+          aimock mocks xAI's native Grok Imagine async video-generation API &mdash; submit a job
+          under <code>POST /v1/videos/generations</code>, then poll it through
+          <code>pending &rarr; done | failed | expired</code> under
+          <code>GET /v1/videos/{request_id}</code>. It draws from the same
+          <code>endpoint: "video"</code> fixture pool as the other video surfaces, disambiguated by
+          the <code>grok-imagine-*</code> model string.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/v1/videos/generations</code></td>
+              <td>
+                <code>{ request_id }</code> job envelope (JSON only &mdash; a
+                <code>multipart/form-data</code> body is rejected with 400 before the body is
+                parsed); the matched fixture's <code>video</code> drives the job's terminal state
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/v1/videos/{request_id}</code></td>
+              <td>
+                <code>{ request_id, status, progress }</code> &mdash; plus <code>video.url</code> /
+                <code>video.duration</code> + <code>usage.cost_in_usd_ticks</code> once
+                <code>done</code>, or those same
+                <code>{ request_id, status, progress }</code> fields plus <code>code</code> /
+                <code>error</code> once <code>failed</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Sora-safe dispatch</h2>
+        <p>
+          Grok's status route, <code>GET /v1/videos/{request_id}</code>, shares its path shape with
+          the OpenAI-shaped <a href="/video">Sora <code>/v1/videos/{id}</code></a> surface. aimock
+          resolves this with a job-map-first lookup: a GET that matches a live Grok job is served by
+          the Grok handler, and any miss falls through to the unchanged Sora
+          <code>handleVideoStatus</code> byte-for-byte (the two id namespaces are disjoint &mdash;
+          Sora ids come from its own state map, Grok request ids are minted UUIDs). The literal
+          <code>/v1/videos/generations</code> submit path is guarded so it is never parsed as a
+          status id of <code>"generations"</code>. Existing Sora behavior is unaffected.
+        </p>
+
+        <h2>Fixture Authoring</h2>
+        <p>
+          Submits are matched against <code>endpoint: "video"</code> fixtures on the request's
+          <code>prompt</code> (via <code>match.userMessage</code>, read from
+          <code>body.prompt</code>) and <code>model</code> (via <code>match.model</code>, default
+          <code>grok-imagine-video</code>). The <code>grok-imagine-*</code> model string is the
+          provider disambiguator &mdash; Grok, Veo, and OpenRouter video fixtures share one match
+          namespace, and their model tokens never overlap.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">grok-video.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"a cat playing piano"</span>, {
+  <span class="cm">// `id` is required by the type but ignored on this surface (the request_id</span>
+  <span class="cm">// is always server-minted); `url` is served as-is, no byte proxying.</span>
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">url</span>: <span class="str">"https://videos.x.ai/abc.mp4"</span>, <span class="prop">duration</span>: <span class="num">6</span>, <span class="prop">cost</span>: <span class="num">0.12</span> },
+}, { <span class="prop">model</span>: <span class="str">"grok-imagine-video"</span> });
+
+<span class="cm">// A failed job:</span>
+<span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"impossible prompt"</span>, {
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_2"</span>, <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
+}, { <span class="prop">model</span>: <span class="str">"grok-imagine-video"</span> });</code></pre>
+        </div>
+
+        <p>The fixture's <code>video</code> object supports:</p>
+        <ul>
+          <li>
+            <code>status</code> &mdash; <code>"completed"</code> or <code>"failed"</code> sets the
+            job's terminal state. The wire <code>status</code> is derived from the stored value: a
+            stored <code>"completed"</code> serializes to the wire <code>"done"</code>; the stored
+            status is always <code>"completed"</code>, never the wire <code>"done"</code>.
+          </li>
+          <li>
+            <code>id</code> &mdash; ignored on this surface (the <code>request_id</code> is always a
+            server-minted UUID)
+          </li>
+          <li>
+            <code>url?</code> &mdash; the video URL surfaced as <code>video.url</code> on a done
+            poll, served as-is (no byte proxying)
+          </li>
+          <li>
+            <code>duration?</code> &mdash; clip duration surfaced as
+            <code>video.duration</code> (defaults to 0)
+          </li>
+          <li>
+            <code>cost?</code> &mdash; generation cost in USD, surfaced as
+            <code>usage.cost_in_usd_ticks</code> on completion (see units below)
+          </li>
+          <li>
+            <code>error?</code> &mdash; failure message surfaced as <code>{ code, error }</code> on
+            a failed poll
+          </li>
+        </ul>
+
+        <h2>Progress &amp; Polling Realism</h2>
+        <p>
+          Grok reports a <code>progress</code> percentage on every poll; aimock
+          <em>synthesizes</em> it from the poll count (climbing toward <code>100</code>, reaching
+          <code>100</code> when the job is <code>done</code>). By default a submitted job is seeded
+          terminal internally. To exercise client code that polls through intermediate states, pass
+          <code>grokVideo</code> with poll thresholds. The semantics are identical to
+          <a href="/fal-ai#polling-realism"><code>falQueue</code></a> and the
+          <a href="/openrouter-video#polling-realism">OpenRouter video</a> surface.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">polling.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">port</span>: <span class="num">0</span>,
+  <span class="prop">grokVideo</span>: { <span class="prop">pollsBeforeInProgress</span>: <span class="num">1</span>, <span class="prop">pollsBeforeCompleted</span>: <span class="num">2</span> },
+});
+
+<span class="cm">// Submit  → { request_id }</span>
+<span class="cm">// poll 1  → { request_id, status: "pending", progress: … }</span>
+<span class="cm">// poll 2  → { request_id, status: "done", progress: 100, video: { url, duration }, usage: { cost_in_usd_ticks } }</span></code></pre>
+        </div>
+
+        <p>
+          Thresholds are sanitized exactly as on the other video surfaces (non-finite treated as
+          unset; negatives/fractions floored and clamped). <code>createServer</code> warns at
+          startup on invalid values.
+        </p>
+
+        <h2>JSON-only — multipart rejected</h2>
+        <div class="info-box">
+          <p>
+            The Grok video API is <strong>JSON-only</strong>. A submit carrying a
+            <code>Content-Type: multipart/form-data</code> body is rejected with HTTP 400 and a
+            <code>{ code, error }</code> envelope <em>before the body is parsed</em> &mdash; aimock
+            does not reuse Sora's accept-multipart create branch. A non-object or malformed JSON
+            body and an empty prompt likewise return
+            <code>{ code: "invalid_request", error }</code>.
+          </p>
+        </div>
+
+        <h2 id="cost-units">Cost units</h2>
+        <p>
+          Grok bills in <code>cost_in_usd_ticks</code>, an integer count of USD ticks where
+          <code>1 USD = 1e10 ticks</code>. A fixture's <code>video.cost</code> is the cost in USD;
+          on a done poll aimock surfaces
+          <code>usage.cost_in_usd_ticks = round(cost &times; 1e10)</code>. Record mode persists the
+          upstream cost back to USD (<code>cost = cost_in_usd_ticks / 1e10</code>) so it
+          round-trips.
+        </p>
+
+        <h2>Chaos &amp; Metrics</h2>
+        <p>
+          <a href="/chaos-testing">Chaos injection</a> applies to both routes. In
+          <a href="/metrics">Prometheus metrics</a> the per-job status path is templated as
+          <code>/v1/videos/{request_id}</code> to keep label cardinality bounded.
+        </p>
+
+        <h2 id="record-mode">Record Mode</h2>
+        <p>
+          With <a href="/record-replay">record mode</a> and the <code>grok</code> provider
+          configured, an unmatched submit becomes a <em>live interactive proxy</em>: the
+          <code>/v1/videos/generations</code> POST is forwarded to the real API and answered with a
+          mock-rewritten <code>{ request_id }</code> envelope (a fresh aimock request id), and each
+          client poll is proxied upstream 1:1 with the mock request id substituted. The client's own
+          polling drives the upstream lifecycle.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">aimock.config.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"llm"</span>: {
+    <span class="key">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="key">"record"</span>: {
+      <span class="key">"providers"</span>: { <span class="key">"grok"</span>: <span class="str">"https://api.x.ai"</span> }
+    }
+  }
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">Programmatic config <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">record</span>: {
+    <span class="prop">providers</span>: { <span class="prop">grok</span>: <span class="str">"https://api.x.ai"</span> },
+  },
+});</code></pre>
+        </div>
+
+        <p>
+          When the upstream poll reports <code>done</code>, the completed poll body is relayed first
+          and the eager capture then runs <em>synchronously</em> on the request stack (there is no
+          byte download to detach): aimock reads the video URL, duration, and cost straight out of
+          the terminal poll body (no download &mdash; the URL is served as-is) and persists a normal
+          video fixture (<code>match.userMessage</code> = the prompt, <code>match.model</code> = the
+          submitted model under the standard model-normalization rules, <code>video.id</code> = the
+          upstream request id, <code>video.status</code> = <code>"completed"</code>,
+          <code>video.url</code> / <code>video.duration</code>, plus <code>cost</code> converted
+          from <code>cost_in_usd_ticks</code>). The same submit then replays in-session and across
+          sessions. Relayed poll bodies are otherwise faithful: status, progress,
+          <code>video.url</code>, and <code>usage</code> pass through verbatim with only the request
+          id rewritten. A <code>failed</code> upstream persists a failed fixture (<code
+            >{ status: "failed", error }</code
+          >) and relays <code>{ request_id, status, progress, code, error }</code>;
+          <code>expired</code> (and any terminal status not representable in
+          <code>video.status</code>) passes through with a warning, persists nothing, and keeps
+          proxying.
+        </p>
+
+        <p>
+          The polling client's Bearer credential is forwarded only to the configured provider
+          origin: the submit response carries just a <code>request_id</code> (never an upstream poll
+          URL), so there is nothing off-origin to adopt or validate &mdash; the poll URL is always
+          constructed on the configured provider origin from that request id. Strict mode wins over
+          record: a strict no-match returns 503 and nothing is proxied. Without a configured
+          <code>grok</code> provider URL, <code>--record</code> warns and serves the normal no-match
+          404. Under proxy-only mode (<code>record.proxyOnly</code> / <code>--proxy-only</code>)
+          nothing is persisted and a done job is never converted to a local replay job &mdash; every
+          poll keeps proxying upstream.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>TTL caveat:</strong> record-mode jobs live in the same bounded job map as replay
+            jobs (1-hour TTL, 10,000 entries). Each successful proxied poll refreshes a record job's
+            TTL, so an actively-polled long render is never evicted mid-recording &mdash; but a poll
+            arriving more than an hour after the <em>last</em> successful poll finds the job evicted
+            and returns 404.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

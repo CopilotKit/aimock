@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Native Google Veo async video lifecycle mock — `POST /v1beta/models/{model}:predictLongRunning` submit, `GET /v1beta/operations/{name}` poll through `done:false → done:true`, poll-count progression via `veoVideo`; the Files-API `uri` is served as-is (aimock never proxies or downloads video bytes) (#278)
+- Record-mode live proxying for the Veo surface (`record.providers.veo`) — submit and poll forwarded 1:1, eager fixture capture of the Files-API uri on `done:true`; captured operations replay later (#278)
+- Native xAI Grok Imagine async video lifecycle mock — `POST /v1/videos/generations` submit (JSON-only; multipart rejected with 400), `GET /v1/videos/{request_id}` poll through `pending → done | failed | expired` with synthesized `progress`, `grokVideo` progression, `cost_in_usd_ticks` units, and a Sora-safe `/v1/videos/{id}` dispatch that leaves the OpenAI video surface unchanged (#278)
+- Record-mode live proxying for the Grok surface (`record.providers.grok`) — submit and poll forwarded 1:1, eager fixture capture of url/duration/cost on `done`, `failed` persisted, `expired` passed through; captured jobs replay later (#278)
+
 ## [1.34.0] - 2026-06-24
 
 ### Changed

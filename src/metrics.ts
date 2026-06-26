@@ -227,6 +227,16 @@ const VERTEX_RE =
 export const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
 export const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
 export const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
+// Exported: server.ts route dispatch matches the same Google Veo and xAI Grok
+// video paths. Veo submit (`:predictLongRunning`) is anchored so it never
+// collides with the bare Gemini `:predict` route; Veo operations live in a
+// fresh `/v1beta/operations/...` namespace. Grok submit is an exact literal
+// path; Grok status reuses the OpenAI `/v1/videos/{id}` shape (the dispatch
+// guards `id !== "generations"` and the job-map lookup disambiguates Sora).
+export const VEO_PREDICT_LRO_RE = /^\/v1beta\/models\/([^:]+):predictLongRunning$/;
+export const VEO_OPERATION_RE = /^\/v1beta\/(operations\/.+)$/;
+export const GROK_VIDEO_SUBMIT_PATH = "/v1/videos/generations";
+export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
 
 /**
  * Normalize parametric API paths to route patterns for use as metric labels.
@@ -272,7 +282,24 @@ export function normalizePathLabel(pathname: string): string {
     return "/api/v1/videos/{jobId}";
   }
 
-  // OpenAI video status: /v1/videos/{id}
+  // Google Veo video: submit `:predictLongRunning` + poll `/v1beta/operations/{name}`.
+  // Operation names are random UUIDs, so the raw path would mint unbounded
+  // label cardinality.
+  if (VEO_PREDICT_LRO_RE.test(pathname)) {
+    return "/v1beta/models/{model}:predictLongRunning";
+  }
+  if (VEO_OPERATION_RE.test(pathname)) {
+    return "/v1beta/operations/{name}";
+  }
+
+  // xAI Grok Imagine submit is a static literal path — keep it distinct from
+  // the `/v1/videos/{id}` status label below (which it would otherwise collapse
+  // into), exactly as `/api/v1/videos/models` is kept out of the jobId bucket.
+  if (pathname === GROK_VIDEO_SUBMIT_PATH) {
+    return GROK_VIDEO_SUBMIT_PATH;
+  }
+
+  // OpenAI/Grok video status: /v1/videos/{id}
   if (OPENAI_VIDEO_STATUS_RE.test(pathname)) {
     return "/v1/videos/{id}";
   }
