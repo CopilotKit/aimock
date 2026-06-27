@@ -836,6 +836,7 @@ async function handleCompletions(
         chunkSize,
         effReasoning,
         overrides,
+        response.blocks,
       );
       // Build usage chunk for stream_options.include_usage
       const completionText =
