@@ -8,7 +8,7 @@
  */
 
 import { crc32 } from "node:zlib";
-import type { RecordProviderKey, ToolCall } from "./types.js";
+import type { FixtureBlock, RecordProviderKey, ToolCall } from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
 
@@ -55,6 +55,131 @@ export interface CollapseResult {
   harmonyUnparsed?: true;
   /** Short human-readable note accompanying {@link harmonyUnparsed}. */
   harmonyNote?: string;
+  /**
+   * Ordered cross-channel block list, in STREAM order, populated ONLY when the
+   * stream is "interleaved" — i.e. a tool-call delta appeared STRICTLY BEFORE
+   * the first content delta, OR a content delta appeared AFTER any tool-call
+   * delta. The flat `content` / `toolCalls` fields stay populated UNCHANGED for
+   * replay back-compat and non-block consumers; `blocks` is purely additive
+   * positional instrumentation the recorder consults to decide whether to
+   * persist the ordered shape. Absent (undefined) for text-first, text-only,
+   * and tool-only streams — i.e. anything NOT interleaved — so the recorder
+   * keeps the legacy `{ content, toolCalls }` shape byte-identical.
+   *
+   * Each text block coalesces all contiguous content deltas between tool
+   * atoms; each toolCall block carries the fully-assembled name/arguments/id
+   * for one tool call in the position its FIRST delta arrived.
+   */
+  blocks?: FixtureBlock[];
+}
+
+// ---------------------------------------------------------------------------
+// Cross-channel block-order instrumentation (#274)
+// ---------------------------------------------------------------------------
+
+/**
+ * Atom recorded during a collapse pass, in stream arrival order. A `text` atom
+ * carries one content delta's text (contiguous text atoms are coalesced when
+ * building blocks); a `toolCall` atom is a stable reference to a tool-call
+ * accumulator whose name/arguments/id are filled in across later deltas. The
+ * `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
+ * to a flat `toolCalls` array), so block identity is reconciled with the flat
+ * representation at finalize time — see {@link buildOrderedBlocks}.
+ */
+type OrderAtom =
+  | { kind: "text"; text: string }
+  | { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } };
+
+/**
+ * Normalize a tool call's accumulated `arguments` into valid JSON exactly like
+ * the flat-`toolCalls` recorder path: an empty / whitespace-only / missing
+ * value becomes `"{}"`, never `""`. Mirrors `recorder.ts` `toToolCallArguments`
+ * so a `blocks[].arguments` value is always parseable JSON and never disagrees
+ * with the flat `toolCalls` entry for the same call.
+ */
+function normalizeToolArguments(args: string | undefined): string {
+  if (args === undefined || args.trim() === "") return "{}";
+  return args;
+}
+
+/**
+ * Build a finalized {@link FixtureBlock.toolCall} from a tool-call accumulator,
+ * normalizing `arguments` so the block agrees byte-for-byte with the flat
+ * `toolCalls` entry built from the SAME accumulator object.
+ */
+function toToolCallBlock(ref: { name: string; arguments: string; id?: string }): FixtureBlock {
+  return {
+    type: "toolCall",
+    name: ref.name,
+    arguments: normalizeToolArguments(ref.arguments),
+    ...(ref.id ? { id: ref.id } : {}),
+  };
+}
+
+/**
+ * Decide whether a recorded atom sequence is "interleaved" and, if so, build
+ * the ordered {@link FixtureBlock} list. Returns `undefined` when NOT
+ * interleaved (text-first, text-only, or tool-only) so callers leave
+ * `CollapseResult.blocks` unset and the recorder keeps the legacy shape.
+ *
+ * Interleaved ⇔ (a tool atom appears strictly before the first text atom) OR
+ * (a text atom appears after any tool atom). A stream with no tool atoms, or
+ * with no text atoms, is never interleaved. Text-first-then-tools is the common
+ * legacy case and is explicitly NOT interleaved.
+ *
+ * CONSISTENCY (#274): each toolCall block is derived from the SAME accumulator
+ * object referenced by its atom and normalized identically to the flat
+ * `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}).
+ * Because the atom `ref` is the very object the flat list is built from, the
+ * block and its flat counterpart describe the same call by identity — even when
+ * upstream tool-call indices do not match stream-arrival order. Empty/missing
+ * arguments normalize to `"{}"` in BOTH representations, never `""`.
+ */
+function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
+  let firstTextIndex = -1;
+  let firstToolIndex = -1;
+  let textAfterTool = false;
+  let sawTool = false;
+  let sawText = false;
+  for (let i = 0; i < atoms.length; i++) {
+    const a = atoms[i];
+    if (a.kind === "text") {
+      sawText = true;
+      if (firstTextIndex === -1) firstTextIndex = i;
+      if (sawTool) textAfterTool = true;
+    } else {
+      sawTool = true;
+      if (firstToolIndex === -1) firstToolIndex = i;
+    }
+  }
+  // No cross-channel ordering to express unless BOTH channels appear.
+  if (!sawTool || !sawText) return undefined;
+  const toolBeforeText = firstToolIndex < firstTextIndex;
+  if (!toolBeforeText && !textAfterTool) return undefined;
+
+  // Coalesce contiguous text atoms into one text block; emit each tool atom as
+  // a toolCall block reflecting its fully-assembled, normalized accumulator.
+  const blocks: FixtureBlock[] = [];
+  let pendingText = "";
+  let hasPendingText = false;
+  const flushText = () => {
+    if (hasPendingText) {
+      blocks.push({ type: "text", text: pendingText });
+      pendingText = "";
+      hasPendingText = false;
+    }
+  };
+  for (const a of atoms) {
+    if (a.kind === "text") {
+      pendingText += a.text;
+      hasPendingText = true;
+    } else {
+      flushText();
+      blocks.push(toToolCallBlock(a.ref));
+    }
+  }
+  flushText();
+  return blocks;
 }
 
 /**
@@ -171,6 +296,10 @@ export function collapseOpenAISSE(body: string): CollapseResult {
   // it (they are small per-stream counters), so synthetic keys never collide.
   let nextSyntheticIndex = 1_000_000;
   const idKeyMap = new Map<string, number>();
+  // Cross-channel order atoms (#274), in stream arrival order. A toolCall atom
+  // references the same accumulator object stored in toolCallMap, so later arg
+  // deltas mutate the block in place.
+  const orderAtoms: OrderAtom[] = [];
 
   for (const line of lines) {
     const data = extractSSEData(splitSSELines(line));
@@ -237,6 +366,9 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     // Text content
     if (typeof delta.content === "string") {
       content += delta.content;
+      if (delta.content.length > 0) {
+        orderAtoms.push({ kind: "text", text: delta.content });
+      }
     }
 
     // Tool calls
@@ -265,11 +397,15 @@ export function collapseOpenAISSE(body: string): CollapseResult {
         }
 
         if (!toolCallMap.has(index)) {
-          toolCallMap.set(index, {
+          const created = {
             id: rawId ?? "",
             name: (fn?.name as string) ?? "",
             arguments: "",
-          });
+          };
+          toolCallMap.set(index, created);
+          // Record the tool atom at the position its FIRST delta arrived; it
+          // references `created` so later name/arg deltas fill it in place.
+          orderAtoms.push({ kind: "toolCall", ref: created });
         }
 
         const entry = toolCallMap.get(index)!;
@@ -311,19 +447,36 @@ export function collapseOpenAISSE(body: string): CollapseResult {
   }
 
   if (toolCallMap.size > 0 || harmonyToolCalls.length > 0) {
-    const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
+    const blocks = buildOrderedBlocks(orderAtoms);
+    // When the stream is interleaved we persist ordered `blocks`; the flat
+    // `toolCalls` MUST then describe the same calls in the same order so the two
+    // representations never disagree (#274). The toolCall atoms reference the
+    // same accumulator objects as `toolCallMap`, so derive the flat list from
+    // those atoms (stream-arrival order, matching blocks) when blocks exist;
+    // otherwise keep the legacy index-sorted order for byte-identical fixtures.
+    const orderedToolCalls = orderAtoms
+      .filter(
+        (a): a is { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } } =>
+          a.kind === "toolCall",
+      )
+      .map((a) => ({
+        name: a.ref.name,
+        arguments: normalizeToolArguments(a.ref.arguments),
+        ...(a.ref.id ? { id: a.ref.id } : {}),
+      }));
+    const indexSortedToolCalls = Array.from(toolCallMap.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => ({
+        name: tc.name,
+        arguments: normalizeToolArguments(tc.arguments),
+        ...(tc.id ? { id: tc.id } : {}),
+      }));
     return {
+      ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       // Fallback-only: harmonyToolCalls are populated ONLY in the
       // no-structured-calls branch, so this is never a merge of both sources.
-      toolCalls: [
-        ...sorted.map(([, tc]) => ({
-          name: tc.name,
-          arguments: tc.arguments,
-          ...(tc.id ? { id: tc.id } : {}),
-        })),
-        ...harmonyToolCalls,
-      ],
+      toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
       // Reasoning is preserved alongside tool calls for ALL structured streams
       // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
       // parity with every other collapser and the non-streaming path.
@@ -388,6 +541,8 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   // below it.
   let nextSyntheticIndex = 1_000_000;
   let lastSyntheticIndex: number | undefined;
+  // Cross-channel order atoms (#274), in stream arrival order.
+  const orderAtoms: OrderAtom[] = [];
 
   for (const block of blocks) {
     const lines = splitSSELines(block);
@@ -430,11 +585,15 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
           index = nextSyntheticIndex++;
         }
         lastSyntheticIndex = index;
-        toolCallMap.set(index, {
+        const created = {
           id: (contentBlock.id as string) ?? "",
           name: (contentBlock.name as string) ?? "",
           arguments: "",
-        });
+        };
+        toolCallMap.set(index, created);
+        // Record the tool atom at the position the tool_use block opened; it
+        // references `created` so later input_json_delta fragments fill it in.
+        orderAtoms.push({ kind: "toolCall", ref: created });
       }
     }
 
@@ -444,6 +603,9 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
 
       if (delta.type === "text_delta" && typeof delta.text === "string") {
         content += delta.text;
+        if (delta.text.length > 0) {
+          orderAtoms.push({ kind: "text", text: delta.text });
+        }
       }
 
       if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
@@ -485,14 +647,33 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
   }
 
   if (toolCallMap.size > 0) {
-    const sorted = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
-    return {
-      ...(content ? { content } : {}),
-      toolCalls: sorted.map(([, tc]) => ({
+    const orderedBlocks = buildOrderedBlocks(orderAtoms);
+    // When interleaved (`blocks` present) the flat `toolCalls` MUST match the
+    // blocks' order/identity (#274). The toolCall atoms reference the same
+    // accumulator objects as `toolCallMap`, so derive the flat list from those
+    // atoms (stream-arrival order) when blocks exist; otherwise keep the legacy
+    // index-sorted order for byte-identical fixtures.
+    const orderedToolCalls = orderAtoms
+      .filter(
+        (a): a is { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } } =>
+          a.kind === "toolCall",
+      )
+      .map((a) => ({
+        name: a.ref.name,
+        arguments: normalizeToolArguments(a.ref.arguments),
+        ...(a.ref.id ? { id: a.ref.id } : {}),
+      }));
+    const indexSortedToolCalls = Array.from(toolCallMap.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => ({
         name: tc.name,
-        arguments: tc.arguments,
+        arguments: normalizeToolArguments(tc.arguments),
         ...(tc.id ? { id: tc.id } : {}),
-      })),
+      }));
+    return {
+      ...(orderedBlocks ? { blocks: orderedBlocks } : {}),
+      ...(content ? { content } : {}),
+      toolCalls: orderedBlocks ? orderedToolCalls : indexSortedToolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(reasoningSignature ? { reasoningSignature } : {}),
       ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
@@ -530,6 +711,8 @@ export function collapseGeminiSSE(body: string): CollapseResult {
   let audioB64 = "";
   let audioMimeType: string | undefined;
   const toolCalls: ToolCall[] = [];
+  // Cross-channel order atoms (#274), in stream arrival order.
+  const orderAtoms: OrderAtom[] = [];
 
   for (const line of lines) {
     const data = extractSSEData(splitSSELines(line));
@@ -561,7 +744,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
     for (const part of parts) {
       if (part.functionCall) {
         const fc = part.functionCall as Record<string, unknown>;
-        toolCalls.push({
+        const created: ToolCall = {
           name: String(fc.name ?? ""),
           // Default undefined/object args to a JSON object string (matches
           // collapseGeminiInteractionsSSE / Ollama). JSON.stringify(undefined)
@@ -569,7 +752,10 @@ export function collapseGeminiSSE(body: string): CollapseResult {
           // ToolCall.arguments:string contract.
           arguments:
             typeof fc.args === "string" ? (fc.args as string) : JSON.stringify(fc.args ?? {}),
-        });
+        };
+        toolCalls.push(created);
+        // Record the tool atom at the position this functionCall part arrived.
+        orderAtoms.push({ kind: "toolCall", ref: created });
       } else if (
         part.inlineData &&
         typeof (part.inlineData as Record<string, unknown>).mimeType === "string" &&
@@ -587,30 +773,51 @@ export function collapseGeminiSSE(body: string): CollapseResult {
           reasoning += part.text;
         } else {
           content += part.text;
+          if (part.text.length > 0) {
+            orderAtoms.push({ kind: "text", text: part.text });
+          }
         }
       }
     }
   }
 
+  // Normalize the flat tool calls' arguments identically to the block path so
+  // the two representations never disagree (#274). The toolCall atoms reference
+  // the same `created` objects pushed here, so blocks and flat describe the same
+  // calls in the same order; this only reconciles empty/missing → "{}".
+  const normalizedToolCalls = toolCalls.map((tc) => ({
+    ...tc,
+    arguments: normalizeToolArguments(tc.arguments),
+  }));
+
   if (audioB64) {
     // Preserve any content / reasoning / tool calls accumulated in the same
     // stream — a Gemini turn can interleave audio with text and functionCall
     // parts, and the early return must not silently drop them.
+    //
+    // Deliberately do NOT build ordered `blocks` here (#274, R2-N2): the audio
+    // collapse shape maps to AudioResponse, which has no `blocks` slot, and the
+    // recorder's audio branch never persists `collapsed.blocks`. Producing block
+    // ordering on this path would be silently produced-then-dropped, advertising
+    // a field this result shape can't carry. Block ordering is built only on the
+    // content+toolCalls path below, which can actually carry it.
     return {
       audioB64,
       audioMimeType,
       ...(content ? { content } : {}),
       ...(reasoning ? { reasoning } : {}),
-      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(normalizedToolCalls.length > 0 ? { toolCalls: normalizedToolCalls } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
     };
   }
 
   if (toolCalls.length > 0) {
+    const blocks = buildOrderedBlocks(orderAtoms);
     return {
+      ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
-      toolCalls,
+      toolCalls: normalizedToolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
@@ -652,6 +859,8 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
   let harmonyUnparsed = false;
   let harmonyNote: string | undefined;
   const toolCalls: ToolCall[] = [];
+  // Cross-channel order atoms (#274), in stream arrival order.
+  const orderAtoms: OrderAtom[] = [];
 
   for (const line of lines) {
     let parsed: Record<string, unknown>;
@@ -671,6 +880,9 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
     if (message) {
       if (typeof message.content === "string") {
         content += message.content;
+        if (message.content.length > 0) {
+          orderAtoms.push({ kind: "text", text: message.content });
+        }
       }
 
       // Tool calls
@@ -678,7 +890,7 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
         for (const tc of message.tool_calls as Array<Record<string, unknown>>) {
           const fn = tc.function as Record<string, unknown> | undefined;
           if (fn) {
-            toolCalls.push({
+            const created: ToolCall = {
               name: String(fn.name ?? ""),
               // Default undefined/object args to a JSON object (matching
               // collapseGeminiInteractionsSSE) — JSON.stringify(undefined)
@@ -687,7 +899,9 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
                 typeof fn.arguments === "string"
                   ? fn.arguments
                   : JSON.stringify(fn.arguments ?? {}),
-            });
+            };
+            toolCalls.push(created);
+            orderAtoms.push({ kind: "toolCall", ref: created });
           }
         }
       }
@@ -696,6 +910,9 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
     // /api/generate format
     else if (typeof parsed.response === "string") {
       content += parsed.response;
+      if (parsed.response.length > 0) {
+        orderAtoms.push({ kind: "text", text: parsed.response });
+      }
     }
   }
 
@@ -721,9 +938,17 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
   }
 
   if (toolCalls.length > 0) {
+    const blocks = buildOrderedBlocks(orderAtoms);
+    // Normalize flat arguments identically to the block path so the two
+    // representations never disagree (#274); same `created` refs, same order.
+    const normalizedToolCalls = toolCalls.map((tc) => ({
+      ...tc,
+      arguments: normalizeToolArguments(tc.arguments),
+    }));
     return {
+      ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
-      toolCalls,
+      toolCalls: normalizedToolCalls,
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),

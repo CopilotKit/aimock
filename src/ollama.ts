@@ -18,6 +18,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   ToolCall,
   ToolDefinition,
@@ -28,6 +29,7 @@ import {
   isContentWithToolCallsResponse,
   isErrorResponse,
   isEmbeddingResponse,
+  resolveFixtureBlocks,
   serializeErrorResponse,
   generateDeterministicEmbedding,
   flattenHeaders,
@@ -332,6 +334,21 @@ function buildOllamaChatToolCallResponse(
 
 // ─── Response builders: /api/chat — content + tool calls ────────────────────
 
+// Map a fixture tool call into Ollama's wire shape (object arguments, no id).
+function toOllamaToolCall(
+  tc: ToolCall,
+  logger: Logger,
+): { function: { name: string; arguments: unknown } } {
+  let argsObj: unknown;
+  try {
+    argsObj = JSON.parse(tc.arguments || "{}");
+  } catch {
+    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
+    argsObj = {};
+  }
+  return { function: { name: tc.name, arguments: argsObj } };
+}
+
 function buildOllamaChatContentWithToolCallsChunks(
   content: string,
   toolCalls: ToolCall[],
@@ -339,10 +356,75 @@ function buildOllamaChatContentWithToolCallsChunks(
   chunkSize: number,
   logger: Logger,
   reasoning?: string,
+  blocks?: FixtureBlock[],
 ): object[] {
   const chunks: object[] = [];
   const createdAt = new Date().toISOString();
 
+  // ── Ordered-blocks path ──────────────────────────────────────────────────
+  // When the fixture declares explicit `blocks`, stream NDJSON message chunks
+  // following the blocks' ARRAY ORDER: a text block emits a `message.content`
+  // delta chunk; a toolCall block emits a chunk carrying `message.tool_calls`.
+  // So [toolCall, text] puts the tool_call-bearing chunk before the content
+  // chunk. Ollama tool-first ordering is PARTIALLY observable: the chunk order
+  // on the wire is honored, but some Ollama clients reassemble content and
+  // tool_calls positionally (text first regardless), so downstream order is
+  // best-effort. Reasoning chunks (if any) still lead, matching legacy. The
+  // legacy single-chunk-all-tools path stays untouched on the else branch.
+  if (blocks && blocks.length > 0) {
+    const ordered = resolveFixtureBlocks(blocks);
+
+    // Reasoning chunks (before everything else), identical to legacy.
+    if (reasoning) {
+      for (let i = 0; i < reasoning.length; i += chunkSize) {
+        const slice = reasoning.slice(i, i + chunkSize);
+        chunks.push({
+          model,
+          created_at: createdAt,
+          message: { role: "assistant", content: "", reasoning_content: slice },
+          done: false,
+        });
+      }
+    }
+
+    for (const block of ordered) {
+      if (block.type === "text") {
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          const slice = block.text.slice(i, i + chunkSize);
+          chunks.push({
+            model,
+            created_at: createdAt,
+            message: { role: "assistant", content: slice },
+            done: false,
+          });
+        }
+      } else {
+        chunks.push({
+          model,
+          created_at: createdAt,
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [toOllamaToolCall(block, logger)],
+          },
+          done: false,
+        });
+      }
+    }
+
+    // Final chunk — preserved exactly as legacy (done + timing fields).
+    chunks.push({
+      model,
+      created_at: createdAt,
+      message: { role: "assistant", content: "" },
+      done: true,
+      ...DURATION_FIELDS,
+    });
+
+    return chunks;
+  }
+
+  // ── Legacy path (UNCHANGED) ──────────────────────────────────────────────
   // Reasoning chunks (before content)
   if (reasoning) {
     for (let i = 0; i < reasoning.length; i += chunkSize) {
@@ -409,6 +491,14 @@ function buildOllamaChatContentWithToolCallsChunks(
   return chunks;
 }
 
+// NOTE (#274): this NON-streaming Ollama builder is intentionally degenerate
+// w.r.t. `blocks` ordering. Ollama's non-streaming chat response puts `content`
+// and `tool_calls` in SEPARATE fields on a single `message` object — they are
+// NOT a positionally-observable array, so a tool-first `blocks` fixture cannot
+// be expressed in the wire shape. Honoring block order here would be a no-op,
+// so we keep the legacy text+tool_calls fields unchanged. (Order-observable
+// surfaces — Claude `content[]`, Gemini `parts[]`, Responses `output[]` — DO
+// honor block order; see those builders.)
 function buildOllamaChatContentWithToolCallsResponse(
   content: string,
   toolCalls: ToolCall[],
@@ -755,6 +845,7 @@ export async function handleOllama(
         chunkSize,
         logger,
         effReasoning,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeNDJSONStream(res, chunks, {

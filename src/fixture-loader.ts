@@ -46,6 +46,25 @@ export function normalizeResponse(raw: FixtureFileResponse): FixtureResponse {
     });
   }
 
+  // Carry the optional ordered `blocks` array through, mirroring the
+  // toolCalls[].arguments idiom above: auto-stringify object `arguments` on
+  // each `toolCall` block. Gated on Array.isArray so a malformed (non-array)
+  // `blocks` value passes through untouched rather than crashing — downstream
+  // validation/builders own shape rejection. Absent `blocks` → key absent.
+  if (Array.isArray(response.blocks)) {
+    response.blocks = (response.blocks as Array<Record<string, unknown>>).map((block) => {
+      if (
+        block != null &&
+        block.type === "toolCall" &&
+        typeof block.arguments === "object" &&
+        block.arguments !== null
+      ) {
+        return { ...block, arguments: JSON.stringify(block.arguments) };
+      }
+      return block;
+    });
+  }
+
   return response as unknown as FixtureResponse;
 }
 
@@ -257,6 +276,91 @@ function validateWebSearches(
   }
 }
 
+function validateBlocks(
+  response: { blocks?: unknown },
+  fixtureIndex: number,
+  results: ValidationResult[],
+): void {
+  if (response.blocks === undefined) return;
+
+  // Mirrors the toolCalls checks: reject malformed `blocks` at LOAD time so a
+  // bad blocks array never reaches the dispatch/builder (where
+  // resolveFixtureBlocks throws AFTER the journal has already recorded
+  // status:200, yielding a journal-200/client-500 mismatch). #274 F3+F8.
+  if (!Array.isArray(response.blocks)) {
+    results.push({
+      severity: "error",
+      fixtureIndex,
+      message: `blocks must be an array, got ${typeof response.blocks}`,
+    });
+    return;
+  }
+
+  for (let j = 0; j < response.blocks.length; j++) {
+    const block = response.blocks[j] as Record<string, unknown> | null | undefined;
+    if (typeof block !== "object" || block === null) {
+      results.push({
+        severity: "error",
+        fixtureIndex,
+        message: `blocks[${j}] must be an object`,
+      });
+      continue;
+    }
+    if (block.type !== "text" && block.type !== "toolCall") {
+      results.push({
+        severity: "error",
+        fixtureIndex,
+        message: `blocks[${j}].type must be "text" or "toolCall", got ${JSON.stringify(block.type)}`,
+      });
+      continue;
+    }
+    if (block.type === "text") {
+      if (typeof block.text !== "string") {
+        results.push({
+          severity: "error",
+          fixtureIndex,
+          message: `blocks[${j}].text must be a string, got ${typeof block.text}`,
+        });
+      }
+    } else {
+      // toolCall block — mirror toolCalls[] name + arguments checks.
+      if (typeof block.name !== "string" || block.name === "") {
+        results.push({
+          severity: "error",
+          fixtureIndex,
+          message: `blocks[${j}].name must be a non-empty string`,
+        });
+      }
+      // `arguments` is JSON-string in runtime form (normalizeResponse already
+      // stringified object/array args); accept a valid-JSON string or an object.
+      if (typeof block.arguments === "string") {
+        try {
+          JSON.parse(block.arguments);
+        } catch {
+          results.push({
+            severity: "error",
+            fixtureIndex,
+            message: `blocks[${j}].arguments is not valid JSON: ${block.arguments}`,
+          });
+        }
+      } else if (typeof block.arguments !== "object" || block.arguments === null) {
+        results.push({
+          severity: "error",
+          fixtureIndex,
+          message: `blocks[${j}].arguments must be a JSON string or object, got ${typeof block.arguments}`,
+        });
+      }
+      if (block.id !== undefined && typeof block.id !== "string") {
+        results.push({
+          severity: "error",
+          fixtureIndex,
+          message: `blocks[${j}].id must be a string, got ${typeof block.id}`,
+        });
+      }
+    }
+  }
+}
+
 export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
   const results: ValidationResult[] = [];
 
@@ -347,6 +451,11 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
         validateReasoning(response, i, results);
         validateWebSearches(response, i, results);
       }
+
+      // Optional ordered `blocks` checks — validated whenever present on the
+      // response, regardless of which content/toolCalls guard matched, so a
+      // malformed blocks array is rejected at LOAD rather than at dispatch.
+      validateBlocks(response as { blocks?: unknown }, i, results);
 
       // Tool call response checks
       if (isToolCallResponse(response)) {

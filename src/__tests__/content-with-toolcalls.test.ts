@@ -1,7 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { isContentWithToolCallsResponse, isTextResponse, isToolCallResponse } from "../helpers.js";
+import {
+  isContentWithToolCallsResponse,
+  isTextResponse,
+  isToolCallResponse,
+  resolveFixtureBlocks,
+} from "../helpers.js";
 import { LLMock } from "../llmock.js";
-import type { SSEChunk } from "../types.js";
+import type { FixtureBlock, SSEChunk } from "../types.js";
 
 describe("isContentWithToolCallsResponse", () => {
   it("returns true when both content and toolCalls are present", () => {
@@ -36,6 +41,63 @@ describe("isContentWithToolCallsResponse", () => {
     expect(isTextResponse(r)).toBe(false);
     expect(isToolCallResponse(r)).toBe(false);
     expect(isContentWithToolCallsResponse(r)).toBe(true);
+  });
+});
+
+describe("resolveFixtureBlocks", () => {
+  it("passes a valid mixed blocks array through in order", () => {
+    const blocks: FixtureBlock[] = [
+      { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+      { type: "text", text: "Here you go" },
+      { type: "toolCall", name: "get_time", arguments: "{}", id: "call_1" },
+    ];
+    const result = resolveFixtureBlocks(blocks);
+    // Same reference, same order — passthrough, not reconstruction.
+    expect(result).toBe(blocks);
+    expect(result.map((b) => b.type)).toEqual(["toolCall", "text", "toolCall"]);
+  });
+
+  it("accepts a text block with a string text field", () => {
+    const blocks: FixtureBlock[] = [{ type: "text", text: "hi" }];
+    expect(resolveFixtureBlocks(blocks)).toEqual(blocks);
+  });
+
+  it("accepts a toolCall block without an optional id", () => {
+    const blocks: FixtureBlock[] = [{ type: "toolCall", name: "f", arguments: "{}" }];
+    expect(resolveFixtureBlocks(blocks)).toEqual(blocks);
+  });
+
+  it("rejects a non-array argument", () => {
+    expect(() => resolveFixtureBlocks({} as unknown as FixtureBlock[])).toThrow(
+      /expected an array/,
+    );
+  });
+
+  it("rejects a text block with a non-string text field", () => {
+    const blocks = [{ type: "text", text: 42 }] as unknown as FixtureBlock[];
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*string "text"/);
+  });
+
+  it("rejects a toolCall block missing arguments", () => {
+    const blocks = [{ type: "toolCall", name: "f" }] as unknown as FixtureBlock[];
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*"name" and "arguments"/);
+  });
+
+  it("rejects a toolCall block with a non-string id", () => {
+    const blocks = [
+      { type: "toolCall", name: "f", arguments: "{}", id: 1 },
+    ] as unknown as FixtureBlock[];
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*"id" must be a string/);
+  });
+
+  it("rejects a block with an unknown type", () => {
+    const blocks = [{ type: "image" }] as unknown as FixtureBlock[];
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/unknown type/);
+  });
+
+  it("rejects a null entry", () => {
+    const blocks = [null] as unknown as FixtureBlock[];
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*expected an object/);
   });
 });
 

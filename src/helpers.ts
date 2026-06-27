@@ -21,6 +21,7 @@ import type {
   RawJSONResponse,
   SSEChunk,
   ToolCall,
+  FixtureBlock,
   ChatCompletion,
   ResponseOverrides,
 } from "./types.js";
@@ -236,6 +237,24 @@ function normalizeFactoryResponse(raw: FixtureResponse): FixtureResponse {
       return { ...tc };
     });
   }
+  // Mirror the toolCalls[].arguments idiom for the optional ordered `blocks`
+  // array: auto-stringify object `arguments` on each `toolCall` block so a
+  // programmatic ResponseFactory may return objects (resolveFixtureBlocks
+  // requires string `arguments`). Text blocks and string arguments pass
+  // through unchanged. Matches the loader's block handling.
+  if (Array.isArray(r.blocks)) {
+    r.blocks = (r.blocks as Array<Record<string, unknown>>).map((block) => {
+      if (
+        block != null &&
+        block.type === "toolCall" &&
+        typeof block.arguments === "object" &&
+        block.arguments !== null
+      ) {
+        return { ...block, arguments: JSON.stringify(block.arguments) };
+      }
+      return { ...block };
+    });
+  }
   return r as unknown as FixtureResponse;
 }
 
@@ -276,6 +295,61 @@ export function isContentWithToolCallsResponse(
     "toolCalls" in r &&
     Array.isArray((r as ContentWithToolCallsResponse).toolCalls)
   );
+}
+
+/**
+ * Validate and pass through the ordered `blocks` field of a combined
+ * content+toolCalls fixture. Used ONLY on the new block-iteration path (when a
+ * fixture explicitly sets `blocks`); it is NOT a legacy-order reconstructor —
+ * fixtures without `blocks` never reach this function and keep their unchanged
+ * text-first path.
+ *
+ * An EMPTY `blocks` array is treated as "no blocks" by every builder's
+ * streaming gate (`blocks && blocks.length > 0`), so it falls back to the
+ * legacy `{content, toolCalls}` path and never reaches this function — the gate
+ * is the single source of truth for "has blocks". This validator therefore only
+ * ever runs on a non-empty array.
+ *
+ * Returns the blocks in array order. Each entry must be a valid
+ * {@link FixtureBlock}: a `text` block with a string `text`, or a `toolCall`
+ * block with string `name` + `arguments` (and an optional string `id`).
+ * Throws on a malformed array or entry — same fail-fast idiom as the other
+ * fixture validators in this module (see e.g. the factory guard at
+ * {@link resolveResponse}).
+ */
+export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
+  if (!Array.isArray(blocks)) {
+    throw new Error(`Invalid fixture blocks: expected an array, got ${typeof blocks}`);
+  }
+  blocks.forEach((block, i) => {
+    if (block === null || typeof block !== "object") {
+      throw new Error(`Invalid fixture block at index ${i}: expected an object`);
+    }
+    const b = block as Record<string, unknown>;
+    if (b.type === "text") {
+      if (typeof b.text !== "string") {
+        throw new Error(
+          `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
+        );
+      }
+    } else if (b.type === "toolCall") {
+      if (typeof b.name !== "string" || typeof b.arguments !== "string") {
+        throw new Error(
+          `Invalid fixture block at index ${i}: "toolCall" block requires string "name" and "arguments" fields`,
+        );
+      }
+      if (b.id !== undefined && typeof b.id !== "string") {
+        throw new Error(
+          `Invalid fixture block at index ${i}: "toolCall" block "id" must be a string when present`,
+        );
+      }
+    } else {
+      throw new Error(
+        `Invalid fixture block at index ${i}: unknown type ${JSON.stringify(b.type)} (expected "text" or "toolCall")`,
+      );
+    }
+  });
+  return blocks;
 }
 
 export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {
@@ -752,6 +826,7 @@ export function buildContentWithToolCallsChunks(
   chunkSize: number,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): SSEChunk[] {
   const id = overrides?.id ?? generateId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
@@ -759,6 +834,143 @@ export function buildContentWithToolCallsChunks(
   const chunks: SSEChunk[] = [];
   const fingerprint = overrides?.systemFingerprint;
 
+  if (blocks && blocks.length > 0) {
+    // NEW: emit chunks in fixture block array order.
+    //
+    // DEGENERATE PROVIDER NOTE: in OpenAI chat-completions, `delta.content` and
+    // `delta.tool_calls` are SEPARATE channels that the client merges with no
+    // positional interleaving. So "tool-call-before-text" is NOT semantically
+    // observable to a real client — it reassembles content and tool calls into
+    // their own buckets regardless of chunk order. We still emit honest
+    // array-order chunks (the SSE chunk SEQUENCE is the contract this path
+    // asserts), but we do NOT fake interleaving the channel cannot express.
+    const ordered = resolveFixtureBlocks(blocks);
+
+    // Reasoning chunks (emitted first, OpenRouter format) — unchanged from legacy.
+    if (reasoning) {
+      for (let i = 0; i < reasoning.length; i += chunkSize) {
+        const slice = reasoning.slice(i, i + chunkSize);
+        chunks.push({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model: effectiveModel,
+          choices: [
+            { index: 0, delta: { reasoning_content: slice }, logprobs: null, finish_reason: null },
+          ],
+          ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+        });
+      }
+    }
+
+    // Role chunk — preserved exactly as the legacy path.
+    chunks.push({
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: effectiveModel,
+      choices: [
+        {
+          index: 0,
+          delta: { role: overrides?.role ?? "assistant", content: "" },
+          logprobs: null,
+          finish_reason: null,
+        },
+      ],
+      ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+    });
+
+    // Tool-call `index` is assigned in encounter order across the block array.
+    let tcIdx = 0;
+    for (const block of ordered) {
+      if (block.type === "text") {
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          const slice = block.text.slice(i, i + chunkSize);
+          chunks.push({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model: effectiveModel,
+            choices: [{ index: 0, delta: { content: slice }, logprobs: null, finish_reason: null }],
+            ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+          });
+        }
+      } else {
+        const tcId = block.id || generateToolCallId();
+
+        // Initial tool call chunk (id + function name)
+        chunks.push({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model: effectiveModel,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: tcIdx,
+                    id: tcId,
+                    type: "function",
+                    function: { name: block.name, arguments: "" },
+                  },
+                ],
+              },
+              logprobs: null,
+              finish_reason: null,
+            },
+          ],
+          ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+        });
+
+        // Argument streaming chunks
+        const args = block.arguments;
+        for (let i = 0; i < args.length; i += chunkSize) {
+          const slice = args.slice(i, i + chunkSize);
+          chunks.push({
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model: effectiveModel,
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [{ index: tcIdx, function: { arguments: slice } }],
+                },
+                logprobs: null,
+                finish_reason: null,
+              },
+            ],
+            ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+          });
+        }
+        tcIdx++;
+      }
+    }
+
+    // Finish chunk — preserved exactly as the legacy path.
+    chunks.push({
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: effectiveModel,
+      choices: [
+        {
+          index: 0,
+          delta: {},
+          logprobs: null,
+          finish_reason: overrides?.finishReason ?? "tool_calls",
+        },
+      ],
+      ...(fingerprint !== undefined && { system_fingerprint: fingerprint }),
+    });
+
+    return chunks;
+  }
+
+  // EXISTING legacy code, byte-for-byte UNCHANGED.
   // Reasoning chunks (emitted before content, OpenRouter format)
   if (reasoning) {
     for (let i = 0; i < reasoning.length; i += chunkSize) {
@@ -881,6 +1093,14 @@ export function buildContentWithToolCallsChunks(
   return chunks;
 }
 
+// NOTE (#274): this NON-streaming OpenAI chat-completions builder is
+// intentionally degenerate w.r.t. `blocks` ordering. A chat.completion puts
+// `message.content` and `message.tool_calls` in SEPARATE fields on a single
+// message object — they are NOT a positionally-observable array, so a
+// tool-first `blocks` fixture cannot be expressed in the wire shape. Honoring
+// block order here would be a no-op, so the legacy content+tool_calls fields
+// are unchanged. (Order-observable surfaces — Claude `content[]`, Gemini
+// `parts[]`, Responses `output[]` — DO honor block order; see those builders.)
 export function buildContentWithToolCallsCompletion(
   content: string,
   toolCalls: ToolCall[],

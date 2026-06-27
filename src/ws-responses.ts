@@ -282,6 +282,7 @@ async function processMessage(
       ),
       response.webSearches,
       extractOverrides(response),
+      response.blocks,
     );
 
     const interruption = createInterruptionSignal(fixture);

@@ -13,6 +13,7 @@ import type {
   Fixture,
   HandlerDefaults,
   RecordedTimings,
+  FixtureBlock,
   ResponseOverrides,
   StreamingProfile,
   ToolCall,
@@ -26,6 +27,7 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  resolveFixtureBlocks,
   flattenHeaders,
   getTestId,
   resolveResponse,
@@ -816,6 +818,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
   redactedThinking?: string[],
+  blocks?: FixtureBlock[],
 ): ClaudeSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const effectiveModel = overrides?.model ?? model;
@@ -842,10 +845,11 @@ function buildClaudeContentWithToolCallsStreamEvents(
   let blockIndex = 0;
 
   // Redacted-thinking blocks lead the turn (before thinking / text / tool_use);
-  // see the helper for the ordering caveat.
+  // see the helper for the ordering caveat. Applies to both the legacy and the
+  // ordered-`blocks` paths.
   blockIndex = pushRedactedThinkingStreamEvents(events, blockIndex, redactedThinking);
 
-  // Optional thinking block
+  // Optional thinking block — also shared by both paths.
   if (reasoning) {
     // Real Anthropic emits an empty `signature` on the thinking
     // `content_block_start`; the cryptographic signature arrives only via the
@@ -879,6 +883,99 @@ function buildClaudeContentWithToolCallsStreamEvents(
     blockIndex++;
   }
 
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: stream `text`/`tool_use` content blocks in the fixture's array
+    // order. Anthropic is fully tool-first capable — a `toolCall` block can take
+    // a lower `index` than a `text` block. Content-block indices are assigned in
+    // encounter order, continuing from any leading thinking/redacted blocks.
+    const ordered = resolveFixtureBlocks(blocks);
+
+    for (const block of ordered) {
+      if (block.type === "text") {
+        events.push({
+          type: "content_block_start",
+          index: blockIndex,
+          content_block: { type: "text", text: "" },
+        });
+
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          const slice = block.text.slice(i, i + chunkSize);
+          events.push({
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "text_delta", text: slice },
+          });
+        }
+
+        events.push({
+          type: "content_block_stop",
+          index: blockIndex,
+        });
+
+        blockIndex++;
+      } else {
+        const toolUseId = block.id || generateToolUseId();
+
+        let argsObj: unknown;
+        try {
+          argsObj = JSON.parse(block.arguments || "{}");
+        } catch {
+          logger.warn(
+            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
+          );
+          argsObj = {};
+        }
+        const argsJson = JSON.stringify(argsObj);
+
+        events.push({
+          type: "content_block_start",
+          index: blockIndex,
+          content_block: {
+            type: "tool_use",
+            id: toolUseId,
+            name: block.name,
+            input: {},
+          },
+        });
+
+        for (let i = 0; i < argsJson.length; i += chunkSize) {
+          const slice = argsJson.slice(i, i + chunkSize);
+          events.push({
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "input_json_delta", partial_json: slice },
+          });
+        }
+
+        events.push({
+          type: "content_block_stop",
+          index: blockIndex,
+        });
+
+        blockIndex++;
+      }
+    }
+
+    // message_delta
+    events.push({
+      type: "message_delta",
+      delta: {
+        stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
+        stop_sequence: null,
+      },
+      usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    });
+
+    // message_stop
+    events.push({ type: "message_stop" });
+
+    return events;
+  }
+
+  // LEGACY PATH (byte-for-byte unchanged): text content block, then tool_use
+  // blocks in `toolCalls` order. Reached only when `blocks` is absent; the
+  // leading redacted-thinking/thinking blocks above are shared with the new
+  // path and produce identical wire output here.
   // Text content block
   events.push({
     type: "content_block_start",
@@ -970,6 +1067,7 @@ function buildClaudeContentWithToolCallsResponse(
   overrides?: ResponseOverrides,
   reasoningSignature?: string,
   redactedThinking?: string[],
+  blocks?: FixtureBlock[],
 ): object {
   const contentBlocks: object[] = [];
 
@@ -986,9 +1084,10 @@ function buildClaudeContentWithToolCallsResponse(
     });
   }
 
-  contentBlocks.push({ type: "text", text: content });
-
-  for (const tc of toolCalls) {
+  // Build a tool_use content block from a fixture tool call, parsing its
+  // string `arguments` into the object `input` Anthropic emits (warning on
+  // malformed JSON, same idiom as the streaming/legacy paths).
+  const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
     let argsObj: unknown;
     try {
       argsObj = JSON.parse(tc.arguments || "{}");
@@ -998,12 +1097,36 @@ function buildClaudeContentWithToolCallsResponse(
       );
       argsObj = {};
     }
-    contentBlocks.push({
+    return {
       type: "tool_use",
       id: tc.id || generateToolUseId(),
       name: tc.name,
       input: argsObj,
-    });
+    };
+  };
+
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: the non-streaming `content[]` array is positionally observable,
+    // so emit `text`/`tool_use` content blocks in the fixture's ARRAY ORDER
+    // (after any leading redacted/thinking blocks). A toolCall block before a
+    // text block therefore yields a tool_use ahead of the text — matching the
+    // streaming path for the same `blocks` fixture.
+    const ordered = resolveFixtureBlocks(blocks);
+    for (const block of ordered) {
+      if (block.type === "text") {
+        contentBlocks.push({ type: "text", text: block.text });
+      } else {
+        contentBlocks.push(
+          toolUseBlock({ name: block.name, arguments: block.arguments, id: block.id }),
+        );
+      }
+    }
+  } else {
+    // LEGACY PATH (unchanged): text content block, then tool_use blocks.
+    contentBlocks.push({ type: "text", text: content });
+    for (const tc of toolCalls) {
+      contentBlocks.push(toolUseBlock(tc));
+    }
   }
 
   return {
@@ -1340,6 +1463,7 @@ export async function handleMessages(
         overrides,
         effReasoningSignature,
         effRedactedThinking,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1354,6 +1478,7 @@ export async function handleMessages(
         overrides,
         effReasoningSignature,
         effRedactedThinking,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeClaudeSSEStream(res, events, {

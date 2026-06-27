@@ -11,6 +11,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   ResponseOverrides,
   StreamingProfile,
@@ -20,6 +21,7 @@ import type {
 import {
   generateId,
   generateToolCallId,
+  resolveFixtureBlocks,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
@@ -656,6 +658,71 @@ function buildMessageOutputEvents(
   return { events, msgItem };
 }
 
+interface FunctionCallBlockResult {
+  events: ResponsesSSEEvent[];
+  fcItem: object;
+}
+
+/**
+ * Emit the output_item.added → arguments deltas → arguments.done →
+ * output_item.done events for a single function_call at `outputIndex`,
+ * returning the completed item for the final `output` array. Behavior is
+ * identical to the inline per-tool-call loop in the legacy path; both the
+ * legacy branch and the ordered-blocks branch share this so wire output stays
+ * byte-identical for a given (tool, outputIndex).
+ */
+function buildFunctionCallOutputEvents(
+  toolCall: ToolCall,
+  chunkSize: number,
+  outputIndex: number,
+): FunctionCallBlockResult {
+  const callId = toolCall.id || generateToolCallId();
+  const fcId = generateId("fc");
+  const args = toolCall.arguments;
+  const events: ResponsesSSEEvent[] = [];
+
+  events.push({
+    type: "response.output_item.added",
+    output_index: outputIndex,
+    item: {
+      type: "function_call",
+      id: fcId,
+      call_id: callId,
+      name: toolCall.name,
+      arguments: "",
+      status: "in_progress",
+    },
+  });
+
+  for (let i = 0; i < args.length; i += chunkSize) {
+    events.push({
+      type: "response.function_call_arguments.delta",
+      item_id: fcId,
+      output_index: outputIndex,
+      delta: args.slice(i, i + chunkSize),
+    });
+  }
+
+  events.push({
+    type: "response.function_call_arguments.done",
+    item_id: fcId,
+    output_index: outputIndex,
+    arguments: args,
+  });
+
+  const fcItem = {
+    type: "function_call",
+    id: fcId,
+    call_id: callId,
+    name: toolCall.name,
+    arguments: args,
+    status: "completed",
+  };
+  events.push({ type: "response.output_item.done", output_index: outputIndex, item: fcItem });
+
+  return { events, fcItem };
+}
+
 // ─── Non-streaming response builders ────────────────────────────────────────
 
 function buildOutputPrefix(content: string, reasoning?: string, webSearches?: string[]): object[] {
@@ -767,6 +834,7 @@ export function buildContentWithToolCallsStreamEvents(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -776,60 +844,59 @@ export function buildContentWithToolCallsStreamEvents(
     overrides,
   );
 
-  const { events: msgEvents, msgItem } = buildMessageOutputEvents(
-    content,
-    chunkSize,
-    nextOutputIndex,
-  );
-  events.push(...msgEvents);
+  // The output items assembled in emission order (after any reasoning /
+  // web-search prefix items). Each output_index is assigned sequentially as we
+  // walk the chosen item order, so the `output_index` on every emitted event
+  // matches that item's slot in the final `response.completed.output` array.
+  const orderedOutputItems: object[] = [];
 
-  const fcOutputItems: object[] = [];
-  for (let idx = 0; idx < toolCalls.length; idx++) {
-    const tc = toolCalls[idx];
-    const callId = tc.id || generateToolCallId();
-    const fcId = generateId("fc");
-    const fcOutputIndex = nextOutputIndex + 1 + idx;
-    const args = tc.arguments;
-
-    events.push({
-      type: "response.output_item.added",
-      output_index: fcOutputIndex,
-      item: {
-        type: "function_call",
-        id: fcId,
-        call_id: callId,
-        name: tc.name,
-        arguments: "",
-        status: "in_progress",
-      },
-    });
-
-    for (let i = 0; i < args.length; i += chunkSize) {
-      events.push({
-        type: "response.function_call_arguments.delta",
-        item_id: fcId,
-        output_index: fcOutputIndex,
-        delta: args.slice(i, i + chunkSize),
-      });
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: stream items in the fixture's block ARRAY ORDER. A toolCall
+    // block placed before a text block therefore yields a function_call item at
+    // a LOWER output_index than the message — it leads the output array.
+    const ordered = resolveFixtureBlocks(blocks);
+    let outputIndex = nextOutputIndex;
+    for (const block of ordered) {
+      if (block.type === "text") {
+        const { events: msgEvents, msgItem } = buildMessageOutputEvents(
+          block.text,
+          chunkSize,
+          outputIndex,
+        );
+        events.push(...msgEvents);
+        orderedOutputItems.push(msgItem);
+      } else {
+        const { events: fcEvents, fcItem } = buildFunctionCallOutputEvents(
+          { name: block.name, arguments: block.arguments, id: block.id },
+          chunkSize,
+          outputIndex,
+        );
+        events.push(...fcEvents);
+        orderedOutputItems.push(fcItem);
+      }
+      outputIndex += 1;
     }
+  } else {
+    // LEGACY PATH: message item first, then function_call items — byte-for-byte
+    // unchanged from the pre-blocks behavior (message always leads the output).
+    const { events: msgEvents, msgItem } = buildMessageOutputEvents(
+      content,
+      chunkSize,
+      nextOutputIndex,
+    );
+    events.push(...msgEvents);
+    orderedOutputItems.push(msgItem);
 
-    events.push({
-      type: "response.function_call_arguments.done",
-      item_id: fcId,
-      output_index: fcOutputIndex,
-      arguments: args,
-    });
-
-    const doneItem = {
-      type: "function_call",
-      id: fcId,
-      call_id: callId,
-      name: tc.name,
-      arguments: args,
-      status: "completed",
-    };
-    events.push({ type: "response.output_item.done", output_index: fcOutputIndex, item: doneItem });
-    fcOutputItems.push(doneItem);
+    for (let idx = 0; idx < toolCalls.length; idx++) {
+      const fcOutputIndex = nextOutputIndex + 1 + idx;
+      const { events: fcEvents, fcItem } = buildFunctionCallOutputEvents(
+        toolCalls[idx],
+        chunkSize,
+        fcOutputIndex,
+      );
+      events.push(...fcEvents);
+      orderedOutputItems.push(fcItem);
+    }
   }
 
   events.push({
@@ -840,12 +907,33 @@ export function buildContentWithToolCallsStreamEvents(
       created_at: created,
       model: overrides?.model ?? model,
       status: responsesStatus(overrides?.finishReason, "completed"),
-      output: [...prefixOutputItems, msgItem, ...fcOutputItems],
+      output: [...prefixOutputItems, ...orderedOutputItems],
       usage: responsesUsage(overrides),
     },
   });
 
   return events;
+}
+
+function buildFunctionCallOutputItem(tc: { name: string; arguments: string; id?: string }): object {
+  return {
+    type: "function_call",
+    id: generateId("fc"),
+    call_id: tc.id || generateToolCallId(),
+    name: tc.name,
+    arguments: tc.arguments,
+    status: "completed",
+  };
+}
+
+function buildMessageOutputItem(content: string): object {
+  return {
+    type: "message",
+    id: itemId(),
+    status: "completed",
+    role: "assistant",
+    content: [{ type: "output_text", text: content, annotations: [] }],
+  };
 }
 
 function buildContentWithToolCallsResponse(
@@ -855,17 +943,53 @@ function buildContentWithToolCallsResponse(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): object {
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: the non-streaming `output[]` array is positionally observable,
+    // so emit the prefix (reasoning / web_search_call), then the blocks in
+    // fixture ARRAY ORDER. A toolCall block before a text block therefore
+    // yields a function_call item ahead of the message — matching the streaming
+    // path's ordering for the same `blocks` fixture.
+    const ordered = resolveFixtureBlocks(blocks);
+    const output: object[] = [];
+    if (reasoning) {
+      output.push({
+        type: "reasoning",
+        id: generateId("rs"),
+        summary: [{ type: "summary_text", text: reasoning }],
+      });
+    }
+    if (webSearches && webSearches.length > 0) {
+      for (const query of webSearches) {
+        output.push({
+          type: "web_search_call",
+          id: generateId("ws"),
+          status: "completed",
+          action: { type: "search", query },
+        });
+      }
+    }
+    for (const block of ordered) {
+      if (block.type === "text") {
+        output.push(buildMessageOutputItem(block.text));
+      } else {
+        output.push(
+          buildFunctionCallOutputItem({
+            name: block.name,
+            arguments: block.arguments,
+            id: block.id,
+          }),
+        );
+      }
+    }
+    return buildResponseEnvelope(model, output, overrides);
+  }
+
+  // LEGACY PATH: message item first, then function_call items — unchanged.
   const output = buildOutputPrefix(content, reasoning, webSearches);
   for (const tc of toolCalls) {
-    output.push({
-      type: "function_call",
-      id: generateId("fc"),
-      call_id: tc.id || generateToolCallId(),
-      name: tc.name,
-      arguments: tc.arguments,
-      status: "completed",
-    });
+    output.push(buildFunctionCallOutputItem(tc));
   }
   return buildResponseEnvelope(model, output, overrides);
 }
@@ -1136,6 +1260,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1148,6 +1273,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {

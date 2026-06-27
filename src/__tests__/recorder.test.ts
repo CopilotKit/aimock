@@ -776,6 +776,120 @@ describe("recorder streaming collapse", () => {
     }
   });
 
+  // ---- Ordered `blocks` persistence (#274) ---------------------------------
+  // A tool-call-before-text Anthropic stream is interleaved, so the recorder
+  // must persist the ordered `blocks` array; an ordinary text-then-tools stream
+  // is NOT interleaved, so the recorder keeps the legacy `{content, toolCalls}`
+  // shape with NO `blocks` key (golden recordings stay byte-identical).
+  async function recordAnthropicStream(
+    sse: string,
+    prefix: string,
+  ): Promise<Record<string, unknown>> {
+    const anthropicUpstream = http.createServer((_upReq, upRes) => {
+      upRes.writeHead(200, { "Content-Type": "text/event-stream" });
+      upRes.end(sse);
+    });
+    await new Promise<void>((resolve) => anthropicUpstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamPort = (anthropicUpstream.address() as { port: number }).port;
+    const fixturePath = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+
+    const recorderServer = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", async () => {
+        const rawBody = Buffer.concat(chunks).toString();
+        await proxyAndRecord(
+          req,
+          res,
+          JSON.parse(rawBody),
+          "anthropic",
+          "/v1/messages",
+          [],
+          {
+            record: {
+              providers: { anthropic: `http://127.0.0.1:${upstreamPort}` },
+              fixturePath,
+            },
+            logger: new Logger("silent"),
+          },
+          rawBody,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => recorderServer.listen(0, "127.0.0.1", () => resolve()));
+    const recorderPort = (recorderServer.address() as { port: number }).port;
+
+    try {
+      const resp = await post(`http://127.0.0.1:${recorderPort}/v1/messages`, {
+        model: "claude-3-7-sonnet-20250219",
+        max_tokens: 1024,
+        stream: true,
+        messages: [{ role: "user", content: "go" }],
+      });
+      expect(resp.status).toBe(200);
+      const files = fs.readdirSync(fixturePath).filter((f) => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      const fixtureContent = JSON.parse(
+        fs.readFileSync(path.join(fixturePath, files[0]), "utf-8"),
+      ) as FixtureFile;
+      return fixtureContent.fixtures[0].response as Record<string, unknown>;
+    } finally {
+      await new Promise<void>((resolve) => anthropicUpstream.close(() => resolve()));
+      await new Promise<void>((resolve) => recorderServer.close(() => resolve()));
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  }
+
+  it("persists ordered blocks for a tool-before-text streamed turn", async () => {
+    const sse = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "get_weather", input: {} } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "input_json_delta", partial_json: '{"city":"Paris"}' } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "text_delta", text: "Done." } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+    const saved = await recordAnthropicStream(sse, "aimock-recorder-blocks-tool-");
+    expect(saved.blocks).toEqual([
+      { type: "toolCall", name: "get_weather", arguments: '{"city":"Paris"}', id: "toolu_1" },
+      { type: "text", text: "Done." },
+    ]);
+    // Legacy fields remain populated for replay/back-compat.
+    expect(saved.content).toBe("Done.");
+    expect(saved.toolCalls).toHaveLength(1);
+  });
+
+  it("persists the legacy shape (no blocks) for a text-then-tools streamed turn", async () => {
+    const sse = [
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 0, content_block: { type: "text", text: "" } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 0, delta: { type: "text_delta", text: "Sure." } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 0 })}`,
+      "",
+      `event: content_block_start\ndata: ${JSON.stringify({ index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "get_weather", input: {} } })}`,
+      "",
+      `event: content_block_delta\ndata: ${JSON.stringify({ index: 1, delta: { type: "input_json_delta", partial_json: '{"city":"Paris"}' } })}`,
+      "",
+      `event: content_block_stop\ndata: ${JSON.stringify({ index: 1 })}`,
+      "",
+      `event: message_stop\ndata: {}`,
+      "",
+    ].join("\n");
+    const saved = await recordAnthropicStream(sse, "aimock-recorder-blocks-text-");
+    expect(saved.blocks).toBeUndefined();
+    expect(saved.content).toBe("Sure.");
+    expect(saved.toolCalls).toHaveLength(1);
+  });
+
   it("captures Anthropic redacted_thinking block data into the recorded fixture's redactedThinking", async () => {
     const REDACTED_DATA = "EncryptedRedactedThinkingPayloadAAA==";
     // Raw Anthropic SSE upstream that streams a redacted_thinking block (its

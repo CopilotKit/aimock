@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type ServerInstance } from "../server.js";
-import type { Fixture } from "../types.js";
+import type { Fixture, FixtureBlock } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 
@@ -50,6 +50,23 @@ const toolReasoningFixture: Fixture = {
   },
 };
 
+// Combined content+toolCalls fixture carrying an ORDERED `blocks` array placing
+// the tool call BEFORE the text. On the WebSocket /v1/responses surface this
+// must yield the function_call output item at a LOWER output_index than the
+// message item — i.e. the function_call leads the output. Mirrors the HTTP
+// fixture-blocks-responses.test.ts assertions but drives the WS dispatch path.
+const wsBlocksToolFirstFixture: Fixture = {
+  match: { userMessage: "ws blocks tool-first" },
+  response: {
+    content: "Here you go.",
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+    blocks: [
+      { type: "toolCall", name: "get_weather", arguments: '{"city":"NYC"}' },
+      { type: "text", text: "Here you go." },
+    ] as FixtureBlock[],
+  },
+};
+
 const allFixtures: Fixture[] = [
   textFixture,
   toolFixture,
@@ -57,6 +74,7 @@ const allFixtures: Fixture[] = [
   reasoningFixture,
   capabilityReasoningFixture,
   toolReasoningFixture,
+  wsBlocksToolFirstFixture,
 ];
 
 // --- tests ---
@@ -364,6 +382,65 @@ describe("WebSocket /v1/responses", () => {
     // Verify output_index on arguments.done events are distinct
     expect(argDoneEvents[0].output_index).toBe(0);
     expect(argDoneEvents[1].output_index).toBe(1);
+
+    ws.close();
+  });
+
+  // ── #274: ordered `blocks` must flow through the WS Responses dispatch so the
+  //    websocket surface honors tool-first ordering exactly like the HTTP path. ──
+  it("honors fixture block order: function_call leads the message item (tool-first)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+
+    ws.send(responseCreateMsg("ws blocks tool-first"));
+
+    // Collect until response.completed (chunking makes the count variable).
+    const maxEvents = 50;
+    let events: WSEvent[] = [];
+    for (let count = 1; ; count++) {
+      if (count > maxEvents) {
+        throw new Error(
+          `response.completed never arrived within ${maxEvents} events ` +
+            `(last event type: ${events[events.length - 1]?.type})`,
+        );
+      }
+      events = parseEvents(await ws.waitForMessages(count));
+      if (events[events.length - 1].type === "response.completed") break;
+    }
+
+    const fcAdded = events.find(
+      (e) =>
+        e.type === "response.output_item.added" &&
+        (e.item as { type: string })?.type === "function_call",
+    );
+    const msgAdded = events.find(
+      (e) =>
+        e.type === "response.output_item.added" && (e.item as { type: string })?.type === "message",
+    );
+    expect(fcAdded).toBeDefined();
+    expect(msgAdded).toBeDefined();
+    // Tool-first: the function_call item takes output_index 0, the message 1.
+    expect((fcAdded as unknown as { output_index: number }).output_index).toBe(0);
+    expect((msgAdded as unknown as { output_index: number }).output_index).toBe(1);
+
+    // The terminal completed.output array must lead with the function_call item.
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (completed!.response as { output: Array<{ type: string }> }).output;
+    const types = output.map((o) => o.type);
+    expect(types.indexOf("function_call")).toBeLessThan(types.indexOf("message"));
+    expect(types[0]).toBe("function_call");
+
+    // Content + arguments still stream fully.
+    const textDeltas = events
+      .filter((e) => e.type === "response.output_text.delta")
+      .map((e) => (e as unknown as { delta: string }).delta)
+      .join("");
+    expect(textDeltas).toBe("Here you go.");
+    const argDeltas = events
+      .filter((e) => e.type === "response.function_call_arguments.delta")
+      .map((e) => (e as unknown as { delta: string }).delta)
+      .join("");
+    expect(argDeltas).toBe('{"city":"NYC"}');
 
     ws.close();
   });

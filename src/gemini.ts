@@ -12,6 +12,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   RecordedTimings,
   RecordProviderKey,
@@ -31,6 +32,7 @@ import {
   flattenHeaders,
   getContext,
   getTestId,
+  resolveFixtureBlocks,
   resolveResponse,
   resolveStrictMode,
   resolveReasoningForModel,
@@ -442,6 +444,7 @@ function buildGeminiContentWithToolCallsStreamChunks(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): GeminiResponseChunk[] {
   const chunks: GeminiResponseChunk[] = [];
 
@@ -458,6 +461,69 @@ function buildGeminiContentWithToolCallsStreamChunks(
         ],
       });
     }
+  }
+
+  if (blocks && blocks.length > 0) {
+    // NEW path (#274): stream chunks whose parts follow the blocks' ARRAY ORDER,
+    // so a tool-first / interleaved fixture emits its functionCall part before
+    // its text part. Gemini's ordered `parts` make this fully expressible. The
+    // terminal block carries the finishReason regardless of its type. Legacy
+    // fixtures (no `blocks`) never enter here — see the else branch below.
+    const resolved = resolveFixtureBlocks(blocks);
+    resolved.forEach((block, i) => {
+      const isLast = i === resolved.length - 1;
+      const finishReason = isLast
+        ? geminiFinishReason(overrides?.finishReason, "FUNCTION_CALL")
+        : undefined;
+      if (block.type === "toolCall") {
+        const part = parseToolCallPart(
+          { name: block.name, arguments: block.arguments, id: block.id },
+          logger,
+        );
+        chunks.push({
+          candidates: [
+            {
+              content: { role: "model", parts: [part] },
+              ...(finishReason ? { finishReason } : {}),
+              index: 0,
+            },
+          ],
+          ...(isLast ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
+        });
+      } else {
+        const text = block.text;
+        if (text.length === 0) {
+          chunks.push({
+            candidates: [
+              {
+                content: { role: "model", parts: [{ text: "" }] },
+                ...(finishReason ? { finishReason } : {}),
+                index: 0,
+              },
+            ],
+            ...(isLast ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
+          });
+        } else {
+          for (let j = 0; j < text.length; j += chunkSize) {
+            const slice = text.slice(j, j + chunkSize);
+            const lastSlice = j + chunkSize >= text.length;
+            const sliceFinish = isLast && lastSlice ? finishReason : undefined;
+            chunks.push({
+              candidates: [
+                {
+                  content: { role: "model", parts: [{ text: slice }] },
+                  ...(sliceFinish ? { finishReason: sliceFinish } : {}),
+                  index: 0,
+                },
+              ],
+              ...(isLast && lastSlice ? { usageMetadata: geminiUsageMetadata(overrides) } : {}),
+            });
+          }
+        }
+      }
+    });
+
+    return chunks;
   }
 
   if (content.length === 0) {
@@ -505,13 +571,33 @@ function buildGeminiContentWithToolCallsResponse(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): GeminiResponseChunk {
   const parts: GeminiPart[] = [];
   if (reasoning) {
     parts.push({ text: reasoning, thought: true });
   }
-  parts.push({ text: content });
-  parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
+
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: the non-streaming `parts[]` array is positionally observable, so
+    // emit parts in the fixture's ARRAY ORDER (after any leading thought part).
+    // A toolCall block before a text block therefore yields a functionCall part
+    // ahead of the text — matching the streaming path for the same `blocks`.
+    const resolved = resolveFixtureBlocks(blocks);
+    for (const block of resolved) {
+      if (block.type === "toolCall") {
+        parts.push(
+          parseToolCallPart({ name: block.name, arguments: block.arguments, id: block.id }, logger),
+        );
+      } else {
+        parts.push({ text: block.text });
+      }
+    }
+  } else {
+    // LEGACY PATH (unchanged): text part first, then functionCall parts.
+    parts.push({ text: content });
+    parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
+  }
 
   return {
     candidates: [
@@ -920,6 +1006,7 @@ export async function handleGemini(
         logger,
         effReasoning,
         overrides,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -931,6 +1018,7 @@ export async function handleGemini(
         logger,
         effReasoning,
         overrides,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {

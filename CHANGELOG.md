@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Optional `blocks` array on the combined `content` + `toolCalls` fixture shape lets a fixture express ordered text/tool-call blocks (`{type:"text",text}` | `{type:"toolCall",name,arguments,id?}`); when present it takes precedence over `{content, toolCalls}` for stream order, enabling tool-first and interleaved ordering. Legacy `{content, toolCalls}` fixtures are unchanged (#274)
+- All five providers stream combined responses in fixture block order: Anthropic, OpenAI Responses, and Gemini are fully observable; Ollama is best-effort (clients may reassemble positionally); OpenAI chat-completions emits in order but is degenerate (`delta.content`/`delta.tool_calls` are separate channels the client merges) (#274)
+- Recorder captures block order and persists `blocks` only when the recorded upstream stream was genuinely tool-first or interleaved; text-first streams keep the legacy `{content, toolCalls}` shape so golden recordings round-trip byte-identically (#274)
+
 ## [1.34.0] - 2026-06-24
 
 ### Changed
