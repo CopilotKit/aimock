@@ -186,6 +186,20 @@ export interface ToolCall {
   id?: string;
 }
 
+/**
+ * A single ordered streaming block for a {@link ContentWithToolCallsResponse}.
+ *
+ * When a combined content+toolCalls fixture sets the optional `blocks` field,
+ * builders stream the blocks in array order — enabling tool-call-before-text
+ * and interleaved orderings that the legacy `{ content, toolCalls }` shape
+ * (always text-first) cannot express. A `text` block carries a text segment; a
+ * `toolCall` block mirrors {@link ToolCall} (`name` + JSON-string `arguments`,
+ * optional `id`).
+ */
+export type FixtureBlock =
+  | { type: "text"; text: string }
+  | { type: "toolCall"; name: string; arguments: string; id?: string };
+
 export interface ToolCallResponse extends ResponseOverrides {
   toolCalls: ToolCall[];
   reasoning?: string;
@@ -199,6 +213,13 @@ export interface ToolCallResponse extends ResponseOverrides {
 export interface ContentWithToolCallsResponse extends ResponseOverrides {
   content: string;
   toolCalls: ToolCall[];
+  /**
+   * Optional ordered streaming blocks. When present, builders stream these in
+   * array order (tool-first / interleaved); when absent, the legacy
+   * `{ content, toolCalls }` text-first path runs unchanged. Purely additive —
+   * `isContentWithToolCallsResponse` still requires `content` + `toolCalls`.
+   */
+  blocks?: FixtureBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -416,6 +437,22 @@ export interface FixtureFileToolCall {
   id?: string;
 }
 
+/**
+ * On-disk counterpart of {@link FixtureBlock}. A `toolCall` block's
+ * `arguments` is relaxed exactly like {@link FixtureFileToolCall} so authors
+ * may write a JSON object/array; the loader JSON.stringifies it into the
+ * runtime string form. Normalizes to a {@link FixtureBlock}.
+ */
+export type FixtureFileBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "toolCall";
+      name: string;
+      /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
+      arguments: string | Record<string, unknown> | unknown[];
+      id?: string;
+    };
+
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
   reasoning?: string;
@@ -441,6 +478,15 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
   /** Accepts a JSON object or array (structured output) — the loader will JSON.stringify it. */
   content: string | Record<string, unknown> | unknown[];
   toolCalls: FixtureFileToolCall[];
+  /**
+   * Optional ordered streaming blocks (mirrors the in-memory
+   * {@link ContentWithToolCallsResponse.blocks}). When present, builders stream
+   * these in array order (tool-first / interleaved); a `toolCall` block's
+   * object `arguments` is auto-stringified just like `toolCalls[].arguments`.
+   * Absent → legacy text-first path runs unchanged. Purely additive. Uses the
+   * on-disk {@link FixtureFileBlock} shape with relaxed `arguments`.
+   */
+  blocks?: FixtureFileBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
