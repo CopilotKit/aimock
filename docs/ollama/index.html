@@ -255,6 +255,16 @@
           <code>options.num_predict</code> to <code>max_tokens</code>, so the same fixtures work
           across all providers.
         </p>
+
+        <h2>Ordered blocks (tool-first)</h2>
+        <p>
+          A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
+          <code>blocks</code> array to control stream order &mdash; see
+          <a href="/fixtures#ordered-blocks">Ordered blocks</a>. Ollama support is
+          <strong>partial</strong>: a <code>tool_calls</code> chunk can be emitted before content on
+          the NDJSON wire, but some clients reassemble positionally, so tool-first is best-effort on
+          this provider.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

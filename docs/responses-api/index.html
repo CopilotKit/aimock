@@ -160,6 +160,16 @@
             <a href="/websocket">WebSocket APIs</a> page for WebSocket-specific details.
           </p>
         </div>
+
+        <h2>Ordered blocks (tool-first)</h2>
+        <p>
+          A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
+          <code>blocks</code> array to control stream order &mdash; see
+          <a href="/fixtures#ordered-blocks">Ordered blocks</a>. The Responses API has
+          <strong>full</strong> support: <code>output</code> items (message vs
+          <code>function_call</code>) are assigned <code>output_index</code> in array order, so a
+          tool call can precede the message and SDKs honor the ordering.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>
