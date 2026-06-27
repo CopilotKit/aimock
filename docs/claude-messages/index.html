@@ -146,6 +146,16 @@
           arrays (including content block arrays) to OpenAI-style messages so the same fixtures work
           across all providers.
         </p>
+
+        <h2>Ordered blocks (tool-first)</h2>
+        <p>
+          A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
+          <code>blocks</code> array to control stream order &mdash; see
+          <a href="/fixtures#ordered-blocks">Ordered blocks</a>. Claude Messages has
+          <strong>full</strong> support: typed <code>text</code> / <code>tool_use</code> content
+          blocks stream at incrementing indices in array order, so tool-first and interleaved
+          ordering are natively observable to clients.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

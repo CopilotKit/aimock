@@ -183,6 +183,16 @@ POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model
           The same fixtures work for both Gemini AI Studio and Vertex AI endpoints. See the
           <a href="/vertex-ai">Vertex AI</a> page for configuration details.
         </p>
+
+        <h2>Ordered blocks (tool-first)</h2>
+        <p>
+          A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
+          <code>blocks</code> array to control stream order &mdash; see
+          <a href="/fixtures#ordered-blocks">Ordered blocks</a>. Gemini has
+          <strong>full</strong> support: ordered parts/candidate chunks carry
+          <code>functionCall</code> and text in array order, so tool-first and interleaved ordering
+          are observable to clients.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

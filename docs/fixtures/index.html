@@ -312,8 +312,12 @@
             </tr>
             <tr>
               <td>Content + Tool Calls</td>
-              <td>content, toolCalls[], reasoning?, finishReason?</td>
-              <td>Text and tool calls in a single response</td>
+              <td>content, toolCalls[], blocks?, reasoning?, finishReason?</td>
+              <td>
+                Text and tool calls in a single response. Add an optional
+                <code>blocks</code> array to control stream order (e.g. tool-first) &mdash; see
+                <a href="#ordered-blocks">Ordered blocks</a> below.
+              </td>
             </tr>
             <tr>
               <td>Error</td>
@@ -359,6 +363,120 @@
             also accept the override fields listed below (<code>id</code>, <code>model</code>,
             <code>usage</code>, <code>finishReason</code>, <code>role</code>,
             <code>systemFingerprint</code>, <code>created</code>).
+          </p>
+        </div>
+
+        <h2 id="ordered-blocks">Ordered blocks (tool-first &amp; interleaved streaming)</h2>
+        <p>
+          By default a <strong>Content + Tool Calls</strong> response streams its text first, then
+          its tool calls. To control that order &mdash; for example to emit a tool call
+          <em>before</em> any text (&ldquo;tool-first&rdquo;), or to interleave text and tool calls
+          &mdash; add an optional <code>blocks</code> array. Each entry is one of:
+        </p>
+        <ul>
+          <li><code>{ "type": "text", "text": "..." }</code> &mdash; a text segment</li>
+          <li>
+            <code>{ "type": "toolCall", "name": "...", "arguments": ..., "id": "..." }</code>
+            &mdash; a tool call (<code>id</code> optional; <code>arguments</code> accepts an object
+            or string, same auto-stringify rules as elsewhere)
+          </li>
+        </ul>
+        <p>
+          When <code>blocks</code> is present it <strong>takes precedence</strong> over the
+          <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
+          streamed in array order. (Keep <code>content</code> and <code>toolCalls</code> populated
+          as well &mdash; they remain the canonical aggregate for replay and for consumers that do
+          not read <code>blocks</code>.) When <code>blocks</code> is <strong>absent</strong>, legacy
+          <code>{ content, toolCalls }</code> fixtures stream exactly as before &mdash; text-first,
+          byte-identical to prior releases. The field is purely additive.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">tool-first.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"content"</span>: <span class="str">"Here is the weather."</span>,
+  <span class="prop">"toolCalls"</span>: [
+    { <span class="prop">"name"</span>: <span class="str">"get_weather"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"city"</span>: <span class="str">"SF"</span> } }
+  ],
+  <span class="prop">"blocks"</span>: [
+    { <span class="prop">"type"</span>: <span class="str">"toolCall"</span>, <span class="prop">"name"</span>: <span class="str">"get_weather"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"city"</span>: <span class="str">"SF"</span> }, <span class="prop">"id"</span>: <span class="str">"call_1"</span> },
+    { <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Here is the weather."</span> }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          The example above streams the <code>get_weather</code> tool call <em>before</em> the text.
+          For an interleaved stream, list blocks in the desired order, e.g.
+          <code>[toolCall, text, toolCall]</code>.
+        </p>
+
+        <h3>Per-provider observability</h3>
+        <p>
+          How faithfully &ldquo;tool-first&rdquo; / interleaved order is observable depends on each
+          provider's wire protocol. The mock always emits chunks in block order; what a client can
+          <em>reconstruct</em> from those chunks varies:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Block-order support</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Anthropic (Claude Messages)</td>
+              <td>Full</td>
+              <td>
+                Typed <code>text</code> / <code>tool_use</code> content blocks at incrementing
+                indices &mdash; tool-first and interleaved are natively observable.
+              </td>
+            </tr>
+            <tr>
+              <td>OpenAI Responses API</td>
+              <td>Full</td>
+              <td>
+                Ordered <code>output</code> items (message vs <code>function_call</code>) carry
+                <code>output_index</code> &mdash; SDKs honor the order, so a tool call can precede
+                the message.
+              </td>
+            </tr>
+            <tr>
+              <td>Gemini</td>
+              <td>Full</td>
+              <td>
+                Ordered parts/candidate chunks carry <code>functionCall</code> and text in any
+                order.
+              </td>
+            </tr>
+            <tr>
+              <td>Ollama</td>
+              <td>Partial</td>
+              <td>
+                A <code>tool_calls</code> chunk can be emitted before content on the wire, but some
+                clients reassemble positionally. Best-effort.
+              </td>
+            </tr>
+            <tr>
+              <td>OpenAI chat-completions</td>
+              <td>Degenerate</td>
+              <td>
+                <code>delta.content</code> and <code>delta.tool_calls</code> are separate channels
+                the client merges. The mock emits chunks in block order (and the wire order is
+                assertable), but the merge is <em>not</em> positionally interleaved, so tool-first
+                is not semantically observable to clients on this channel.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="info-box">
+          <p>
+            <strong>Recording:</strong> In record mode the recorder only persists a
+            <code>blocks</code> array when the recorded upstream stream was
+            <em>genuinely</em> tool-first or interleaved (a tool-call delta arrives before the first
+            content delta, or content arrives after a tool-call delta). Ordinary text-then-tools
+            streams are saved in the legacy <code>{ content, toolCalls }</code> shape with no
+            <code>blocks</code> key, so existing golden recordings round-trip byte-identically.
           </p>
         </div>
 

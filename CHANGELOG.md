@@ -8,6 +8,9 @@
 - Record-mode live proxying for the Veo surface (`record.providers.veo`) — submit and poll forwarded 1:1, eager fixture capture of the Files-API uri on `done:true`; captured operations replay later (#278)
 - Native xAI Grok Imagine async video lifecycle mock — `POST /v1/videos/generations` submit (JSON-only; multipart rejected with 400), `GET /v1/videos/{request_id}` poll through `pending → done | failed | expired` with synthesized `progress`, `grokVideo` progression, `cost_in_usd_ticks` units, and a Sora-safe `/v1/videos/{id}` dispatch that leaves the OpenAI video surface unchanged (#278)
 - Record-mode live proxying for the Grok surface (`record.providers.grok`) — submit and poll forwarded 1:1, eager fixture capture of url/duration/cost on `done`, `failed` persisted, `expired` passed through; captured jobs replay later (#278)
+- Optional `blocks` array on the combined `content` + `toolCalls` fixture shape lets a fixture express ordered text/tool-call blocks (`{type:"text",text}` | `{type:"toolCall",name,arguments,id?}`); when present it takes precedence over `{content, toolCalls}` for stream order, enabling tool-first and interleaved ordering. Legacy `{content, toolCalls}` fixtures are unchanged (#274)
+- All five providers stream combined responses in fixture block order: Anthropic, OpenAI Responses, and Gemini are fully observable; Ollama is best-effort (clients may reassemble positionally); OpenAI chat-completions emits in order but is degenerate (`delta.content`/`delta.tool_calls` are separate channels the client merges) (#274)
+- Recorder captures block order and persists `blocks` only when the recorded upstream stream was genuinely tool-first or interleaved; text-first streams keep the legacy `{content, toolCalls}` shape so golden recordings round-trip byte-identically (#274)
 
 ## [1.34.0] - 2026-06-24
 

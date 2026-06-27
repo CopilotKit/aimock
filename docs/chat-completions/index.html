@@ -227,6 +227,17 @@
           <code>ChatCompletionChunk</code> type with <code>delta</code> instead of
           <code>message</code>.
         </p>
+
+        <h3>Ordered blocks (tool-first)</h3>
+        <p>
+          A combined <code>content</code> + <code>toolCalls</code> fixture accepts an optional
+          <code>blocks</code> array to control stream order &mdash; see
+          <a href="/fixtures#ordered-blocks">Ordered blocks</a>. On chat-completions this is
+          <strong>degenerate</strong>: <code>delta.content</code> and <code>delta.tool_calls</code>
+          are separate channels the client merges, so the mock emits chunks in block order (the wire
+          order is assertable) but tool-first is not positionally observable to clients. Use
+          Anthropic, the Responses API, or Gemini for fully observable tool-first ordering.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>
