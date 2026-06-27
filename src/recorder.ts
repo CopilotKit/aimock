@@ -699,10 +699,21 @@ export async function proxyAndRecord(
           arguments: tc.arguments ?? "{}",
         }));
         if (collapsed.content) {
-          // Both content and toolCalls present — save as ContentWithToolCallsResponse
+          // Both content and toolCalls present — save as ContentWithToolCallsResponse.
+          //
+          // Ordered `blocks` (#274) is persisted ONLY when the collapser
+          // classified the stream as interleaved — a tool-call delta appeared
+          // strictly before the first content delta, OR a content delta
+          // appeared after any tool-call delta. The collapser encodes exactly
+          // that rule: it sets `collapsed.blocks` only in those cases and
+          // leaves it undefined otherwise. So the recorder simply spreads it
+          // when present; an ordinary text-then-tools (or text-only) stream has
+          // no `blocks` and persists the legacy shape byte-identically.
+          const blocksSpread = collapsed.blocks?.length ? { blocks: collapsed.blocks } : {};
           fixtureResponse = {
             content: collapsed.content,
             toolCalls: sanitizedToolCalls,
+            ...blocksSpread,
             ...reasoningSpread,
             ...reasoningSignatureSpread,
             ...redactedThinkingSpread,
