@@ -762,6 +762,160 @@ describe("validateFixtures", () => {
     ).toBe(true);
   });
 
+  // --- blocks checks (#274 F3+F8) ---
+  // A malformed `blocks` array must be REJECTED at load time so it never
+  // reaches the dispatch/builder (where resolveFixtureBlocks would throw AFTER
+  // the journal already recorded status:200). Mirrors the toolCalls checks.
+
+  it("error: blocks is not an array", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: "not-an-array",
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("blocks must be an array")),
+    ).toBe(true);
+  });
+
+  it("error: block with unknown type", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: [{ type: "bogus" }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) => r.severity === "error" && r.message.includes("type") && r.message.includes("blocks"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: text block with non-string text", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          // object `text` would replay as `[object Object]`
+          blocks: [{ type: "text", text: { nested: true } }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("text"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: toolCall block with non-string name", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: [{ type: "toolCall", name: 123, arguments: "{}" }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("name"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: toolCall block with empty name", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: [{ type: "toolCall", name: "", arguments: "{}" }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("name"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: toolCall block with invalid-JSON arguments", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: [{ type: "toolCall", name: "fn", arguments: "not json" }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" &&
+          r.message.includes("blocks[0]") &&
+          r.message.includes("not valid JSON"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error: toolCall block with non-string id", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "ok",
+          toolCalls: [{ name: "fn", arguments: "{}" }],
+          blocks: [{ type: "toolCall", name: "fn", arguments: "{}", id: 7 }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("id"),
+      ),
+    ).toBe(true);
+  });
+
+  it("no error: a valid blocks array passes validation", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "Done.",
+          toolCalls: [{ name: "search", arguments: '{"q":"x"}' }],
+          blocks: [
+            { type: "toolCall", name: "search", arguments: '{"q":"x"}', id: "call_1" },
+            { type: "text", text: "Done." },
+          ],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.filter((r) => r.severity === "error")).toEqual([]);
+  });
+
   it("error: error response with empty message", () => {
     const fixtures = [
       makeFixture({ response: { error: { message: "", type: "e" }, status: 500 } }),

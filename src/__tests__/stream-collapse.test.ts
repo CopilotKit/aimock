@@ -3583,3 +3583,349 @@ describe("harmony fail-safe — quoted whole-message ambiguity (known limitation
     expect(direct.content).not.toBe("To emit write hello<|return|> and then stop");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-channel block-order instrumentation (#274)
+//
+// The collapsers must retain enough cross-channel order to let the recorder
+// decide whether a stream is "interleaved" — a tool-call delta appears
+// strictly before the first content delta, OR a content delta appears after
+// any tool-call delta. When interleaved, `CollapseResult.blocks` carries the
+// ordered FixtureBlock[] in stream order. When NOT interleaved (text-first,
+// text-only, or tool-only), `blocks` stays undefined so the recorder persists
+// the legacy `{ content, toolCalls }` shape byte-identically.
+// ---------------------------------------------------------------------------
+
+describe("stream block-order instrumentation (#274)", () => {
+  // ---- OpenAI SSE ----------------------------------------------------------
+  describe("collapseOpenAISSE blocks", () => {
+    const textDelta = (text: string) =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}`;
+    const toolDelta = (index: number, opts: { id?: string; name?: string; args?: string }) =>
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index,
+                  ...(opts.id ? { id: opts.id } : {}),
+                  function: {
+                    ...(opts.name ? { name: opts.name } : {}),
+                    ...(opts.args !== undefined ? { arguments: opts.args } : {}),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })}`;
+
+    it("text-first stream is NOT interleaved → no blocks", () => {
+      const body = [
+        textDelta("Hello "),
+        "",
+        textDelta("world"),
+        "",
+        toolDelta(0, { id: "call_1", name: "get_weather", args: '{"city":"Paris"}' }),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const result = collapseOpenAISSE(body);
+      expect(result.content).toBe("Hello world");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("tool-first stream is interleaved → blocks in tool-first order", () => {
+      const body = [
+        toolDelta(0, { id: "call_1", name: "get_weather", args: '{"city":"Paris"}' }),
+        "",
+        textDelta("Here you go"),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const result = collapseOpenAISSE(body);
+      expect(result.blocks).toBeDefined();
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "get_weather", arguments: '{"city":"Paris"}', id: "call_1" },
+        { type: "text", text: "Here you go" },
+      ]);
+    });
+
+    it("tools→text→tools interleave is captured in stream order", () => {
+      const body = [
+        toolDelta(0, { id: "call_1", name: "a", args: "{}" }),
+        "",
+        textDelta("middle"),
+        "",
+        toolDelta(1, { id: "call_2", name: "b", args: "{}" }),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const result = collapseOpenAISSE(body);
+      expect(result.blocks).toBeDefined();
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "a", arguments: "{}", id: "call_1" },
+        { type: "text", text: "middle" },
+        { type: "toolCall", name: "b", arguments: "{}", id: "call_2" },
+      ]);
+    });
+
+    it("text-only stream has no blocks", () => {
+      const body = [textDelta("just text"), "", "data: [DONE]", ""].join("\n");
+      expect(collapseOpenAISSE(body).blocks).toBeUndefined();
+    });
+
+    it("tool-only stream has no blocks (no content channel to order against)", () => {
+      const body = [
+        toolDelta(0, { id: "call_1", name: "a", args: "{}" }),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      expect(collapseOpenAISSE(body).blocks).toBeUndefined();
+    });
+
+    // ---- #274 F4/F5: blocks must agree with flat toolCalls -----------------
+
+    it("out-of-arrival-order tool indices: blocks[i] and toolCalls[i] are the SAME call (F4)", () => {
+      // First-arriving tool call carries the HIGHER index (5); second carries
+      // the LOWER (1). Index-sorting the flat list would put call_low first,
+      // disagreeing with the stream-arrival-ordered blocks. Interleave a text
+      // delta after the first tool so `blocks` is emitted.
+      const body = [
+        toolDelta(5, { id: "call_high", name: "first_arrived", args: '{"a":1}' }),
+        "",
+        textDelta("between"),
+        "",
+        toolDelta(1, { id: "call_low", name: "second_arrived", args: '{"b":2}' }),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const result = collapseOpenAISSE(body);
+      expect(result.blocks).toBeDefined();
+      const blockToolCalls = result.blocks!.filter((b) => b.type === "toolCall");
+      // blocks[i] and toolCalls[i] must describe the SAME call (consistent
+      // ordering + identity). Pre-fix the flat list was index-sorted
+      // (call_low first) while blocks were arrival-sorted (call_high first).
+      expect(result.toolCalls).toHaveLength(blockToolCalls.length);
+      result.toolCalls!.forEach((tc, i) => {
+        const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
+        expect(block.name).toBe(tc.name);
+        expect(block.arguments).toBe(tc.arguments);
+        expect(block.id).toBe(tc.id);
+      });
+      // Concretely: the first call by stream arrival is `first_arrived`.
+      expect(result.toolCalls![0].name).toBe("first_arrived");
+      expect((blockToolCalls[0] as { name: string }).name).toBe("first_arrived");
+    });
+
+    it("tool-call with no argument deltas: block arguments is valid JSON '{}', matching flat (F5)", () => {
+      // The first tool call NEVER receives any `arguments` fragment — its
+      // accumulator stays "". A text delta after it makes the stream
+      // interleaved so `blocks` is emitted.
+      const body = [
+        toolDelta(0, { id: "call_noargs", name: "no_args" }),
+        "",
+        textDelta("after"),
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      const result = collapseOpenAISSE(body);
+      expect(result.blocks).toBeDefined();
+      const block = result.blocks!.find((b) => b.type === "toolCall") as {
+        arguments: string;
+      };
+      // Pre-fix: block.arguments === "" (invalid JSON), flat sanitized to "{}".
+      expect(block.arguments).toBe("{}");
+      expect(() => JSON.parse(block.arguments)).not.toThrow();
+      // And it agrees with the flat representation.
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(block.arguments).toBe(result.toolCalls![0].arguments);
+    });
+  });
+
+  // ---- Anthropic SSE -------------------------------------------------------
+  describe("collapseAnthropicSSE blocks", () => {
+    const textBlock = (index: number, text: string) =>
+      [
+        `event: content_block_start`,
+        `data: ${JSON.stringify({ type: "content_block_start", index, content_block: { type: "text", text: "" } })}`,
+        "",
+        `event: content_block_delta`,
+        `data: ${JSON.stringify({ type: "content_block_delta", index, delta: { type: "text_delta", text } })}`,
+        "",
+        `event: content_block_stop`,
+        `data: ${JSON.stringify({ type: "content_block_stop", index })}`,
+      ].join("\n");
+    const toolBlock = (index: number, id: string, name: string, args: string) =>
+      [
+        `event: content_block_start`,
+        `data: ${JSON.stringify({ type: "content_block_start", index, content_block: { type: "tool_use", id, name, input: {} } })}`,
+        "",
+        `event: content_block_delta`,
+        `data: ${JSON.stringify({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: args } })}`,
+        "",
+        `event: content_block_stop`,
+        `data: ${JSON.stringify({ type: "content_block_stop", index })}`,
+      ].join("\n");
+
+    it("text-first → no blocks", () => {
+      const body = [textBlock(0, "Hi"), "", toolBlock(1, "toolu_1", "fn", "{}"), ""].join("\n");
+      const result = collapseAnthropicSSE(body);
+      expect(result.content).toBe("Hi");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("tool-first → blocks in tool-first order", () => {
+      const body = [toolBlock(0, "toolu_1", "fn", '{"x":1}'), "", textBlock(1, "after"), ""].join(
+        "\n",
+      );
+      const result = collapseAnthropicSSE(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "fn", arguments: '{"x":1}', id: "toolu_1" },
+        { type: "text", text: "after" },
+      ]);
+    });
+
+    it("tools→text→tools interleave captured in order", () => {
+      const body = [
+        toolBlock(0, "toolu_1", "a", "{}"),
+        "",
+        textBlock(1, "mid"),
+        "",
+        toolBlock(2, "toolu_2", "b", "{}"),
+        "",
+      ].join("\n");
+      const result = collapseAnthropicSSE(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "a", arguments: "{}", id: "toolu_1" },
+        { type: "text", text: "mid" },
+        { type: "toolCall", name: "b", arguments: "{}", id: "toolu_2" },
+      ]);
+    });
+  });
+
+  // ---- Gemini SSE ----------------------------------------------------------
+  describe("collapseGeminiSSE blocks", () => {
+    const textPart = (text: string) =>
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}`;
+    const fcPart = (name: string, args: Record<string, unknown>) =>
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name, args } }] } }] })}`;
+
+    it("text-first → no blocks", () => {
+      const body = [textPart("Hi"), "", fcPart("fn", {}), ""].join("\n");
+      const result = collapseGeminiSSE(body);
+      expect(result.content).toBe("Hi");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("tool-first → blocks in tool-first order", () => {
+      const body = [fcPart("fn", { x: 1 }), "", textPart("after"), ""].join("\n");
+      const result = collapseGeminiSSE(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "fn", arguments: '{"x":1}' },
+        { type: "text", text: "after" },
+      ]);
+    });
+
+    it("tools→text→tools interleave captured in order", () => {
+      const body = [fcPart("a", {}), "", textPart("mid"), "", fcPart("b", {}), ""].join("\n");
+      const result = collapseGeminiSSE(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "a", arguments: "{}" },
+        { type: "text", text: "mid" },
+        { type: "toolCall", name: "b", arguments: "{}" },
+      ]);
+    });
+
+    // #274 R2-N2: an interleaved Gemini AUDIO turn must NOT carry `blocks`.
+    // The audio collapse shape (AudioResponse) has no `blocks` slot and the
+    // recorder's audio branch never persists it — so producing ordered blocks
+    // on the audio path is silently produced-then-dropped. The companion
+    // content / toolCalls / reasoning are still preserved (flat), just no blocks.
+    const audioPart = (mimeType: string, data: string) =>
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType, data } }] } }] })}`;
+
+    it("audio turn with interleaved tool/text deltas → no blocks (audio shape)", () => {
+      const body = [
+        fcPart("fn", { x: 1 }),
+        "",
+        textPart("between"),
+        "",
+        audioPart("audio/mpeg", "QUJD"),
+        "",
+      ].join("\n");
+      const result = collapseGeminiSSE(body);
+      // Audio shape: audio bytes captured, companions preserved flat.
+      expect(result.audioB64).toBe("QUJD");
+      expect(result.audioMimeType).toBe("audio/mpeg");
+      expect(result.content).toBe("between");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].name).toBe("fn");
+      // The audio result type cannot carry ordered blocks — must be absent.
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("non-audio interleaved turn STILL produces blocks (F4F5 regression guard)", () => {
+      const body = [fcPart("fn", { x: 1 }), "", textPart("after"), ""].join("\n");
+      const result = collapseGeminiSSE(body);
+      expect(result.audioB64).toBeUndefined();
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "fn", arguments: '{"x":1}' },
+        { type: "text", text: "after" },
+      ]);
+    });
+  });
+
+  // ---- Ollama NDJSON -------------------------------------------------------
+  describe("collapseOllamaNDJSON blocks", () => {
+    const textLine = (content: string) =>
+      JSON.stringify({ model: "llama3", message: { role: "assistant", content }, done: false });
+    const toolLine = (name: string, args: Record<string, unknown>) =>
+      JSON.stringify({
+        model: "llama3",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ function: { name, arguments: args } }],
+        },
+        done: false,
+      });
+
+    it("text-first → no blocks", () => {
+      const body = [textLine("Hi"), toolLine("fn", {})].join("\n");
+      const result = collapseOllamaNDJSON(body);
+      expect(result.content).toBe("Hi");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("tool-first → blocks in tool-first order", () => {
+      const body = [toolLine("fn", { x: 1 }), textLine("after")].join("\n");
+      const result = collapseOllamaNDJSON(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "fn", arguments: '{"x":1}' },
+        { type: "text", text: "after" },
+      ]);
+    });
+
+    it("tools→text→tools interleave captured in order", () => {
+      const body = [toolLine("a", {}), textLine("mid"), toolLine("b", {})].join("\n");
+      const result = collapseOllamaNDJSON(body);
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "a", arguments: "{}" },
+        { type: "text", text: "mid" },
+        { type: "toolCall", name: "b", arguments: "{}" },
+      ]);
+    });
+  });
+});

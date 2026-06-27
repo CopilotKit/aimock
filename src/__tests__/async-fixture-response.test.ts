@@ -225,6 +225,43 @@ describe("async fixture response (function responses)", () => {
     expect(res.status).toBe(500);
   });
 
+  it("stringifies object arguments on a factory-returned toolCall block", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.on(
+      { userMessage: "blocks-fn" },
+      () =>
+        ({
+          content: "Here you go.",
+          toolCalls: [{ name: "get_weather", arguments: { city: "NYC" } }],
+          blocks: [
+            // OBJECT arguments — must be auto-stringified like toolCalls[].arguments,
+            // otherwise resolveFixtureBlocks throws (FixtureBlock requires string args).
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { type: "toolCall", name: "get_weather", arguments: { city: "NYC" } } as any,
+          ],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "blocks-fn" }],
+        stream: true,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseSSEChunks(await res.text());
+    const args = chunks
+      .map((c) => c.choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments ?? "")
+      .join("");
+    expect(args).toBe('{"city":"NYC"}');
+  });
+
   it("works with async factory and streaming", async () => {
     mock = new LLMock({ port: 0 });
     mock.on({ userMessage: "async-stream" }, async () => {
