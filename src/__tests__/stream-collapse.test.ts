@@ -6,6 +6,7 @@ import {
   collapseOllamaNDJSON,
   collapseCohereSSE,
   collapseBedrockEventStream,
+  collapseGeminiInteractionsSSE,
   collapseStreamingResponse,
 } from "../stream-collapse.js";
 import { encodeEventStreamMessage, encodeEventStreamFrame } from "../aws-event-stream.js";
@@ -3926,6 +3927,333 @@ describe("stream block-order instrumentation (#274)", () => {
         { type: "text", text: "mid" },
         { type: "toolCall", name: "b", arguments: "{}" },
       ]);
+    });
+  });
+
+  // ---- Cohere SSE ----------------------------------------------------------
+  describe("collapseCohereSSE blocks + zero-arg", () => {
+    const textDelta = (text: string) =>
+      [
+        `event: content-delta`,
+        `data: ${JSON.stringify({
+          type: "content-delta",
+          index: 0,
+          delta: { message: { content: { type: "text", text } } },
+        })}`,
+        "",
+      ].join("\n");
+    const toolStart = (index: number, id: string, name: string) =>
+      [
+        `event: tool-call-start`,
+        `data: ${JSON.stringify({
+          type: "tool-call-start",
+          index,
+          delta: { message: { tool_calls: { id, type: "function", function: { name } } } },
+        })}`,
+        "",
+      ].join("\n");
+    const toolArgDelta = (index: number, args: string) =>
+      [
+        `event: tool-call-delta`,
+        `data: ${JSON.stringify({
+          type: "tool-call-delta",
+          index,
+          delta: { message: { tool_calls: { function: { arguments: args } } } },
+        })}`,
+        "",
+      ].join("\n");
+
+    it("zero-arg tool call → flat arguments is '{}' not '' (F5)", () => {
+      const body = [toolStart(0, "call_1", "no_args")].join("\n");
+      const result = collapseCohereSSE(body);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    });
+
+    it("text-first stream is NOT interleaved → no blocks (legacy byte-identical)", () => {
+      const body = [
+        textDelta("Hello "),
+        textDelta("world"),
+        toolStart(0, "call_1", "get_weather"),
+        toolArgDelta(0, '{"city":"Paris"}'),
+      ].join("\n");
+      const result = collapseCohereSSE(body);
+      expect(result.content).toBe("Hello world");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("tool-first stream is interleaved → blocks in tool-first order", () => {
+      const body = [
+        toolStart(0, "call_1", "get_weather"),
+        toolArgDelta(0, '{"city":"Paris"}'),
+        textDelta("Here you go"),
+      ].join("\n");
+      const result = collapseCohereSSE(body);
+      expect(result.blocks).toBeDefined();
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "get_weather", arguments: '{"city":"Paris"}', id: "call_1" },
+        { type: "text", text: "Here you go" },
+      ]);
+    });
+
+    it("text-after-tool interleave captured in stream order", () => {
+      const body = [
+        textDelta("before"),
+        toolStart(0, "call_1", "fn"),
+        toolArgDelta(0, "{}"),
+        textDelta("after"),
+      ].join("\n");
+      const result = collapseCohereSSE(body);
+      expect(result.blocks).toEqual([
+        { type: "text", text: "before" },
+        { type: "toolCall", name: "fn", arguments: "{}", id: "call_1" },
+        { type: "text", text: "after" },
+      ]);
+    });
+
+    it("blocks ⟷ flat toolCalls consistent + record→reload round-trip valid (F4/F5)", () => {
+      const body = [
+        toolStart(0, "call_1", "first"),
+        toolArgDelta(0, '{"a":1}'),
+        textDelta("middle"),
+        toolStart(1, "call_2", "second"),
+        toolArgDelta(1, '{"b":2}'),
+      ].join("\n");
+      const result = collapseCohereSSE(body);
+      expect(result.blocks).toBeDefined();
+      const blockToolCalls = result.blocks!.filter((b) => b.type === "toolCall");
+      expect(result.toolCalls).toHaveLength(blockToolCalls.length);
+      result.toolCalls!.forEach((tc, i) => {
+        const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
+        expect(block.name).toBe(tc.name);
+        expect(block.arguments).toBe(tc.arguments);
+        expect(block.id).toBe(tc.id);
+      });
+      // Every persisted arguments string (blocks AND flat) must be valid JSON so
+      // the fixture re-loads without a JSON.parse validation error.
+      for (const b of result.blocks!) {
+        if (b.type === "toolCall") {
+          expect(() => JSON.parse((b as { arguments: string }).arguments)).not.toThrow();
+        }
+      }
+      for (const tc of result.toolCalls!) {
+        expect(() => JSON.parse(tc.arguments)).not.toThrow();
+      }
+    });
+  });
+
+  // ---- Bedrock EventStream (binary) ---------------------------------------
+  describe("collapseBedrockEventStream blocks + zero-arg", () => {
+    // Converse (camelCase) frame builders
+    const cText = (text: string) =>
+      encodeEventStreamMessage("contentBlockDelta", {
+        contentBlockIndex: 0,
+        contentBlockDelta: { contentBlockIndex: 0, delta: { text } },
+      });
+    const cToolStart = (index: number, id: string, name: string) =>
+      encodeEventStreamMessage("contentBlockStart", {
+        contentBlockIndex: index,
+        contentBlockStart: {
+          contentBlockIndex: index,
+          start: { toolUse: { toolUseId: id, name } },
+        },
+      });
+    const cToolArg = (index: number, input: string) =>
+      encodeEventStreamMessage("contentBlockDelta", {
+        contentBlockIndex: index,
+        contentBlockDelta: { contentBlockIndex: index, delta: { toolUse: { input } } },
+      });
+    // Anthropic-native (flat type) frame builders
+    const nText = (text: string) =>
+      encodeEventStreamMessage("chunk", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text },
+      });
+    const nToolStart = (index: number, id: string, name: string) =>
+      encodeEventStreamMessage("chunk", {
+        type: "content_block_start",
+        index,
+        content_block: { type: "tool_use", id, name },
+      });
+    const nToolArg = (index: number, partial: string) =>
+      encodeEventStreamMessage("chunk", {
+        type: "content_block_delta",
+        index,
+        delta: { type: "input_json_delta", partial_json: partial },
+      });
+
+    it("Converse: zero-arg tool call → flat arguments is '{}' not '' (F5)", () => {
+      const buf = Buffer.concat([cToolStart(0, "tool_1", "no_args")]);
+      const result = collapseBedrockEventStream(buf);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    });
+
+    it("Anthropic-native: zero-arg tool call → flat arguments is '{}' not '' (F5)", () => {
+      const buf = Buffer.concat([nToolStart(0, "toolu_1", "no_args")]);
+      const result = collapseBedrockEventStream(buf);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    });
+
+    it("Converse: tool-first stream → content preserved (no longer dropped) AND blocks ordered", () => {
+      const buf = Buffer.concat([
+        cToolStart(0, "tool_1", "get_weather"),
+        cToolArg(0, '{"city":"Paris"}'),
+        cText("Here you go"),
+      ]);
+      const result = collapseBedrockEventStream(buf);
+      // Regression: a tool-bearing turn that ALSO streamed text used to drop content.
+      expect(result.content).toBe("Here you go");
+      expect(result.blocks).toEqual([
+        { type: "toolCall", name: "get_weather", arguments: '{"city":"Paris"}', id: "tool_1" },
+        { type: "text", text: "Here you go" },
+      ]);
+    });
+
+    it("Anthropic-native: text-after-tool interleave captured in stream order", () => {
+      const buf = Buffer.concat([
+        nText("before"),
+        nToolStart(0, "toolu_1", "fn"),
+        nToolArg(0, "{}"),
+        nText("after"),
+      ]);
+      const result = collapseBedrockEventStream(buf);
+      expect(result.content).toBe("beforeafter");
+      expect(result.blocks).toEqual([
+        { type: "text", text: "before" },
+        { type: "toolCall", name: "fn", arguments: "{}", id: "toolu_1" },
+        { type: "text", text: "after" },
+      ]);
+    });
+
+    it("text-first stream → blocks undefined (legacy byte-identical)", () => {
+      const buf = Buffer.concat([
+        cText("Hello"),
+        cToolStart(0, "tool_1", "get_weather"),
+        cToolArg(0, '{"city":"Paris"}'),
+      ]);
+      const result = collapseBedrockEventStream(buf);
+      expect(result.content).toBe("Hello");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.blocks).toBeUndefined();
+    });
+
+    it("blocks ⟷ flat toolCalls consistent + round-trip valid JSON (F4/F5)", () => {
+      const buf = Buffer.concat([
+        cToolStart(0, "tool_1", "first"),
+        cToolArg(0, '{"a":1}'),
+        cText("middle"),
+        cToolStart(1, "tool_2", "second"),
+        cToolArg(1, '{"b":2}'),
+      ]);
+      const result = collapseBedrockEventStream(buf);
+      expect(result.blocks).toBeDefined();
+      const blockToolCalls = result.blocks!.filter((b) => b.type === "toolCall");
+      expect(result.toolCalls).toHaveLength(blockToolCalls.length);
+      result.toolCalls!.forEach((tc, i) => {
+        const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
+        expect(block.name).toBe(tc.name);
+        expect(block.arguments).toBe(tc.arguments);
+        expect(block.id).toBe(tc.id);
+      });
+      for (const b of result.blocks!) {
+        if (b.type === "toolCall") {
+          expect(() => JSON.parse((b as { arguments: string }).arguments)).not.toThrow();
+        }
+      }
+      for (const tc of result.toolCalls!) {
+        expect(() => JSON.parse(tc.arguments)).not.toThrow();
+      }
+    });
+  });
+
+  // ---- Gemini Interactions SSE (args-only; NO block-capture) ---------------
+  // DECISION: block-capture is intentionally NOT applied to this collapser. The
+  // 2.x protocol is step/index-addressed and the finalizer emits tool calls in
+  // SORTED step-index order, interleaved with arrival-pushed legacy 1.x calls —
+  // a hybrid that cannot be reconciled with arrival-order OrderAtoms by identity.
+  // Emitting blocks here would risk a blocks⟷flat disagreement (violating the
+  // #274 F4/F5 invariant), so we only normalize arguments and assert blocks stays
+  // undefined for an interleaved stream.
+  describe("collapseGeminiInteractionsSSE args-only", () => {
+    const data = (obj: Record<string, unknown>) => `data: ${JSON.stringify(obj)}`;
+
+    it("2.x zero-arg (whitespace argsStr) → arguments '{}' not '' or ' '", () => {
+      const body = [
+        data({
+          event_type: "step.start",
+          index: 0,
+          step: { type: "function_call", id: "s1", name: "fn" },
+        }),
+        data({
+          event_type: "step.delta",
+          index: 0,
+          delta: { type: "arguments_delta", arguments: "  " },
+        }),
+      ].join("\n\n");
+      const result = collapseGeminiInteractionsSSE(body);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    });
+
+    it("legacy 1.x zero-arg (arguments: '') → arguments '{}' not ''", () => {
+      const body = [
+        data({
+          event_type: "content.delta",
+          index: 0,
+          delta: { type: "function_call", name: "fn", arguments: "" },
+        }),
+      ].join("\n\n");
+      const result = collapseGeminiInteractionsSSE(body);
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls![0].arguments).toBe("{}");
+      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    });
+
+    it("valid non-empty args pass through unchanged (no regression)", () => {
+      const body = [
+        data({
+          event_type: "step.start",
+          index: 0,
+          step: { type: "function_call", id: "s1", name: "fn" },
+        }),
+        data({
+          event_type: "step.delta",
+          index: 0,
+          delta: { type: "arguments_delta", arguments: '{"x":1}' },
+        }),
+      ].join("\n\n");
+      const result = collapseGeminiInteractionsSSE(body);
+      expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    });
+
+    it("interleaved 2.x stream yields NO blocks (deliberate no-block decision)", () => {
+      const body = [
+        data({
+          event_type: "step.start",
+          index: 0,
+          step: { type: "function_call", id: "s1", name: "fn" },
+        }),
+        data({
+          event_type: "step.delta",
+          index: 0,
+          delta: { type: "arguments_delta", arguments: "{}" },
+        }),
+        data({
+          event_type: "content.delta",
+          index: 0,
+          delta: { type: "text", text: "after tool" },
+        }),
+      ].join("\n\n");
+      const result = collapseGeminiInteractionsSSE(body);
+      expect(result.blocks).toBeUndefined();
     });
   });
 });
