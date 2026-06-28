@@ -53,6 +53,12 @@ aimock.on_system_message("name=Atai", {"content": "..."}, user_message="who am I
 # Array form: all substrings must appear in the joined system text (AND)
 aimock.on_system_message(["name=Atai", "tz=PST"], {"content": "..."})
 aimock.add_fixture(match={...}, response={...}, chunkSize=10, latency=50)
+# Ordered blocks: stream a tool call before text (tool-first / interleaved).
+# A blocks-only response is first-class — see /fixtures#ordered-blocks
+aimock.add_fixture(match={...}, response={"blocks": [
+    {"type": "toolCall", "name": "get_weather", "arguments": {"city": "SF"}},
+    {"type": "text", "text": "Here is the weather."},
+]})
 aimock.load_fixtures("path/to/fixtures.json")
 
 # Inspect

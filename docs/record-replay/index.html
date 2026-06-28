@@ -429,6 +429,25 @@
           simple <code>{ content }</code> or <code>{ toolCalls }</code> fixture response.
         </p>
 
+        <h2 id="recording-block-order">Recording Block Order</h2>
+        <p>
+          When a recorded stream is <em>genuinely</em> tool-first or interleaved &mdash; a tool-call
+          delta arrives before the first content delta, or content arrives after a tool-call delta
+          &mdash; the collapser preserves that arrival order as a
+          <a href="/fixtures#ordered-blocks"><code>blocks</code></a> array on the fixture. This
+          works across OpenAI, Anthropic, Gemini, Ollama, Cohere, and Bedrock. Ordinary
+          text-then-tools streams are saved in the legacy <code>{ content, toolCalls }</code> shape
+          with no <code>blocks</code> key, so existing recordings round-trip byte-identically.
+        </p>
+        <p>
+          <strong>Gemini Interactions is the exception:</strong> its record-side collapser
+          normalizes tool-call arguments only and does not reorder blocks on capture. Ordering is
+          still honored on replay from a hand-authored <code>blocks</code> fixture; it is simply not
+          reconstructed automatically from a recording. See the
+          <a href="/fixtures#ordered-blocks">per-provider observability matrix</a> for how
+          faithfully block order is reconstructable on each provider's wire.
+        </p>
+
         <h2>Header Forwarding</h2>
         <p>
           When proxying to upstream providers, aimock forwards the original request's headers except

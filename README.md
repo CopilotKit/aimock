@@ -64,6 +64,7 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 - **[Docker + Helm](https://aimock.copilotkit.dev/docker)** — Container image and Helm chart for CI/CD
 - **[Vitest & Jest Plugins](https://aimock.copilotkit.dev/test-plugins)** — Zero-config `useAimock()` with auto lifecycle and env patching
 - **[Response Overrides](https://aimock.copilotkit.dev/fixtures)** — Control `id`, `model`, `usage`, `finishReason` in fixture responses
+- **[Ordered Blocks](https://aimock.copilotkit.dev/fixtures#ordered-blocks)** — A `blocks` array streams text and tool calls in any order (tool-first or interleaved); blocks-only fixtures are first-class, and the recorder captures order from genuinely tool-first/interleaved streams
 - **[Streaming Usage Chunks](https://aimock.copilotkit.dev/streaming-physics)** — `stream_options.include_usage` support emits a final chunk with token counts, matching OpenAI's streaming usage protocol
 - **[Rate Limiting Headers](https://aimock.copilotkit.dev/chaos-testing)** — `x-ratelimit-*` headers on every response and `Retry-After` on 429 errors for testing retry/backoff logic
 - **Zero dependencies** — Everything from Node.js builtins
