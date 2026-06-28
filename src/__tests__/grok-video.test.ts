@@ -392,7 +392,8 @@ describe("Grok video — testId scoping of returned request_id", () => {
       body: JSON.stringify({ model: "grok-imagine-video", prompt: "scoped poll" }),
     });
     const { request_id } = (await submit.json()) as { request_id: string };
-    expect(request_id).toContain("testId=test-a");
+    // Exact query param, not just a substring: `{uuid}?testId=test-a`.
+    expect(request_id).toMatch(/^[^?]+\?testId=test-a$/);
 
     // Bare poll of the returned id — no X-Test-Id header — must still resolve
     // via the embedded query parameter.
@@ -402,29 +403,61 @@ describe("Grok video — testId scoping of returned request_id", () => {
     expect(data.status).toBe("done");
   });
 
-  test("job submitted under one testId is invisible to another", async () => {
+  // DECISIVE multi-tenant routing (#278). Two tenants submit DISTINCT jobs
+  // concurrently — both live in the map at once — then each polls ONLY its own
+  // RETURNED suffix-bearing request_id, sending NO x-test-id header. The
+  // header-less poll must resolve via the embedded `?testId=` suffix to that
+  // tenant's own job (not the other tenant's, not a Sora 404 fall-through).
+  // This FAILS on pre-fix code: a bare returned request_id carries no testId, so
+  // a header-less poll falls to the default testId, the `${testId}:${requestId}`
+  // key misses, and the Grok-first dispatch falls through to Sora → 404. The
+  // earlier header-stripping "isolation" test was tautological (it 404s pre- AND
+  // post-fix); this one is the real cross-tenant routing proof.
+  test("concurrent tenants each resolve their OWN job via the header-less suffix", async () => {
     mock = new LLMock({ port: 0 });
     mock.addFixture({
-      match: { userMessage: "isolated", endpoint: "video" },
-      response: { video: { id: "vid_iso", status: "completed", url: "https://cdn.x.ai/i.mp4" } },
+      match: { userMessage: "tenant A clip", endpoint: "video" },
+      response: { video: { id: "vid_A", status: "completed", url: "https://cdn.x.ai/a.mp4" } },
+    });
+    mock.addFixture({
+      match: { userMessage: "tenant B clip", endpoint: "video" },
+      response: { video: { id: "vid_B", status: "completed", url: "https://cdn.x.ai/b.mp4" } },
     });
     await mock.start();
 
-    const submit = await fetch(`${mock.url}/v1/videos/generations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Test-Id": "test-a" },
-      body: JSON.stringify({ model: "grok-imagine-video", prompt: "isolated" }),
-    });
-    const { request_id } = (await submit.json()) as { request_id: string };
+    // Both tenants submit concurrently → both jobs coexist in the map.
+    const [resA, resB] = await Promise.all([
+      fetch(`${mock.url}/v1/videos/generations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Id": "tenant-a" },
+        body: JSON.stringify({ model: "grok-imagine-video", prompt: "tenant A clip" }),
+      }),
+      fetch(`${mock.url}/v1/videos/generations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Id": "tenant-b" },
+        body: JSON.stringify({ model: "grok-imagine-video", prompt: "tenant B clip" }),
+      }),
+    ]);
+    const { request_id: idA } = (await resA.json()) as { request_id: string };
+    const { request_id: idB } = (await resB.json()) as { request_id: string };
+    expect(idA).toMatch(/^[^?]+\?testId=tenant-a$/);
+    expect(idB).toMatch(/^[^?]+\?testId=tenant-b$/);
+    // Distinct underlying request ids (no accidental collision).
+    expect(idA.split("?")[0]).not.toBe(idB.split("?")[0]);
 
-    // Strip the testId suffix to recover the bare request_id, then poll it under
-    // a DIFFERENT tenant. Grok misses fall through to Sora status, which 404s an
-    // unknown id — so a cross-tenant poll must NOT return a Grok "done" body.
-    const bareId = request_id.split("?")[0];
-    const crossPoll = await fetch(`${mock.url}/v1/videos/${bareId}`, {
-      headers: { "X-Test-Id": "test-b" },
-    });
-    expect(crossPoll.status).toBe(404);
+    // Header-less poll of A's returned id → resolves A's job (a.mp4), not B's.
+    const pollA = await fetch(`${mock.url}/v1/videos/${idA}`);
+    expect(pollA.status).toBe(200);
+    const dataA = await pollA.json();
+    expect(dataA.status).toBe("done");
+    expect(dataA.video.url).toBe("https://cdn.x.ai/a.mp4");
+
+    // Header-less poll of B's returned id → resolves B's job (b.mp4), not A's.
+    const pollB = await fetch(`${mock.url}/v1/videos/${idB}`);
+    expect(pollB.status).toBe(200);
+    const dataB = await pollB.json();
+    expect(dataB.status).toBe("done");
+    expect(dataB.video.url).toBe("https://cdn.x.ai/b.mp4");
   });
 
   test("default testId returns the bare request_id (no testId param)", async () => {

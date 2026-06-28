@@ -310,7 +310,8 @@ describe("Veo video — testId scoping of returned operation name", () => {
       body: JSON.stringify({ instances: [{ prompt: "scoped poll" }] }),
     });
     const { name } = (await submit.json()) as { name: string };
-    expect(name).toContain("testId=test-a");
+    // Exact query param, not just a substring: `operations/{uuid}?testId=test-a`.
+    expect(name).toMatch(/^operations\/[^?]+\?testId=test-a$/);
 
     // Bare poll of the returned name — no X-Test-Id header — must still resolve
     // via the embedded query parameter.
@@ -320,30 +321,68 @@ describe("Veo video — testId scoping of returned operation name", () => {
     expect(data.done).toBe(true);
   });
 
-  test("job submitted under one testId is invisible to another", async () => {
+  // DECISIVE multi-tenant routing (#278). Two tenants submit DISTINCT jobs
+  // concurrently — both live in the map at once — then each polls ONLY its own
+  // RETURNED suffix-bearing id, sending NO x-test-id header. The header-less
+  // poll must resolve via the embedded `?testId=` suffix to that tenant's own
+  // job (not the other tenant's, not 404). This FAILS on pre-fix code: a bare
+  // returned name carries no testId, so a header-less poll falls to the default
+  // testId and the `${testId}:${operationName}` key misses → 404. The earlier
+  // header-stripping "isolation" test was tautological (it 404s pre- AND
+  // post-fix); this one is the real cross-tenant routing proof.
+  test("concurrent tenants each resolve their OWN job via the header-less suffix", async () => {
     mock = new LLMock({ port: 0 });
     mock.addFixture({
-      match: { userMessage: "isolated", endpoint: "video" },
+      match: { userMessage: "tenant A clip", endpoint: "video" },
       response: {
-        video: { id: "veo_iso", status: "completed", url: "https://files.example/i.mp4" },
+        video: { id: "veo_A", status: "completed", url: "https://files.example/a.mp4" },
+      },
+    });
+    mock.addFixture({
+      match: { userMessage: "tenant B clip", endpoint: "video" },
+      response: {
+        video: { id: "veo_B", status: "completed", url: "https://files.example/b.mp4" },
       },
     });
     await mock.start();
 
-    const submit = await fetch(submitUrl(mock.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Test-Id": "test-a" },
-      body: JSON.stringify({ instances: [{ prompt: "isolated" }] }),
-    });
-    const { name } = (await submit.json()) as { name: string };
+    // Both tenants submit concurrently → both jobs coexist in the map.
+    const [resA, resB] = await Promise.all([
+      fetch(submitUrl(mock.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Id": "tenant-a" },
+        body: JSON.stringify({ instances: [{ prompt: "tenant A clip" }] }),
+      }),
+      fetch(submitUrl(mock.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Test-Id": "tenant-b" },
+        body: JSON.stringify({ instances: [{ prompt: "tenant B clip" }] }),
+      }),
+    ]);
+    const { name: nameA } = (await resA.json()) as { name: string };
+    const { name: nameB } = (await resB.json()) as { name: string };
+    expect(nameA).toMatch(/^operations\/[^?]+\?testId=tenant-a$/);
+    expect(nameB).toMatch(/^operations\/[^?]+\?testId=tenant-b$/);
+    // Distinct underlying operation names (no accidental collision).
+    expect(nameA.split("?")[0]).not.toBe(nameB.split("?")[0]);
 
-    // Strip the testId suffix to recover the bare operation name, then poll it
-    // under a DIFFERENT tenant — must 404 (cross-tenant leak otherwise).
-    const bareName = name.split("?")[0];
-    const crossPoll = await fetch(`${mock.url}/v1beta/${bareName}`, {
-      headers: { "X-Test-Id": "test-b" },
-    });
-    expect(crossPoll.status).toBe(404);
+    // Header-less poll of A's returned name → resolves A's job (a.mp4), not B's.
+    const pollA = await fetch(`${mock.url}/v1beta/${nameA}`);
+    expect(pollA.status).toBe(200);
+    const dataA = await pollA.json();
+    expect(dataA.done).toBe(true);
+    expect(dataA.response.generateVideoResponse.generatedSamples[0].video.uri).toBe(
+      "https://files.example/a.mp4",
+    );
+
+    // Header-less poll of B's returned name → resolves B's job (b.mp4), not A's.
+    const pollB = await fetch(`${mock.url}/v1beta/${nameB}`);
+    expect(pollB.status).toBe(200);
+    const dataB = await pollB.json();
+    expect(dataB.done).toBe(true);
+    expect(dataB.response.generateVideoResponse.generatedSamples[0].video.uri).toBe(
+      "https://files.example/b.mp4",
+    );
   });
 
   test("default testId returns the bare operation name (no testId param)", async () => {
