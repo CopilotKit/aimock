@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-06-27
+
 ### Added
 
 - Native Google Veo async video lifecycle mock — `POST /v1beta/models/{model}:predictLongRunning` submit, `GET /v1beta/operations/{name}` poll through `done:false → done:true`, poll-count progression via `veoVideo`; the Files-API `uri` is served as-is (aimock never proxies or downloads video bytes) (#278)
