@@ -37,6 +37,8 @@
         { label: "Audio Transcription", href: "/transcription" },
         { label: "Video Generation", href: "/video" },
         { label: "OpenRouter Video", href: "/openrouter-video" },
+        { label: "Google Veo Video", href: "/veo-video" },
+        { label: "Grok Imagine Video", href: "/grok-video" },
         { label: "fal.ai", href: "/fal-ai" },
       ],
     },

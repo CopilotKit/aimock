@@ -56,7 +56,7 @@ import { handleEmbeddings } from "./embeddings.js";
 import { handleImages, handleImageEdit, handleImageVariations } from "./images.js";
 import { handleSpeech } from "./speech.js";
 import { handleTranscription } from "./transcription.js";
-import { handleVideoCreate, handleVideoStatus, VideoStateMap } from "./video.js";
+import { handleVideoCreate, VideoStateMap } from "./video.js";
 import {
   handleOpenRouterVideoCreate,
   handleOpenRouterVideoStatus,
@@ -65,6 +65,8 @@ import {
   OpenRouterVideoJobMap,
   OPENROUTER_VIDEO_DEFAULT_MAX_CONTENT_BYTES,
 } from "./openrouter-video.js";
+import { handleVeoVideoCreate, handleVeoVideoStatus, VeoVideoJobMap } from "./veo-video.js";
+import { handleGrokVideoCreate, handleGrokVideoStatus, GrokVideoJobMap } from "./grok-video.js";
 import { handleElevenLabsAudio, handleElevenLabsTTS } from "./elevenlabs-audio.js";
 import { handleFalQueue, falJobs } from "./fal-audio.js";
 import { handleFal, falQueueStates } from "./fal.js";
@@ -82,9 +84,12 @@ import { applyChaosAction, evaluateChaos } from "./chaos.js";
 import {
   createMetricsRegistry,
   normalizePathLabel,
-  OPENAI_VIDEO_STATUS_RE,
   OPENROUTER_VIDEO_CONTENT_RE,
   OPENROUTER_VIDEO_STATUS_RE,
+  VEO_PREDICT_LRO_RE,
+  VEO_OPERATION_RE,
+  GROK_VIDEO_SUBMIT_PATH,
+  GROK_VIDEO_STATUS_RE,
 } from "./metrics.js";
 import { proxyAndRecord } from "./recorder.js";
 
@@ -95,6 +100,8 @@ export interface ServerInstance {
   defaults: HandlerDefaults;
   videoStates: VideoStateMap;
   openRouterVideoJobs: OpenRouterVideoJobMap;
+  veoVideoJobs: VeoVideoJobMap;
+  grokVideoJobs: GrokVideoJobMap;
 }
 
 const COMPLETIONS_PATH = "/v1/chat/completions";
@@ -249,12 +256,16 @@ function performFixturesReset(
   journal: Journal,
   videoStates: VideoStateMap,
   openRouterVideoJobs: OpenRouterVideoJobMap,
+  veoVideoJobs: VeoVideoJobMap,
+  grokVideoJobs: GrokVideoJobMap,
   defaults: HandlerDefaults,
 ): void {
   fixtures.length = 0;
   journal.clear();
   videoStates.clear();
   openRouterVideoJobs.clear();
+  veoVideoJobs.clear();
+  grokVideoJobs.clear();
   falJobs.clear();
   falQueueStates.clear();
   resetInteractionCounter();
@@ -276,6 +287,8 @@ async function handleControlAPI(
   journal: Journal,
   videoStates: VideoStateMap,
   openRouterVideoJobs: OpenRouterVideoJobMap,
+  veoVideoJobs: VeoVideoJobMap,
+  grokVideoJobs: GrokVideoJobMap,
   defaults: HandlerDefaults,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
@@ -358,7 +371,15 @@ async function handleControlAPI(
 
   // POST /__aimock/reset/fixtures — full reset (fixtures + journal + match counts)
   if (subPath === "/reset/fixtures" && req.method === "POST") {
-    performFixturesReset(fixtures, journal, videoStates, openRouterVideoJobs, defaults);
+    performFixturesReset(
+      fixtures,
+      journal,
+      videoStates,
+      openRouterVideoJobs,
+      veoVideoJobs,
+      grokVideoJobs,
+      defaults,
+    );
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -375,7 +396,15 @@ async function handleControlAPI(
 
   // POST /__aimock/reset — DEPRECATED alias for /reset/fixtures (full reset)
   if (subPath === "/reset" && req.method === "POST") {
-    performFixturesReset(fixtures, journal, videoStates, openRouterVideoJobs, defaults);
+    performFixturesReset(
+      fixtures,
+      journal,
+      videoStates,
+      openRouterVideoJobs,
+      veoVideoJobs,
+      grokVideoJobs,
+      defaults,
+    );
     const deprecation =
       "POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)";
     defaults.logger.warn(
@@ -1111,6 +1140,12 @@ export async function createServer(
     get openRouterVideo() {
       return serverOptions.openRouterVideo;
     },
+    get veoVideo() {
+      return serverOptions.veoVideo;
+    },
+    get grokVideo() {
+      return serverOptions.grokVideo;
+    },
   };
 
   // Validate chaos config rates
@@ -1132,6 +1167,8 @@ export async function createServer(
   for (const { name, config } of [
     { name: "falQueue", config: options?.falQueue },
     { name: "openRouterVideo", config: options?.openRouterVideo },
+    { name: "veoVideo", config: options?.veoVideo },
+    { name: "grokVideo", config: options?.grokVideo },
   ]) {
     if (!config) continue;
     for (const field of ["pollsBeforeInProgress", "pollsBeforeCompleted"] as const) {
@@ -1168,6 +1205,8 @@ export async function createServer(
   });
   const videoStates = new VideoStateMap();
   const openRouterVideoJobs = new OpenRouterVideoJobMap();
+  const veoVideoJobs = new VeoVideoJobMap();
+  const grokVideoJobs = new GrokVideoJobMap();
 
   // Share journal and metrics registry with mounted services
   if (mounts) {
@@ -1249,6 +1288,8 @@ export async function createServer(
         journal,
         videoStates,
         openRouterVideoJobs,
+        veoVideoJobs,
+        grokVideoJobs,
         defaults,
       );
       return;
@@ -1940,6 +1981,54 @@ export async function createServer(
       return;
     }
 
+    // POST /v1/videos/generations — xAI Grok Imagine video submit. A distinct
+    // exact path from Sora's POST /v1/videos (no collision). Must precede the
+    // Sora GET status RE which would otherwise parse `generations` as an id on
+    // a GET — but this is a POST, so the guard is method-level here and
+    // `id !== "generations"` in the GET block below. (T0: stub filled in T2.)
+    if (pathname === GROK_VIDEO_SUBMIT_PATH && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const raw = await readBody(req);
+        await handleGrokVideoCreate(
+          req,
+          res,
+          raw,
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          grokVideoJobs,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        defaults.logger.error(`grok-video submit: ${msg}`);
+        if (!res.headersSent) {
+          try {
+            journal.add({
+              method: req.method ?? "POST",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch (jErr) {
+            defaults.logger.warn(
+              `grok-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+            );
+          }
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
     // POST /v1/videos — Video Generation API
     if (pathname === VIDEOS_PATH && req.method === "POST") {
       try {
@@ -1969,11 +2058,144 @@ export async function createServer(
       return;
     }
 
-    // GET /v1/videos/{id} — Video Status Check
-    const videoStatusMatch = pathname.match(OPENAI_VIDEO_STATUS_RE);
-    if (videoStatusMatch && req.method === "GET") {
-      const videoId = videoStatusMatch[1];
-      handleVideoStatus(req, res, videoId, journal, defaults, setCorsHeaders, videoStates);
+    // GET /v1/videos/{id} — Grok-first video status check. Grok Imagine and
+    // Sora share this path: handleGrokVideoStatus does a job-map-first lookup
+    // and falls through to the UNCHANGED Sora handleVideoStatus on a Grok miss
+    // (disjoint id namespaces → unambiguous). The `id !== "generations"` guard
+    // keeps the Grok submit literal out of the status RE. (T0: the Grok job map
+    // is always empty, so every GET delegates to Sora — behavior-preserving.)
+    const grokVideoStatusMatch = pathname.match(GROK_VIDEO_STATUS_RE);
+    if (grokVideoStatusMatch && grokVideoStatusMatch[1] !== "generations" && req.method === "GET") {
+      try {
+        await handleGrokVideoStatus(
+          req,
+          res,
+          grokVideoStatusMatch[1],
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          grokVideoJobs,
+          videoStates,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        defaults.logger.error(`grok-video status: ${msg}`);
+        if (!res.headersSent) {
+          try {
+            journal.add({
+              method: req.method ?? "GET",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch (jErr) {
+            defaults.logger.warn(
+              `grok-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+            );
+          }
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    // POST /v1beta/models/{model}:predictLongRunning — Google Veo video submit.
+    // Anchored on `:predictLongRunning`, so it never collides with the Gemini
+    // `:predict` Imagen route below. (T0: handler is a stub filled in T1.)
+    const veoPredictMatch = pathname.match(VEO_PREDICT_LRO_RE);
+    if (veoPredictMatch && req.method === "POST") {
+      setCorsHeaders(res);
+      try {
+        const raw = await readBody(req);
+        await handleVeoVideoCreate(
+          req,
+          res,
+          raw,
+          veoPredictMatch[1],
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          veoVideoJobs,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        defaults.logger.error(`veo-video submit: ${msg}`);
+        if (!res.headersSent) {
+          try {
+            journal.add({
+              method: req.method ?? "POST",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch (jErr) {
+            defaults.logger.warn(
+              `veo-video submit: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+            );
+          }
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+
+    // GET /v1beta/operations/{name} — Google Veo video status poll.
+    // (T0: handler is a stub filled in T1.)
+    const veoOperationMatch = pathname.match(VEO_OPERATION_RE);
+    if (veoOperationMatch && req.method === "GET") {
+      try {
+        await handleVeoVideoStatus(
+          req,
+          res,
+          veoOperationMatch[1],
+          fixtures,
+          journal,
+          defaults,
+          setCorsHeaders,
+          veoVideoJobs,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        defaults.logger.error(`veo-video status: ${msg}`);
+        if (!res.headersSent) {
+          try {
+            journal.add({
+              method: req.method ?? "GET",
+              path: req.url ?? pathname,
+              headers: flattenHeaders(req.headers),
+              body: null,
+              response: { status: 500, fixture: null },
+            });
+          } catch (jErr) {
+            defaults.logger.warn(
+              `veo-video status: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+            );
+          }
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
@@ -2716,6 +2938,8 @@ export async function createServer(
     activeConnections.clear();
     videoStates.clear();
     openRouterVideoJobs.clear();
+    veoVideoJobs.clear();
+    grokVideoJobs.clear();
     originalClose(callback);
     return this;
   } as typeof server.close;
@@ -2737,7 +2961,16 @@ export async function createServer(
         }
       }
 
-      resolve({ server, journal, url, defaults, videoStates, openRouterVideoJobs });
+      resolve({
+        server,
+        journal,
+        url,
+        defaults,
+        videoStates,
+        openRouterVideoJobs,
+        veoVideoJobs,
+        grokVideoJobs,
+      });
     });
   });
 }

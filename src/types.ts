@@ -55,6 +55,14 @@ export interface ChatCompletionRequest {
   _endpointType?: string;
   /** Context identifier, set by handlers for fixture context routing. */
   _context?: string;
+  /**
+   * Video-provider discriminator, set by the async video handlers for journal
+   * and dispatch clarity only. NOT a fixture match key — `buildFixtureMatch`
+   * derives the endpoint from `_endpointType` and never reads this field; the
+   * model string is the provider disambiguator (veo-* / grok-imagine-* /
+   * openrouter ids do not overlap).
+   */
+  _videoProvider?: "openrouter" | "veo" | "grok";
   [key: string]: unknown;
 }
 
@@ -261,6 +269,8 @@ export interface VideoResponse {
     b64?: string;
     /** Generation cost surfaced in usage envelopes (e.g. OpenRouter `usage.cost`). */
     cost?: number;
+    /** Clip duration in seconds surfaced by some providers (e.g. Grok `video.duration`). */
+    duration?: number;
   };
 }
 
@@ -613,7 +623,9 @@ export type RecordProviderKey =
   | "cohere"
   | "elevenlabs"
   | "fal"
-  | "openrouter";
+  | "openrouter"
+  | "veo"
+  | "grok";
 
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
@@ -785,6 +797,21 @@ export interface MockServerOptions {
    * the first status poll merely reports the already-terminal status.
    */
   openRouterVideo?: FalQueueConfig;
+  /**
+   * Configure Google Veo async video job polling progression
+   * (`done:false → done:true` on `GET /v1beta/operations/{name}`). Same
+   * threshold semantics as `openRouterVideo`; the internal
+   * `pending → in_progress → completed | failed` model is serialized to the
+   * two-state Veo wire.
+   */
+  veoVideo?: FalQueueConfig;
+  /**
+   * Configure xAI Grok Imagine async video job polling progression
+   * (`pending → done | failed` on `GET /v1/videos/{request_id}`). Same
+   * threshold semantics as `openRouterVideo`; progress is synthesized from the
+   * poll count.
+   */
+  grokVideo?: FalQueueConfig;
 }
 
 /**
@@ -833,4 +860,6 @@ export interface HandlerDefaults {
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   falQueue?: FalQueueConfig;
   openRouterVideo?: FalQueueConfig;
+  veoVideo?: FalQueueConfig;
+  grokVideo?: FalQueueConfig;
 }

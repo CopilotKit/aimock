@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google Veo Video — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Google Veo Video</h1>
+        <p class="lead">
+          aimock mocks Google's native Veo async video-generation API &mdash; submit a long-running
+          operation under <code>POST /v1beta/models/{model}:predictLongRunning</code>, then poll it
+          through <code>done: false &rarr; done: true</code> under
+          <code>GET /v1beta/operations/{name}</code>. It draws from the same
+          <code>endpoint: "video"</code> fixture pool as the other video surfaces, disambiguated by
+          the <code>veo-*</code> model string.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/v1beta/models/{model}:predictLongRunning</code></td>
+              <td>
+                <code>{ name: "operations/&hellip;" }</code> &mdash; the long-running operation
+                handle; the matched fixture's <code>video</code> drives the operation's terminal
+                state
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/v1beta/operations/{name}</code></td>
+              <td>
+                <code>{ name, done: false }</code> while running, then
+                <code
+                  >{ name, done: true, response.generateVideoResponse.generatedSamples[0].video.uri
+                  }</code
+                >
+                once complete &mdash; or <code>{ name, done: true, error }</code> on failure
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Veo has no collision with the Gemini <code>:predict</code> route (anchored on
+          <code>:predict$</code>, so <code>:predictLongRunning</code> never matches it) and
+          <code>/v1beta/operations/&hellip;</code> is a fresh namespace. There is no model-listing
+          endpoint, and &mdash; deliberately &mdash; no content/download endpoint (see
+          <a href="#files-api-uri">Files-API uri</a>).
+        </p>
+
+        <h2>Fixture Authoring</h2>
+        <p>
+          Submits are matched against <code>endpoint: "video"</code> fixtures on the request's
+          <code>prompt</code> (via <code>match.userMessage</code>) and <code>model</code> (via
+          <code>match.model</code>). The Veo create body's prompt is read from
+          <code>instances[0].prompt</code>. The <code>veo-*</code> model string is the provider
+          disambiguator &mdash; Veo, Grok, and OpenRouter video fixtures share one match namespace,
+          and their model tokens never overlap.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">veo-video.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"a cat playing piano"</span>, {
+  <span class="cm">// `id` is required by the type but ignored on this surface (the operation</span>
+  <span class="cm">// name is always server-minted); `url` is the Files-API uri served as-is.</span>
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_1"</span>, <span class="prop">status</span>: <span class="str">"completed"</span>, <span class="prop">url</span>: <span class="str">"https://generativelanguage.googleapis.com/v1beta/files/abc"</span> },
+}, { <span class="prop">model</span>: <span class="str">"veo-3.1-generate-preview"</span> });
+
+<span class="cm">// A failed operation:</span>
+<span class="op">mock</span>.<span class="fn">onVideo</span>(<span class="str">"impossible prompt"</span>, {
+  <span class="prop">video</span>: { <span class="prop">id</span>: <span class="str">"vid_2"</span>, <span class="prop">status</span>: <span class="str">"failed"</span>, <span class="prop">error</span>: <span class="str">"content policy violation"</span> },
+}, { <span class="prop">model</span>: <span class="str">"veo-3.1-generate-preview"</span> });</code></pre>
+        </div>
+
+        <p>The fixture's <code>video</code> object supports:</p>
+        <ul>
+          <li>
+            <code>status</code> &mdash; <code>"completed"</code> or <code>"failed"</code> sets the
+            operation's terminal state. The wire terminal signal is the boolean
+            <code>done</code> field: a stored <code>"completed"</code> or
+            <code>"failed"</code> status serializes to <code>done: true</code> (and a non-terminal
+            poll to <code>done: false</code>). There is no <code>"done"</code> status string on this
+            surface &mdash; only the boolean.
+          </li>
+          <li>
+            <code>id</code> &mdash; ignored on this surface (the operation name is always a
+            server-minted <code>operations/&lt;uuid&gt;</code>)
+          </li>
+          <li>
+            <code>url?</code> &mdash; the Files-API uri returned in
+            <code>generatedSamples[0].video.uri</code> on a completed poll; defaults to a
+            Files-API-shaped placeholder when omitted
+          </li>
+          <li><code>error?</code> &mdash; failure message surfaced on a failed-operation poll</li>
+          <li>
+            <code>cost?</code> &mdash; not applicable to Veo. The Veo operations envelope carries no
+            cost field, so cost is neither captured in record mode nor round-tripped on this
+            surface.
+          </li>
+        </ul>
+
+        <h2>Polling Realism</h2>
+        <p>
+          By default a submitted operation is seeded terminal internally &mdash; the first status
+          poll already reports <code>done: true</code>. To exercise client code that polls through
+          intermediate states, pass <code>veoVideo</code> with poll thresholds. The semantics are
+          identical to <a href="/fal-ai#polling-realism"><code>falQueue</code></a> and the
+          <a href="/openrouter-video#polling-realism">OpenRouter video</a> surface: aimock keeps a
+          <code>pending &rarr; in_progress &rarr; completed</code> model internally and serializes
+          both non-terminal states to the Veo wire's <code>done: false</code>.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">polling.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">port</span>: <span class="num">0</span>,
+  <span class="prop">veoVideo</span>: { <span class="prop">pollsBeforeInProgress</span>: <span class="num">1</span>, <span class="prop">pollsBeforeCompleted</span>: <span class="num">2</span> },
+});
+
+<span class="cm">// Submit  → { name: "operations/…" }</span>
+<span class="cm">// poll 1  → { name, done: false }</span>
+<span class="cm">// poll 2  → { name, done: true, response.generateVideoResponse.generatedSamples[0].video.uri }</span></code></pre>
+        </div>
+
+        <p>
+          Thresholds are sanitized exactly as on the other video surfaces: non-finite values
+          (<code>NaN</code>, <code>Infinity</code>) are treated as unset, negative or fractional
+          values are floored and clamped to non-negative integers, and an explicit
+          <code>{ pollsBeforeInProgress: 0, pollsBeforeCompleted: 0 }</code> still seeds the
+          operation terminal at submit. <code>createServer</code> warns at startup on invalid
+          values.
+        </p>
+
+        <h2 id="files-api-uri">Files-API uri — served as-is, no byte proxying</h2>
+        <div class="info-box">
+          <p>
+            <strong>aimock does not proxy or capture Veo video bytes.</strong> The Veo API returns
+            the rendered clip as a Files-API <code>uri</code> inside
+            <code>generatedSamples[0].video.uri</code>, and aimock serves that uri
+            <em>verbatim</em> &mdash; there is no content/download endpoint, no base64, and no byte
+            relay. A fixture stores the uri in <code>video.url</code> (a Files-API-shaped
+            <code>https://generativelanguage.googleapis.com/v1beta/files/&hellip;</code> placeholder
+            is served when omitted), and record mode persists the upstream uri as-is. Clients fetch
+            the actual bytes from the Files API themselves, exactly as against the real provider.
+          </p>
+        </div>
+
+        <h2>Errors</h2>
+        <p>
+          Malformed or non-object JSON, an empty prompt, and an unknown operation all return the
+          Gemini error envelope <code>{ error: { code, message, status } }</code> &mdash; 400 for a
+          bad submit body, 404 for an unknown operation. A matched <code>failed</code> fixture polls
+          to <code>{ name, done: true, error: { code, message } }</code>.
+        </p>
+
+        <h2>Chaos &amp; Metrics</h2>
+        <p>
+          <a href="/chaos-testing">Chaos injection</a> applies to both routes. In
+          <a href="/metrics">Prometheus metrics</a> the per-operation path is templated as
+          <code>/v1beta/models/{model}:predictLongRunning</code> and
+          <code>/v1beta/operations/{name}</code> to keep label cardinality bounded.
+        </p>
+
+        <h2 id="record-mode">Record Mode</h2>
+        <p>
+          With <a href="/record-replay">record mode</a> and the <code>veo</code> provider
+          configured, an unmatched submit becomes a <em>live interactive proxy</em>: the
+          <code>:predictLongRunning</code> POST is forwarded to the real API and answered with a
+          mock-rewritten <code>{ name }</code> envelope (a fresh aimock operation name), and each
+          client poll is proxied upstream 1:1 with the mock operation name substituted. The client's
+          own polling drives the upstream lifecycle &mdash; there is no server-side queue walk.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">aimock.config.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="key">"llm"</span>: {
+    <span class="key">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="key">"record"</span>: {
+      <span class="key">"providers"</span>: { <span class="key">"veo"</span>: <span class="str">"https://generativelanguage.googleapis.com"</span> }
+    }
+  }
+}</code></pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header">Programmatic config <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>({
+  <span class="prop">record</span>: {
+    <span class="prop">providers</span>: { <span class="prop">veo</span>: <span class="str">"https://generativelanguage.googleapis.com"</span> },
+  },
+});</code></pre>
+        </div>
+
+        <p>
+          When the upstream poll reports <code>done: true</code>, the body is relayed immediately
+          and an eager capture runs <em>in the background</em>: aimock reads the Files-API uri
+          straight out of the terminal poll body (no download &mdash; there are no bytes to fetch)
+          and persists a normal video fixture (<code>match.userMessage</code> = the prompt,
+          <code>match.model</code> = the submitted model under the standard model-normalization
+          rules, <code>video.id</code> = the upstream operation name, <code>video.status</code> =
+          <code>"completed"</code>, <code>video.url</code> = the upstream uri). The Veo operations
+          envelope carries no cost field, so no cost is captured. The same submit then replays
+          in-session and across sessions. Relayed poll bodies are otherwise faithful: every upstream
+          field passes through verbatim &mdash; including the Files-API uri inside
+          <code>response</code> &mdash; with only the operation name rewritten to the mock id. A
+          <code>failed</code> operation persists <code>{ status: "failed", error }</code>; any
+          terminal status that is not representable in <code>video.status</code> passes through with
+          a warning and is never recorded.
+        </p>
+
+        <p>
+          The polling client's Bearer credential is forwarded only to the configured provider
+          origin: the upstream poll URL is adopted only when same-origin (an off-origin or
+          unparseable URL falls back to the constructed path on the provider origin, with a
+          warning). Strict mode wins over record: a strict no-match returns 503 and nothing is
+          proxied. Without a configured <code>veo</code> provider URL, <code>--record</code> warns
+          and serves the normal no-match 404. Under proxy-only mode (<code>record.proxyOnly</code> /
+          <code>--proxy-only</code>) nothing is persisted and a completed operation is never
+          converted to a local replay job &mdash; every poll keeps proxying upstream.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>TTL caveat:</strong> record-mode operations live in the same bounded job map as
+            replay operations (1-hour TTL, 10,000 entries). Each successful proxied poll refreshes a
+            record operation's TTL, so an actively-polled long render is never evicted mid-recording
+            &mdash; but a poll arriving more than an hour after the <em>last</em> successful poll
+            finds the operation evicted and returns 404.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>
