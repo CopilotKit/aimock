@@ -22,6 +22,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   ResponseOverrides,
   ToolCall,
@@ -39,6 +40,7 @@ import {
   getContext,
   getTestId,
   resolveResponse,
+  resolveFixtureBlocks,
   resolveReasoningForModel,
   resolveStrictMode,
   strictOverrideField,
@@ -333,6 +335,64 @@ function buildBedrockToolCallResponse(
   };
 }
 
+/**
+ * Build a Bedrock-invoke (Anthropic-style) non-streaming response whose
+ * `content[]` array honors the fixture's ordered `blocks`. Bedrock-invoke
+ * mirrors the Anthropic Messages content array, which is positionally
+ * observable, so a `toolCall` block ahead of a `text` block yields a `tool_use`
+ * content entry ahead of the `text` entry (tool-first is wire-expressible).
+ *
+ * Any leading thinking block (when reasoning is present) precedes the ordered
+ * blocks, matching the legacy builders. Reached only when `blocks` is non-empty;
+ * the legacy `{content, toolCalls}` text-first path is untouched.
+ */
+function buildBedrockBlocksResponse(
+  blocks: FixtureBlock[],
+  model: string,
+  logger: Logger,
+  reasoning?: string,
+  overrides?: ResponseOverrides,
+): object {
+  const contentBlocks: object[] = [];
+  if (reasoning) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
+  }
+
+  const ordered = resolveFixtureBlocks(blocks);
+  for (const block of ordered) {
+    if (block.type === "text") {
+      contentBlocks.push({ type: "text", text: block.text });
+    } else {
+      let argsObj: unknown;
+      try {
+        argsObj = JSON.parse(block.arguments || "{}");
+      } catch {
+        logger.warn(
+          `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
+        );
+        argsObj = {};
+      }
+      contentBlocks.push({
+        type: "tool_use",
+        id: block.id || generateToolUseId(),
+        name: block.name,
+        input: argsObj,
+      });
+    }
+  }
+
+  return {
+    id: overrides?.id ?? generateMessageId(),
+    type: "message",
+    role: "assistant",
+    content: contentBlocks,
+    model: overrides?.model ?? model,
+    stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
+    stop_sequence: null,
+    usage: bedrockUsage(overrides),
+  };
+}
+
 // ─── Request handler ────────────────────────────────────────────────────────
 
 export async function handleBedrock(
@@ -565,6 +625,20 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    if (response.blocks && response.blocks.length > 0) {
+      // NEW PATH: honor the fixture's ordered `blocks` in the positionally
+      // observable Anthropic-style content array (tool-first expressible).
+      const blocksBody = buildBedrockBlocksResponse(
+        response.blocks,
+        completionReq.model,
+        logger,
+        effReasoning,
+        overrides,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(blocksBody));
+      return;
+    }
     const textBody = buildBedrockTextResponse(
       response.content ?? "",
       completionReq.model,
@@ -829,6 +903,7 @@ export function buildBedrockStreamContentWithToolCallsEvents(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): Array<{ eventType: string; payload: object }> {
   const events: Array<{ eventType: string; payload: object }> = [];
 
@@ -836,7 +911,8 @@ export function buildBedrockStreamContentWithToolCallsEvents(
 
   let blockIndex = 0;
 
-  // Thinking block (emitted before text when reasoning is present)
+  // Thinking block (emitted before text/tool_use when reasoning is present);
+  // shared by both the legacy and the ordered-`blocks` paths.
   if (reasoning) {
     events.push({
       eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
@@ -872,6 +948,85 @@ export function buildBedrockStreamContentWithToolCallsEvents(
     blockIndex++;
   }
 
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: emit `text`/`tool_use` content_block events in the fixture's
+    // array order. Bedrock-invoke binary `content_block_*` events are
+    // positional, so a `toolCall` block can take a lower `index` than a `text`
+    // block (tool-first is wire-expressible). Indices continue from any leading
+    // thinking block above.
+    const ordered = resolveFixtureBlocks(blocks);
+    for (const block of ordered) {
+      if (block.type === "text") {
+        events.push({
+          eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+          payload: {
+            type: "content_block_start",
+            index: blockIndex,
+            content_block: { type: "text", text: "" },
+          },
+        });
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          const slice = block.text.slice(i, i + chunkSize);
+          events.push({
+            eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+            payload: {
+              type: "content_block_delta",
+              index: blockIndex,
+              delta: { type: "text_delta", text: slice },
+            },
+          });
+        }
+        events.push({
+          eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+          payload: { type: "content_block_stop", index: blockIndex },
+        });
+        blockIndex++;
+      } else {
+        const toolUseId = block.id || generateToolUseId();
+        events.push({
+          eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+          payload: {
+            type: "content_block_start",
+            index: blockIndex,
+            content_block: {
+              type: "tool_use",
+              id: toolUseId,
+              name: block.name,
+              input: {},
+            },
+          },
+        });
+        const argsStr = parseToolArgumentsForStream(
+          { name: block.name, arguments: block.arguments } as ToolCall,
+          logger,
+        );
+        for (let i = 0; i < argsStr.length; i += chunkSize) {
+          const slice = argsStr.slice(i, i + chunkSize);
+          events.push({
+            eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+            payload: {
+              type: "content_block_delta",
+              index: blockIndex,
+              delta: { type: "input_json_delta", partial_json: slice },
+            },
+          });
+        }
+        events.push({
+          eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+          payload: { type: "content_block_stop", index: blockIndex },
+        });
+        blockIndex++;
+      }
+    }
+
+    events.push(
+      buildBedrockInvokeMessageDelta(bedrockStopReason(overrides?.finishReason, "tool_use")),
+    );
+    events.push(buildBedrockInvokeMessageStop());
+    return events;
+  }
+
+  // LEGACY PATH (unchanged): text block, then tool_use blocks in toolCalls order.
   // Text block
   events.push({
     eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
@@ -1286,6 +1441,7 @@ export async function handleBedrockStream(
       logger,
       effReasoning,
       overrides,
+      response.blocks,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {

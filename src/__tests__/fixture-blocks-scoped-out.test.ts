@@ -1,11 +1,13 @@
 /**
- * #274 slot T3 — SCOPED-OUT consumer safety for ordered `blocks`.
+ * #274 — SCOPED-OUT consumer safety for ordered `blocks`.
  *
- * The `blocks` field is honored only by the five in-scope stream builders
- * (OpenAI chat, Anthropic, Gemini, Ollama, OpenAI Responses + the WS Responses
- * dispatch). The OTHER consumers of `isContentWithToolCallsResponse` —
- * Bedrock (`/model/{id}/invoke`), Cohere (`/v2/chat`), and Gemini Interactions
- * (`/v1beta/interactions`) — were deliberately left UNCHANGED: they read only
+ * The `blocks` field is honored by the in-scope builders (OpenAI chat,
+ * Anthropic, Gemini, Ollama, OpenAI Responses + the WS Responses dispatch) and
+ * the Bedrock invoke builder (`/model/{id}/invoke[-with-response-stream]`, whose
+ * Anthropic-style content array is positionally observable). The REMAINING
+ * consumers of `isContentWithToolCallsResponse` — Cohere (`/v2/chat`) and Gemini
+ * Interactions (`/v1beta/interactions`) — are deliberately left UNCHANGED: their
+ * wire shapes are degenerate w.r.t. block order, so they read only
  * `.content` / `.toolCalls` and must completely IGNORE `.blocks`.
  *
  * These tests drive each scoped-out consumer with a fixture that ALSO carries a
@@ -82,30 +84,9 @@ afterEach(async () => {
 });
 
 describe("#274 scoped-out consumers ignore `blocks` without crashing", () => {
-  it("Bedrock /model/{id}/invoke serves legacy content+tool_use, ignoring blocks", async () => {
-    instance = await createServer([blocksBearingFixture]);
-    const res = await post(
-      `${instance.url}/model/anthropic.claude-3-5-sonnet-20241022-v2:0/invoke`,
-      {
-        anthropic_version: "bedrock-2023-05-31",
-        max_tokens: 512,
-        messages: [{ role: "user", content: "scoped-out blocks" }],
-      },
-    );
-
-    expect(res.status).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.type).toBe("message");
-    // Legacy text-first Anthropic shape: text content then tool_use — NOT the
-    // tool-first ordering carried in `blocks` (which Bedrock must ignore).
-    expect(body.content[0].type).toBe("text");
-    expect(body.content[0].text).toBe("Let me help you");
-    expect(body.content[1].type).toBe("tool_use");
-    expect(body.content[1].name).toBe("get_weather");
-    expect(body.content[1].input).toEqual({ city: "SF" });
-    expect(body.stop_reason).toBe("tool_use");
-  });
-
+  // NOTE: Bedrock invoke is NO LONGER scoped out — it honors `blocks` ordering
+  // (see fixture-blocks-bedrock.test.ts). Only Cohere and Gemini Interactions
+  // remain scoped out below.
   it("Cohere /v2/chat serves legacy content+tool_calls, ignoring blocks", async () => {
     instance = await createServer([blocksBearingFixture]);
     const res = await post(`${instance.url}/v2/chat`, {
