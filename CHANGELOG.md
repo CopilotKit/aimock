@@ -14,7 +14,7 @@
 - Blocks-only fixtures are first-class: a non-empty `blocks` array is a complete response shape on its own, with no `content`/`toolCalls` required — builders derive the aggregate from the blocks and `validateFixtures()` accepts the shape (#274)
 - Block ordering is now honored on replay across the remaining providers — Cohere (streaming), Bedrock invoke, Bedrock Converse, and Gemini Interactions — so a tool-first or interleaved fixture streams its tool call ahead of its text wherever the wire protocol can express it (#274)
 - Record-side block capture extends to the Cohere and Bedrock collapsers; Gemini Interactions normalizes tool-call arguments only and does not reorder blocks on capture (its step-index protocol can't reconcile arrival-order blocks at record time), while replay still honors a hand-authored `blocks` array (#274)
-- `validateBlocks` rejects a malformed `blocks` array at load time — non-array, non-object entries, a `type` other than `text`/`toolCall`, a non-string text block, or a `toolCall` block missing a name or carrying non-JSON arguments — so a bad array never reaches a builder mid-dispatch (#274)
+- `validateBlocks` rejects a malformed `blocks` array at load time — non-array, non-object entries, a `type` other than `text`/`toolCall`, a non-string or empty-string text block, or a `toolCall` block missing a name or carrying non-JSON arguments — and warns when a fixture carries both `blocks` and divergent `content`/`toolCalls`, so a bad array never reaches a builder mid-dispatch (#274)
 
 ## [1.34.0] - 2026-06-24
 

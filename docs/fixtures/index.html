@@ -426,9 +426,12 @@
             array at load time so a malformed array is rejected before it reaches a builder &mdash;
             <code>blocks</code> must be an array; each entry must be an object with
             <code>type</code> <code>"text"</code> or <code>"toolCall"</code>; a
-            <code>text</code> block needs a string <code>text</code>; a <code>toolCall</code> block
-            needs a non-empty <code>name</code>, <code>arguments</code> that are a valid-JSON string
-            or an object, and an optional string <code>id</code>.
+            <code>text</code> block needs a non-empty string <code>text</code>; a
+            <code>toolCall</code> block needs a non-empty <code>name</code>,
+            <code>arguments</code> that are a valid-JSON string or an object, and an optional string
+            <code>id</code>. If a fixture carries both <code>blocks</code> and legacy
+            <code>content</code>/<code>toolCalls</code> that disagree, loading warns (the redundant
+            legacy fields are ignored in favor of <code>blocks</code>).
           </p>
         </div>
 
