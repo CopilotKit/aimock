@@ -11,6 +11,10 @@
 - Optional `blocks` array on the combined `content` + `toolCalls` fixture shape lets a fixture express ordered text/tool-call blocks (`{type:"text",text}` | `{type:"toolCall",name,arguments,id?}`); when present it takes precedence over `{content, toolCalls}` for stream order, enabling tool-first and interleaved ordering. Legacy `{content, toolCalls}` fixtures are unchanged (#274)
 - All five providers stream combined responses in fixture block order: Anthropic, OpenAI Responses, and Gemini are fully observable; Ollama is best-effort (clients may reassemble positionally); OpenAI chat-completions emits in order but is degenerate (`delta.content`/`delta.tool_calls` are separate channels the client merges) (#274)
 - Recorder captures block order and persists `blocks` only when the recorded upstream stream was genuinely tool-first or interleaved; text-first streams keep the legacy `{content, toolCalls}` shape so golden recordings round-trip byte-identically (#274)
+- Blocks-only fixtures are first-class: a non-empty `blocks` array is a complete response shape on its own, with no `content`/`toolCalls` required — builders derive the aggregate from the blocks and `validateFixtures()` accepts the shape (#274)
+- Block ordering is now honored on replay across the remaining providers — Cohere (streaming), Bedrock invoke, Bedrock Converse, and Gemini Interactions — so a tool-first or interleaved fixture streams its tool call ahead of its text wherever the wire protocol can express it (#274)
+- Record-side block capture extends to the Cohere and Bedrock collapsers; Gemini Interactions normalizes tool-call arguments only and does not reorder blocks on capture (its step-index protocol can't reconcile arrival-order blocks at record time), while replay still honors a hand-authored `blocks` array (#274)
+- `validateBlocks` rejects a malformed `blocks` array at load time — non-array, non-object entries, a `type` other than `text`/`toolCall`, a non-string text block, or a `toolCall` block missing a name or carrying non-JSON arguments — so a bad array never reaches a builder mid-dispatch (#274)
 
 ## [1.34.0] - 2026-06-24
 
