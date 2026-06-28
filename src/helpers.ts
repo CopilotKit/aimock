@@ -22,6 +22,7 @@ import type {
   SSEChunk,
   ToolCall,
   FixtureBlock,
+  FixtureFileBlock,
   ChatCompletion,
   ResponseOverrides,
 } from "./types.js";
@@ -323,14 +324,23 @@ export function isContentWithToolCallsResponse(
  * is the single source of truth for "has blocks". This validator therefore only
  * ever runs on a non-empty array.
  *
- * Returns the blocks in array order. Each entry must be a valid
- * {@link FixtureBlock}: a `text` block with a string `text`, or a `toolCall`
- * block with string `name` + `arguments` (and an optional string `id`).
- * Throws on a malformed array or entry — same fail-fast idiom as the other
- * fixture validators in this module (see e.g. the factory guard at
- * {@link resolveResponse}).
+ * Accepts the relaxed on-disk {@link FixtureFileBlock} input shape — a
+ * `toolCall` block's `arguments` may be a string OR a JSON object/array — which
+ * makes the object-tolerance below type-visible and mirrors how
+ * normalizeResponse types its file-form input (see {@link FixtureFileBlock} /
+ * {@link FixtureFileContentWithToolCallsResponse}). The in-memory
+ * {@link FixtureBlock} form (string `arguments`) is a structural subtype, so
+ * existing callers that pass `FixtureBlock[]` continue to type-check.
+ *
+ * Returns the blocks in array order, NORMALIZED to {@link FixtureBlock}: a
+ * `text` block with a string `text`, or a `toolCall` block with string `name` +
+ * string `arguments` (object/array `arguments` is JSON.stringified) and an
+ * optional string `id`. The return type guarantees `arguments: string` — every
+ * caller relies on that. Throws on a malformed array or entry — same fail-fast
+ * idiom as the other fixture validators in this module (see e.g. the factory
+ * guard at {@link resolveResponse}).
  */
-export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
+export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[] {
   if (!Array.isArray(blocks)) {
     throw new Error(`Invalid fixture blocks: expected an array, got ${typeof blocks}`);
   }
@@ -350,7 +360,7 @@ export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
-      return block;
+      return { type: "text", text: b.text };
     } else if (b.type === "toolCall") {
       if (typeof b.name !== "string") {
         throw new Error(
@@ -378,7 +388,7 @@ export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
           `Invalid fixture block at index ${i}: "toolCall" block requires a string or object "arguments" field`,
         );
       }
-      return block;
+      return { ...b, type: "toolCall", name: b.name, arguments: b.arguments } as FixtureBlock;
     } else {
       throw new Error(
         `Invalid fixture block at index ${i}: unknown type ${JSON.stringify(b.type)} (expected "text" or "toolCall")`,

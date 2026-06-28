@@ -492,13 +492,15 @@ function buildOllamaChatContentWithToolCallsChunks(
 }
 
 // NOTE (#274): this NON-streaming Ollama builder is intentionally degenerate
-// w.r.t. `blocks` ordering. Ollama's non-streaming chat response puts `content`
+// w.r.t. `blocks` ORDERING. Ollama's non-streaming chat response puts `content`
 // and `tool_calls` in SEPARATE fields on a single `message` object — they are
 // NOT a positionally-observable array, so a tool-first `blocks` fixture cannot
-// be expressed in the wire shape. Honoring block order here would be a no-op,
-// so we keep the legacy text+tool_calls fields unchanged. (Order-observable
-// surfaces — Claude `content[]`, Gemini `parts[]`, Responses `output[]` — DO
-// honor block order; see those builders.)
+// be expressed in the wire shape. Block ORDER is therefore a no-op here.
+// The PAYLOAD, however, is still derived from `blocks` when present (the body
+// backfills `content`/`tool_calls` from the blocks — see the comment at the
+// top of the function body); only the relative ordering of those fields is
+// unobservable. (Order-observable surfaces — Claude `content[]`, Gemini
+// `parts[]`, Responses `output[]` — DO honor block order; see those builders.)
 function buildOllamaChatContentWithToolCallsResponse(
   content: string,
   toolCalls: ToolCall[],
