@@ -444,8 +444,11 @@
           wire carries the blocks in a single positionally-ordered structure (indexed content
           blocks, ordered <code>output</code> items, ordered steps); it is
           <strong>Non-observable</strong> when text and tool calls land in
-          <em>separate</em> top-level fields that the client merges without a shared order. The
-          classifications below were verified against each provider's builder.
+          <em>separate</em> top-level fields that the client merges without a shared order. It is
+          <strong>Partial</strong> when block order <em>is</em> carried on the wire (chunk arrival
+          order) but the structure is not positionally indexed, so some clients reassemble
+          positionally rather than honoring arrival order &mdash; observable best-effort, not
+          guaranteed. The classifications below were verified against each provider's builder.
         </p>
         <table class="endpoint-table">
           <thead>
