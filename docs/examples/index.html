@@ -154,6 +154,33 @@
 }</code></pre>
         </div>
 
+        <h3>Tool-First Blocks</h3>
+        <p>
+          Plain <code>content</code> + <code>toolCalls</code> can't express a tool call
+          <em>before</em> text, or text and tools interleaved in a specific order &mdash; the
+          builders always emit text first. Use <code>blocks</code> to pin the exact emission order.
+          A fixture can be <strong>blocks-only</strong> (<code>response: { blocks: [...] }</code>
+          with no <code>content</code>/<code>toolCalls</code>), as shown here.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/examples/llm/blocks-tool-first.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"fixtures"</span>: [
+    {
+      <span class="key">"match"</span>: { <span class="key">"userMessage"</span>: <span class="str">"what's the weather in NYC?"</span> },
+      <span class="key">"response"</span>: {
+        <span class="key">"blocks"</span>: [
+          { <span class="key">"type"</span>: <span class="str">"toolCall"</span>, <span class="key">"name"</span>: <span class="str">"get_weather"</span>, <span class="key">"arguments"</span>: <span class="str">"{\"city\": \"NYC\"}"</span> },
+          { <span class="key">"type"</span>: <span class="str">"text"</span>, <span class="key">"text"</span>: <span class="str">"Let me check the weather in NYC for you."</span> }
+        ]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+
         <!-- ─── Protocol Configs ───────────────────────────────────── -->
 
         <h2>Protocol Configs</h2>
