@@ -14,6 +14,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   RecordedTimings,
   ResponseOverrides,
@@ -34,6 +35,7 @@ import {
   serializeErrorResponse,
   flattenHeaders,
   getTestId,
+  resolveFixtureBlocks,
   resolveResponse,
   resolveStrictMode,
   resolveReasoningForModel,
@@ -316,8 +318,24 @@ function buildCohereContentWithToolCallsResponse(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): object {
-  const cohereCalls = toolCalls.map((tc) => {
+  // Cohere's non-streaming response keeps text in `message.content[]` and tool
+  // calls in the SEPARATE `message.tool_calls[]` field, so the relative ORDER
+  // of a text vs. toolCall block is NOT observable on the wire (unlike the
+  // ordered streaming events, or Anthropic/Gemini's single ordered array).
+  // When `blocks` is present we therefore derive both fields FROM the blocks
+  // (so a blocks-only fixture still produces correct output) but make no
+  // ordering guarantee between the two fields. Legacy fixtures use the
+  // `content` + `toolCalls` inputs unchanged.
+  const effectiveToolCalls: ToolCall[] =
+    blocks && blocks.length > 0
+      ? resolveFixtureBlocks(blocks)
+          .filter((b): b is Extract<FixtureBlock, { type: "toolCall" }> => b.type === "toolCall")
+          .map((b) => ({ name: b.name, arguments: b.arguments, id: b.id }))
+      : toolCalls;
+
+  const cohereCalls = effectiveToolCalls.map((tc) => {
     let argsJson: string;
     try {
       JSON.parse(tc.arguments || "{}");
@@ -338,11 +356,19 @@ function buildCohereContentWithToolCallsResponse(
     };
   });
 
+  const effectiveContent: string =
+    blocks && blocks.length > 0
+      ? resolveFixtureBlocks(blocks)
+          .filter((b): b is Extract<FixtureBlock, { type: "text" }> => b.type === "text")
+          .map((b) => b.text)
+          .join("")
+      : content;
+
   const contentBlocks: { type: string; text: string }[] = [];
   if (reasoning) {
     contentBlocks.push({ type: "text", text: reasoning });
   }
-  contentBlocks.push({ type: "text", text: content });
+  contentBlocks.push({ type: "text", text: effectiveContent });
 
   return {
     id: overrides?.id ?? generateMessageId(),
@@ -579,6 +605,7 @@ function buildCohereContentWithToolCallsStreamEvents(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): CohereSSEEvent[] {
   const msgId = overrides?.id ?? generateMessageId();
   const events: CohereSSEEvent[] = [];
@@ -617,6 +644,90 @@ function buildCohereContentWithToolCallsStreamEvents(
     }
     events.push({ type: "content-end", index: contentIndex });
     contentIndex++;
+  }
+
+  if (blocks && blocks.length > 0) {
+    // NEW path (#274): emit Cohere SSE events in the blocks' ARRAY ORDER so a
+    // tool-first / interleaved fixture streams its tool call before its text.
+    // Cohere v2 events are ordered, so tool-first is wire-expressible. The
+    // tool-plan-delta is emitted once before the first toolCall block (Cohere
+    // requires it preceding tool calls). Legacy fixtures (no blocks) skip this.
+    const resolved = resolveFixtureBlocks(blocks);
+    let toolPlanEmitted = false;
+    let toolIdx = 0;
+    resolved.forEach((block) => {
+      if (block.type === "toolCall") {
+        if (!toolPlanEmitted) {
+          events.push({
+            type: "tool-plan-delta",
+            delta: { message: { tool_plan: "I will use the requested tool." } },
+          });
+          toolPlanEmitted = true;
+        }
+        const callId = block.id || generateToolCallId();
+        let argsJson: string;
+        try {
+          JSON.parse(block.arguments || "{}");
+          argsJson = block.arguments || "{}";
+        } catch {
+          logger.warn(
+            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
+          );
+          argsJson = "{}";
+        }
+        events.push({
+          type: "tool-call-start",
+          index: toolIdx,
+          delta: {
+            message: {
+              tool_calls: {
+                id: callId,
+                type: "function",
+                function: { name: block.name, arguments: "" },
+              },
+            },
+          },
+        });
+        for (let i = 0; i < argsJson.length; i += chunkSize) {
+          events.push({
+            type: "tool-call-delta",
+            index: toolIdx,
+            delta: {
+              message: {
+                tool_calls: { function: { arguments: argsJson.slice(i, i + chunkSize) } },
+              },
+            },
+          });
+        }
+        events.push({ type: "tool-call-end", index: toolIdx });
+        toolIdx++;
+      } else {
+        events.push({
+          type: "content-start",
+          index: contentIndex,
+          delta: { message: { content: { type: "text" } } },
+        });
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          events.push({
+            type: "content-delta",
+            index: contentIndex,
+            delta: {
+              message: { content: { type: "text", text: block.text.slice(i, i + chunkSize) } },
+            },
+          });
+        }
+        events.push({ type: "content-end", index: contentIndex });
+        contentIndex++;
+      }
+    });
+    events.push({
+      type: "message-end",
+      delta: {
+        finish_reason: cohereFinishReason(overrides?.finishReason, "TOOL_CALL"),
+        usage: cohereUsage(overrides),
+      },
+    });
+    return events;
   }
 
   // content-start (type: "text" only, no text field)
@@ -1031,6 +1142,7 @@ export async function handleCohere(
         logger,
         effReasoning,
         overrides,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1042,6 +1154,7 @@ export async function handleCohere(
         logger,
         effReasoning,
         overrides,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
