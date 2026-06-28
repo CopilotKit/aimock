@@ -22,6 +22,7 @@ import type {
   SSEChunk,
   ToolCall,
   FixtureBlock,
+  FixtureFileBlock,
   ChatCompletion,
   ResponseOverrides,
 } from "./types.js";
@@ -289,12 +290,25 @@ export function isToolCallResponse(r: FixtureResponse): r is ToolCallResponse {
 export function isContentWithToolCallsResponse(
   r: FixtureResponse,
 ): r is ContentWithToolCallsResponse {
-  return (
+  const o = r as ContentWithToolCallsResponse;
+  // LEGACY / COMBINED shape — BOTH content (string) + toolCalls (array). This
+  // clause is byte-identical to the original guard, so every fixture that
+  // matched before still matches here and is classified exactly as before.
+  const hasContentAndToolCalls =
     "content" in r &&
-    typeof (r as ContentWithToolCallsResponse).content === "string" &&
+    typeof o.content === "string" &&
     "toolCalls" in r &&
-    Array.isArray((r as ContentWithToolCallsResponse).toolCalls)
-  );
+    Array.isArray(o.toolCalls);
+  // BLOCKS-ONLY shape (additive, #274 F0) — a non-empty `blocks` array with no
+  // content/toolCalls. This is a pure RELAXATION: it recognizes MORE, never
+  // reclassifies an existing fixture. A blocks-only fixture cannot be claimed by
+  // any earlier/looser guard in the dispatch order — `isTextResponse` requires a
+  // string `content` AND `!("toolCalls" in r)`, and `isToolCallResponse`
+  // requires a `toolCalls` array — so it would otherwise fall through to 500.
+  // `isAudioResponse` (checked first everywhere) requires an `audio` field, which
+  // blocks-only lacks, so there is no overlap there either.
+  const hasNonEmptyBlocks = Array.isArray(o.blocks) && o.blocks.length > 0;
+  return hasContentAndToolCalls || hasNonEmptyBlocks;
 }
 
 /**
@@ -310,18 +324,32 @@ export function isContentWithToolCallsResponse(
  * is the single source of truth for "has blocks". This validator therefore only
  * ever runs on a non-empty array.
  *
- * Returns the blocks in array order. Each entry must be a valid
- * {@link FixtureBlock}: a `text` block with a string `text`, or a `toolCall`
- * block with string `name` + `arguments` (and an optional string `id`).
- * Throws on a malformed array or entry — same fail-fast idiom as the other
- * fixture validators in this module (see e.g. the factory guard at
- * {@link resolveResponse}).
+ * Accepts the relaxed on-disk {@link FixtureFileBlock} input shape — a
+ * `toolCall` block's `arguments` may be a string OR a JSON object/array — which
+ * makes the object-tolerance below type-visible and mirrors how
+ * normalizeResponse types its file-form input (see {@link FixtureFileBlock} /
+ * {@link FixtureFileContentWithToolCallsResponse}). The in-memory
+ * {@link FixtureBlock} form (string `arguments`) is a structural subtype, so
+ * existing callers that pass `FixtureBlock[]` continue to type-check.
+ *
+ * Returns the blocks in array order, NORMALIZED to {@link FixtureBlock}: a
+ * `text` block with a string `text`, or a `toolCall` block with string `name` +
+ * string `arguments` (object/array `arguments` is JSON.stringified) and an
+ * optional string `id`. The return type guarantees `arguments: string` — every
+ * caller relies on that. Throws on a malformed array or entry — same fail-fast
+ * idiom as the other fixture validators in this module (see e.g. the factory
+ * guard at {@link resolveResponse}).
  */
-export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
+export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[] {
   if (!Array.isArray(blocks)) {
     throw new Error(`Invalid fixture blocks: expected an array, got ${typeof blocks}`);
   }
-  blocks.forEach((block, i) => {
+  // Validate each block and return a normalized COPY. Builders iterate the
+  // result and must not observe later mutations of — nor be able to mutate —
+  // the caller's stored fixture array, and block objects are consumed read-only
+  // downstream, so we never mutate the input in place: any normalization (e.g.
+  // stringifying object `arguments`) is applied to a fresh per-block copy.
+  return blocks.map((block, i) => {
     if (block === null || typeof block !== "object") {
       throw new Error(`Invalid fixture block at index ${i}: expected an object`);
     }
@@ -332,10 +360,11 @@ export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
           `Invalid fixture block at index ${i}: "text" block requires a string "text" field`,
         );
       }
+      return { type: "text", text: b.text };
     } else if (b.type === "toolCall") {
-      if (typeof b.name !== "string" || typeof b.arguments !== "string") {
+      if (typeof b.name !== "string") {
         throw new Error(
-          `Invalid fixture block at index ${i}: "toolCall" block requires string "name" and "arguments" fields`,
+          `Invalid fixture block at index ${i}: "toolCall" block requires a string "name" field`,
         );
       }
       if (b.id !== undefined && typeof b.id !== "string") {
@@ -343,13 +372,29 @@ export function resolveFixtureBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
           `Invalid fixture block at index ${i}: "toolCall" block "id" must be a string when present`,
         );
       }
+      // `arguments` is a JSON string in normalized (file-load) form. The
+      // programmatic path (addFixture/addFixtures/prependFixture) stores RAW
+      // fixtures with no normalizeResponse pass, so an OBJECT `arguments` can
+      // reach here. Be tolerant: stringify an object/array (mirroring
+      // normalizeResponse's `JSON.stringify`) into a fresh block copy so the
+      // programmatic path is safe and the caller's stored fixture is untouched.
+      // A string stays byte-identical (file-load path unchanged); any other
+      // type is still rejected.
+      if (typeof b.arguments === "object" && b.arguments !== null) {
+        return { ...b, arguments: JSON.stringify(b.arguments) } as unknown as FixtureBlock;
+      }
+      if (typeof b.arguments !== "string") {
+        throw new Error(
+          `Invalid fixture block at index ${i}: "toolCall" block requires a string or object "arguments" field`,
+        );
+      }
+      return { ...b, type: "toolCall", name: b.name, arguments: b.arguments } as FixtureBlock;
     } else {
       throw new Error(
         `Invalid fixture block at index ${i}: unknown type ${JSON.stringify(b.type)} (expected "text" or "toolCall")`,
       );
     }
   });
-  return blocks;
 }
 
 export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {

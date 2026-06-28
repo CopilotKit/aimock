@@ -92,6 +92,24 @@ Multi-part content (e.g., `[{type: "text", text: "hello"}]`) is automatically ex
 
 **Both object and string forms are accepted** for `arguments`. The fixture loader auto-stringifies objects via `JSON.stringify()`. Object form is preferred for readability.
 
+### Blocks (ordered text / tool-call streaming)
+
+The optional `blocks` array expresses an explicit, ordered sequence of stream entries — something plain `content` + `toolCalls` cannot, since those imply text-then-tools. Each entry is either `{ "type": "text", "text": "..." }` or `{ "type": "toolCall", "name": "...", "arguments": "...", "id"?: "..." }`, streamed in array order. This enables tool-first ordering (a tool call before any text) and interleaved text/tool ordering.
+
+```typescript
+// Tool-first: tool call streams before the text
+{
+  blocks: [
+    { type: "toolCall", name: "get_weather", arguments: { city: "SF" } },
+    { type: "text", text: "Checking the weather for you…" },
+  ];
+}
+```
+
+When `blocks` is present it takes **precedence over `content`/`toolCalls`** for stream order; when absent, legacy behavior is unchanged. blocks-only fixtures are first-class — a response may be just `{ blocks: [...] }` with no `content` and no `toolCalls`, and builders derive the aggregate `content`/`tool_calls` from the blocks. A toolCall block's `arguments` may be a JSON object or a string (objects auto-stringify), exactly like top-level `toolCalls`.
+
+Replay caveat: block order is observable on some providers and not others — see the [per-provider observability matrix](../../docs/fixtures/index.html#ordered-blocks).
+
 ### Embedding
 
 ```typescript
@@ -364,7 +382,7 @@ mock.nextRequestError(429, { message: "Rate limited", type: "rate_limit_error" }
 }
 ```
 
-**JSON auto-stringify**: In JSON fixture files, `arguments` and `content` can be objects — the loader auto-stringifies them with `JSON.stringify()`. The escaped-string form (`"{\"city\":\"SF\"}"`) still works but objects are preferred for readability.
+**JSON auto-stringify**: In JSON fixture files, `arguments` and `content` can be objects — the loader auto-stringifies them with `JSON.stringify()`. This also applies to a `blocks` entry's `arguments` — object form auto-stringifies just like top-level `toolCalls`. The escaped-string form (`"{\"city\":\"SF\"}"`) still works but objects are preferred for readability.
 
 JSON files cannot use `RegExp` or `predicate` — those are code-only features. `streamingProfile` is supported in JSON fixture files.
 

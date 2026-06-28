@@ -17,6 +17,12 @@ export interface WSTestClient {
   send(data: string): void;
   close(): void;
   waitForMessages(count: number, timeoutMs?: number): Promise<string[]>;
+  /**
+   * Returns a snapshot of every text message received so far. Unlike
+   * `waitForMessages`, it never blocks — use it after `waitForClose()` to count
+   * exactly what the server emitted before truncating/closing the socket.
+   */
+  getMessages(): string[];
   waitForClose(): Promise<void>;
   /**
    * Resolves with the RFC 6455 close frame's status code and reason once the
@@ -146,6 +152,9 @@ export function connectWebSocket(
                 check();
                 messageResolvers.push(check);
               });
+            },
+            getMessages(): string[] {
+              return messages.slice();
             },
             waitForClose(): Promise<void> {
               return new Promise((resolve) => {

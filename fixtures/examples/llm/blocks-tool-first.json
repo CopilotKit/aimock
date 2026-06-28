@@ -1,0 +1,13 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "what's the weather in NYC?" },
+      "response": {
+        "blocks": [
+          { "type": "toolCall", "name": "get_weather", "arguments": "{\"city\": \"NYC\"}" },
+          { "type": "text", "text": "Let me check the weather in NYC for you." }
+        ]
+      }
+    }
+  ]
+}

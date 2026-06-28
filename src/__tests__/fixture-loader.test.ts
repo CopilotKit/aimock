@@ -916,6 +916,92 @@ describe("validateFixtures", () => {
     expect(results.filter((r) => r.severity === "error")).toEqual([]);
   });
 
+  // P2 (#274): empty-text block rejection + blocks/content divergence warning.
+
+  it("error: text block with empty text string", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          blocks: [{ type: "text", text: "" }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some(
+        (r) =>
+          r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("empty"),
+      ),
+    ).toBe(true);
+  });
+
+  it("warning: blocks diverge from content", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "Original text.",
+          blocks: [{ type: "text", text: "Different text." }],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "warning" && r.message.includes("diverge"))).toBe(
+      true,
+    );
+  });
+
+  it("warning: blocks diverge from toolCalls", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "Done.",
+          toolCalls: [{ name: "search", arguments: "{}" }],
+          blocks: [
+            { type: "toolCall", name: "lookup", arguments: "{}" },
+            { type: "text", text: "Done." },
+          ],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.severity === "warning" && r.message.includes("diverge"))).toBe(
+      true,
+    );
+  });
+
+  it("no warning: blocks-only fixture (no content/toolCalls)", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          blocks: [
+            { type: "toolCall", name: "search", arguments: '{"q":"x"}', id: "call_1" },
+            { type: "text", text: "Done." },
+          ],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.message.includes("diverge"))).toBe(false);
+    expect(results.filter((r) => r.severity === "error")).toEqual([]);
+  });
+
+  it("no warning: blocks matching content + toolCalls", () => {
+    const fixtures = [
+      makeFixture({
+        response: {
+          content: "Done.",
+          toolCalls: [{ name: "search", arguments: '{"q":"x"}' }],
+          blocks: [
+            { type: "toolCall", name: "search", arguments: '{"q":"x"}', id: "call_1" },
+            { type: "text", text: "Done." },
+          ],
+        } as never,
+      }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.some((r) => r.message.includes("diverge"))).toBe(false);
+  });
+
   it("error: error response with empty message", () => {
     const fixtures = [
       makeFixture({ response: { error: { message: "", type: "e" }, status: 500 } }),

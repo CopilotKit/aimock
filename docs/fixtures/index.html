@@ -384,19 +384,24 @@
         <p>
           When <code>blocks</code> is present it <strong>takes precedence</strong> over the
           <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
-          streamed in array order. (Keep <code>content</code> and <code>toolCalls</code> populated
-          as well &mdash; they remain the canonical aggregate for replay and for consumers that do
-          not read <code>blocks</code>.) When <code>blocks</code> is <strong>absent</strong>, legacy
+          streamed in array order. When <code>blocks</code> is <strong>absent</strong>, legacy
           <code>{ content, toolCalls }</code> fixtures stream exactly as before &mdash; text-first,
           byte-identical to prior releases. The field is purely additive.
+        </p>
+
+        <h3 id="blocks-only">Blocks-only fixtures (first-class)</h3>
+        <p>
+          A fixture can be written with <strong>only</strong> a <code>blocks</code> array &mdash; no
+          <code>content</code> or <code>toolCalls</code> needed. A non-empty
+          <code>blocks</code> array is a first-class response shape: the builders derive the
+          aggregate text and tool calls from the blocks themselves, and
+          <code>validateFixtures()</code> accepts it without requiring the legacy fields. This is
+          the cleanest way to author a tool-first or interleaved response &mdash; you express the
+          order once, in one place, with no duplicated aggregate to keep in sync.
         </p>
         <div class="code-block">
           <div class="code-block-header">tool-first.json <span class="lang-tag">json</span></div>
           <pre><code>{
-  <span class="prop">"content"</span>: <span class="str">"Here is the weather."</span>,
-  <span class="prop">"toolCalls"</span>: [
-    { <span class="prop">"name"</span>: <span class="str">"get_weather"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"city"</span>: <span class="str">"SF"</span> } }
-  ],
   <span class="prop">"blocks"</span>: [
     { <span class="prop">"type"</span>: <span class="str">"toolCall"</span>, <span class="prop">"name"</span>: <span class="str">"get_weather"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"city"</span>: <span class="str">"SF"</span> }, <span class="prop">"id"</span>: <span class="str">"call_1"</span> },
     { <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Here is the weather."</span> }
@@ -404,21 +409,51 @@
 }</code></pre>
         </div>
         <p>
-          The example above streams the <code>get_weather</code> tool call <em>before</em> the text.
-          For an interleaved stream, list blocks in the desired order, e.g.
-          <code>[toolCall, text, toolCall]</code>.
+          The example above streams the <code>get_weather</code> tool call <em>before</em> the text,
+          with no separate <code>content</code> / <code>toolCalls</code> fields. For an interleaved
+          stream, list blocks in the desired order, e.g. <code>[toolCall, text, toolCall]</code>.
         </p>
+        <p>
+          You may still supply <code>content</code> and <code>toolCalls</code> alongside
+          <code>blocks</code> if you want an explicit aggregate &mdash; for example to assert a
+          specific merged shape independently of the order. Both forms are supported;
+          <code>blocks</code> always wins for stream ordering.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Validation:</strong> <code>validateFixtures()</code> checks a
+            <code>blocks</code>
+            array at load time so a malformed array is rejected before it reaches a builder &mdash;
+            <code>blocks</code> must be an array; each entry must be an object with
+            <code>type</code> <code>"text"</code> or <code>"toolCall"</code>; a
+            <code>text</code> block needs a non-empty string <code>text</code>; a
+            <code>toolCall</code> block needs a non-empty <code>name</code>,
+            <code>arguments</code> that are a valid-JSON string or an object, and an optional string
+            <code>id</code>. If a fixture carries both <code>blocks</code> and legacy
+            <code>content</code>/<code>toolCalls</code> that disagree, loading warns (the redundant
+            legacy fields are ignored in favor of <code>blocks</code>).
+          </p>
+        </div>
 
         <h3>Per-provider observability</h3>
         <p>
           How faithfully &ldquo;tool-first&rdquo; / interleaved order is observable depends on each
-          provider's wire protocol. The mock always emits chunks in block order; what a client can
-          <em>reconstruct</em> from those chunks varies:
+          provider's wire protocol &mdash; and, for some providers, on whether the request is
+          streaming. The mock always emits in block order; what a client can
+          <em>reconstruct</em> from the result varies. A shape is <strong>Full</strong> when the
+          wire carries the blocks in a single positionally-ordered structure (indexed content
+          blocks, ordered <code>output</code> items, ordered steps); it is
+          <strong>Non-observable</strong> when text and tool calls land in
+          <em>separate</em> top-level fields that the client merges without a shared order. It is
+          <strong>Partial</strong> when block order <em>is</em> carried on the wire (chunk arrival
+          order) but the structure is not positionally indexed, so some clients reassemble
+          positionally rather than honoring arrival order &mdash; observable best-effort, not
+          guaranteed. The classifications below were verified against each provider's builder.
         </p>
         <table class="endpoint-table">
           <thead>
             <tr>
-              <th>Provider</th>
+              <th>Provider / shape</th>
               <th>Block-order support</th>
               <th>Notes</th>
             </tr>
@@ -429,7 +464,8 @@
               <td>Full</td>
               <td>
                 Typed <code>text</code> / <code>tool_use</code> content blocks at incrementing
-                indices &mdash; tool-first and interleaved are natively observable.
+                indices &mdash; tool-first and interleaved are natively observable, streaming and
+                non-streaming alike.
               </td>
             </tr>
             <tr>
@@ -450,7 +486,45 @@
               </td>
             </tr>
             <tr>
-              <td>Ollama</td>
+              <td>Gemini Interactions (replay)</td>
+              <td>Full</td>
+              <td>
+                One step per block in array order &mdash; a <code>function_call</code> step takes a
+                lower <code>index</code> than a later <code>model_output</code> step, streaming
+                (<code>step.*</code> events) and non-streaming (<code>steps[]</code>) alike. Record
+                side is args-normalization only &mdash; see the note below.
+              </td>
+            </tr>
+            <tr>
+              <td>Bedrock invoke</td>
+              <td>Full</td>
+              <td>
+                Mirrors the Anthropic Messages content array: ordered
+                <code>text</code> / <code>tool_use</code> entries non-streaming, indexed
+                <code>content_block_*</code> events streaming &mdash; tool-first is wire-expressible
+                on both.
+              </td>
+            </tr>
+            <tr>
+              <td>Bedrock Converse</td>
+              <td>Full</td>
+              <td>
+                Positional <code>content[]</code> blocks non-streaming, indexed
+                <code>contentBlock*</code> events (carrying <code>contentBlockIndex</code>)
+                streaming &mdash; a <code>toolUse</code> can precede the text on both.
+              </td>
+            </tr>
+            <tr>
+              <td>Cohere (streaming)</td>
+              <td>Full</td>
+              <td>
+                SSE emits <code>content-*</code> and <code>tool-call-*</code> events in block array
+                order, each carrying an <code>index</code> &mdash; tool-first / interleaved is
+                observable on the stream.
+              </td>
+            </tr>
+            <tr>
+              <td>Ollama (streaming)</td>
               <td>Partial</td>
               <td>
                 A <code>tool_calls</code> chunk can be emitted before content on the wire, but some
@@ -459,12 +533,33 @@
             </tr>
             <tr>
               <td>OpenAI chat-completions</td>
-              <td>Degenerate</td>
+              <td>Non-observable</td>
               <td>
-                <code>delta.content</code> and <code>delta.tool_calls</code> are separate channels
-                the client merges. The mock emits chunks in block order (and the wire order is
-                assertable), but the merge is <em>not</em> positionally interleaved, so tool-first
-                is not semantically observable to clients on this channel.
+                <code>delta.content</code> and <code>delta.tool_calls</code> (streaming), or
+                <code>message.content</code> and <code>message.tool_calls</code> (non-streaming),
+                are separate channels/fields the client merges. The mock emits in block order and
+                the streamed wire order is assertable, but the merge is <em>not</em> positionally
+                interleaved, so tool-first is not semantically observable to clients on this
+                channel.
+              </td>
+            </tr>
+            <tr>
+              <td>Cohere (non-streaming)</td>
+              <td>Non-observable</td>
+              <td>
+                The non-streaming body keeps text in <code>message.content[]</code> and tool calls
+                in the separate <code>message.tool_calls[]</code> field &mdash; the relative order
+                of a text vs. a toolCall block is not on the wire. Use the streaming shape when
+                order matters.
+              </td>
+            </tr>
+            <tr>
+              <td>Ollama (non-streaming)</td>
+              <td>Non-observable</td>
+              <td>
+                The aggregated reply carries <code>message.content</code> and
+                <code>message.tool_calls</code> as separate fields &mdash; no positional ordering
+                between a text and a toolCall block. Use the streaming shape when order matters.
               </td>
             </tr>
           </tbody>
@@ -476,7 +571,16 @@
             <em>genuinely</em> tool-first or interleaved (a tool-call delta arrives before the first
             content delta, or content arrives after a tool-call delta). Ordinary text-then-tools
             streams are saved in the legacy <code>{ content, toolCalls }</code> shape with no
-            <code>blocks</code> key, so existing golden recordings round-trip byte-identically.
+            <code>blocks</code> key, so existing golden recordings round-trip byte-identically. The
+            Cohere and Bedrock collapsers capture block order this way alongside the original
+            providers.
+          </p>
+          <p>
+            <strong>Gemini Interactions</strong> is the exception: its record-side collapser
+            normalizes tool-call arguments only and does not reorder blocks on capture &mdash; its
+            step-index protocol can't reconcile arrival-order blocks at record time. Ordering is
+            still honored on <em>replay</em> from a hand-authored <code>blocks</code> fixture; it is
+            simply not reconstructed automatically from a recording.
           </p>
         </div>
 
@@ -789,12 +893,12 @@
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
-              <td>&mdash;</td>
+              <td>Record only<sup>&dagger;</sup></td>
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
-              <td>&mdash;</td>
+              <td>Yes</td>
             </tr>
             <tr>
               <td>Web Searches</td>
@@ -827,6 +931,11 @@
         <p class="footnote">
           <sup>*</sup> Azure inherits OpenAI&rsquo;s override support because Azure OpenAI routes
           through the OpenAI Chat Completions response format internally.
+        </p>
+        <p class="footnote">
+          <sup>&dagger;</sup> Gemini Interactions captures reasoning on record (its collapser
+          assembles <code>thought_summary</code> deltas into <code>reasoning</code>), but its replay
+          builders do not re-emit reasoning, so a replayed turn carries none.
         </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>

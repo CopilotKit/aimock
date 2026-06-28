@@ -277,7 +277,7 @@ function validateWebSearches(
 }
 
 function validateBlocks(
-  response: { blocks?: unknown },
+  response: { blocks?: unknown; content?: unknown; toolCalls?: unknown },
   fixtureIndex: number,
   results: ValidationResult[],
 ): void {
@@ -321,6 +321,14 @@ function validateBlocks(
           fixtureIndex,
           message: `blocks[${j}].text must be a string, got ${typeof block.text}`,
         });
+      } else if (block.text === "") {
+        // Mirror the content/toolCalls "empty string" rejection: an empty-text
+        // block produces a meaningless/spurious wire chunk on replay.
+        results.push({
+          severity: "error",
+          fixtureIndex,
+          message: `blocks[${j}].text is empty string`,
+        });
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.
@@ -355,6 +363,64 @@ function validateBlocks(
           severity: "error",
           fixtureIndex,
           message: `blocks[${j}].id must be a string, got ${typeof block.id}`,
+        });
+      }
+    }
+  }
+
+  // blocks-vs-content/toolCalls divergence (#274 P2). When a fixture carries
+  // BOTH `blocks` AND legacy `content`/`toolCalls` (allowed but unusual now
+  // that blocks-only is first-class), builders stream `blocks` and IGNORE the
+  // redundant `content`/`toolCalls`. If those disagree it is a silent footgun,
+  // so WARN (not a hard error). Stay silent on the clean blocks-only path
+  // (neither legacy field present) — that is the intended shape.
+  const hasLegacyContent = typeof response.content === "string";
+  const hasLegacyToolCalls = Array.isArray(response.toolCalls);
+  if ((hasLegacyContent || hasLegacyToolCalls) && Array.isArray(response.blocks)) {
+    const textBlocks = response.blocks.filter(
+      (b): b is { type: "text"; text: string } =>
+        b != null &&
+        typeof b === "object" &&
+        (b as { type?: unknown }).type === "text" &&
+        typeof (b as { text?: unknown }).text === "string",
+    );
+    const toolCallBlockNames = response.blocks
+      .filter(
+        (b): b is { type: "toolCall"; name: string } =>
+          b != null &&
+          typeof b === "object" &&
+          (b as { type?: unknown }).type === "toolCall" &&
+          typeof (b as { name?: unknown }).name === "string",
+      )
+      .map((b) => b.name);
+
+    // Text divergence: blocks' concatenated text vs legacy `content`.
+    if (hasLegacyContent) {
+      const blocksText = textBlocks.map((b) => b.text).join("");
+      if (blocksText !== response.content) {
+        results.push({
+          severity: "warning",
+          fixtureIndex,
+          message:
+            "blocks text diverges from content — builders stream blocks and ignore the redundant content field",
+        });
+      }
+    }
+
+    // ToolCall divergence: blocks' ordered toolCall names vs legacy `toolCalls`.
+    if (hasLegacyToolCalls) {
+      const legacyNames = (response.toolCalls as Array<{ name?: unknown }>).map((tc) =>
+        typeof tc?.name === "string" ? tc.name : undefined,
+      );
+      const sameNames =
+        legacyNames.length === toolCallBlockNames.length &&
+        legacyNames.every((n, k) => n === toolCallBlockNames[k]);
+      if (!sameNames) {
+        results.push({
+          severity: "warning",
+          fixtureIndex,
+          message:
+            "blocks toolCalls diverge from toolCalls — builders stream blocks and ignore the redundant toolCalls field",
         });
       }
     }
@@ -400,9 +466,19 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
         });
       }
 
+      // When a non-empty ordered `blocks` array is present, the builders stream
+      // `blocks` and IGNORE the legacy `content` mirror (see validateBlocks's
+      // divergence note + isContentWithToolCallsResponse's BLOCKS-ONLY clause).
+      // So an empty-string `content` is harmless in that case and must NOT raise
+      // the "content is empty string" hard error. Fixtures WITHOUT blocks keep
+      // the error (an empty content with no blocks produces no output).
+      const hasNonEmptyBlocks =
+        Array.isArray((response as { blocks?: unknown }).blocks) &&
+        (response as { blocks: unknown[] }).blocks.length > 0;
+
       // Text response checks
       if (isTextResponse(response)) {
-        if (response.content === "") {
+        if (response.content === "" && !hasNonEmptyBlocks) {
           results.push({
             severity: "error",
             fixtureIndex: i,
@@ -415,37 +491,47 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
 
       // ContentWithToolCalls response checks
       if (isContentWithToolCallsResponse(response)) {
-        if (response.content === "") {
-          results.push({
-            severity: "error",
-            fixtureIndex: i,
-            message: "content is empty string",
-          });
-        }
-        if (response.toolCalls.length === 0) {
-          results.push({
-            severity: "warning",
-            fixtureIndex: i,
-            message: "toolCalls array is empty — fixture will never produce tool calls",
-          });
-        }
-        for (let j = 0; j < response.toolCalls.length; j++) {
-          const tc = response.toolCalls[j];
-          if (!tc.name) {
+        // The guard now also matches a BLOCKS-ONLY fixture (non-empty `blocks`,
+        // no `content`/`toolCalls`). For that shape the content/toolCalls checks
+        // below don't apply (and `content`/`toolCalls` are undefined) — the
+        // ordered `blocks` array is validated separately by `validateBlocks`
+        // immediately after this block. So gate the legacy field checks on the
+        // fields actually being present, mirroring the builders' branch-on-blocks.
+        if (typeof response.content === "string") {
+          if (response.content === "" && !hasNonEmptyBlocks) {
             results.push({
               severity: "error",
               fixtureIndex: i,
-              message: `toolCalls[${j}].name is empty`,
+              message: "content is empty string",
             });
           }
-          try {
-            JSON.parse(tc.arguments);
-          } catch {
+        }
+        if (Array.isArray(response.toolCalls)) {
+          if (response.toolCalls.length === 0) {
             results.push({
-              severity: "error",
+              severity: "warning",
               fixtureIndex: i,
-              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+              message: "toolCalls array is empty — fixture will never produce tool calls",
             });
+          }
+          for (let j = 0; j < response.toolCalls.length; j++) {
+            const tc = response.toolCalls[j];
+            if (!tc.name) {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].name is empty`,
+              });
+            }
+            try {
+              JSON.parse(tc.arguments);
+            } catch {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+              });
+            }
           }
         }
         validateReasoning(response, i, results);
@@ -455,7 +541,11 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
       // Optional ordered `blocks` checks — validated whenever present on the
       // response, regardless of which content/toolCalls guard matched, so a
       // malformed blocks array is rejected at LOAD rather than at dispatch.
-      validateBlocks(response as { blocks?: unknown }, i, results);
+      validateBlocks(
+        response as { blocks?: unknown; content?: unknown; toolCalls?: unknown },
+        i,
+        results,
+      );
 
       // Tool call response checks
       if (isToolCallResponse(response)) {

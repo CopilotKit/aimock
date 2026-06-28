@@ -1254,8 +1254,8 @@ export async function handleResponses(
     });
     if (responsesReq.stream !== true) {
       const body = buildContentWithToolCallsResponse(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         effReasoning,
         response.webSearches,
@@ -1266,8 +1266,8 @@ export async function handleResponses(
       res.end(JSON.stringify(body));
     } else {
       const events = buildContentWithToolCallsStreamEvents(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         chunkSize,
         effReasoning,

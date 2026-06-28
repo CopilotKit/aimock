@@ -34,6 +34,19 @@ async function ollamaChatStream(mock: LLMock, userMessage: string): Promise<Olla
   return parseNDJSON(await res.text());
 }
 
+async function ollamaChatNonStreaming(mock: LLMock, userMessage: string): Promise<OllamaChunk> {
+  const res = await fetch(`${mock.url}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "llama3.1",
+      messages: [{ role: "user", content: userMessage }],
+      stream: false,
+    }),
+  });
+  return (await res.json()) as OllamaChunk;
+}
+
 describe("Ollama — fixture block ordering (tool-first)", () => {
   let mock: LLMock | null = null;
 
@@ -133,5 +146,50 @@ describe("Ollama — fixture block ordering (tool-first)", () => {
     expect(legacyContentIdx).toBeLessThan(legacyToolIdx);
     expect(blockContentIdx).toBeLessThan(blockToolIdx);
     expect(normalize(blockChunks)).toEqual(normalize(legacyChunks));
+  });
+
+  it("non-streaming: a blocks-only fixture backfills content and tool_calls from blocks", async () => {
+    // F0 regression (#274): the non-streaming /api/chat builder never received
+    // `response.blocks`, so a blocks-only fixture (no content/toolCalls) rendered
+    // as an empty turn (content:"", tool_calls:[]) — both payloads dropped.
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "test ollama blocks-only nonstreaming" },
+      response: {
+        blocks: [
+          { type: "text", text: "hi" },
+          { type: "toolCall", name: "f", arguments: "{}" },
+        ],
+      },
+    });
+    await mock.start();
+
+    const body = await ollamaChatNonStreaming(mock, "test ollama blocks-only nonstreaming");
+
+    // Text block backfills content; toolCall block backfills tool_calls.
+    expect(body.message?.content).toBe("hi");
+    expect(body.message?.tool_calls?.length).toBe(1);
+    expect(body.message!.tool_calls![0].function.name).toBe("f");
+    expect(body.message!.tool_calls![0].function.arguments).toEqual({});
+    expect(body.done).toBe(true);
+    expect(body).toHaveProperty("total_duration");
+  });
+
+  it("non-streaming: a no-blocks legacy fixture is unchanged (content + tool_calls)", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "test ollama legacy nonstreaming" },
+      response: {
+        content: "Let me check.",
+        toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+      },
+    });
+    await mock.start();
+
+    const body = await ollamaChatNonStreaming(mock, "test ollama legacy nonstreaming");
+
+    expect(body.message?.content).toBe("Let me check.");
+    expect(body.message!.tool_calls![0].function.name).toBe("get_weather");
+    expect(body.message!.tool_calls![0].function.arguments).toEqual({ city: "NYC" });
   });
 });

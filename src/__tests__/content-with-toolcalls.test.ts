@@ -52,8 +52,11 @@ describe("resolveFixtureBlocks", () => {
       { type: "toolCall", name: "get_time", arguments: "{}", id: "call_1" },
     ];
     const result = resolveFixtureBlocks(blocks);
-    // Same reference, same order — passthrough, not reconstruction.
-    expect(result).toBe(blocks);
+    // Returns a defensive COPY (#274 F0): same contents and order, but NOT the
+    // caller's reference — builders must not be able to mutate, nor observe
+    // later mutations of, the stored fixture array.
+    expect(result).not.toBe(blocks);
+    expect(result).toEqual(blocks);
     expect(result.map((b) => b.type)).toEqual(["toolCall", "text", "toolCall"]);
   });
 
@@ -80,7 +83,7 @@ describe("resolveFixtureBlocks", () => {
 
   it("rejects a toolCall block missing arguments", () => {
     const blocks = [{ type: "toolCall", name: "f" }] as unknown as FixtureBlock[];
-    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*"name" and "arguments"/);
+    expect(() => resolveFixtureBlocks(blocks)).toThrow(/index 0.*string or object "arguments"/);
   });
 
   it("rejects a toolCall block with a non-string id", () => {

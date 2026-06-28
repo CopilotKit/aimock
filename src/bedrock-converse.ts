@@ -12,6 +12,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   ResponseOverrides,
   ToolCall,
@@ -23,6 +24,7 @@ import {
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
+  resolveFixtureBlocks,
   isErrorResponse,
   flattenHeaders,
   getContext,
@@ -181,7 +183,101 @@ function buildBedrockStreamContentWithToolCallsEvents(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): Array<{ eventType: string; payload: object }> {
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: stream `text`/`toolUse` content blocks in the fixture's array
+    // order. Converse's indexed contentBlock events make ordering observable —
+    // a `toolCall` block can take a lower `contentBlockIndex` than a `text`
+    // block. Indices are assigned in encounter order, continuing from any
+    // leading reasoning block (which occupies index 0).
+    const events: Array<{ eventType: string; payload: object }> = [
+      { eventType: "messageStart", payload: { role: "assistant" } },
+    ];
+
+    let blockIndex = 0;
+    if (reasoning) {
+      events.push({
+        eventType: "contentBlockStart",
+        payload: { contentBlockIndex: blockIndex, start: { reasoningContent: {} } },
+      });
+      for (let i = 0; i < reasoning.length; i += chunkSize) {
+        events.push({
+          eventType: "contentBlockDelta",
+          payload: {
+            contentBlockIndex: blockIndex,
+            delta: { reasoningContent: { text: reasoning.slice(i, i + chunkSize) } },
+          },
+        });
+      }
+      events.push({
+        eventType: "contentBlockStop",
+        payload: { contentBlockIndex: blockIndex },
+      });
+      blockIndex++;
+    }
+
+    const ordered = resolveFixtureBlocks(blocks);
+    for (const block of ordered) {
+      if (block.type === "text") {
+        events.push({
+          eventType: "contentBlockStart",
+          payload: { contentBlockIndex: blockIndex, start: {} },
+        });
+        for (let i = 0; i < block.text.length; i += chunkSize) {
+          events.push({
+            eventType: "contentBlockDelta",
+            payload: {
+              contentBlockIndex: blockIndex,
+              delta: { text: block.text.slice(i, i + chunkSize) },
+            },
+          });
+        }
+        events.push({
+          eventType: "contentBlockStop",
+          payload: { contentBlockIndex: blockIndex },
+        });
+      } else {
+        const toolUseId = block.id || generateToolUseId();
+        events.push({
+          eventType: "contentBlockStart",
+          payload: {
+            contentBlockIndex: blockIndex,
+            start: { toolUse: { toolUseId, name: block.name } },
+          },
+        });
+        const argsStr = parseConverseToolArgumentsForStream(
+          { name: block.name, arguments: block.arguments } as ToolCall,
+          logger,
+        );
+        for (let i = 0; i < argsStr.length; i += chunkSize) {
+          events.push({
+            eventType: "contentBlockDelta",
+            payload: {
+              contentBlockIndex: blockIndex,
+              delta: { toolUse: { input: argsStr.slice(i, i + chunkSize) } },
+            },
+          });
+        }
+        events.push({
+          eventType: "contentBlockStop",
+          payload: { contentBlockIndex: blockIndex },
+        });
+      }
+      blockIndex++;
+    }
+
+    events.push({
+      eventType: "messageStop",
+      payload: { stopReason: converseStopReason(overrides?.finishReason, "tool_use") },
+    });
+    events.push({
+      eventType: "metadata",
+      payload: { usage: converseUsage(overrides), metrics: { latencyMs: 0 } },
+    });
+    return events;
+  }
+
   const events = buildBedrockStreamTextEvents(content, chunkSize, reasoning, overrides);
   // Remove trailing metadata + messageStop events — we re-emit them after tool blocks
   for (let i = events.length - 1; i >= 0; i--) {
@@ -495,6 +591,7 @@ function buildConverseContentWithToolCallsResponse(
   logger: Logger,
   reasoning?: string,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): object {
   const contentBlocks: object[] = [];
   if (reasoning) {
@@ -502,8 +599,11 @@ function buildConverseContentWithToolCallsResponse(
       reasoningContent: { reasoningText: { text: reasoning } },
     });
   }
-  contentBlocks.push({ text: content });
-  for (const tc of toolCalls) {
+
+  // Build a Converse `toolUse` content block from a fixture tool call, parsing
+  // its string `arguments` into the object `input` Converse emits (warning on
+  // malformed JSON — same idiom as the legacy/streaming paths).
+  const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
     let argsObj: unknown;
     try {
       argsObj = JSON.parse(tc.arguments || "{}");
@@ -513,13 +613,38 @@ function buildConverseContentWithToolCallsResponse(
       );
       argsObj = {};
     }
-    contentBlocks.push({
+    return {
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
         name: tc.name,
         input: argsObj,
       },
-    });
+    };
+  };
+
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: the non-streaming `content[]` array is positionally observable,
+    // so emit `text`/`toolUse` content blocks in the fixture's ARRAY ORDER
+    // (after any leading reasoning block). A toolCall block before a text block
+    // therefore yields a toolUse ahead of the text — matching the streaming
+    // path for the same `blocks` fixture.
+    const ordered = resolveFixtureBlocks(blocks);
+    for (const block of ordered) {
+      if (block.type === "text") {
+        contentBlocks.push({ text: block.text });
+      } else {
+        contentBlocks.push(
+          toolUseBlock({ name: block.name, arguments: block.arguments, id: block.id }),
+        );
+      }
+    }
+  } else {
+    // LEGACY PATH (unchanged): text content block, then toolUse blocks in
+    // `toolCalls` order.
+    contentBlocks.push({ text: content });
+    for (const tc of toolCalls) {
+      contentBlocks.push(toolUseBlock(tc));
+    }
   }
 
   return {
@@ -767,11 +892,12 @@ export async function handleConverse(
       response: { status: 200, fixture },
     });
     const body = buildConverseContentWithToolCallsResponse(
-      response.content,
-      response.toolCalls,
+      response.content ?? "",
+      response.toolCalls ?? [],
       logger,
       effReasoning,
       overrides,
+      response.blocks,
     );
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
@@ -1085,12 +1211,13 @@ export async function handleConverseStream(
       response: { status: 200, fixture },
     });
     const events = buildBedrockStreamContentWithToolCallsEvents(
-      response.content,
-      response.toolCalls,
+      response.content ?? "",
+      response.toolCalls ?? [],
       chunkSize,
       logger,
       effReasoning,
       overrides,
+      response.blocks,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await writeEventStream(res, events, {

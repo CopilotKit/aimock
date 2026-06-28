@@ -1455,8 +1455,8 @@ export async function handleMessages(
     });
     if (claudeReq.stream !== true) {
       const body = buildClaudeContentWithToolCallsResponse(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         logger,
         effReasoning,
@@ -1469,8 +1469,8 @@ export async function handleMessages(
       res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeContentWithToolCallsStreamEvents(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         chunkSize,
         logger,

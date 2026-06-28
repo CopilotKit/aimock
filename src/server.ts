@@ -848,8 +848,8 @@ async function handleCompletions(
     });
     if (body.stream !== true) {
       const completion = buildContentWithToolCallsCompletion(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         body.model,
         effReasoning,
         overrides,
@@ -859,8 +859,8 @@ async function handleCompletions(
       res.end(JSON.stringify(completion));
     } else {
       const chunks = buildContentWithToolCallsChunks(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         body.model,
         chunkSize,
         effReasoning,
@@ -869,7 +869,8 @@ async function handleCompletions(
       );
       // Build usage chunk for stream_options.include_usage
       const completionText =
-        response.content + response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
+        (response.content ?? "") +
+        (response.toolCalls ?? []).map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = includeUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",

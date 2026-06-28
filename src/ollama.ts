@@ -492,20 +492,42 @@ function buildOllamaChatContentWithToolCallsChunks(
 }
 
 // NOTE (#274): this NON-streaming Ollama builder is intentionally degenerate
-// w.r.t. `blocks` ordering. Ollama's non-streaming chat response puts `content`
+// w.r.t. `blocks` ORDERING. Ollama's non-streaming chat response puts `content`
 // and `tool_calls` in SEPARATE fields on a single `message` object — they are
 // NOT a positionally-observable array, so a tool-first `blocks` fixture cannot
-// be expressed in the wire shape. Honoring block order here would be a no-op,
-// so we keep the legacy text+tool_calls fields unchanged. (Order-observable
-// surfaces — Claude `content[]`, Gemini `parts[]`, Responses `output[]` — DO
-// honor block order; see those builders.)
+// be expressed in the wire shape. Block ORDER is therefore a no-op here.
+// The PAYLOAD, however, is still derived from `blocks` when present (the body
+// backfills `content`/`tool_calls` from the blocks — see the comment at the
+// top of the function body); only the relative ordering of those fields is
+// unobservable. (Order-observable surfaces — Claude `content[]`, Gemini
+// `parts[]`, Responses `output[]` — DO honor block order; see those builders.)
 function buildOllamaChatContentWithToolCallsResponse(
   content: string,
   toolCalls: ToolCall[],
   model: string,
   logger: Logger,
   reasoning?: string,
+  blocks?: FixtureBlock[],
 ): object {
+  // Blocks-only / blocks-present fixtures: the non-streaming wire shape has no
+  // positional array, so order is a no-op here (see NOTE above). But the PAYLOAD
+  // must not be dropped: backfill `content` from text blocks (concatenated) and
+  // `tool_calls` from toolCall blocks, mirroring what the streaming path derives.
+  // Legacy (no-blocks) callers keep byte-identical output.
+  if (blocks && blocks.length > 0) {
+    const ordered = resolveFixtureBlocks(blocks);
+    content = ordered
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    toolCalls = ordered
+      .filter(
+        (b): b is { type: "toolCall"; name: string; arguments: string; id?: string } =>
+          b.type === "toolCall",
+      )
+      .map((b) => ({ name: b.name, arguments: b.arguments }));
+  }
+
   const ollamaToolCalls = toolCalls.map((tc) => {
     let argsObj: unknown;
     try {
@@ -829,18 +851,19 @@ export async function handleOllama(
     );
     if (!streaming) {
       const body = buildOllamaChatContentWithToolCallsResponse(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         logger,
         effReasoning,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatContentWithToolCallsChunks(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         completionReq.model,
         chunkSize,
         logger,

@@ -1001,8 +1001,8 @@ export async function handleGemini(
     });
     if (!streaming) {
       const body = buildGeminiContentWithToolCallsResponse(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         logger,
         effReasoning,
         overrides,
@@ -1012,8 +1012,8 @@ export async function handleGemini(
       res.end(JSON.stringify(body));
     } else {
       const chunks = buildGeminiContentWithToolCallsStreamChunks(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         chunkSize,
         logger,
         effReasoning,

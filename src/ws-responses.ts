@@ -270,8 +270,8 @@ async function processMessage(
     });
 
     const events = buildContentWithToolCallsStreamEvents(
-      response.content,
-      response.toolCalls,
+      response.content ?? "",
+      response.toolCalls ?? [],
       completionReq.model,
       chunkSize,
       resolveReasoningForModel(

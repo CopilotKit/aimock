@@ -12,6 +12,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureBlock,
   HandlerDefaults,
   RecordedTimings,
   ResponseOverrides,
@@ -34,6 +35,7 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  resolveFixtureBlocks,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -385,10 +387,41 @@ export function buildInteractionsContentWithToolCallsResponse(
   interactionId: string,
   logger: Logger,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): object {
-  const steps: object[] = [{ type: "model_output", content: [{ type: "text", text: content }] }];
-  for (const tc of toolCalls) {
-    steps.push(buildFunctionCallStep(tc, logger));
+  const steps: object[] = [];
+  // Collect output_text in step order so the top-level field mirrors the
+  // concatenated text steps regardless of where they appear in `steps`.
+  let outputText = "";
+
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: the non-stream `steps[]` array is index/step-addressed and
+    // ordered, so emit one step per block in fixture ARRAY ORDER. A toolCall
+    // block placed before a text block therefore yields a function_call step
+    // ahead of the model_output step — tool-first, the opposite of the legacy
+    // (text-step-always-first) shape below.
+    const ordered = resolveFixtureBlocks(blocks);
+    for (const block of ordered) {
+      if (block.type === "text") {
+        steps.push({ type: "model_output", content: [{ type: "text", text: block.text }] });
+        outputText += block.text;
+      } else {
+        steps.push(
+          buildFunctionCallStep(
+            { name: block.name, arguments: block.arguments, id: block.id },
+            logger,
+          ),
+        );
+      }
+    }
+  } else {
+    // LEGACY PATH: a single text step first, then function_call steps —
+    // unchanged from the pre-blocks behavior (text always leads `steps`).
+    steps.push({ type: "model_output", content: [{ type: "text", text: content }] });
+    outputText = content;
+    for (const tc of toolCalls) {
+      steps.push(buildFunctionCallStep(tc, logger));
+    }
   }
 
   return {
@@ -396,7 +429,7 @@ export function buildInteractionsContentWithToolCallsResponse(
     status: "requires_action",
     model: overrides?.model ?? model,
     role: "model",
-    output_text: content,
+    output_text: outputText,
     steps,
     usage: interactionsUsage(overrides),
   };
@@ -570,6 +603,95 @@ export function buildInteractionsToolCallSSEEvents(
   return events;
 }
 
+// Emit the step.start/delta(s)/stop bracket for a text (model_output) step at
+// a given step `index`. Inner delta shape ({ type: "text", text }) and the
+// empty-content single-empty-delta behavior are unchanged from the legacy path.
+function pushTextStepEvents(
+  events: InteractionsSSEEvent[],
+  index: number,
+  content: string,
+  chunkSize: number,
+): void {
+  events.push({
+    event_type: "step.start",
+    index,
+    step: { type: "model_output" },
+    event_id: nextEventId(),
+  });
+
+  if (content.length === 0) {
+    events.push({
+      event_type: "step.delta",
+      index,
+      delta: { type: "text", text: "" },
+      event_id: nextEventId(),
+    });
+  } else {
+    for (let i = 0; i < content.length; i += chunkSize) {
+      const slice = content.slice(i, i + chunkSize);
+      events.push({
+        event_type: "step.delta",
+        index,
+        delta: { type: "text", text: slice },
+        event_id: nextEventId(),
+      });
+    }
+  }
+
+  events.push({
+    event_type: "step.stop",
+    index,
+    event_id: nextEventId(),
+  });
+}
+
+// Emit the step.start/arguments_delta/stop bracket for a function_call step at
+// a given step `index`. Identity (id, name) lives on step.start with an empty
+// `arguments: {}` placeholder; the arguments stream as a single
+// `arguments_delta` JSON-string fragment — unchanged from the legacy path.
+function pushFunctionCallStepEvents(
+  events: InteractionsSSEEvent[],
+  index: number,
+  tc: ToolCall,
+  logger: Logger,
+): void {
+  let argsObj: unknown;
+  try {
+    argsObj = JSON.parse(tc.arguments || "{}");
+  } catch {
+    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
+    argsObj = {};
+  }
+
+  events.push({
+    event_type: "step.start",
+    index,
+    step: {
+      type: "function_call",
+      id: tc.id || generateToolCallId(),
+      name: tc.name,
+      arguments: {},
+    },
+    event_id: nextEventId(),
+  });
+
+  events.push({
+    event_type: "step.delta",
+    index,
+    delta: {
+      type: "arguments_delta",
+      arguments: JSON.stringify(argsObj),
+    },
+    event_id: nextEventId(),
+  });
+
+  events.push({
+    event_type: "step.stop",
+    index,
+    event_id: nextEventId(),
+  });
+}
+
 export function buildInteractionsContentWithToolCallsSSEEvents(
   content: string,
   toolCalls: ToolCall[],
@@ -577,6 +699,7 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
   chunkSize: number,
   logger: Logger,
   overrides?: ResponseOverrides,
+  blocks?: FixtureBlock[],
 ): InteractionsSSEEvent[] {
   const events: InteractionsSSEEvent[] = [];
 
@@ -587,80 +710,33 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
     event_id: nextEventId(),
   });
 
-  // Text content at index 0 (model_output step)
-  events.push({
-    event_type: "step.start",
-    index: 0,
-    step: { type: "model_output" },
-    event_id: nextEventId(),
-  });
-
-  if (content.length === 0) {
-    events.push({
-      event_type: "step.delta",
-      index: 0,
-      delta: { type: "text", text: "" },
-      event_id: nextEventId(),
-    });
+  if (blocks && blocks.length > 0) {
+    // NEW PATH: stream one step per block in fixture ARRAY ORDER. The step
+    // `index` increments with array position, so a toolCall block before a text
+    // block yields a function_call step at a LOWER index than the model_output
+    // step — tool-first, the opposite of the legacy (text-at-index-0) shape.
+    const ordered = resolveFixtureBlocks(blocks);
+    let idx = 0;
+    for (const block of ordered) {
+      if (block.type === "text") {
+        pushTextStepEvents(events, idx, block.text, chunkSize);
+      } else {
+        pushFunctionCallStepEvents(
+          events,
+          idx,
+          { name: block.name, arguments: block.arguments, id: block.id },
+          logger,
+        );
+      }
+      idx += 1;
+    }
   } else {
-    for (let i = 0; i < content.length; i += chunkSize) {
-      const slice = content.slice(i, i + chunkSize);
-      events.push({
-        event_type: "step.delta",
-        index: 0,
-        delta: { type: "text", text: slice },
-        event_id: nextEventId(),
-      });
+    // LEGACY PATH: text content at index 0 (model_output step), tool calls at
+    // index 1+ — byte-for-byte unchanged from the pre-blocks behavior.
+    pushTextStepEvents(events, 0, content, chunkSize);
+    for (let i = 0; i < toolCalls.length; i++) {
+      pushFunctionCallStepEvents(events, i + 1, toolCalls[i], logger);
     }
-  }
-
-  events.push({
-    event_type: "step.stop",
-    index: 0,
-    event_id: nextEventId(),
-  });
-
-  // Tool calls at index 1+ (identity on step.start, args as arguments_delta)
-  for (let i = 0; i < toolCalls.length; i++) {
-    const tc = toolCalls[i];
-    const idx = i + 1; // offset by 1 because text is index 0
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-
-    events.push({
-      event_type: "step.start",
-      index: idx,
-      step: {
-        type: "function_call",
-        id: tc.id || generateToolCallId(),
-        name: tc.name,
-        arguments: {},
-      },
-      event_id: nextEventId(),
-    });
-
-    events.push({
-      event_type: "step.delta",
-      index: idx,
-      delta: {
-        type: "arguments_delta",
-        arguments: JSON.stringify(argsObj),
-      },
-      event_id: nextEventId(),
-    });
-
-    events.push({
-      event_type: "step.stop",
-      index: idx,
-      event_id: nextEventId(),
-    });
   }
 
   // interaction.completed
@@ -930,23 +1006,25 @@ export async function handleGeminiInteractions(
     });
     if (!streaming) {
       const body = buildInteractionsContentWithToolCallsResponse(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         model,
         interactionId,
         logger,
         overrides,
+        response.blocks,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const events = buildInteractionsContentWithToolCallsSSEEvents(
-        response.content,
-        response.toolCalls,
+        response.content ?? "",
+        response.toolCalls ?? [],
         interactionId,
         chunkSize,
         logger,
         overrides,
+        response.blocks,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiInteractionsSSEStream(res, events, {

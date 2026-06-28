@@ -211,13 +211,25 @@ export interface ToolCallResponse extends ResponseOverrides {
 }
 
 export interface ContentWithToolCallsResponse extends ResponseOverrides {
-  content: string;
-  toolCalls: ToolCall[];
+  /**
+   * Combined-turn text. Required for the legacy `{ content, toolCalls }` shape
+   * and the combined `{ content, toolCalls, blocks }` shape. OPTIONAL only for a
+   * BLOCKS-ONLY fixture (`{ blocks: [...] }` with no `content`/`toolCalls`),
+   * where the ordered `blocks` array is the sole source of streamed output and
+   * the legacy text-first builder branch is never taken. The runtime guard
+   * `isContentWithToolCallsResponse` enforces this: it matches when BOTH
+   * `content` + `toolCalls` are present (legacy/combined) OR when a non-empty
+   * `blocks` array is present (blocks-only).
+   */
+  content?: string;
+  /** See {@link ContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
+  toolCalls?: ToolCall[];
   /**
    * Optional ordered streaming blocks. When present, builders stream these in
    * array order (tool-first / interleaved); when absent, the legacy
-   * `{ content, toolCalls }` text-first path runs unchanged. Purely additive —
-   * `isContentWithToolCallsResponse` still requires `content` + `toolCalls`.
+   * `{ content, toolCalls }` text-first path runs unchanged. Purely additive.
+   * A non-empty `blocks` array also makes this a FIRST-CLASS blocks-only
+   * response even without `content`/`toolCalls` (see those fields above).
    */
   blocks?: FixtureBlock[];
   reasoning?: string;
@@ -475,16 +487,23 @@ export interface FixtureFileTextResponse extends ResponseOverrides {
 }
 
 export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrides {
-  /** Accepts a JSON object or array (structured output) — the loader will JSON.stringify it. */
-  content: string | Record<string, unknown> | unknown[];
-  toolCalls: FixtureFileToolCall[];
+  /**
+   * Accepts a JSON object or array (structured output) — the loader will
+   * JSON.stringify it. OPTIONAL only for a BLOCKS-ONLY fixture (mirrors
+   * {@link ContentWithToolCallsResponse.content}); required for the
+   * legacy/combined shapes.
+   */
+  content?: string | Record<string, unknown> | unknown[];
+  /** See {@link FixtureFileContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
+  toolCalls?: FixtureFileToolCall[];
   /**
    * Optional ordered streaming blocks (mirrors the in-memory
    * {@link ContentWithToolCallsResponse.blocks}). When present, builders stream
    * these in array order (tool-first / interleaved); a `toolCall` block's
    * object `arguments` is auto-stringified just like `toolCalls[].arguments`.
    * Absent → legacy text-first path runs unchanged. Purely additive. Uses the
-   * on-disk {@link FixtureFileBlock} shape with relaxed `arguments`.
+   * on-disk {@link FixtureFileBlock} shape with relaxed `arguments`. A non-empty
+   * `blocks` array alone makes this a first-class blocks-only fixture.
    */
   blocks?: FixtureFileBlock[];
   reasoning?: string;

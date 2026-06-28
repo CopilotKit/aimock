@@ -1480,9 +1480,12 @@ describe("collapseGeminiInteractionsSSE", () => {
       'data: {"event_type":"step.stop","index":0,"event_id":"evt_3"}',
     ].join("\n\n");
     const result = collapseGeminiInteractionsSSE(sse);
-    // The (corrupt) call is still surfaced, but flagged so the recorder warns.
+    // The call is still surfaced and flagged so the recorder warns, but the
+    // unparseable assembly is NOT persisted — it falls back to valid "{}" so the
+    // fixture reloads cleanly (the loader JSON.parses arguments). See #274.
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NY');
+    expect(result.toolCalls![0].arguments).toBe("{}");
+    expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
     expect(result.droppedChunks).toBe(1);
     expect(result.firstDroppedSample).toMatch(/not valid JSON/);
   });

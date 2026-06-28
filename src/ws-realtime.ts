@@ -7,7 +7,13 @@
  */
 
 import { randomBytes } from "node:crypto";
-import type { ChatCompletionRequest, ChatMessage, Fixture } from "./types.js";
+import type {
+  ChatCompletionRequest,
+  ChatMessage,
+  Fixture,
+  FixtureBlock,
+  JournalEntry,
+} from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
   generateToolCallId,
@@ -16,6 +22,7 @@ import {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   isErrorResponse,
+  resolveFixtureBlocks,
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
@@ -851,6 +858,31 @@ async function handleResponseCreate(
       response: { status: 200, fixture },
     });
 
+    // ── Ordered blocks path (#274) ──────────────────────────────────
+    // When the fixture supplies an ordered `blocks` array, stream the items in
+    // array order so a blocks-only fixture (no `content`/`toolCalls`) never
+    // emits an empty payload, and a combined `{content,toolCalls,blocks}`
+    // fixture preserves block ordering vs the HTTP path. Unlike OpenAI
+    // chat-completions (separate, non-positional content/tool channels), the
+    // Realtime WS protocol sequences output items on the wire with explicit
+    // `output_index`, so block order — including tool-before-text — IS
+    // observable to a client and is honored here.
+    if (response.blocks && response.blocks.length > 0) {
+      await streamRealtimeBlocks(
+        ws,
+        resolveFixtureBlocks(response.blocks),
+        responseId,
+        fixture,
+        defaults,
+        latency,
+        chunkSize,
+        isBeta,
+        conversationItems,
+        journalEntry,
+      );
+      return;
+    }
+
     // response.created
     sendEvent(
       ws,
@@ -923,7 +955,7 @@ async function handleResponseCreate(
     );
 
     // response.output_text.delta (chunked) — GA name
-    const content = response.content;
+    const content = response.content ?? "";
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     let eventIndex = 0;
@@ -1056,8 +1088,9 @@ async function handleResponseCreate(
     allOutputItems.push(textOutputItem);
 
     // ── Tool call parts ────────────────────────────────────────────
-    for (let tcIdx = 0; tcIdx < response.toolCalls.length; tcIdx++) {
-      const tc = response.toolCalls[tcIdx];
+    const toolCalls = response.toolCalls ?? [];
+    for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+      const tc = toolCalls[tcIdx];
       const callId = tc.id ?? generateToolCallId();
       const itemId = realtimeId("item");
       const outputIndex = tcIdx + 1; // offset by 1 for the text item
@@ -1307,7 +1340,7 @@ async function handleResponseCreate(
     );
 
     // response.output_text.delta (chunked) — GA name
-    const content = response.content;
+    const content = response.content ?? "";
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
     const interruption = createInterruptionSignal(fixture);
@@ -1666,4 +1699,383 @@ async function handleResponseCreate(
     isBeta,
     "server_error",
   );
+}
+
+/**
+ * Stream a content+toolCalls fixture's ordered `blocks` over the Realtime WS
+ * surface (#274). Each block becomes its own output item, sequenced on the wire
+ * with an incrementing `output_index` so a client observes the blocks in array
+ * order (text and tool-call items can interleave in any order, unlike the
+ * separate channels of chat-completions). Emits the same per-item event shapes
+ * as the legacy text/tool branches; a blocks-only fixture therefore never
+ * produces an empty payload.
+ */
+async function streamRealtimeBlocks(
+  ws: WebSocketConnection,
+  blocks: FixtureBlock[],
+  responseId: string,
+  fixture: Fixture,
+  defaults: { latency: number; chunkSize: number; replaySpeed?: number; logger: Logger },
+  latency: number,
+  chunkSize: number,
+  isBeta: boolean,
+  conversationItems: RealtimeItem[],
+  journalEntry: JournalEntry,
+): Promise<void> {
+  // response.created
+  sendEvent(
+    ws,
+    {
+      type: "response.created",
+      response: {
+        id: responseId,
+        object: "realtime.response",
+        status: "in_progress",
+        status_details: null,
+        output: [],
+        usage: null,
+      },
+    },
+    isBeta,
+  );
+
+  const interruption = createInterruptionSignal(fixture);
+  let interrupted = false;
+  const allOutputItems: unknown[] = [];
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const { recordedTimings } = fixture;
+  let eventIndex = 0;
+
+  // A text block following a tool-call block (or any tool present in the array)
+  // is "commentary"; a lone text block is the "final_answer".
+  const hasToolCalls = blocks.some((b) => b.type === "toolCall");
+
+  for (let outputIndex = 0; outputIndex < blocks.length; outputIndex++) {
+    if (ws.isClosed || interrupted) break;
+    const block = blocks[outputIndex];
+
+    if (block.type === "text") {
+      const textItemId = realtimeId("item");
+      const contentIndex = 0;
+      const textPhase = hasToolCalls ? "commentary" : "final_answer";
+      const text = block.text;
+
+      const textOutputItem = {
+        id: textItemId,
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text }],
+      };
+
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.added",
+          response_id: responseId,
+          output_index: outputIndex,
+          item: {
+            id: textItemId,
+            type: "message",
+            role: "assistant",
+            status: "in_progress",
+            content: [],
+            phase: textPhase,
+          },
+        },
+        isBeta,
+      );
+
+      sendEvent(
+        ws,
+        {
+          type: "response.content_part.added",
+          response_id: responseId,
+          item_id: textItemId,
+          output_index: outputIndex,
+          content_index: contentIndex,
+          part: { type: "output_text", text: "" },
+        },
+        isBeta,
+      );
+
+      for (let i = 0; i < text.length; i += chunkSize) {
+        if (ws.isClosed) break;
+        const chunkDelay = calculateDelay(
+          eventIndex,
+          undefined,
+          latency,
+          recordedTimings,
+          replaySpeed,
+        );
+        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
+        if (ws.isClosed) break;
+        const chunk = text.slice(i, i + chunkSize);
+        try {
+          sendEvent(
+            ws,
+            {
+              type: "response.output_text.delta",
+              response_id: responseId,
+              item_id: textItemId,
+              output_index: outputIndex,
+              content_index: contentIndex,
+              delta: chunk,
+            },
+            isBeta,
+          );
+        } catch (err) {
+          defaults.logger.debug(
+            "[ws-realtime] send failed during block text streaming, closing",
+            err,
+          );
+          break;
+        }
+        eventIndex++;
+        interruption?.tick();
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
+      }
+
+      if (interrupted || ws.isClosed) break;
+
+      sendEvent(
+        ws,
+        {
+          type: "response.output_text.done",
+          response_id: responseId,
+          item_id: textItemId,
+          output_index: outputIndex,
+          content_index: contentIndex,
+          text,
+        },
+        isBeta,
+      );
+
+      if (ws.isClosed) break;
+
+      sendEvent(
+        ws,
+        {
+          type: "response.content_part.done",
+          response_id: responseId,
+          item_id: textItemId,
+          output_index: outputIndex,
+          content_index: contentIndex,
+          part: { type: "output_text", text },
+        },
+        isBeta,
+      );
+
+      if (ws.isClosed) break;
+
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.done",
+          response_id: responseId,
+          output_index: outputIndex,
+          item: { ...textOutputItem, phase: textPhase },
+        },
+        isBeta,
+      );
+
+      sendEvent(
+        ws,
+        {
+          type: "conversation.item.done",
+          item: {
+            id: textItemId,
+            object: "realtime.item",
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: textOutputItem.content,
+          },
+        },
+        isBeta,
+      );
+
+      if (ws.isClosed) break;
+      allOutputItems.push(textOutputItem);
+    } else {
+      const callId = block.id ?? generateToolCallId();
+      const itemId = realtimeId("item");
+      const args = block.arguments;
+
+      const toolOutputItem = {
+        id: itemId,
+        type: "function_call",
+        status: "completed",
+        call_id: callId,
+        name: block.name,
+        arguments: args,
+      };
+
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.added",
+          response_id: responseId,
+          output_index: outputIndex,
+          item: {
+            id: itemId,
+            type: "function_call",
+            status: "in_progress",
+            call_id: callId,
+            name: block.name,
+            arguments: "",
+            phase: "final_answer",
+          },
+        },
+        isBeta,
+      );
+
+      for (let i = 0; i < args.length; i += chunkSize) {
+        if (ws.isClosed) break;
+        const chunkDelay = calculateDelay(
+          eventIndex,
+          undefined,
+          latency,
+          recordedTimings,
+          replaySpeed,
+        );
+        if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
+        if (ws.isClosed) break;
+        const chunk = args.slice(i, i + chunkSize);
+        try {
+          sendEvent(
+            ws,
+            {
+              type: "response.function_call_arguments.delta",
+              response_id: responseId,
+              item_id: itemId,
+              output_index: outputIndex,
+              call_id: callId,
+              delta: chunk,
+            },
+            isBeta,
+          );
+        } catch (err) {
+          defaults.logger.debug(
+            "[ws-realtime] send failed during block tool call streaming, closing",
+            err,
+          );
+          break;
+        }
+        eventIndex++;
+        interruption?.tick();
+        if (interruption?.signal.aborted) {
+          interrupted = true;
+          break;
+        }
+      }
+
+      if (interrupted || ws.isClosed) break;
+
+      sendEvent(
+        ws,
+        {
+          type: "response.function_call_arguments.done",
+          response_id: responseId,
+          item_id: itemId,
+          output_index: outputIndex,
+          call_id: callId,
+          arguments: args,
+        },
+        isBeta,
+      );
+
+      if (ws.isClosed) break;
+
+      sendEvent(
+        ws,
+        {
+          type: "response.output_item.done",
+          response_id: responseId,
+          output_index: outputIndex,
+          item: { ...toolOutputItem, phase: "final_answer" },
+        },
+        isBeta,
+      );
+
+      sendEvent(
+        ws,
+        {
+          type: "conversation.item.done",
+          item: {
+            id: itemId,
+            object: "realtime.item",
+            type: "function_call",
+            status: "completed",
+            call_id: callId,
+            name: block.name,
+            arguments: args,
+          },
+        },
+        isBeta,
+      );
+
+      if (ws.isClosed) break;
+      allOutputItems.push(toolOutputItem);
+    }
+  }
+
+  if (interrupted) {
+    ws.destroy();
+    journalEntry.response.interrupted = true;
+    journalEntry.response.interruptReason = interruption?.reason();
+    interruption?.cleanup();
+    return;
+  }
+
+  interruption?.cleanup();
+
+  if (ws.isClosed) return;
+
+  // response.done
+  sendEvent(
+    ws,
+    {
+      type: "response.done",
+      response: {
+        id: responseId,
+        object: "realtime.response",
+        status: "completed",
+        output: allOutputItems,
+        usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+      },
+    },
+    isBeta,
+  );
+
+  // Accumulate into conversation for multi-turn (each output item, in order).
+  for (const item of allOutputItems) {
+    const it = item as { type: string; id: string; content?: unknown };
+    if (it.type === "message") {
+      conversationItems.push({
+        type: "message",
+        id: it.id,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: ((it.content as Array<{ text?: string }>)?.[0]?.text ?? "") as string,
+          },
+        ],
+      });
+    } else {
+      conversationItems.push(item as RealtimeItem);
+    }
+  }
 }
