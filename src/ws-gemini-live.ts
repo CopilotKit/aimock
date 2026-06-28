@@ -23,6 +23,7 @@ import {
   flattenHeaders,
   formatToMime,
   generateToolCallId,
+  resolveFixtureBlocks,
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
@@ -512,6 +513,165 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
+
+    // BLOCKS path (#274): when the fixture carries an ordered `blocks` array,
+    // honor it instead of the legacy `content ?? ""` / `toolCalls ?? []` path.
+    // The Gemini Live WS protocol expresses ordering via SEQUENTIAL messages —
+    // a text block becomes one-or-more `serverContent.modelTurn.parts[{text}]`
+    // messages and a toolCall block becomes a `toolCall.functionCalls` message,
+    // so emitting in array order faithfully reproduces tool-before-text (or any
+    // interleaving), matching the HTTP gemini.ts blocks branch. Without this, a
+    // blocks-only fixture (post-F0 it matches this guard) would stream an EMPTY
+    // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
+    if (response.blocks && response.blocks.length > 0) {
+      const resolvedBlocks = resolveFixtureBlocks(response.blocks);
+      const interruption = createInterruptionSignal(fixture);
+      const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+      const { recordedTimings } = fixture;
+      let chunkIndex = 0;
+      let interrupted = false;
+
+      // Accumulate the equivalent assistant turn for conversation history, so a
+      // follow-up turn sees the same content + tool_calls as the legacy path.
+      let historyContent = "";
+      const historyToolCalls: {
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }[] = [];
+
+      outer: for (const block of resolvedBlocks) {
+        if (block.type === "toolCall") {
+          if (ws.isClosed) break;
+          const tcDelay = calculateDelay(
+            chunkIndex,
+            undefined,
+            latency,
+            recordedTimings,
+            replaySpeed,
+          );
+          if (tcDelay > 0) await delay(tcDelay, interruption?.signal);
+          if (interruption?.signal.aborted) {
+            interrupted = true;
+            break;
+          }
+          if (ws.isClosed) break;
+
+          const resolvedId = block.id ?? generateToolCallId();
+          let argsObj: Record<string, unknown>;
+          try {
+            argsObj = JSON.parse(block.arguments || "{}") as Record<string, unknown>;
+          } catch {
+            defaults.logger.warn(
+              `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
+            );
+            argsObj = {};
+          }
+
+          try {
+            ws.send(
+              JSON.stringify({
+                toolCall: { functionCalls: [{ name: block.name, args: argsObj, id: resolvedId }] },
+              }),
+            );
+          } catch (err) {
+            defaults.logger.debug(
+              "[gemini-live] send failed during blocks streaming, closing",
+              err,
+            );
+            break;
+          }
+          chunkIndex++;
+          historyToolCalls.push({
+            id: resolvedId,
+            type: "function" as const,
+            function: { name: block.name, arguments: block.arguments },
+          });
+          interruption?.tick();
+          if (interruption?.signal.aborted) {
+            interrupted = true;
+            break;
+          }
+        } else {
+          const text = block.text;
+          historyContent += text;
+          if (text.length === 0) {
+            if (ws.isClosed) break;
+            try {
+              ws.send(
+                JSON.stringify({
+                  serverContent: { modelTurn: { parts: [{ text: "" }] } },
+                }),
+              );
+            } catch (err) {
+              defaults.logger.debug(
+                "[gemini-live] send failed during blocks streaming, closing",
+                err,
+              );
+              break;
+            }
+            continue;
+          }
+          for (let i = 0; i < text.length; i += chunkSize) {
+            if (ws.isClosed) break outer;
+            const chunkDelay = calculateDelay(
+              chunkIndex,
+              undefined,
+              latency,
+              recordedTimings,
+              replaySpeed,
+            );
+            if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+            if (interruption?.signal.aborted) {
+              interrupted = true;
+              break outer;
+            }
+            if (ws.isClosed) break outer;
+            try {
+              ws.send(
+                JSON.stringify({
+                  serverContent: { modelTurn: { parts: [{ text: text.slice(i, i + chunkSize) }] } },
+                }),
+              );
+            } catch (err) {
+              defaults.logger.debug(
+                "[gemini-live] send failed during blocks streaming, closing",
+                err,
+              );
+              break outer;
+            }
+            chunkIndex++;
+            interruption?.tick();
+            if (interruption?.signal.aborted) {
+              interrupted = true;
+              break outer;
+            }
+          }
+        }
+      }
+
+      if (interrupted) {
+        ws.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+        interruption?.cleanup();
+        return;
+      }
+
+      interruption?.cleanup();
+
+      // Send turnComplete
+      if (!ws.isClosed) {
+        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+      }
+
+      session.conversationHistory.push({
+        role: "assistant",
+        content: historyContent || null,
+        ...(historyToolCalls.length > 0 ? { tool_calls: historyToolCalls } : {}),
+      });
+      return;
+    }
 
     const content = response.content ?? "";
     const chunkList: string[] = [];
