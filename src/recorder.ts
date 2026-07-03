@@ -779,14 +779,16 @@ export async function proxyAndRecord(
     }
   }
 
-  // If the client disconnected mid-stream, the collected data is likely
-  // truncated.  Saving a partial fixture is worse than saving none — skip
-  // fixture persistence entirely.
+  // Client may have closed its socket before upstream fired `end`
+  // (e.g. the OpenAI Python SDK closes the response immediately after
+  // consuming `data: [DONE]`). Because we no longer destroy the upstream
+  // request on client close (see the `clientRes.on("close")` handler
+  // below), reaching this point means upstream still ran to completion
+  // and the buffered body is intact — so recording the fixture is safe.
   if (clientDisconnected) {
     defaults.logger.warn(
-      "Client disconnected mid-stream — skipping fixture save to avoid truncated data",
+      "Client closed connection before upstream end — upstream response completed, recording full fixture",
     );
-    return "relayed";
   }
 
   // Build RecordedTimings from frame timestamps captured during streaming.
@@ -1071,25 +1073,20 @@ function makeUpstreamRequest(
           // before the first data chunk arrives.
           if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
           streamedToClient = true;
-          // Stop relaying if the client disconnects mid-stream.
-          // Check writableFinished to distinguish normal completion (where
-          // "close" also fires) from premature client disconnects.
+          // Track client disconnects but do NOT destroy the upstream
+          // request. Some SDKs (notably the OpenAI Python SDK) close
+          // their socket the instant they consume `data: [DONE]`, before
+          // upstream has fired `res.end`. If we destroyed upstream on
+          // that signal we would lose the tail of the response — or the
+          // whole response, when the SDK closes right after `[DONE]` —
+          // and record mode would silently produce no fixture. Letting
+          // upstream finish means we still capture a complete body; the
+          // `!clientDisconnected` guard inside `onUpstreamData` already
+          // prevents further writes to the now-closed client socket, so
+          // no data is written to a dead peer.
           clientRes.on("close", () => {
             if (!clientRes.writableFinished) {
               clientDisconnected = true;
-              req.destroy();
-              // Stop in-flight buffering immediately rather than draining the
-              // upstream socket under backpressure: detach the data listener so
-              // no further chunks accumulate, and free what's already buffered.
-              // The promise still settles via the 'end'/'error'/'close' the
-              // destroyed request emits; collapse/recording is skipped because
-              // the client disconnected.
-              res.removeListener("data", onUpstreamData);
-              chunks.length = 0;
-              bufferedBytes = 0;
-              frameTimestamps.length = 0;
-              frameBuffer = "";
-              binaryFrameBuffer = Buffer.alloc(0);
             }
           });
         }
