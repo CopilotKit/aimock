@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.35.1] - 2026-07-06
+
 ### Fixed
 
 - Record mode no longer silently drops fixtures when an SDK closes its socket immediately after `data: [DONE]` (e.g. the OpenAI Python SDK); the completed upstream response is now persisted. Genuine mid-stream aborts (client disconnect before `[DONE]`) still abort upstream and write no fixture (#288)
