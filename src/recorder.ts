@@ -447,6 +447,7 @@ export async function proxyAndRecord(
   // skip the final res.writeHead/res.end relay at the bottom of this fn.
   let streamedToClient = false;
   let clientDisconnected = false;
+  let sawDone = false;
   let frameTimestamps: number[] = [];
   let streamStartTime = 0;
   const maxProxyBufferBytes = clampMaxBufferBytes(record.maxProxyBufferBytes);
@@ -469,6 +470,7 @@ export async function proxyAndRecord(
     rawBuffer = result.rawBuffer;
     streamedToClient = result.streamedToClient;
     clientDisconnected = result.clientDisconnected;
+    sawDone = result.sawDone;
     frameTimestamps = result.frameTimestamps;
     streamStartTime = result.streamStartTime;
     bufferTruncated = result.bufferTruncated;
@@ -779,13 +781,21 @@ export async function proxyAndRecord(
     }
   }
 
-  // Client may have closed its socket before upstream fired `end`
-  // (e.g. the OpenAI Python SDK closes the response immediately after
-  // consuming `data: [DONE]`). Because we no longer destroy the upstream
-  // request on client close (see the `clientRes.on("close")` handler
-  // below), reaching this point means upstream still ran to completion
-  // and the buffered body is intact — so recording the fixture is safe.
+  // Client may have closed its socket before upstream fired `end`.
+  // Distinguish two cases based on whether the SSE `[DONE]` marker was seen:
+  //   - sawDone=true: client closed after consuming `data: [DONE]` (e.g. the
+  //     OpenAI Python SDK closes the socket the moment it reads `[DONE]`).
+  //     Upstream ran to completion; the buffered body is intact. Log and
+  //     proceed to persist the full fixture.
+  //   - sawDone=false: genuine mid-stream abort. The buffered body is partial;
+  //     saving it would produce a corrupt fixture. Skip fixture persistence.
   if (clientDisconnected) {
+    if (!sawDone) {
+      defaults.logger.warn(
+        "Client disconnected mid-stream — skipping fixture save to avoid truncated data",
+      );
+      return "relayed";
+    }
     defaults.logger.warn(
       "Client closed connection before upstream end — upstream response completed, recording full fixture",
     );
@@ -1003,6 +1013,15 @@ function makeUpstreamRequest(
    * loud (502) rather than relay this truncated body as a success status.
    */
   hardCeilingExceeded: boolean;
+  /**
+   * True when the SSE terminal marker `data: [DONE]` was observed in the
+   * upstream stream before the client disconnected. When `clientDisconnected`
+   * is true AND `sawDone` is true, the client closed after consuming `[DONE]`
+   * (e.g. the OpenAI Python SDK) — the stream was logically complete, so the
+   * fixture SHOULD be persisted. When `sawDone` is false the disconnect was a
+   * genuine mid-stream abort and the fixture MUST NOT be persisted.
+   */
+  sawDone: boolean;
 }> {
   return new Promise((resolve, reject) => {
     const transport = target.protocol === "https:" ? https : http;
@@ -1056,6 +1075,16 @@ function makeUpstreamRequest(
 
         let streamedToClient = false;
         let clientDisconnected = false;
+        // True once the SSE terminal marker `data: [DONE]` has been seen in the
+        // upstream stream. Used to distinguish two client-close scenarios:
+        //   1. Close AT/AFTER `[DONE]`: the stream is logically complete (e.g.
+        //      the OpenAI Python SDK closes the socket the moment it reads
+        //      `[DONE]`, before upstream fires `res.end`). The upstream should
+        //      NOT be torn down — let it finish and persist the full fixture.
+        //   2. Close BEFORE `[DONE]`: genuine mid-stream abort. Restore the
+        //      original teardown so upstream is destroyed and no partial fixture
+        //      is persisted.
+        let sawDone = false;
         if (isProgressiveStream && clientRes && !clientRes.headersSent) {
           const relayHeaders: Record<string, string> = {
             "Cache-Control": "no-cache, no-transform",
@@ -1073,20 +1102,27 @@ function makeUpstreamRequest(
           // before the first data chunk arrives.
           if (typeof clientRes.flushHeaders === "function") clientRes.flushHeaders();
           streamedToClient = true;
-          // Track client disconnects but do NOT destroy the upstream
-          // request. Some SDKs (notably the OpenAI Python SDK) close
-          // their socket the instant they consume `data: [DONE]`, before
-          // upstream has fired `res.end`. If we destroyed upstream on
-          // that signal we would lose the tail of the response — or the
-          // whole response, when the SDK closes right after `[DONE]` —
-          // and record mode would silently produce no fixture. Letting
-          // upstream finish means we still capture a complete body; the
-          // `!clientDisconnected` guard inside `onUpstreamData` already
-          // prevents further writes to the now-closed client socket, so
-          // no data is written to a dead peer.
           clientRes.on("close", () => {
             if (!clientRes.writableFinished) {
               clientDisconnected = true;
+              if (!sawDone) {
+                // Genuine mid-stream abort — tear down upstream so it stops
+                // producing data, and clear all parse state so no partial
+                // fixture is persisted. Mirrors the pre-#288 behavior.
+                req.destroy();
+                res.removeListener("data", onUpstreamData);
+                chunks.length = 0;
+                bufferedBytes = 0;
+                frameTimestamps.length = 0;
+                frameBuffer = "";
+                binaryFrameBuffer = Buffer.alloc(0);
+              }
+              // If sawDone is true: client closed after consuming `[DONE]`
+              // (e.g. the OpenAI Python SDK). The upstream is logically
+              // complete; let it run to `res.end` so the full body is
+              // buffered and the fixture can be persisted. The
+              // `!clientDisconnected` guard inside `onUpstreamData` already
+              // prevents further writes to the now-closed client socket.
             }
           });
         }
@@ -1218,8 +1254,12 @@ function makeUpstreamRequest(
                 tripTruncation("frame");
                 break;
               }
-              if (parts[fi].trim().length > 0) {
+              const frame = parts[fi].trim();
+              if (frame.length > 0) {
                 frameTimestamps.push(Date.now());
+                // Track the SSE terminal marker so the client-close handler
+                // can distinguish a post-[DONE] close from a mid-stream abort.
+                if (frame === "data: [DONE]") sawDone = true;
               }
             }
             // Last part stays in buffer (may be incomplete). Skip when the
@@ -1340,6 +1380,7 @@ function makeUpstreamRequest(
             truncationCap,
             totalBytes,
             hardCeilingExceeded,
+            sawDone,
           });
         });
       },
