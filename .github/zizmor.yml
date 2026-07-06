@@ -4,16 +4,6 @@
 # Adding a rule here REQUIRES a comment explaining why it is safe.
 
 rules:
-  # ─── artipacked ────────────────────────────────────────────────────────
-  artipacked:
-    ignore:
-      # Dependabot auto-merge: uses pull_request_target for write token.
-      # Does NOT checkout PR code. Actor-gated to dependabot[bot].
-      - dependabot-auto-merge.yml
-      # Dependabot major analysis: uses pull_request_target for PR comments.
-      # Does NOT checkout PR code. Actor-gated to dependabot[bot].
-      - dependabot-major-analysis.yml
-
   # ─── dangerous-triggers ────────────────────────────────────────────────
   # `notify-pr.yml` uses `pull_request_target` intentionally: it needs
   # `secrets.SLACK_WEBHOOK` to fire on PRs from forks. It does NOT check out
@@ -29,9 +19,3 @@ rules:
     ignore:
       - notify-pr.yml
       - fix-drift.yml
-      # Dependabot auto-merge: uses pull_request_target for write token.
-      # Does NOT checkout PR code. Actor-gated to dependabot[bot].
-      - dependabot-auto-merge.yml
-      # Dependabot major analysis: uses pull_request_target for PR comments.
-      # Does NOT checkout PR code. Actor-gated to dependabot[bot].
-      - dependabot-major-analysis.yml
