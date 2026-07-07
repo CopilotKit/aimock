@@ -35,7 +35,18 @@ const BETA_SUPPRESSED_EVENTS = new Set(["conversation.item.done"]);
 // ---------------------------------------------------------------------------
 
 let instance: ServerInstance;
+// The known-models canary — the entire reason this suite exists — fetches the
+// model list via GET /v1/models, which returns ALL models for ANY valid OpenAI
+// key regardless of realtime access. So it uses OPENAI_API_KEY (the credential
+// CI actually provides to the drift job) and is gated ONLY on OPENAI_API_KEY,
+// guaranteeing it runs in CI and cannot silently skip.
+//
+// The real realtime WS *session* tests connect a live socket that legitimately
+// requires realtime access, so they gate on OPENAI_REALTIME_KEY and pass that
+// same credential in their session config — using the chat-only OPENAI_API_KEY
+// there could produce a spurious auth-failure "drift" if the two keys differ.
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_REALTIME_KEY = process.env.OPENAI_REALTIME_KEY;
 
 beforeAll(async () => {
   instance = await startDriftServer();
@@ -50,14 +61,24 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
-  const config = { apiKey: OPENAI_API_KEY! };
+  // Session config for the real WS realtime tests uses the realtime credential,
+  // NOT the chat-only OPENAI_API_KEY, so that a differing realtime key can't
+  // cause a spurious auth-failure "drift". The canary below does NOT use this.
+  const config = { apiKey: OPENAI_REALTIME_KEY! };
 
   it("canary: GA realtime models available", async () => {
-    const models = await listOpenAIModels(config.apiKey);
+    // Fetch via GET /v1/models, which lists ALL models for ANY valid key. Use
+    // OPENAI_API_KEY (guaranteed present by the describe.skipIf above and the
+    // credential CI provides) so the canary ALWAYS runs in CI and never skips —
+    // gating this on OPENAI_REALTIME_KEY (which CI does NOT provide) would have
+    // silently skipped the one check this whole suite exists to run.
+    const models = await listOpenAIModels(OPENAI_API_KEY!);
 
     const gaModels = [
       "gpt-realtime",
       "gpt-realtime-2",
+      "gpt-realtime-2.1",
+      "gpt-realtime-2.1-mini",
       "gpt-realtime-2025-08-28",
       "gpt-realtime-1.5",
       "gpt-realtime-mini",
@@ -89,16 +110,42 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
 
     const realtimeModels = models.filter((m) => m.includes("realtime"));
 
-    // At least one GA model should exist
-    const hasGA = realtimeModels.some((m) => gaModels.includes(m));
-    expect(hasGA).toBe(true);
-
-    // Flag unknown realtime models
+    // Compute the unknown-model list BEFORE the hasGA assertion. A run can be
+    // BOTH GA-family-gone AND carry new unknown models; because the hasGA
+    // assertion below throws first, the later unknown-models assertion would
+    // never run and its list would be lost from the NO_GA failure message (and
+    // therefore from the auto-fix prompt). So we carry the unknown list into the
+    // NO_GA marker too — no information is lost in the combined case.
     const unknown = realtimeModels.filter((m) => !knownModels.has(m));
     if (unknown.length > 0) {
       console.warn(`[DRIFT] Unknown realtime models detected: ${unknown.join(", ")}`);
     }
-    expect(unknown).toEqual([]);
+
+    // At least one GA model should exist. Carry the OBSERVED realtime models in
+    // a stable custom assertion message (symmetric to UNKNOWN_REALTIME_MODELS=
+    // below) so that when the GA family is renamed/removed — or the credential
+    // cannot see any realtime models — the drift collector recognizes the
+    // NO_GA_REALTIME_MODELS= marker and emits a CRITICAL OpenAI-Realtime entry
+    // (exit 2, auto-remediated) instead of crashing to exit 1. Without the
+    // marker, "expected false to be true" is an unrecognized shape that the
+    // collector would treat as unparseable and throw on.
+    //
+    // The message ALSO carries the unknown list after a ` | UNKNOWN_REALTIME_MODELS=`
+    // segment so the combined (no-GA AND unknown-models-present) case does not
+    // lose the unknown list when this assertion short-circuits the one below.
+    // The collector splits the two markers apart; each list stays clean.
+    const hasGA = realtimeModels.some((m) => gaModels.includes(m));
+    expect(
+      hasGA,
+      `NO_GA_REALTIME_MODELS=${realtimeModels.join(",")} | UNKNOWN_REALTIME_MODELS=${unknown.join(",")}`,
+    ).toBe(true);
+
+    // Carry the FULL unknown-model list in a stable custom assertion message.
+    // vitest truncates the printed array in failureMessages (`…(N)`), so the
+    // drift collector cannot recover ids beyond the first from the array. The
+    // custom message is emitted verbatim and is NOT truncated, so the collector
+    // parses the UNKNOWN_REALTIME_MODELS= marker as its source of truth.
+    expect(unknown, `UNKNOWN_REALTIME_MODELS=${unknown.join(",")}`).toEqual([]);
   });
 
   it.skipIf(!process.env.OPENAI_REALTIME_KEY)(

@@ -19,6 +19,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { DriftEntry, DriftReport, DriftSeverity, ParsedDiff } from "./drift-types.js";
 
@@ -178,7 +179,7 @@ const AGUI_DRIFT_TEST = "src/__tests__/drift/agui-schema.drift.ts";
  */
 const VALID_SEVERITIES = new Set<DriftSeverity>(["critical", "warning", "info"]);
 
-function parseDriftBlock(text: string): { context: string; diffs: ParsedDiff[] } | null {
+export function parseDriftBlock(text: string): { context: string; diffs: ParsedDiff[] } | null {
   const headerMatch = text.match(/API DRIFT DETECTED:\s*(.+)/);
   if (!headerMatch) return null;
 
@@ -225,7 +226,7 @@ function parseDriftBlock(text: string): { context: string; diffs: ParsedDiff[] }
  *   "OpenAI Chat (non-streaming text)" → "OpenAI Chat"
  *   "Anthropic Claude drift" → "Anthropic Claude"
  */
-function extractProviderName(text: string): string | null {
+export function extractProviderName(text: string): string | null {
   // Try matching against known provider keys (longest first to avoid partial matches)
   const sorted = Object.keys(PROVIDER_MAP).sort((a, b) => b.length - a.length);
   for (const key of sorted) {
@@ -240,9 +241,146 @@ function extractProviderName(text: string): string | null {
  * "OpenAI Chat (non-streaming text)" → "non-streaming text"
  * "Anthropic Claude (streaming tool call)" → "streaming tool call"
  */
-function extractScenario(context: string): string {
+export function extractScenario(context: string): string {
   const parenMatch = context.match(/\(([^)]+)\)/);
   return parenMatch ? parenMatch[1] : context;
+}
+
+// ---------------------------------------------------------------------------
+// Known-models canary recognizer
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated result of parsing the ws-realtime canary failure.
+ *
+ * CLASS 3: `ids` holds ONLY genuine model ids (never a prose sentinel). The
+ * "some ids were truncated in CI output" fact is a boolean flag, not a fake id,
+ * so a non-model annotation can never flow into `DriftEntry.real` downstream.
+ *
+ * CLASS 2: `noGA` marks the hasGA-false mode — the GA realtime family was
+ * renamed/removed or the credential could not see any realtime models. `ids`
+ * then carries the OBSERVED realtime models (possibly empty), not "unknown"
+ * ones. Either mode is a critical, exit-2 drift signal.
+ */
+export interface CanaryParseResult {
+  ids: string[];
+  truncated?: boolean;
+  noGA?: boolean;
+  /**
+   * NO_GA mode only: the unknown-model list observed in the SAME run. Because
+   * the hasGA assertion short-circuits the later unknown-models assertion, the
+   * NO_GA marker carries both lists (`… | UNKNOWN_REALTIME_MODELS=…`); this
+   * field holds the unknown segment so the combined case loses no information.
+   */
+  unknownIds?: string[];
+}
+
+/**
+ * Parse the ws-realtime canary assertion failure. Two canary modes exist:
+ *
+ * 1. UNKNOWN models — `expect(unknown, \`UNKNOWN_REALTIME_MODELS=…\`).toEqual([])`
+ *    shape: `AssertionError: UNKNOWN_REALTIME_MODELS=a,b: expected [ 'a', …(1) ]
+ *    to deeply equal []`.
+ * 2. NO GA models (CLASS 2) — `expect(hasGA, \`NO_GA_REALTIME_MODELS=…\`).toBe(true)`
+ *    shape: `AssertionError: NO_GA_REALTIME_MODELS=x,y: expected false to be true`.
+ *
+ * PRIMARY SOURCE: the `*_REALTIME_MODELS=` marker carries the FULL, non-truncated
+ * comma-joined list verbatim (vitest truncates the printed array with `…(N)` /
+ * `... (N)`, so ids beyond the first are unrecoverable from the array alone).
+ *
+ * FALLBACK (unknown-mode only, marker missing/mangled): parse the printed array
+ * and set `truncated` when a CI ellipsis is present.
+ *
+ * Returns a CanaryParseResult, or null if the message is not a canary shape.
+ */
+export function parseKnownModelsCanary(text: string): CanaryParseResult | null {
+  // CLASS 2 PRIMARY: hasGA-false marker. The GA family is gone/unreachable — a
+  // critical signal even when the observed list is empty. Recognize it FIRST so
+  // the "expected false to be true" shape is a structured entry, not a crash.
+  const noGaMatch = text.match(/NO_GA_REALTIME_MODELS=(.*?)(?::\s*expected\b|\n|$)/);
+  if (noGaMatch) {
+    // The NO_GA marker carries BOTH the observed realtime models AND the
+    // unknown-model list observed in the same run, joined as
+    // `<observed> | UNKNOWN_REALTIME_MODELS=<unknown>`. Split the two apart so
+    // neither list pollutes the other (the combined no-GA + unknown case must
+    // not lose the unknown list, since the hasGA assertion short-circuits the
+    // later unknown-models assertion). A legacy message without the unknown
+    // segment still parses — `split` yields a single element.
+    const [observedRaw, unknownRaw] = noGaMatch[1].split(/\s*\|\s*UNKNOWN_REALTIME_MODELS=/);
+    const toList = (s: string | undefined): string[] =>
+      (s ?? "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0);
+    const ids = toList(observedRaw);
+    const unknownIds = toList(unknownRaw);
+    return unknownIds.length > 0 ? { ids, noGA: true, unknownIds } : { ids, noGA: true };
+  }
+
+  // UNKNOWN-mode PRIMARY: stable marker carrying the full, non-truncated list.
+  // Scan the whole message (not just line 0) so a leading blank line cannot hide
+  // it. Capture the ENTIRE value up to the vitest boilerplate (`: expected …`)
+  // or end-of-line. On a malformed/empty marker we fall THROUGH to the
+  // printed-array fallback so a recoverable id in the array is still surfaced.
+  const markerMatch = text.match(/UNKNOWN_REALTIME_MODELS=(.*?)(?::\s*expected\b|\n|$)/);
+  if (markerMatch) {
+    const ids = markerMatch[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (ids.length > 0) return { ids };
+  }
+
+  // FALLBACK GATE: the printed-array fallback matches the GENERIC vitest shape
+  // `expected [ ... ] to deeply equal []`, which ANY `toEqual([])` assertion in
+  // ANY provider's test emits. On its own that shape is NOT a canary signal — a
+  // non-canary failure (e.g. a different provider asserting an empty array whose
+  // observed value happens to be a secret or an object shape) would otherwise be
+  // misclassified as OpenAI-Realtime known-models drift and have its arbitrary
+  // array contents relabeled as "unknown model ids". So the fallback fires ONLY
+  // when the message is clearly the ws-realtime known-models canary. Two
+  // recognizers (either suffices):
+  //   1. the realtime-canary marker family (`UNKNOWN_REALTIME_MODELS=` /
+  //      `NO_GA_REALTIME_MODELS=`), even mangled/partial — the marker paths
+  //      above only fall through here when the marker VALUE was empty/unusable,
+  //      but the TOKEN itself still identifies the canary; and
+  //   2. the canary's origin file in the stack trace — a real canary failure
+  //      ALWAYS carries an `at …/ws-realtime.drift.ts` frame.
+  // A generic non-canary `toEqual([])` failure has neither, so it returns null
+  // and falls through to the collector's normal unparseable/fail-loud handling.
+  const isRealtimeCanaryContext =
+    /_REALTIME_MODELS=/.test(text) || /ws-realtime\.drift\.ts/.test(text);
+  if (!isRealtimeCanaryContext) return null;
+
+  // FALLBACK: no (usable) marker but a confirmed canary context. Best-effort
+  // parse of the printed array on the first line. The canary assertion is always
+  // on line 1.
+  const firstLine = text.split("\n")[0];
+
+  // Shape: ...: expected [ ... ] to deeply equal []
+  const canaryMatch = firstLine.match(/expected\s*\[([^\]]*)\]\s*to deeply equal \[\]/);
+  if (!canaryMatch) return null;
+
+  const inner = canaryMatch[1].trim();
+
+  // Extract quoted model ids from the bracket list
+  const ids: string[] = [];
+  const idPattern = /'([^']+)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = idPattern.exec(inner)) !== null) {
+    ids.push(m[1]);
+  }
+
+  // CI truncation marker in BOTH forms: single-glyph `…(N)` and three-dot ASCII
+  // `... (N)`. CLASS 3: this is a BOOLEAN flag — never a synthetic id.
+  const truncated = /(?:…|\.{3})\s*\(\d+\)/.test(inner);
+
+  // A genuinely-empty inner list with no truncation (`expected [] to deeply
+  // equal []`) means the canary's `unknown` array was empty — no drift to
+  // surface. Return null so it is not a spurious entry.
+  if (ids.length === 0 && !truncated) return null;
+
+  return truncated ? { ids, truncated: true } : { ids };
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +462,162 @@ function runDriftTests(): VitestJsonResult {
   }
 }
 
-function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
+/**
+ * Distinguish genuine infrastructure errors from genuine-but-unparseable drift
+ * reports. Returns true when the whole batch of unparseable messages should be
+ * SWALLOWED as benign infra (collector exits 0); false means genuine drift is
+ * present and the collector must throw.
+ *
+ * A false "infra" classification here is dangerous: it makes the collector exit
+ * 0 and silently drop real drift.
+ *
+ * F2: `/AssertionError/i` is DELIBERATELY NOT an infra indicator. Every vitest
+ * drift failure is an AssertionError, so treating it as benign infra masks real
+ * drift. Infra failures announce themselves with network/HTTP/parse markers
+ * below; a bare AssertionError is drift until proven infra.
+ *
+ * A3: BOTH the infra-indicator scan and the drift-like scan run against the
+ * SAME normalized text (stack-trace `  at …` frames stripped). An earlier
+ * version scanned the RAW message for infra indicators but the stack-stripped
+ * message for drift indicators; that asymmetry could tip the benign-infra gate
+ * true and silently drop genuine drift. Normalizing both identically keeps the
+ * two scans from ever disagreeing on the same input.
+ */
+// Infra indicators. IMPORTANT (CLASS 1 / uniform anchoring): every infra
+// indicator is defined here as a BARE phrase (the source string only, no `^`,
+// no flags, no anchoring-defeating `(?:.*:\s*)?` prefix). The line-anchor is
+// applied UNIFORMLY by `anchorInfraIndicator` below, so no single indicator can
+// be individually mis-anchored and a phrase added to this list later is
+// automatically anchored the same way as its siblings.
+//
+// The anchor requires the phrase to BE the failure reason at the START of a
+// line (optional leading whitespace, an optional `HTTP ` prefix for the numeric
+// ones), followed by a word boundary. This means a genuine infra REASON like
+// `empty response`, `fetch failed`, or `API returned 503` at line start still
+// classifies as infra, while a labelled drift-body VALUE like
+// `     Real: API returned 503` / `     Real:    empty response` can NEVER trip
+// the gate (the phrase is not at the line start, it follows a `Field:` label).
+//
+// Each entry is a bare `source` phrase plus a `boundary` flag: `true` appends a
+// trailing `\b` (word-like phrases such as `empty response` / `ECONNREFUSED`),
+// `false` omits it for phrases whose next char is punctuation (`INFRA_ERROR:`)
+// or a tag (`<!DOCTYPE`, `<html`) where `\b` would misfire.
+interface InfraIndicatorSpec {
+  /** Bare regex source for the phrase — no anchor, no flags. */
+  source: string;
+  /** Append a trailing `\b` word boundary (default true). */
+  boundary?: boolean;
+}
+
+const INFRA_INDICATOR_SPECS: InfraIndicatorSpec[] = [
+  { source: "INFRA_ERROR:", boundary: false },
+  { source: "API returned \\d{3}" },
+  { source: "status\\s*:?\\s*\\d{3}" },
+  { source: "<!DOCTYPE", boundary: false },
+  { source: "<html", boundary: false },
+  { source: "failed to parse JSON" },
+  { source: "empty response" },
+  { source: "fetch failed" },
+  { source: "ECONNREFUSED" },
+  { source: "ETIMEDOUT" },
+  { source: "ENOTFOUND" },
+  { source: "network error" },
+  { source: "API unavailable" },
+  { source: "returned no SSE events" },
+  { source: "returned empty body" },
+  { source: "waitUntil timeout" },
+  { source: "STACK_TRACE_ERROR" },
+];
+
+/**
+ * Wrap a bare infra phrase into a uniformly line-anchored, case-insensitive,
+ * multiline regex. The anchor is IDENTICAL for every indicator:
+ *
+ *   ^\s*(?:HTTP\s+)?<phrase>[\b]
+ *
+ * so the phrase must be the failure reason at the start of a line. A labelled
+ * drift-body value (`Real: <phrase>`) is preceded by a `Field:` label and thus
+ * never matches. This is the single choke point that makes anchoring uniform —
+ * there is no per-indicator anchoring to get wrong.
+ */
+function anchorInfraIndicator(spec: InfraIndicatorSpec): RegExp {
+  const boundary = spec.boundary === false ? "" : "\\b";
+  return new RegExp(`^\\s*(?:HTTP\\s+)?${spec.source}${boundary}`, "im");
+}
+
+/**
+ * The bare infra phrase sources, exported so tests can iterate the REAL list
+ * (property-based test in drift-collector.test.ts) rather than a hand-copied
+ * subset. A future indicator added to INFRA_INDICATOR_SPECS is automatically
+ * covered — if it were somehow mis-anchored the property test would fail.
+ */
+export const INFRA_INDICATOR_SOURCES: readonly string[] = INFRA_INDICATOR_SPECS.map(
+  (s) => s.source,
+);
+
+/**
+ * A concrete failure-reason sample for a given bare infra phrase source, used
+ * by the property-based test to synthesize both a bare (line-start, infra) and
+ * a labelled (`Real: …`, drift) line. Regex metacharacters in the source
+ * (`\d{3}`, `\s*:?`, tag `<`) are replaced with literal, matching sample text.
+ */
+export function infraIndicatorSample(source: string): string {
+  return source
+    .replace(/\\s\*:\?\\s\*/g, ": ") // status\s*:?\s* → "status: "
+    .replace(/\\s\*/g, " ")
+    .replace(/\\d\{3\}/g, "503")
+    .replace(/\\d\+/g, "503")
+    .replace(/\\b/g, "");
+}
+
+const INFRA_INDICATORS: RegExp[] = INFRA_INDICATOR_SPECS.map(anchorInfraIndicator);
+
+// Drift-like indicators. A genuine drift failure is drift until proven infra.
+// The `expected … to be/equal/deeply equal …` shape is the canonical vitest
+// assertion body for our drift/canary assertions — the OLD `/expected.*but/i`
+// guard was DEAD (vitest never emits "expected … but …"), so it never fired and
+// left bare assertion failures indistinguishable from infra. This repaired
+// guard fires on the shapes vitest actually emits, so an unrecognized assertion
+// failure counts as drift-like and forces a fail-loud (throw → exit 1).
+const DRIFT_LIKE_INDICATORS = [
+  /drift/i,
+  /mismatch/i,
+  /\bexpected\b.*\bto\s+(?:be|equal|deeply equal|contain|match|have)\b/i,
+  /LLMOCK DRIFT/i,
+  /API DRIFT/i,
+];
+
+/** Strip vitest stack-trace frames (`  at …`) so filenames like
+ * "ws-realtime.drift.ts" cannot influence content-based classification. */
+function stripStackFrames(msg: string): string {
+  return msg
+    .split("\n")
+    .filter((line) => !/^\s*at\s/.test(line))
+    .join("\n");
+}
+
+export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
+  // CLASS 1 — fail-loud on absent evidence. No messages means NO positive infra
+  // evidence, so this is NOT a benign "all clear". `[].every(...)` is vacuously
+  // true, which would have wrongly classified an empty batch as infra and made
+  // the collector exit 0. Root invariant: unrecognized ⇒ fail loud, never a
+  // false all-clear.
+  if (unparseableMessages.length === 0) return false;
+
+  // Normalize ONCE per message; both scans consume the identical normalized
+  // text (A3 — the two scans must never disagree due to differing inputs).
+  const normalized = unparseableMessages.map(stripStackFrames);
+
+  // Infra requires POSITIVE evidence on EVERY message AND zero drift signal on
+  // ALL of them. If any message lacks an infra indicator, or any message looks
+  // drift-like, we do NOT swallow — the caller throws (exit 1, investigate).
+  const allInfraErrors = normalized.every((msg) => INFRA_INDICATORS.some((re) => re.test(msg)));
+  const anyDriftLike = normalized.some((msg) => DRIFT_LIKE_INDICATORS.some((re) => re.test(msg)));
+
+  return allInfraErrors && !anyDriftLike;
+}
+
+export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
   const entries: DriftEntry[] = [];
   const unmapped: string[] = [];
   let unparseable = 0;
@@ -337,6 +630,100 @@ function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
       const fullMessage = assertion.failureMessages.join("\n");
       const parsed = parseDriftBlock(fullMessage);
       if (!parsed || parsed.diffs.length === 0) {
+        // Check for the ws-realtime canary assertion shapes BEFORE classifying
+        // as unparseable — both the unknown-models mode and the hasGA-false mode
+        // (CLASS 2) are genuine, critical drift and must be surfaced (exit 2),
+        // never crashed as unparseable (exit 1).
+        const canary = parseKnownModelsCanary(fullMessage);
+        if (canary !== null) {
+          const mapping = PROVIDER_MAP["OpenAI Realtime"];
+
+          // Build the critical diffs. F4: severity MUST be "critical" — the Fix
+          // Drift workflow (.github/workflows/fix-drift.yml) gates remediation
+          // entirely on exit code 2, which main() emits only when
+          // criticalCount > 0. F5: this canary is real-API-only — there is no
+          // mock leg, so we never mislabel a model id as a mock value.
+          const NO_MOCK_LEG = "<no mock leg — real-API-only canary>";
+          const diffs: ParsedDiff[] = canary.noGA
+            ? [
+                // CLASS 2: the GA realtime family is renamed/removed or the
+                // credential cannot see it. Surface the observed models (may be
+                // empty) so the auto-fix prompt knows what IS present.
+                {
+                  severity: "critical" as const,
+                  issue:
+                    "GA realtime family unavailable — no known GA model in the OpenAI realtime list. " +
+                    "OpenAI may have renamed/removed the GA family, or the realtime credential cannot see it. " +
+                    "Update the gaModels list in ws-realtime.drift.ts.",
+                  path: "gaModels",
+                  expected: "(at least one GA realtime model present)",
+                  real:
+                    canary.ids.length > 0
+                      ? `observed realtime models: ${canary.ids.join(", ")}`
+                      : "no realtime models observed",
+                  mock: NO_MOCK_LEG,
+                },
+                // The hasGA assertion short-circuits the later unknown-models
+                // assertion, so surface any unknown models observed in the SAME
+                // run here (carried by the NO_GA marker). Without this, a run
+                // that is BOTH no-GA AND has new unknown models would lose the
+                // unknown list from the auto-fix prompt. One diff per id — each
+                // is a genuine model id (never a prose sentinel).
+                ...(canary.unknownIds ?? []).map((id) => ({
+                  severity: "critical" as const,
+                  issue:
+                    "Unknown realtime model detected (observed in the same run as the missing GA " +
+                    "family) — add to knownModels in ws-realtime.drift.ts",
+                  path: "knownModels",
+                  expected: "(not in knownModels set)",
+                  real: id,
+                  mock: NO_MOCK_LEG,
+                })),
+              ]
+            : // CLASS 3: only genuine model ids become `real` diffs. The
+              // truncation fact is carried as a SEPARATE diff whose `real` is a
+              // count note, never a fake model id in a per-model slot.
+              [
+                ...canary.ids.map((id) => ({
+                  severity: "critical" as const,
+                  issue:
+                    "Unknown realtime model detected — add to knownModels in ws-realtime.drift.ts",
+                  path: "knownModels",
+                  expected: "(not in knownModels set)",
+                  real: id,
+                  mock: NO_MOCK_LEG,
+                })),
+                ...(canary.truncated
+                  ? [
+                      {
+                        severity: "critical" as const,
+                        issue:
+                          "Additional unknown realtime models were truncated in CI output — " +
+                          "the full list is unrecoverable without the UNKNOWN_REALTIME_MODELS= marker. " +
+                          "Re-run with the marker to enumerate them.",
+                        path: "knownModels[truncated]",
+                        // CLASS 3: `real`/`expected` NEVER carry a prose sentinel.
+                        // The truncation fact lives entirely in `issue`/`path`;
+                        // there is no observed model value to report here.
+                        expected: "<unavailable>",
+                        real: "<unavailable>",
+                        mock: NO_MOCK_LEG,
+                      },
+                    ]
+                  : []),
+              ];
+
+          entries.push({
+            provider: "OpenAI Realtime",
+            scenario: "known-models canary",
+            builderFile: mapping.builderFile,
+            builderFunctions: mapping.builderFunctions,
+            typesFile: mapping.typesFile ?? null,
+            sdkShapesFile: SDK_SHAPES_FILE,
+            diffs,
+          });
+          continue;
+        }
         unparseable++;
         continue;
       }
@@ -391,39 +778,7 @@ function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
       console.warn(`  Unparseable failure message (first 300 chars): ${msg.slice(0, 300)}`);
     }
 
-    // Distinguish infrastructure errors from broken drift report formats
-    const infraIndicators = [
-      /^INFRA_ERROR:/m,
-      /API returned \d{3}/i,
-      /status \d{3}/i,
-      /<!DOCTYPE/i,
-      /<html/i,
-      /failed to parse JSON/i,
-      /empty response/i,
-      /fetch failed/i,
-      /ECONNREFUSED/i,
-      /ETIMEDOUT/i,
-      /ENOTFOUND/i,
-      /network error/i,
-      /API unavailable/i,
-      /returned no SSE events/i,
-      /returned empty body/i,
-      /waitUntil timeout/i,
-      /AssertionError/i,
-      /^Error:/m,
-      /at\s+\S+\s+\(file:/,
-      /STACK_TRACE_ERROR/,
-    ];
-    const driftLikeIndicators = [/drift/i, /mismatch/i, /expected.*but/i, /LLMOCK DRIFT/i];
-
-    const allInfraErrors = unparseableMessages.every((msg) =>
-      infraIndicators.some((re) => re.test(msg)),
-    );
-    const anyDriftLike = unparseableMessages.some((msg) =>
-      driftLikeIndicators.some((re) => re.test(msg)),
-    );
-
-    if (allInfraErrors && !anyDriftLike) {
+    if (classifyUnparseableAsInfra(unparseableMessages)) {
       console.warn(
         `WARNING: ${unparseable} test failure(s) appear to be API/infrastructure errors ` +
           `(not drift reports). Continuing with 0 drift entries.`,
@@ -700,9 +1055,28 @@ function main(): void {
   console.log("No critical diffs found.");
 }
 
-try {
-  main();
-} catch (err: unknown) {
-  console.error("Fatal error:", err);
-  process.exit(1);
+/**
+ * Entry-point guard: only run main() when this module is executed directly
+ * (e.g. `npx tsx scripts/drift-report-collector.ts` from the Fix Drift
+ * workflow), NOT when it is imported (e.g. by the vitest suite that exercises
+ * the exported pure functions). Without this guard, importing the module for
+ * tests would spawn the whole drift suite via execSync and call process.exit.
+ */
+function isDirectRun(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun()) {
+  try {
+    main();
+  } catch (err: unknown) {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  }
 }
