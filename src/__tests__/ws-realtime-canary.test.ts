@@ -15,12 +15,33 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { detectVoiceModelDrift, isVoiceModelId, knownVoiceModels } from "./drift/voice-models.js";
+import {
+  detectVoiceModelDrift,
+  isVoiceModelId,
+  knownVoiceModelFamilies,
+  normalizeVoiceModelFamily,
+} from "./drift/voice-models.js";
+
+// Dated-snapshot / build-tag variants of families that are ALREADY known. These
+// are the exact ids the live Drift Tests run (28968203340) flagged as false
+// positives before family normalization: each normalizes onto a known family
+// (tts-1, tts-1-hd, gpt-audio, gpt-4o-mini-transcribe, gpt-4o-mini-tts) and so
+// MUST NOT be flagged.
+const KNOWN_FAMILY_SNAPSHOTS = [
+  "tts-1-1106",
+  "tts-1-hd-1106",
+  "gpt-audio-2025-08-28",
+  "gpt-4o-mini-transcribe-2025-12-15",
+  "gpt-4o-mini-transcribe-2025-03-20",
+  "gpt-4o-mini-tts-2025-03-20",
+  "gpt-4o-mini-tts-2025-12-15",
+];
 
 // A representative GET /v1/models id list: the known GA realtime family, some
-// known audio/transcribe/tts models, a batch of non-voice chat/image/embedding
-// models that MUST NOT be flagged, and the newly-shipped gpt-live-* full-duplex
-// voice family that the old "realtime"-substring filter would have missed.
+// known audio/transcribe/tts models (incl. dated snapshots of known families
+// that MUST normalize onto their family), a batch of non-voice
+// chat/image/embedding models that MUST NOT be flagged, and the newly-shipped
+// gpt-live-* full-duplex voice family that is a genuinely new family.
 const REPRESENTATIVE_MODELS = [
   // --- known voice/audio family (should stay green) ---
   "gpt-realtime",
@@ -31,6 +52,8 @@ const REPRESENTATIVE_MODELS = [
   "whisper-1",
   "gpt-4o-realtime-preview",
   "tts-1",
+  // --- dated-snapshot / build-tag variants of KNOWN families (stay green) ---
+  ...KNOWN_FAMILY_SNAPSHOTS,
   // --- non-voice models (must NOT be flagged as voice drift) ---
   "gpt-4o",
   "gpt-4o-mini",
@@ -71,9 +94,36 @@ describe("ws-realtime known-voice-models canary detection", () => {
       "gpt-4o-realtime-preview",
       "tts-1",
     ]) {
-      expect(knownVoiceModels.has(known)).toBe(true);
+      expect(knownVoiceModelFamilies.has(normalizeVoiceModelFamily(known))).toBe(true);
       expect(unknown).not.toContain(known);
     }
+  });
+
+  it("does not flag dated-snapshot / build-tag variants of known families", () => {
+    // Regression guard for live Drift Tests run 28968203340: these 7 real ids
+    // were flagged as critical drift by the pre-normalization id-set matcher.
+    // Family normalization collapses each onto an already-known family, so none
+    // may appear in `unknown`.
+    const { unknown } = detectVoiceModelDrift(REPRESENTATIVE_MODELS);
+    for (const snapshot of KNOWN_FAMILY_SNAPSHOTS) {
+      expect(unknown).not.toContain(snapshot);
+    }
+  });
+
+  it("normalizes dated snapshots and build tags onto their family", () => {
+    // Dated snapshot `-YYYY-MM-DD` and build tag `-NNN`/`-NNNN` are stripped.
+    expect(normalizeVoiceModelFamily("tts-1-1106")).toBe("tts-1");
+    expect(normalizeVoiceModelFamily("tts-1-hd-1106")).toBe("tts-1-hd");
+    expect(normalizeVoiceModelFamily("gpt-audio-2025-08-28")).toBe("gpt-audio");
+    expect(normalizeVoiceModelFamily("gpt-4o-mini-transcribe-2025-12-15")).toBe(
+      "gpt-4o-mini-transcribe",
+    );
+    expect(normalizeVoiceModelFamily("gpt-4o-mini-tts-2025-03-20")).toBe("gpt-4o-mini-tts");
+    // A single-digit trailing tag is NOT a build tag: gpt-live-1 stays a new
+    // family and must remain flaggable.
+    expect(normalizeVoiceModelFamily("gpt-live-1")).toBe("gpt-live-1");
+    expect(normalizeVoiceModelFamily("gpt-live-1-mini")).toBe("gpt-live-1-mini");
+    expect(knownVoiceModelFamilies.has("gpt-live-1")).toBe(false);
   });
 
   it("does not flag non-voice chat/image/embedding models as voice drift", () => {

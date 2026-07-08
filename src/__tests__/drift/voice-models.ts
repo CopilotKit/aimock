@@ -1,5 +1,8 @@
 /**
- * Known voice/audio model set + drift detection for the OpenAI realtime canary.
+ * Known voice/audio model FAMILIES + drift detection for the OpenAI realtime
+ * canary. Detection compares each candidate's NORMALIZED family (trailing dated
+ * snapshot / build-tag suffixes stripped) against a known-family set, so dated
+ * snapshots of a known family don't churn as false-positive drift.
  *
  * Extracted into its own side-effect-free module (no `describe`/`beforeAll`) so
  * both the live canary in ws-realtime.drift.ts AND its unit test can import the
@@ -8,54 +11,96 @@
  */
 
 /**
- * The GA realtime model family. At least one of these MUST appear in the
- * account's model list, otherwise the family was renamed/removed (NO_GA drift).
+ * The GA realtime model FAMILIES. At least one voice/audio model whose
+ * normalized family (see `normalizeVoiceModelFamily`) is one of these MUST
+ * appear in the account's model list, otherwise the family was renamed/removed
+ * (NO_GA drift). Entries are already normalized family keys — dated snapshots
+ * such as `gpt-realtime-2025-08-28` collapse onto `gpt-realtime` and so match
+ * here without being listed separately.
  */
 export const gaRealtimeModels = [
   "gpt-realtime",
   "gpt-realtime-2",
   "gpt-realtime-2.1",
   "gpt-realtime-2.1-mini",
-  "gpt-realtime-2025-08-28",
   "gpt-realtime-1.5",
   "gpt-realtime-mini",
-  "gpt-realtime-mini-2025-10-06",
-  "gpt-realtime-mini-2025-12-15",
 ];
 
 /**
- * The full set of voice/audio model ids we already know about. Any voice/audio
- * model id NOT in this set is surfaced as new/unknown drift so a newly-shipped
- * family is flagged the first time it appears on the account.
+ * Normalize a model id to its FAMILY KEY by stripping trailing version/snapshot
+ * suffixes that OpenAI appends to already-known families. New dated snapshots of
+ * an existing family land constantly (`tts-1-1106`, `gpt-audio-2025-08-28`,
+ * `gpt-4o-mini-tts-2025-12-15`, …); appending every one to a known-ID set never
+ * converges and turns the daily drift job permanently red on false positives.
+ * Comparing the NORMALIZED family instead means only a genuinely new family
+ * (e.g. `gpt-live`) is ever flagged.
+ *
+ * Two suffix shapes are stripped, repeatedly, from the END of the id:
+ *   - a dated snapshot `-YYYY-MM-DD`  (e.g. `-2025-08-28`)
+ *   - a build/version tag `-NNN` or `-NNNN`  (3–4 digits, e.g. `-1106`)
+ *
+ * Both are anchored to the end and applied in a loop so a trailing dated
+ * snapshot that itself follows a build tag is fully reduced. A short numeric
+ * suffix like `gpt-live-1`'s trailing `-1` is a SINGLE digit and is deliberately
+ * NOT stripped, so `gpt-live-1` normalizes to `gpt-live-1` — an unknown family —
+ * and stays flagged (the whole point of the canary).
  */
-export const knownVoiceModels = new Set([
-  ...gaRealtimeModels,
-  // Translate/whisper models (also contain "realtime" in some variants)
-  "gpt-realtime-translate",
-  "gpt-realtime-whisper",
-  // Audio models also valid in realtime sessions
-  "gpt-audio",
-  "gpt-audio-1.5",
-  "gpt-audio-mini",
-  "gpt-audio-mini-2025-10-06",
-  "gpt-audio-mini-2025-12-15",
-  // Transcription/translation models
-  "gpt-4o-transcribe",
-  "gpt-4o-mini-transcribe",
-  "gpt-4o-transcribe-diarize",
-  "whisper-1",
-  // Legacy preview models (may still appear)
-  "gpt-4o-realtime-preview",
-  "gpt-4o-mini-realtime-preview",
-  "gpt-4o-realtime-preview-2024-10-01",
-  "gpt-4o-realtime-preview-2024-12-17",
-  "gpt-4o-realtime-preview-2025-06-03",
-  "gpt-4o-mini-realtime-preview-2024-12-17",
-  // TTS / speech-out models (voice family, no "realtime" substring)
-  "gpt-4o-mini-tts",
-  "tts-1",
-  "tts-1-hd",
-]);
+const DATED_SNAPSHOT_SUFFIX = /-\d{4}-\d{2}-\d{2}$/;
+const BUILD_TAG_SUFFIX = /-\d{3,4}$/;
+
+export function normalizeVoiceModelFamily(id: string): string {
+  let family = id;
+  for (;;) {
+    const stripped = family.replace(DATED_SNAPSHOT_SUFFIX, "").replace(BUILD_TAG_SUFFIX, "");
+    if (stripped === family) break;
+    family = stripped;
+  }
+  return family;
+}
+
+/**
+ * The set of voice/audio model FAMILIES we already know about, keyed by the
+ * normalized family (see `normalizeVoiceModelFamily`). A voice/audio model whose
+ * NORMALIZED family is not in this set is surfaced as new/unknown drift, so a
+ * newly-shipped family (e.g. `gpt-live`) is flagged the first time it appears —
+ * while dated snapshots of a known family (e.g. `gpt-audio-2025-08-28`) collapse
+ * onto their family and stay green.
+ *
+ * The listed ids are the family keys; the seed values are already normalized
+ * (they carry no dated/build suffix), so building the set through
+ * `normalizeVoiceModelFamily` is idempotent and keeps the two in lockstep.
+ */
+export const knownVoiceModelFamilies = new Set(
+  [
+    // GA realtime family (dated/versioned variants normalize onto these).
+    "gpt-realtime",
+    "gpt-realtime-2",
+    "gpt-realtime-2.1",
+    "gpt-realtime-2.1-mini",
+    "gpt-realtime-1.5",
+    "gpt-realtime-mini",
+    // Translate/whisper realtime variants
+    "gpt-realtime-translate",
+    "gpt-realtime-whisper",
+    // Audio models also valid in realtime sessions
+    "gpt-audio",
+    "gpt-audio-1.5",
+    "gpt-audio-mini",
+    // Transcription/translation models
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe-diarize",
+    "whisper-1",
+    // Legacy preview models (may still appear)
+    "gpt-4o-realtime-preview",
+    "gpt-4o-mini-realtime-preview",
+    // TTS / speech-out models (voice family, no "realtime" substring)
+    "gpt-4o-mini-tts",
+    "tts-1",
+    "tts-1-hd",
+  ].map(normalizeVoiceModelFamily),
+);
 
 /**
  * Match a model id that belongs to the voice/audio family the realtime canary
@@ -80,9 +125,13 @@ export function isVoiceModelId(id: string): boolean {
 export interface VoiceModelDriftResult {
   /** Every model id that matched the voice/audio family matcher. */
   candidateModels: string[];
-  /** Voice/audio ids not present in knownVoiceModels — new/unknown drift. */
+  /**
+   * Voice/audio ids whose NORMALIZED family is not in knownVoiceModelFamilies —
+   * new/unknown drift. Dated snapshots of a known family (e.g.
+   * `gpt-audio-2025-08-28`) collapse onto their family and are NOT listed.
+   */
   unknown: string[];
-  /** Whether at least one GA realtime model is present. */
+  /** Whether at least one GA realtime model (by family) is present. */
   hasGA: boolean;
 }
 
@@ -95,7 +144,11 @@ export interface VoiceModelDriftResult {
  */
 export function detectVoiceModelDrift(models: string[]): VoiceModelDriftResult {
   const candidateModels = models.filter(isVoiceModelId);
-  const unknown = candidateModels.filter((m) => !knownVoiceModels.has(m));
-  const hasGA = candidateModels.some((m) => gaRealtimeModels.includes(m));
+  const unknown = candidateModels.filter(
+    (m) => !knownVoiceModelFamilies.has(normalizeVoiceModelFamily(m)),
+  );
+  const hasGA = candidateModels.some((m) =>
+    gaRealtimeModels.includes(normalizeVoiceModelFamily(m)),
+  );
   return { candidateModels, unknown, hasGA };
 }
