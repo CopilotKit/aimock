@@ -489,6 +489,70 @@
           <code>recordedTimings</code> block (streaming frame timings) — never the request headers.
         </p>
 
+        <h2 id="own-provider-keys">aimock-Owned Upstream Keys</h2>
+        <p>
+          By default, aimock forwards the caller's auth header to the upstream provider unchanged.
+          If your tests can only send a dummy placeholder key — for example, an SDK that refuses to
+          start without a non-empty API key — aimock can inject its <em>own</em> configured upstream
+          key on a fixture-miss passthrough so the recorded/proxied call actually authenticates.
+          This is <strong>opt-in and backward-compatible</strong>: with no key configured the
+          feature is fully inert and the caller's header is forwarded as-is.
+        </p>
+        <p>
+          Set one or more of these env vars to aimock's real upstream keys. Each is independent —
+          configure only the providers you record against:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Env var</th>
+              <th>Provider</th>
+              <th>Injected header</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>AIMOCK_PROVIDER_OPENAI_KEY</code></td>
+              <td>OpenAI</td>
+              <td><code>Authorization: Bearer &lt;key&gt;</code></td>
+            </tr>
+            <tr>
+              <td><code>AIMOCK_PROVIDER_ANTHROPIC_KEY</code></td>
+              <td>Anthropic</td>
+              <td><code>x-api-key: &lt;key&gt;</code></td>
+            </tr>
+            <tr>
+              <td><code>AIMOCK_PROVIDER_GEMINI_KEY</code></td>
+              <td>Gemini</td>
+              <td><code>x-goog-api-key: &lt;key&gt;</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Injection fires only when both of these hold:</p>
+        <ul>
+          <li>
+            The request is a fixture-<em>miss</em> passthrough (record mode or
+            <code>--proxy-only</code>).
+          </li>
+          <li>
+            The caller sent <strong>no</strong> credential for that provider,
+            <strong>or</strong> sent a <em>dummy</em> credential prefixed with
+            <code>sk-aimock-</code>. A caller credential that does not start with the marker is
+            treated as a real key and forwarded verbatim — the caller always overrides aimock.
+          </li>
+        </ul>
+        <p>
+          The dummy marker prefix is overridable via <code>AIMOCK_DUMMY_KEY_MARKER</code> for setups
+          that mint placeholder keys under a different prefix. Gemini is injected as an
+          <code>x-goog-api-key</code> header only (no query-param <code>?key=</code> rewrite).
+        </p>
+        <p>
+          <strong>Signed and exchanged credentials are never rewritten.</strong> AWS Bedrock
+          (SigV4), Vertex AI, and Azure AD carry OAuth/signed auth rather than a simple bearer or
+          api-key header, so aimock always forwards their credentials unchanged regardless of these
+          env vars.
+        </p>
+
         <h2>Strict Mode</h2>
         <p>
           When <code>--strict</code> is enabled, an unmatched request returns
