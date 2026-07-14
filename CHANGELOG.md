@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-07-13
+
+### Added
+
+- On a fixture-miss passthrough (record/proxy mode), aimock can inject its own configured upstream provider key instead of forwarding a caller's dummy placeholder key. Keys come from `AIMOCK_PROVIDER_OPENAI_KEY` / `AIMOCK_PROVIDER_ANTHROPIC_KEY` / `AIMOCK_PROVIDER_GEMINI_KEY` and are applied with the provider-correct scheme (`Authorization: Bearer` for OpenAI/OpenRouter/Cohere, `x-api-key` for Anthropic, `x-goog-api-key` for Gemini). Injection fires only when the caller credential is absent or dummy-prefixed (`sk-aimock-`, overridable via `AIMOCK_DUMMY_KEY_MARKER`); a real caller key is always forwarded unchanged, and with no built-in key configured the feature is inert. Signed/exchanged credentials (Bedrock SigV4, Vertex, Azure-AD) are never rewritten (#293)
+
 ## [1.35.1] - 2026-07-06
 
 ### Fixed
