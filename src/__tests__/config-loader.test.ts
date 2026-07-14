@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig, startFromConfig } from "../config-loader.js";
 import type { AimockConfig } from "../config-loader.js";
 import type { RecordedTimings } from "../types.js";
+import { Logger } from "../logger.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "config-loader-test-"));
@@ -254,7 +255,10 @@ describe("startFromConfig", () => {
 
   it("with non-positive llm.replaySpeed, warns and ignores it", async () => {
     const fixturePath = writeStreamFixtureFile(tmpDir);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Spy on the logger the code path actually uses rather than console, so the
+    // assertion verifies the intended warn call without coupling to the
+    // "[aimock]" prefix or the console transport.
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
 
     // 0 looks like "no delay" but hits the `speed > 0` guard in calculateDelay,
     // which would replay at full recorded speed.
@@ -264,10 +268,37 @@ describe("startFromConfig", () => {
     cleanups.push(() => llmock.stop());
 
     expect(warn).toHaveBeenCalledWith(
-      "[aimock]",
       expect.stringContaining("llm.replaySpeed must be a positive number"),
     );
     warn.mockRestore();
+  });
+
+  it("with llm.logLevel debug, the server logs debug output that silent suppresses", async () => {
+    const fixturePath = writeFixtureFile(tmpDir);
+    // The server logger writes debug/info lines via console.log; capture them so
+    // we can assert the configured level actually reaches the running server.
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // A matched request emits a "Fixture matched" debug line, but only when the
+    // configured logLevel is high enough — so it is a direct probe of the passthrough.
+    async function debugLineCount(logLevel: "debug" | "silent"): Promise<number> {
+      log.mockClear();
+      const { llmock, url } = await startFromConfig({
+        llm: { fixtures: fixturePath, logLevel },
+      });
+      cleanups.push(() => llmock.stop());
+      await fetch(`${url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4", messages: [{ role: "user", content: "hello" }] }),
+      });
+      return log.mock.calls.filter((args) => String(args[1]).startsWith("Fixture matched")).length;
+    }
+
+    expect(await debugLineCount("debug")).toBeGreaterThan(0);
+    expect(await debugLineCount("silent")).toBe(0);
+
+    log.mockRestore();
   });
 
   it("with mcp tools config, MCPMock created and tools/list works", async () => {
