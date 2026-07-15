@@ -10,7 +10,8 @@
  * Exit codes:
  *   0 — no critical diffs found (or no drift at all)
  *   2 — at least one critical diff exists
- *   1 — script error (unhandled exception)
+ *   5 — at least one failure was quarantined (unparseable/untrusted — needs review)
+ *   1 — AG-UI drift detection was skipped (infra), or an unhandled script error
  *
  * Usage:
  *   npx tsx scripts/drift-report-collector.ts [--out drift-report.json]
@@ -985,6 +986,39 @@ function collectAgUiDriftEntries(results: VitestJsonResult): DriftEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Exit-code policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Map the three terminal signals a drift run can produce onto the collector's
+ * process exit code. Pure and side-effect-free so the mapping is unit-testable
+ * without spawning the drift suite.
+ *
+ * Precedence (highest first):
+ *   - `criticalCount > 0`  → 2  — at least one trustworthy critical drift.
+ *   - `quarantineCount > 0`→ 5  — a failure could not be parsed/mapped into a
+ *                                 trustworthy finding and was held for review;
+ *                                 distinct from a critical (2) and from a clean
+ *                                 pass (0) so it is never silently swallowed.
+ *   - `agUiSkipped`        → 1  — AG-UI drift detection could not run (infra).
+ *                                 O2: AG-UI-skipped stays exit 1 (unchanged).
+ *   - otherwise            → 0  — no drift.
+ *
+ * Critical wins over quarantine: if the run found a genuine critical drift, that
+ * is the actionable signal even if some other failure was also quarantined.
+ */
+export function computeExitCode(
+  criticalCount: number,
+  quarantineCount: number,
+  agUiSkipped: boolean,
+): 0 | 1 | 2 | 5 {
+  if (criticalCount > 0) return 2;
+  if (quarantineCount > 0) return 5;
+  if (agUiSkipped) return 1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1042,17 +1076,27 @@ function main(): void {
   );
   console.log(`  Critical diffs: ${criticalCount}`);
 
-  if (criticalCount > 0) {
-    console.log("Exiting with code 2 (critical diffs found).");
-    process.exit(2);
-  }
+  // Quarantine count is wired in A1.3 (collectDriftEntries appends quarantine
+  // entries instead of throwing). Until then there are none to report.
+  const quarantineCount = 0;
 
-  if (agUiSkipped) {
-    console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
-    process.exit(1);
+  const exitCode = computeExitCode(criticalCount, quarantineCount, agUiSkipped);
+  switch (exitCode) {
+    case 2:
+      console.log("Exiting with code 2 (critical diffs found).");
+      process.exit(2);
+    // eslint-disable-next-line no-fallthrough
+    case 5:
+      console.warn(`Exiting with code 5 (${quarantineCount} failure(s) quarantined for review).`);
+      process.exit(5);
+    // eslint-disable-next-line no-fallthrough
+    case 1:
+      console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
+      process.exit(1);
+    // eslint-disable-next-line no-fallthrough
+    default:
+      console.log("No critical diffs found.");
   }
-
-  console.log("No critical diffs found.");
 }
 
 /**
