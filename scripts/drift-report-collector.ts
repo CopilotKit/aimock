@@ -207,13 +207,17 @@ export function parseDriftBlock(text: string): { context: string; diffs: ParsedD
       );
       continue;
     }
+    const path = match[3].trim();
     diffs.push({
       severity: severity as DriftSeverity,
       issue: match[2].trim(),
-      path: match[3].trim(),
+      path,
       expected: match[4].trim(),
       real: match[5].trim(),
       mock: match[6].trim(),
+      // Stable per-item key derived from the offending path so different paths
+      // yield different delta keys (provider+id) in the D6.1 delta layer.
+      id: path,
     });
   }
 
@@ -726,6 +730,10 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   expected: "(not in knownModels set)",
                   real: id,
                   mock: NO_MOCK_LEG,
+                  // D6.2: set `id` to the model id so the delta layer (D6.1)
+                  // can key by provider+id, yielding one distinct key per model
+                  // rather than collapsing all entries under path:"knownModels".
+                  id,
                 })),
               ]
             : // CLASS 3: only genuine model ids become `real` diffs. The
@@ -740,6 +748,10 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   expected: "(not in knownModels set)",
                   real: id,
                   mock: NO_MOCK_LEG,
+                  // D6.2: set `id` to the model id so the delta layer (D6.1)
+                  // can key by provider+id, yielding one distinct key per model
+                  // rather than collapsing all entries under path:"knownModels".
+                  id,
                 })),
                 ...(canary.truncated
                   ? [
