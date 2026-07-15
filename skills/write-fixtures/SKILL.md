@@ -255,7 +255,7 @@ mock.on(
 mock.on({ userMessage: "status", sequenceIndex: 1 }, { content: "All systems operational." });
 ```
 
-Match counts are tracked per fixture group and reset with `reset()` or `resetMatchCounts()`.
+Match counts are tracked per fixture group. Use `resetMatchCounts()` between tests to reset counts while keeping loaded fixtures. `reset()` also clears the fixture pool, so avoid it between tests that share a loaded fixture set.
 
 ### Streaming physics (realistic timing)
 
@@ -500,7 +500,7 @@ These fields map correctly across all provider formats — for example, `finishR
 
 10. **Embeddings auto-generate if no fixture matches** — deterministic vectors are generated from the input text hash. You don't need a catch-all for embedding requests.
 
-11. **Sequential response counts are tracked per fixture** — counts reset with `reset()` or `resetMatchCounts()`. The count increments after each match of that fixture group (all fixtures sharing the same non-`sequenceIndex` match fields).
+11. **Sequential response counts are tracked per fixture** — use `resetMatchCounts()` between tests to reset counts while keeping loaded fixtures; `reset()` also clears the fixture pool, so don't use it between tests that share a loaded fixture set. The count increments after each match of that fixture group (all fixtures sharing the same non-`sequenceIndex` match fields).
 
 12. **Bedrock uses Anthropic Messages format internally** — the adapter normalizes Bedrock requests to `ChatCompletionRequest`, so the same fixtures work. Bedrock supports both non-streaming (`/invoke`, `/converse`) and streaming (`/invoke-with-response-stream`, `/converse-stream`) endpoints.
 
@@ -549,7 +549,7 @@ await suite.start();
 // suite.llm — the LLMock instance
 // suite.url — base URL
 
-afterEach(() => suite.reset()); // resets everything
+afterEach(() => suite.llm.resetMatchCounts()); // reset sequence counts, keep fixtures
 afterAll(() => suite.stop());
 ```
 
@@ -684,8 +684,8 @@ mock.loadFixtureDir("./fixtures");
 await mock.start();
 process.env.OPENAI_BASE_URL = `${mock.url}/v1`;
 
-// Per-test cleanup
-afterEach(() => mock.reset()); // clears fixtures AND journal
+// Per-test cleanup — reset sequence match counts, keep the loaded fixtures
+afterEach(() => mock.resetMatchCounts());
 
 // Teardown
 afterAll(async () => await mock.stop());
@@ -735,6 +735,8 @@ const mock = await LLMock.create({ port: 0 }); // creates + starts in one call
 | `mount(path, handler)`                   | Mount a Mountable (VectorMock, etc.)        |
 | `url` / `baseUrl`                        | Server URL (throws if not started)          |
 | `port`                                   | Server port number                          |
+
+Between tests that share a loaded fixture set, use `resetMatchCounts()` (not `reset()`, which also clears fixtures). For a `MockSuite`, call `suite.llm.resetMatchCounts()` — the suite itself has no `resetMatchCounts()`.
 
 Sequential responses use `on()` with `sequenceIndex` in the match — there is no dedicated convenience method.
 
