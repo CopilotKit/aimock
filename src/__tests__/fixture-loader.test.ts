@@ -1400,6 +1400,90 @@ describe("validateFixtures", () => {
     expect(duplicateWarnings).toHaveLength(0);
   });
 
+  it("no warning: same userMessage but different toolCallId", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", toolCallId: "call_a" } }),
+      makeFixture({ match: { userMessage: "hello", toolCallId: "call_b" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different systemMessage", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", systemMessage: "persona A" } }),
+      makeFixture({ match: { userMessage: "hello", systemMessage: "persona B" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different model", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", model: "gpt-4o" } }),
+      makeFixture({ match: { userMessage: "hello", model: "claude-opus-4" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different toolName", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", toolName: "search" } }),
+      makeFixture({ match: { userMessage: "hello", toolName: "fetch" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different responseFormat", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", responseFormat: "text" } }),
+      makeFixture({ match: { userMessage: "hello", responseFormat: "json_object" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different endpoint", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", endpoint: "chat" } }),
+      makeFixture({ match: { userMessage: "hello", endpoint: "video" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different inputText", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", inputText: "embed A" } }),
+      makeFixture({ match: { userMessage: "hello", inputText: "embed B" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
   it("warning: same userMessage with identical turnIndex/hasToolResult/sequenceIndex", () => {
     const fixtures = [
       makeFixture({ match: { userMessage: "hello", turnIndex: 1, hasToolResult: true } }),
