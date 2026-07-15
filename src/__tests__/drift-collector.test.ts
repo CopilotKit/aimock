@@ -1267,3 +1267,85 @@ describe("classifyUnparseableAsInfra", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// D6.2 — per-item `id` field on ParsedDiff
+//
+// The delta layer (D6.1) keys findings by `provider+id`. For N distinct unknown
+// model ids, the collector must produce N DISTINCT per-item `id` values so that
+// a downstream `provider+id` keying yields N distinct keys — not 1 collapsed
+// key under `path:"knownModels"` (pre-fix behaviour when `id` was absent/undefined).
+//
+// RED (pre-fix): `id` is unset on every ParsedDiff produced by the canary path,
+//   so all 3 diffs have `id === undefined` → only 1 distinct key.
+// GREEN (post-fix): each diff carries `id` = the model id stored in `diff.real`,
+//   so 3 distinct unknown ids → 3 distinct `id` values → 3 distinct keys.
+// ---------------------------------------------------------------------------
+
+describe("D6.2 — per-item id on ParsedDiff", () => {
+  // Three distinct hypothetical unknown model ids (not in the knownModels set
+  // in ws-realtime.drift.ts — A4 note: use future/hypothetical ids only).
+  const THREE_UNKNOWN_IDS_CANARY =
+    "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-x1,gpt-realtime-x2,gpt-realtime-x3: " +
+    "expected [ 'gpt-realtime-x1', …(2) ] to deeply equal []\n" +
+    "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:108:69";
+
+  it("D6.2 RED→GREEN: 3 distinct canary model ids produce 3 DISTINCT per-item id fields (not collapsed under undefined)", () => {
+    const result = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Realtime API drift"],
+        title: "canary: GA realtime models available",
+        failureMessages: [THREE_UNKNOWN_IDS_CANARY],
+      }),
+    ]);
+
+    const entries = entriesOf(result);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.provider).toBe("OpenAI Realtime");
+
+    // There should be exactly 3 diffs — one per unknown model id.
+    expect(entry.diffs).toHaveLength(3);
+
+    // D6.2 core assertion: each diff must carry a populated `id` field equal to
+    // the model id in `diff.real`, and all three must be distinct.
+    const ids = entry.diffs.map((d) => d.id);
+    expect(ids).toEqual(["gpt-realtime-x1", "gpt-realtime-x2", "gpt-realtime-x3"]);
+
+    // All three ids are defined (not undefined).
+    expect(ids.every((id) => id !== undefined)).toBe(true);
+
+    // All three ids are DISTINCT — a downstream provider+id key would yield 3
+    // different keys, not 1 collapsed key under undefined/absent id.
+    const distinctIds = new Set(ids);
+    expect(distinctIds.size).toBe(3);
+
+    // The model ids must match what's in `diff.real` (the source of truth).
+    for (const diff of entry.diffs) {
+      expect(diff.id).toBe(diff.real);
+    }
+  });
+
+  it("D6.2: parseDriftBlock-path diffs carry a stable id derived from path", () => {
+    // For regular drift-block diffs (not canary), `id` is derived from
+    // the `path` field so different paths → different ids.
+    const formatted = formatDriftReport("OpenAI Chat (non-streaming text)", [
+      { ...SAMPLE_DIFF, path: "choices[0].message.refusal" },
+      { ...SAMPLE_DIFF, path: "choices[0].message.content", severity: "warning" as const },
+    ]);
+    const parsed = parseDriftBlock(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.diffs).toHaveLength(2);
+
+    const ids = parsed!.diffs.map((d) => d.id);
+    // Both diffs must have a non-empty id.
+    expect(ids.every((id) => id !== undefined && id !== "")).toBe(true);
+    // The two paths are different → two distinct ids.
+    expect(new Set(ids).size).toBe(2);
+    // Each id must be derived from (or equal to) the path.
+    for (const diff of parsed!.diffs) {
+      expect(diff.id).toBe(diff.path);
+    }
+  });
+});
