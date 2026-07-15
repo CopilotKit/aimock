@@ -10,7 +10,8 @@
  * red on false positives. Comparing the NORMALIZED family instead means only a
  * genuinely new family (e.g. `gpt-live`) is ever flagged.
  *
- * Two suffix shapes are stripped, repeatedly, from the END of the id:
+ * Two suffix shapes are stripped, repeatedly, from the END of the id for ALL
+ * providers (the SHARED CORE):
  *   - a dated snapshot `-YYYY-MM-DD`  (e.g. `-2025-08-28`)
  *   - a build/version tag `-NNN` or `-NNNN`  (3–4 digits, e.g. `-1106`)
  *
@@ -20,23 +21,37 @@
  * NOT stripped, so `gpt-live-1` normalizes to `gpt-live-1` — an unknown family —
  * and stays flagged (the whole point of the canary).
  *
- * The `provider` argument is a forward hook: the dated-snapshot/build-tag strip
- * below is the SHARED CORE applied identically for all three providers today, so
- * `normalizeModelFamily(id, "openai")` is byte-identical to the historical
- * `normalizeVoiceModelFamily(id)`. Provider-specific normalization can branch off
- * `provider` later without touching call sites.
+ * The `provider` argument selects a per-provider EXTRA rule on top of the shared
+ * core:
+ *   - `anthropic` additionally strips a CONTIGUOUS 8-digit snapshot `-YYYYMMDD`
+ *     (e.g. `claude-3-5-sonnet-20241022` → `claude-3-5-sonnet`). Anthropic dates
+ *     its ids with an undelimited `-YYYYMMDD` suffix rather than the dashed
+ *     `-YYYY-MM-DD` form, so without this every dated Claude id would
+ *     false-positive as drift (the incident-2 class, for Anthropic).
+ *   - `openai` / `gemini` keep ONLY the shared core — the 8-digit strip is NOT
+ *     applied to them, so a non-date 8-digit tail is never over-stripped, and
+ *     `normalizeModelFamily(id, "openai")` stays byte-identical to the historical
+ *     `normalizeVoiceModelFamily(id)`.
+ *
+ * The per-provider rule runs inside the SAME reduction loop as the shared core,
+ * so it stays idempotent: a dated snapshot following a build tag still fully
+ * reduces.
  */
 const DATED_SNAPSHOT_SUFFIX = /-\d{4}-\d{2}-\d{2}$/;
 const BUILD_TAG_SUFFIX = /-\d{3,4}$/;
+/** Anthropic contiguous `-YYYYMMDD` snapshot suffix (undelimited date). */
+const ANTHROPIC_DATE_SUFFIX = /-\d{8}$/;
 
 export function normalizeModelFamily(
   id: string,
   provider: "openai" | "anthropic" | "gemini",
 ): string {
-  void provider;
   let family = id;
   for (;;) {
-    const stripped = family.replace(DATED_SNAPSHOT_SUFFIX, "").replace(BUILD_TAG_SUFFIX, "");
+    let stripped = family.replace(DATED_SNAPSHOT_SUFFIX, "").replace(BUILD_TAG_SUFFIX, "");
+    if (provider === "anthropic") {
+      stripped = stripped.replace(ANTHROPIC_DATE_SUFFIX, "");
+    }
     if (stripped === family) break;
     family = stripped;
   }
