@@ -107,7 +107,9 @@ export function entryToFixture(entry: FixtureFileEntry, logger?: Logger): Fixtur
   if (fixture.recordedTimings) {
     const rt = fixture.recordedTimings;
     if (!Number.isFinite(rt.ttftMs) || rt.ttftMs < 0) rt.ttftMs = 0;
-    rt.interChunkDelaysMs = rt.interChunkDelaysMs.filter((d) => Number.isFinite(d) && d >= 0);
+    rt.interChunkDelaysMs = Array.isArray(rt.interChunkDelaysMs)
+      ? rt.interChunkDelaysMs.filter((d) => Number.isFinite(d) && d >= 0)
+      : [];
     if (!Number.isFinite(rt.totalDurationMs) || rt.totalDurationMs < 0) rt.totalDurationMs = 0;
   }
 

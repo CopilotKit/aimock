@@ -316,6 +316,32 @@ describe("loadFixtureFile", () => {
     expect(fixtures[0].disconnectAfterMs).toBeUndefined();
   });
 
+  it("loads sibling fixtures when one entry has a non-array interChunkDelaysMs", () => {
+    // Untrusted fixture JSON: interChunkDelaysMs is typed number[] but may be
+    // null/missing/non-array. Without an Array.isArray guard, .filter throws a
+    // TypeError inside entryToFixture, aborting the entire file's load and
+    // silently dropping every fixture in it.
+    const filePath = writeJson(tmpDir, "bad-timings.json", {
+      fixtures: [
+        {
+          match: { userMessage: "malformed" },
+          response: { content: "bad" },
+          recordedTimings: { ttftMs: 0, interChunkDelaysMs: null, totalDurationMs: 0 },
+        },
+        {
+          match: { userMessage: "valid" },
+          response: { content: "good" },
+        },
+      ],
+    });
+
+    const fixtures = loadFixtureFile(filePath);
+    expect(fixtures).toHaveLength(2);
+    expect(fixtures[1].match.userMessage).toBe("valid");
+    // The malformed entry is sanitized: non-array interChunkDelaysMs -> [].
+    expect(fixtures[0].recordedTimings?.interChunkDelaysMs).toEqual([]);
+  });
+
   it("warns and returns empty array for invalid JSON", () => {
     const filePath = join(tmpDir, "bad.json");
     writeFileSync(filePath, "{ not valid json", "utf-8");
