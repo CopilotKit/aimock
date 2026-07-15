@@ -24,10 +24,36 @@ import {
   extractScenario,
   parseKnownModelsCanary,
   collectDriftEntries,
+  computeExitCode,
   classifyUnparseableAsInfra,
   INFRA_INDICATOR_SOURCES,
   infraIndicatorSample,
 } from "../../scripts/drift-report-collector.js";
+import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers for the A1.3 CollectResult shape ({ entries, quarantine }).
+// collectDriftEntries no longer returns a bare array nor throws on unmapped /
+// unparseable-not-infra failures — those are quarantined (→ exit 5).
+// ---------------------------------------------------------------------------
+
+function entriesOf(result: VitestJsonResult): DriftEntry[] {
+  return collectDriftEntries(result).entries;
+}
+
+function quarantineOf(result: VitestJsonResult): QuarantineEntry[] {
+  return collectDriftEntries(result).quarantine;
+}
+
+/** The exit code main() would emit for a given collect result (agUiSkipped=false). */
+function exitCodeOf(result: VitestJsonResult): 0 | 1 | 2 | 5 {
+  const { entries, quarantine } = collectDriftEntries(result);
+  const criticalCount = entries.reduce(
+    (sum, e) => sum + e.diffs.filter((d) => d.severity === "critical").length,
+    0,
+  );
+  return computeExitCode(criticalCount, quarantine.length, false);
+}
 
 // ---------------------------------------------------------------------------
 // Vitest JSON reporter fixture builders
@@ -319,19 +345,25 @@ describe("extractScenario", () => {
 // ---------------------------------------------------------------------------
 
 describe("collectDriftEntries", () => {
-  it("returns empty array when no failed tests", () => {
+  it("returns empty entries+quarantine when no failed tests", () => {
     const result = makeResult([
       makeAssertion({ status: "passed" }),
       makeAssertion({ status: "pending" }),
     ]);
-    expect(collectDriftEntries(result)).toEqual([]);
+    expect(entriesOf(result)).toEqual([]);
+    expect(quarantineOf(result)).toEqual([]);
+    expect(exitCodeOf(result)).toBe(0);
   });
 
-  it("returns empty array when there are no test files at all", () => {
-    expect(collectDriftEntries({ testResults: [] })).toEqual([]);
+  it("returns empty entries+quarantine when there are no test files at all", () => {
+    const result: VitestJsonResult = { testResults: [] };
+    expect(entriesOf(result)).toEqual([]);
+    expect(quarantineOf(result)).toEqual([]);
   });
 
-  it("throws when an unmapped provider is found in drift report", () => {
+  it("QUARANTINES (does NOT throw) an unmapped provider found in a drift report → exit 5", () => {
+    // A1.3: an unmapped provider is untrusted, not a collector crash. It is held
+    // for review (exit 5) instead of throwing (was exit 1).
     const driftText = formatDriftReport("UnknownProvider (non-streaming text)", [SAMPLE_DIFF]);
     const result = makeResult([
       makeAssertion({
@@ -340,21 +372,43 @@ describe("collectDriftEntries", () => {
         failureMessages: [driftText],
       }),
     ]);
-    expect(() => collectDriftEntries(result)).toThrow(/unmapped drift entries/);
+    expect(() => collectDriftEntries(result)).not.toThrow();
+    const q = quarantineOf(result);
+    expect(q).toHaveLength(1);
+    expect(entriesOf(result)).toEqual([]);
+    expect(exitCodeOf(result)).toBe(5);
   });
 
-  it("throws when all failures are unparseable and no drift entries collected", () => {
+  it("QUARANTINES (does NOT throw) all-unparseable-not-infra failures → exit 5 (incident-5)", () => {
+    // A1.3: the incident-5 surface. Genuine-but-unparseable failures are no
+    // longer a fail-loud crash (exit 1) — they are quarantined (exit 5) so they
+    // surface for review without being swallowed.
     const result = makeResult([
       makeAssertion({
         status: "failed",
-        failureMessages: ["Error: expected true to equal false\n  at Object.<anonymous>"],
+        ancestorTitles: ["Some Suite"],
+        title: "a",
+        failureMessages: [
+          "AssertionError: expected 1 to be 2 // Object.is equality\n    at foo (/repo/src/__tests__/drift/some.drift.ts:8:13)",
+        ],
       }),
       makeAssertion({
         status: "failed",
-        failureMessages: ["TypeError: Cannot read property 'foo' of undefined"],
+        ancestorTitles: ["Other Suite"],
+        title: "b",
+        failureMessages: [
+          "TypeError: Cannot read property 'foo' of undefined\n    at bar (/repo/src/__tests__/drift/other.drift.ts:3:1)",
+        ],
       }),
     ]);
-    expect(() => collectDriftEntries(result)).toThrow(/unparseable test failures/);
+    expect(() => collectDriftEntries(result)).not.toThrow();
+    const q = quarantineOf(result);
+    expect(q).toHaveLength(2);
+    // O-1: raw file:line captured from the stack frame BEFORE stripping.
+    expect(q[0].rawLocation).toBe("/repo/src/__tests__/drift/some.drift.ts:8:13");
+    expect(q[1].rawLocation).toBe("/repo/src/__tests__/drift/other.drift.ts:3:1");
+    expect(entriesOf(result)).toEqual([]);
+    expect(exitCodeOf(result)).toBe(5);
   });
 
   it("returns valid entries and tolerates unparseable failures mixed in", () => {
@@ -374,13 +428,19 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Chat");
     expect(entries[0].scenario).toBe("non-streaming text");
     expect(entries[0].builderFile).toBe("src/helpers.ts");
     expect(entries[0].diffs).toHaveLength(1);
     expect(entries[0].diffs[0].severity).toBe("critical");
+    // When real drift entries ARE present, a mixed-in unparseable sibling stays
+    // TOLERATED (warn-only) rather than quarantined — the quarantine path only
+    // fires for the all-unparseable, zero-entries case (former throw site).
+    expect(quarantineOf(result)).toEqual([]);
+    // A critical entry present → exit 2 (dominates any tolerated sibling).
+    expect(exitCodeOf(result)).toBe(2);
   });
 
   it("ignores passed assertions in a mixed result set", () => {
@@ -395,7 +455,7 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Chat");
   });
@@ -429,7 +489,7 @@ describe("collectDriftEntries", () => {
       ],
     };
 
-    const entries = collectDriftEntries(results);
+    const entries = entriesOf(results);
     expect(entries).toHaveLength(2);
     expect(entries[0].provider).toBe("OpenAI Chat");
     expect(entries[1].provider).toBe("Google Gemini");
@@ -450,7 +510,7 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
 
     const entry = entries[0];
@@ -484,14 +544,16 @@ describe("collectDriftEntries", () => {
     expect(criticalCount).toBe(4);
   });
 
-  it("does NOT misattribute a non-canary toEqual([]) failure from another provider as OpenAI-Realtime drift (RED without the gate)", () => {
+  it("does NOT misattribute a non-canary toEqual([]) failure from another provider as OpenAI-Realtime drift → quarantine (exit 5)", () => {
     // A different provider's test failed with the generic vitest shape
     // `expected [ 'sk-leaked' ] to deeply equal []`. Pre-fix, the unguarded
     // canary fallback matched this and emitted a CRITICAL "OpenAI Realtime
     // known-models canary" entry with `real: 'sk-leaked'`, pointing the auto-fix
     // at src/ws-realtime.ts and relabeling arbitrary array contents as a model
-    // id. It must NOT be claimed as a canary; with no other parseable/infra
-    // signal the collector must fail loud (throw) rather than fabricate an entry.
+    // id. It must NOT be claimed as a canary. A1.3: because the message is
+    // neither a parseable drift block, a canary, nor infra, it is QUARANTINED
+    // (exit 5) — never fabricated into a false entry, never silently dropped,
+    // and (A1.3) no longer a fail-loud crash.
     const NON_CANARY_TOEQUAL_EMPTY =
       "AssertionError: expected [ 'sk-leaked' ] to deeply equal []\n" +
       "    at /repo/src/__tests__/drift/openai-chat.drift.ts:42:30\n" +
@@ -505,9 +567,13 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    // No OpenAI-Realtime entry may be produced. Because the message is neither a
-    // parseable drift block, a canary, nor infra, the collector fails loud.
-    expect(() => collectDriftEntries(result)).toThrow(/unparseable test failures/);
+    expect(() => collectDriftEntries(result)).not.toThrow();
+    // No OpenAI-Realtime (nor any) entry may be produced.
+    expect(entriesOf(result)).toEqual([]);
+    expect(quarantineOf(result)).toHaveLength(1);
+    // The arbitrary array content is NOT relabeled as a model id anywhere.
+    expect(quarantineOf(result)[0].message).toContain("sk-leaked");
+    expect(exitCodeOf(result)).toBe(5);
   });
 
   it("surfaces a genuine drift report carried in an AssertionError with a leading blank line (does not swallow)", () => {
@@ -520,18 +586,19 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Chat");
     expect(entries[0].diffs).toHaveLength(1);
     expect(entries[0].diffs[0].severity).toBe("critical");
   });
 
-  it("throws (does NOT exit 0) when the only failure is unparseable with an infra token confined to a stack frame (A3)", () => {
-    // RED on the pre-fix collector: the raw-vs-stripped asymmetry classified
-    // this as benign infra and swallowed it (returned []). The fix normalizes
-    // both scans, so an infra token that survives ONLY in a stripped-away stack
-    // frame no longer flips the gate — the failure is surfaced via throw.
+  it("does NOT exit 0 (quarantines → exit 5) when the only failure has an infra token confined to a stack frame (A3)", () => {
+    // The raw-vs-stripped asymmetry classified this as benign infra and swallowed
+    // it (returned []). The fix normalizes both scans, so an infra token that
+    // survives ONLY in a stripped-away stack frame no longer flips the gate — the
+    // failure is surfaced. A1.3: surfaced now means QUARANTINE (exit 5), not a
+    // crash; the invariant that matters is it is NEVER a green (exit 0).
     const result = makeResult([
       makeAssertion({
         status: "failed",
@@ -540,7 +607,10 @@ describe("collectDriftEntries", () => {
         failureMessages: [INFRA_TOKEN_IN_STACKFRAME_ONLY],
       }),
     ]);
-    expect(() => collectDriftEntries(result)).toThrow(/unparseable test failures/);
+    expect(() => collectDriftEntries(result)).not.toThrow();
+    expect(quarantineOf(result)).toHaveLength(1);
+    expect(exitCodeOf(result)).toBe(5);
+    expect(exitCodeOf(result)).not.toBe(0);
   });
 
   // -------------------------------------------------------------------------
@@ -557,7 +627,7 @@ describe("collectDriftEntries", () => {
       }),
     ]);
 
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
@@ -584,7 +654,7 @@ describe("collectDriftEntries", () => {
         failureMessages: [CANARY_NO_GA_WITH_UNKNOWN],
       }),
     ]);
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
@@ -605,7 +675,7 @@ describe("collectDriftEntries", () => {
         failureMessages: [CANARY_NO_GA_EMPTY],
       }),
     ]);
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     expect(entries[0].provider).toBe("OpenAI Realtime");
     expect(entries[0].diffs.every((d) => d.severity === "critical")).toBe(true);
@@ -624,7 +694,7 @@ describe("collectDriftEntries", () => {
         failureMessages: [CANARY_FALLBACK_TRUNCATED],
       }),
     ]);
-    const entries = collectDriftEntries(result);
+    const entries = entriesOf(result);
     expect(entries).toHaveLength(1);
     for (const d of entries[0].diffs) {
       // No `real` value may be a prose annotation (e.g. "(additional models…)").
@@ -634,10 +704,16 @@ describe("collectDriftEntries", () => {
 
   // -------------------------------------------------------------------------
   // CLASS 1 — corpus/table test asserting the SAFE outcome for the recurring
-  // classifier failure shapes. `throws: true` = fail-loud (exit-1 investigate);
-  // `throws: false` = surfaced as a structured entry (never a silent exit-0).
+  // classifier failure shapes. A1.3 replaces the old binary throws/no-throw
+  // with a three-way `outcome`:
+  //   "entry"      → surfaced as a structured drift entry (exit 2), NEVER a
+  //                  silent exit-0;
+  //   "quarantine" → held for human review (exit 5), NEVER a crash and NEVER a
+  //                  silent exit-0 (was: fail-loud throw / exit 1);
+  //   "infra"      → benign infra, collector returns [] (exit 0).
+  // The invariant the corpus protects: an untrusted failure is never a green.
   // -------------------------------------------------------------------------
-  describe("CLASS 1 fail-loud corpus", () => {
+  describe("CLASS 1 safe-outcome corpus", () => {
     const DRIFT_VALUE_WITH_STATUS_200 = formatDriftReport("OpenAI Chat (non-streaming text)", [
       {
         path: "choices[0].message.content",
@@ -652,37 +728,37 @@ describe("collectDriftEntries", () => {
     const rows: {
       name: string;
       messages: string[];
-      throws: boolean;
+      outcome: "entry" | "quarantine" | "infra";
     }[] = [
       {
-        name: "a drift body containing the substring 'status 200' is surfaced, NOT swallowed as infra",
+        name: "a drift body containing the substring 'status 200' is surfaced as an entry, NOT swallowed as infra",
         messages: [DRIFT_VALUE_WITH_STATUS_200],
-        throws: false, // parsed into a structured entry
+        outcome: "entry",
       },
       {
-        name: "a genuine drift report with a leading blank line is surfaced",
+        name: "a genuine drift report with a leading blank line is surfaced as an entry",
         messages: [GENUINE_DRIFT_WITH_STACK],
-        throws: false,
+        outcome: "entry",
       },
       {
-        name: "an 'expected false to be true' hasGA shape is surfaced (canary), not swallowed",
+        name: "an 'expected false to be true' hasGA shape is surfaced as a (canary) entry, not swallowed",
         messages: [CANARY_NO_GA_MARKER],
-        throws: false,
+        outcome: "entry",
       },
       {
-        name: "an 'expected […] to deeply equal []' canary shape is surfaced, not swallowed",
+        name: "an 'expected […] to deeply equal []' canary shape is surfaced as an entry, not swallowed",
         messages: [CANARY_MARKER_MULTI],
-        throws: false,
+        outcome: "entry",
       },
       {
-        name: "a bare AssertionError with no infra token and no drift marker fails loud",
+        name: "a bare AssertionError with no infra token and no drift marker is quarantined (exit 5), not swallowed",
         messages: ["AssertionError: expected 1 to be 2 // Object.is equality\n    at foo (x:1:1)"],
-        throws: true,
+        outcome: "quarantine",
       },
       {
-        name: "an infra token confined to a stack frame fails loud (A3)",
+        name: "an infra token confined to a stack frame is quarantined (exit 5) (A3)",
         messages: [INFRA_TOKEN_IN_STACKFRAME_ONLY],
-        throws: true,
+        outcome: "quarantine",
       },
     ];
 
@@ -698,16 +774,25 @@ describe("collectDriftEntries", () => {
             }),
           ),
         );
-        if (row.throws) {
-          expect(() => collectDriftEntries(result)).toThrow();
+        expect(() => collectDriftEntries(result)).not.toThrow();
+        const { entries, quarantine } = collectDriftEntries(result);
+        if (row.outcome === "entry") {
+          expect(entries.length).toBeGreaterThan(0);
+          expect(exitCodeOf(result)).toBe(2);
+        } else if (row.outcome === "quarantine") {
+          expect(entries).toEqual([]);
+          expect(quarantine.length).toBeGreaterThan(0);
+          expect(exitCodeOf(result)).toBe(5);
+          expect(exitCodeOf(result)).not.toBe(0);
         } else {
-          expect(() => collectDriftEntries(result)).not.toThrow();
-          expect(collectDriftEntries(result).length).toBeGreaterThan(0);
+          expect(entries).toEqual([]);
+          expect(quarantine).toEqual([]);
+          expect(exitCodeOf(result)).toBe(0);
         }
       });
     }
 
-    it("still classifies genuine infra (body token) as benign — collector returns [] without throwing", () => {
+    it("still classifies genuine infra (body token) as benign — collector returns [] entries+quarantine (exit 0)", () => {
       const result = makeResult([
         makeAssertion({
           status: "failed",
@@ -716,7 +801,127 @@ describe("collectDriftEntries", () => {
           failureMessages: [REAL_INFRA_BODY],
         }),
       ]);
-      expect(collectDriftEntries(result)).toEqual([]);
+      expect(entriesOf(result)).toEqual([]);
+      expect(quarantineOf(result)).toEqual([]);
+      expect(exitCodeOf(result)).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A1.4 TAXONOMY — the exit-code taxonomy end-to-end through the REAL collector
+  // + computeExitCode. Each row asserts the full path from a vitest failure
+  // shape to the process exit code main() would emit.
+  // -------------------------------------------------------------------------
+  describe("exit-code taxonomy (collector → computeExitCode)", () => {
+    it("critical drift → exit 2", () => {
+      const driftText = formatDriftReport("OpenAI Chat (non-streaming text)", [SAMPLE_DIFF]);
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Chat Completions drift"],
+          failureMessages: [driftText],
+        }),
+      ]);
+      expect(entriesOf(result)).toHaveLength(1);
+      expect(quarantineOf(result)).toEqual([]);
+      expect(exitCodeOf(result)).toBe(2);
+    });
+
+    it("incident-5 unparseable failure → quarantine + exit 5 (NOT a throw)", () => {
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["Broken Suite"],
+          title: "a",
+          failureMessages: [
+            "AssertionError: expected 1 to be 2 // Object.is equality\n    at foo (/repo/src/__tests__/drift/x.drift.ts:8:13)",
+          ],
+        }),
+      ]);
+      expect(() => collectDriftEntries(result)).not.toThrow();
+      expect(entriesOf(result)).toEqual([]);
+      expect(quarantineOf(result)).toHaveLength(1);
+      expect(exitCodeOf(result)).toBe(5);
+    });
+
+    it("all-infra failures → exit 0 (benign, collector returns nothing)", () => {
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Chat Completions drift"],
+          failureMessages: [REAL_INFRA_BODY],
+        }),
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Responses drift"],
+          failureMessages: [
+            "INFRA_ERROR: upstream down\n    at h (file:///repo/src/y.drift.ts:1:1)",
+          ],
+        }),
+      ]);
+      expect(entriesOf(result)).toEqual([]);
+      expect(quarantineOf(result)).toEqual([]);
+      expect(exitCodeOf(result)).toBe(0);
+    });
+
+    it("canary (unknown-model) failure → critical entry + exit 2", () => {
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Realtime API drift"],
+          title: "canary: GA realtime models available",
+          failureMessages: [CANARY_MARKER_MULTI],
+        }),
+      ]);
+      const entries = entriesOf(result);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].diffs.every((d) => d.severity === "critical")).toBe(true);
+      expect(exitCodeOf(result)).toBe(2);
+    });
+
+    it("empty → fail-loud invariant: an all-unparseable batch is NEVER classified as a benign all-clear", () => {
+      // CLASS 1 root invariant surfaced at the collector: an empty evidence set
+      // (no positive infra evidence) must NOT be treated as infra. The batch is
+      // quarantined (exit 5), never a silent exit 0.
+      expect(classifyUnparseableAsInfra([])).toBe(false);
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["Broken Suite"],
+          title: "unrecognized",
+          failureMessages: [
+            "AssertionError: expected 1 to be 2\n    at foo (/repo/src/z.drift.ts:1:1)",
+          ],
+        }),
+      ]);
+      expect(exitCodeOf(result)).not.toBe(0);
+      expect(exitCodeOf(result)).toBe(5);
+    });
+
+    it("critical + quarantine together → exit 2 (critical dominates quarantine)", () => {
+      const driftText = formatDriftReport("OpenAI Chat (non-streaming text)", [SAMPLE_DIFF]);
+      const result = makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Chat Completions drift"],
+          title: "non-streaming text matches real API",
+          failureMessages: [driftText],
+        }),
+        // An unmapped-provider drift block → quarantined (never dropped) even
+        // though a real critical entry is also present.
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["UnknownProvider drift"],
+          title: "some scenario",
+          failureMessages: [formatDriftReport("UnknownProvider (streaming text)", [SAMPLE_DIFF])],
+        }),
+      ]);
+      const { entries, quarantine } = collectDriftEntries(result);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].provider).toBe("OpenAI Chat");
+      expect(quarantine).toHaveLength(1);
+      // Critical dominates: exit 2, not 5.
+      expect(exitCodeOf(result)).toBe(2);
     });
   });
 });
@@ -1020,6 +1225,127 @@ describe("classifyUnparseableAsInfra", () => {
         // the anchoring fix must not over-tighten and break genuine infra.
         expect(classifyUnparseableAsInfra([sample])).toBe(true);
       });
+
+      it(`[${source}] taxonomy (c): a bare "${sample}" reason → collector exit 0 (benign, no quarantine)`, () => {
+        // A1.4 extension: tie the infra classification to the exit-code taxonomy
+        // at the REAL collector surface. A bare infra-reason failure must be a
+        // benign exit 0 — NOT quarantined (exit 5) and NOT a crash.
+        const result = makeResult([
+          makeAssertion({
+            status: "failed",
+            ancestorTitles: ["OpenAI Chat Completions drift"],
+            title: "non-streaming text matches real API",
+            failureMessages: [sample],
+          }),
+        ]);
+        expect(() => collectDriftEntries(result)).not.toThrow();
+        expect(entriesOf(result)).toEqual([]);
+        expect(quarantineOf(result)).toEqual([]);
+        expect(exitCodeOf(result)).toBe(0);
+      });
+
+      it(`[${source}] taxonomy (c'): a labelled "Real: ${sample}" drift value → NOT exit 0 (quarantined, exit 5)`, () => {
+        // Symmetric to (a) at the collector surface: a labelled body value that
+        // merely CONTAINS the infra phrase must never be swallowed as a green.
+        // It is not a full parseable drift block, so it is quarantined (exit 5).
+        const msg =
+          "     Path:    choices[0].message.content\n" +
+          "     SDK:     n/a\n" +
+          `     Real:    ${sample}\n` +
+          "     Mock:    <absent>\n";
+        const result = makeResult([
+          makeAssertion({
+            status: "failed",
+            ancestorTitles: ["OpenAI Chat Completions drift"],
+            title: "non-streaming text matches real API",
+            failureMessages: [msg],
+          }),
+        ]);
+        expect(exitCodeOf(result)).not.toBe(0);
+        expect(exitCodeOf(result)).toBe(5);
+      });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D6.2 — per-item `id` field on ParsedDiff
+//
+// The delta layer (D6.1) keys findings by `provider+id`. For N distinct unknown
+// model ids, the collector must produce N DISTINCT per-item `id` values so that
+// a downstream `provider+id` keying yields N distinct keys — not 1 collapsed
+// key under `path:"knownModels"` (pre-fix behaviour when `id` was absent/undefined).
+//
+// RED (pre-fix): `id` is unset on every ParsedDiff produced by the canary path,
+//   so all 3 diffs have `id === undefined` → only 1 distinct key.
+// GREEN (post-fix): each diff carries `id` = the model id stored in `diff.real`,
+//   so 3 distinct unknown ids → 3 distinct `id` values → 3 distinct keys.
+// ---------------------------------------------------------------------------
+
+describe("D6.2 — per-item id on ParsedDiff", () => {
+  // Three distinct hypothetical unknown model ids (not in the knownModels set
+  // in ws-realtime.drift.ts — A4 note: use future/hypothetical ids only).
+  const THREE_UNKNOWN_IDS_CANARY =
+    "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-x1,gpt-realtime-x2,gpt-realtime-x3: " +
+    "expected [ 'gpt-realtime-x1', …(2) ] to deeply equal []\n" +
+    "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:108:69";
+
+  it("D6.2 RED→GREEN: 3 distinct canary model ids produce 3 DISTINCT per-item id fields (not collapsed under undefined)", () => {
+    const result = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Realtime API drift"],
+        title: "canary: GA realtime models available",
+        failureMessages: [THREE_UNKNOWN_IDS_CANARY],
+      }),
+    ]);
+
+    const entries = entriesOf(result);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.provider).toBe("OpenAI Realtime");
+
+    // There should be exactly 3 diffs — one per unknown model id.
+    expect(entry.diffs).toHaveLength(3);
+
+    // D6.2 core assertion: each diff must carry a populated `id` field equal to
+    // the model id in `diff.real`, and all three must be distinct.
+    const ids = entry.diffs.map((d) => d.id);
+    expect(ids).toEqual(["gpt-realtime-x1", "gpt-realtime-x2", "gpt-realtime-x3"]);
+
+    // All three ids are defined (not undefined).
+    expect(ids.every((id) => id !== undefined)).toBe(true);
+
+    // All three ids are DISTINCT — a downstream provider+id key would yield 3
+    // different keys, not 1 collapsed key under undefined/absent id.
+    const distinctIds = new Set(ids);
+    expect(distinctIds.size).toBe(3);
+
+    // The model ids must match what's in `diff.real` (the source of truth).
+    for (const diff of entry.diffs) {
+      expect(diff.id).toBe(diff.real);
+    }
+  });
+
+  it("D6.2: parseDriftBlock-path diffs carry a stable id derived from path", () => {
+    // For regular drift-block diffs (not canary), `id` is derived from
+    // the `path` field so different paths → different ids.
+    const formatted = formatDriftReport("OpenAI Chat (non-streaming text)", [
+      { ...SAMPLE_DIFF, path: "choices[0].message.refusal" },
+      { ...SAMPLE_DIFF, path: "choices[0].message.content", severity: "warning" as const },
+    ]);
+    const parsed = parseDriftBlock(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.diffs).toHaveLength(2);
+
+    const ids = parsed!.diffs.map((d) => d.id);
+    // Both diffs must have a non-empty id.
+    expect(ids.every((id) => id !== undefined && id !== "")).toBe(true);
+    // The two paths are different → two distinct ids.
+    expect(new Set(ids).size).toBe(2);
+    // Each id must be derived from (or equal to) the path.
+    for (const diff of parsed!.diffs) {
+      expect(diff.id).toBe(diff.path);
     }
   });
 });

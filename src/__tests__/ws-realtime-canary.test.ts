@@ -21,6 +21,7 @@ import {
   knownVoiceModelFamilies,
   normalizeVoiceModelFamily,
 } from "./drift/voice-models.js";
+import { normalizeModelFamily } from "./drift/model-family.js";
 
 // Dated-snapshot / build-tag variants of families that are ALREADY known. These
 // are the exact ids the live Drift Tests run (28968203340) flagged as false
@@ -124,6 +125,20 @@ describe("ws-realtime known-voice-models canary detection", () => {
     expect(normalizeVoiceModelFamily("gpt-live-1")).toBe("gpt-live-1");
     expect(normalizeVoiceModelFamily("gpt-live-1-mini")).toBe("gpt-live-1-mini");
     expect(knownVoiceModelFamilies.has("gpt-live-1")).toBe(false);
+  });
+
+  it("is byte-identical to the shared normalizeModelFamily(id, 'openai') primitive", () => {
+    // Characterization guard for the A3.2 equivalence refactor: normalizeVoiceModelFamily
+    // is now a thin wrapper over normalizeModelFamily(id, "openai"), and the migrated
+    // wrapper must yield the SAME normalization for every representative id AND an
+    // identical knownVoiceModelFamilies set as re-seeding through the shared primitive.
+    for (const id of [...REPRESENTATIVE_MODELS, ...knownVoiceModelFamilies]) {
+      expect(normalizeVoiceModelFamily(id)).toBe(normalizeModelFamily(id, "openai"));
+    }
+    const reseeded = new Set(
+      [...knownVoiceModelFamilies].map((f) => normalizeModelFamily(f, "openai")),
+    );
+    expect([...knownVoiceModelFamilies].sort()).toEqual([...reseeded].sort());
   });
 
   it("does not flag non-voice chat/image/embedding models as voice drift", () => {

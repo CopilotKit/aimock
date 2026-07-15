@@ -6,6 +6,11 @@ on:
     paths:
       - "src/agui-types.ts"
       - "src/__tests__/drift/agui-schema.drift.ts"
+      # PR-scoped live drift leg (drift-live-pr job): trigger when the drift
+      # scripts, any drift test, or a drift workflow itself changes.
+      - "scripts/drift-*.ts"
+      - "src/__tests__/drift/**"
+      - ".github/workflows/*drift*"
   workflow_dispatch: # Manual trigger
 
 permissions:
@@ -44,6 +49,11 @@ jobs:
       # persisted across every retry). Lets the alert say "confirmed across N
       # runs". Empty on the common green/transient path.
       runs: ${{ steps.drift.outputs.drift_runs }}
+      # Final collector exit code (0 clean/transient, 2 critical drift, 5
+      # quarantine, other = crash). Promoted to a job output so the `notify`
+      # job can classify an exit-5 quarantine distinctly instead of folding it
+      # into the generic "job failed → HTTP drift" fallback (M5 backstop).
+      exit_code: ${{ steps.drift.outputs.exit_code }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
@@ -53,6 +63,89 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # Per-provider key-freshness PREFLIGHT. Before spending 15 minutes on the
+      # full suite, do a cheap GET /models per provider. A dead/expired/revoked
+      # key returns 401/403 — classify that as `stale-key` and fail the job LOUD
+      # with a "rotate <PROVIDER>_API_KEY" message, so a dead key surfaces up
+      # front instead of as a late, generic streaming failure buried in the
+      # suite (or worse, a misleading green skip). Classification keys off the
+      # numeric InfraError.status (401/403), NEVER the prose message. Transient
+      # statuses (429/5xx/network) are NOT stale keys: the preflight warns and
+      # continues, since the retry-wrapped collector below handles those.
+      # (C5.3b, a separate task, adds the exit_code job-output + notify
+      # plumbing — this step is only the preflight.)
+      - name: Preflight — provider key freshness
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          # Written at the checkout root (cwd) so the relative provider import
+          # below resolves against the repo. ESM relative specifiers key off the
+          # module's own location, not the process cwd — a file under
+          # $RUNNER_TEMP would look for src/ beside itself and fail. Cleaned up
+          # on exit either way.
+          PREFLIGHT_FILE="$GITHUB_WORKSPACE/.drift-preflight.mts"
+          trap 'rm -f "$PREFLIGHT_FILE"' EXIT
+          cat > "$PREFLIGHT_FILE" <<'PREFLIGHT'
+          import {
+            InfraError,
+            listOpenAIModels,
+            listAnthropicModels,
+            listGeminiModels,
+          } from "./src/__tests__/drift/providers.js";
+
+          const PROVIDERS: {
+            name: string;
+            keyEnv: string;
+            list: (key: string) => Promise<string[]>;
+          }[] = [
+            { name: "OpenAI", keyEnv: "OPENAI_API_KEY", list: listOpenAIModels },
+            { name: "Anthropic", keyEnv: "ANTHROPIC_API_KEY", list: listAnthropicModels },
+            { name: "Gemini", keyEnv: "GOOGLE_API_KEY", list: listGeminiModels },
+          ];
+
+          const stale: string[] = [];
+
+          for (const p of PROVIDERS) {
+            const key = process.env[p.keyEnv];
+            if (!key) {
+              console.error(`::error::${p.keyEnv} is not set — cannot run drift for ${p.name}`);
+              stale.push(p.keyEnv);
+              continue;
+            }
+            try {
+              await p.list(key);
+              console.log(`preflight: ${p.name} key OK`);
+            } catch (err) {
+              const status = err instanceof InfraError ? err.status : 0;
+              if (status === 401 || status === 403) {
+                // stale-key: the key is dead/expired/revoked. LOUD, classified.
+                console.error(
+                  `::error title=stale-key::${p.name} preflight got HTTP ${status} — rotate ${p.keyEnv}`,
+                );
+                stale.push(p.keyEnv);
+              } else {
+                // Transient (429/5xx/network) at preflight time is NOT a stale
+                // key — don't block; the retry-wrapped collector handles it.
+                const msg = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  `preflight: ${p.name} non-auth error (status ${status}), continuing: ${msg}`,
+                );
+              }
+            }
+          }
+
+          if (stale.length > 0) {
+            console.error(
+              `::error::Preflight failed (stale-key): rotate ${stale.join(", ")} before drift can run`,
+            );
+            process.exit(1);
+          }
+          console.log("preflight: all provider keys fresh");
+          PREFLIGHT
+          npx tsx "$PREFLIGHT_FILE"
 
       # Run the collector behind a "retry before alert" wrapper. A single
       # critical run can be a transient real-API hiccup (a streaming call
@@ -76,6 +169,9 @@ jobs:
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift persisted across retries, continue
+          elif [ "$EXIT_CODE" -eq 5 ]; then
+            echo "::error::Drift collector quarantined unparseable output (exit 5) — manual triage required"
+            exit "$EXIT_CODE"
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"
@@ -129,6 +225,7 @@ jobs:
           AGUI_RESULT: ${{ needs.agui-schema-drift.result }}
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
+          DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -137,9 +234,17 @@ jobs:
           HTTP_DRIFT=false
           AGUI_DRIFT=false
           INFRA_ERROR=false
+          QUARANTINE=false
 
-          # Determine what happened in each job
-          if [ "$DRIFT_RESULT" = "failure" ]; then
+          # Determine what happened in each job. An exit_code of 5 means the
+          # collector QUARANTINED unparseable output — the drift job concludes
+          # `failure`, but this is NOT real HTTP API drift: it needs human
+          # triage, not a "providers changed formats" alert. Classify it as
+          # quarantine FIRST, before the generic failure→HTTP_DRIFT fallback,
+          # so an exit-5 quarantine is never misreported as real drift.
+          if [ "$DRIFT_EXIT_CODE" = "5" ]; then
+            QUARANTINE=true
+          elif [ "$DRIFT_RESULT" = "failure" ]; then
             HTTP_DRIFT=true
           elif [ "$DRIFT_RESULT" != "success" ] && [ "$DRIFT_RESULT" != "skipped" ]; then
             INFRA_ERROR=true
@@ -175,8 +280,15 @@ jobs:
             CONFIRMED="${NL}_(confirmed across ${DRIFT_RUNS} runs)_"
           fi
 
+          # Quarantine (collector exit 5): unparseable output was quarantined
+          # and needs manual triage. Classified distinctly — NOT real HTTP API
+          # drift — so nobody chases a phantom provider format change. The
+          # DRIFT_SUMMARY already carries the quarantine detail block (C5.2).
+          if [ "$QUARANTINE" = "true" ]; then
+            EMOJI="🔬"
+            MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
           # Both types of drift
-          if [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
+          elif [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
             MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift.${DETAIL}${CONFIRMED}${NL}${RUN_URL}"
           # HTTP API drift only
@@ -204,3 +316,426 @@ jobs:
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+
+  # PR-scoped live drift leg (D6.3a skeleton). Triggered ONLY on `pull_request`
+  # — deliberately NOT `pull_request_target` (O3): a `pull_request` run on a
+  # fork gets a read-only GITHUB_TOKEN and NO repo secrets, so untrusted fork
+  # code can never exfiltrate the provider keys. The trade-off (a fork PR has
+  # no live provider keys and so cannot run the live leg) is handled by the
+  # fork→maintainer-dry-run fallback that D6.3b documents; this skeleton only
+  # produces the two reports on the trusted (non-fork) path.
+  #
+  # The job runs the live drift collector on BOTH the base (`main`) and the
+  # head (the PR ref), emitting two artifacts — `drift-report-base` and
+  # `drift-report-head`. For base it first tries to REUSE the most recent
+  # same-UTC-day, well-formed `main` scheduled report (via
+  # `isBaseReportReusable`); only when no reusable report exists does it run a
+  # fresh live base. The delta comparison / block-vs-advisory decision that
+  # consumes these two reports is intentionally NOT here — that is D6.3b, which
+  # plugs in at the "D6.3b SEAM" marker below.
+  drift-live-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      # HEAD checkout: the PR ref (default checkout behavior on pull_request).
+      # persist-credentials:false — this leg never pushes; keeps the token off
+      # disk on the fork path.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          # Need main's history reachable so the base leg can check it out
+          # into a sibling worktree without a second full clone.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # ---- PR preflight — per-provider key triage (graceful degradation) ---
+      # The PR-scoped live leg must NOT hard-block a drift-code PR merely because
+      # a provider key is absent or a provider is transiently down — that would
+      # re-introduce the live-key coupling the whole delta design set out to
+      # reduce. So classify each provider independently, keying off the numeric
+      # InfraError.status (401/403), NEVER the prose message:
+      #
+      #   - NO key configured        → SKIP that provider's live leg with a
+      #                                NEUTRAL ::notice:: advisory. Not a failure.
+      #   - key present but 401/403  → LOUD `stale-key` ::error:: → block. A
+      #                                configured key that is dead is a real
+      #                                failure (rotate it) — this is the one case
+      #                                that stays red (the InfraError.status
+      #                                contract, mirroring the daily preflight).
+      #   - transient (429/5xx/net)  → warn + continue; the collector's own retry
+      #                                path handles a transient blip.
+      #
+      # `live_legs_ran` records whether ANY provider had a usable key. When it is
+      # `false` (all skipped for no-key — e.g. a fork PR with no secrets), the
+      # delta gate below is a neutral pass with a "live drift leg skipped — no
+      # keys" advisory, and the maintainer-dry-run fallback (documented at the
+      # bottom of this job) applies.
+      - name: PR preflight — per-provider key triage
+        id: preflight
+        run: |
+          set -uo pipefail
+          # Written at the checkout root (cwd) so the relative provider import
+          # resolves against the repo — ESM relative specifiers key off the
+          # module's own location, not the process cwd. Cleaned up on exit.
+          PREFLIGHT_FILE="$GITHUB_WORKSPACE/.drift-pr-preflight.mts"
+          trap 'rm -f "$PREFLIGHT_FILE"' EXIT
+          cat > "$PREFLIGHT_FILE" <<'PREFLIGHT'
+          import { appendFileSync } from "node:fs";
+          import {
+            InfraError,
+            listOpenAIModels,
+            listAnthropicModels,
+            listGeminiModels,
+          } from "./src/__tests__/drift/providers.js";
+
+          const PROVIDERS: {
+            name: string;
+            keyEnv: string;
+            list: (key: string) => Promise<string[]>;
+          }[] = [
+            { name: "OpenAI", keyEnv: "OPENAI_API_KEY", list: listOpenAIModels },
+            { name: "Anthropic", keyEnv: "ANTHROPIC_API_KEY", list: listAnthropicModels },
+            { name: "Gemini", keyEnv: "GOOGLE_API_KEY", list: listGeminiModels },
+          ];
+
+          const stale: string[] = [];
+          let liveLegs = 0;
+
+          for (const p of PROVIDERS) {
+            const key = process.env[p.keyEnv];
+            if (!key) {
+              // NO key configured → SKIP this provider's live leg. Neutral
+              // advisory, NOT a failure (the drift suite's own describe.skipIf
+              // already drops the provider's tests when the key is absent).
+              console.log(
+                `::notice title=drift-live skipped (no key)::${p.name} live drift leg skipped — ${p.keyEnv} not configured`,
+              );
+              continue;
+            }
+            try {
+              await p.list(key);
+              liveLegs++;
+              console.log(`preflight: ${p.name} key OK`);
+            } catch (err) {
+              const status = err instanceof InfraError ? err.status : 0;
+              if (status === 401 || status === 403) {
+                // stale-key: a CONFIGURED key is dead/expired/revoked. LOUD,
+                // classified, blocking — this stays a real failure.
+                console.error(
+                  `::error title=stale-key::${p.name} preflight got HTTP ${status} — rotate ${p.keyEnv}`,
+                );
+                stale.push(p.keyEnv);
+              } else {
+                // Transient (429/5xx/network) is NOT a stale key — don't block;
+                // count it as a live leg and let the collector's retry handle it.
+                liveLegs++;
+                const msg = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  `preflight: ${p.name} non-auth error (status ${status}), continuing: ${msg}`,
+                );
+              }
+            }
+          }
+
+          const out = process.env.GITHUB_OUTPUT;
+          if (out) {
+            appendFileSync(out, `live_legs_ran=${liveLegs > 0 ? "true" : "false"}\n`);
+          }
+
+          if (stale.length > 0) {
+            console.error(
+              `::error::PR preflight failed (stale-key): rotate ${stale.join(", ")} — a configured key is dead`,
+            );
+            process.exit(1);
+          }
+          if (liveLegs === 0) {
+            console.log(
+              "::notice title=drift-live skipped::no provider keys configured — live drift leg skipped (neutral); maintainer-dry-run fallback applies",
+            );
+          }
+          console.log(`preflight: ${liveLegs} live provider leg(s) will run`);
+          PREFLIGHT
+          npx tsx "$PREFLIGHT_FILE"
+
+      # ---- BASE leg -------------------------------------------------------
+      # Prefer reusing the most recent same-UTC-day, well-formed `main`
+      # scheduled drift report as the delta base — a same-day main baseline
+      # already captures the day's environmental drift, so reusing it avoids a
+      # redundant live run and keeps the PR fast. Only when no reusable report
+      # is available do we fall back to a fresh live base run.
+      #
+      # Reusability is decided by `isBaseReportReusable(report, conclusion,
+      # sameUtcDay)` from scripts/drift-delta.ts (D6.1): non-empty entries +
+      # known-good collector conclusion + same UTC day. The producing step
+      # writes `drift-report-base.json` either way, so downstream steps have a
+      # single stable base path regardless of which path produced it.
+      - name: Base drift report — reuse same-UTC-day main run, else run live
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LIVE_LEGS_RAN: ${{ steps.preflight.outputs.live_legs_ran }}
+        run: |
+          set -euo pipefail
+          # No provider key had a usable credential (fork PR / all keys absent).
+          # The live legs are skipped — write an empty, well-formed base report so
+          # the delta gate has a stable file to read, and stop here (neutral).
+          if [ "${LIVE_LEGS_RAN:-true}" != "true" ]; then
+            echo "base: live legs skipped (no keys) — writing empty base report"
+            printf '%s\n' '{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","entries":[]}' \
+              > drift-report-base.json
+            echo "reused=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Attempt reuse: download the most recent successful scheduled
+          # `main` run's drift-report artifact, then let isBaseReportReusable
+          # (D6.1) decide if it is a trustworthy same-UTC-day baseline. On any
+          # failure to obtain a reusable report, fall through to a live run.
+          REUSED=false
+          if BASE_RUN_ID=$(gh run list \
+                --workflow="Drift Tests" --repo="$REPO" --branch=main \
+                --event=schedule --status=success --limit=1 \
+                --json databaseId --jq '.[0].databaseId // empty'); then
+            if [ -n "$BASE_RUN_ID" ]; then
+              rm -rf ./.base-artifact
+              if gh run download "$BASE_RUN_ID" --repo="$REPO" \
+                    --name drift-report --dir ./.base-artifact; then
+                BASE_CONCLUSION=$(gh run view "$BASE_RUN_ID" --repo="$REPO" \
+                  --json conclusion --jq '.conclusion // empty' || echo "")
+                if node --input-type=module -e '
+                  import { readFileSync } from "node:fs";
+                  import { isBaseReportReusable } from "./scripts/drift-delta.ts";
+                  const path = "./.base-artifact/drift-report.json";
+                  let report = null;
+                  try { report = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+                  const conclusion = report?.conclusion ?? process.env.BASE_CONCLUSION ?? "";
+                  const genAt = report?.generatedAt ? new Date(report.generatedAt) : null;
+                  const now = new Date();
+                  const sameUtcDay =
+                    !!genAt &&
+                    genAt.getUTCFullYear() === now.getUTCFullYear() &&
+                    genAt.getUTCMonth() === now.getUTCMonth() &&
+                    genAt.getUTCDate() === now.getUTCDate();
+                  process.exit(isBaseReportReusable(report, conclusion, sameUtcDay) ? 0 : 1);
+                ' BASE_CONCLUSION="$BASE_CONCLUSION"; then
+                  cp ./.base-artifact/drift-report.json drift-report-base.json
+                  REUSED=true
+                  echo "base: reusing same-UTC-day main scheduled report (run $BASE_RUN_ID)"
+                fi
+              fi
+            fi
+          fi
+
+          if [ "$REUSED" != "true" ]; then
+            echo "base: no reusable same-UTC-day main report — running fresh live base"
+            # Check main out into a sibling worktree and run the collector
+            # there, writing the base report back into the workspace root.
+            git worktree add ../base-main origin/main
+            cd ../base-main
+            pnpm install --frozen-lockfile
+            # The collector exits 2 when it finds critical drift — that is the
+            # NORMAL "drift present" signal, NOT a step failure. The delta gate
+            # (not this leg) decides block-vs-advisory, so exit 2 here must be
+            # tolerated. Exit 5 (quarantine) and any other non-zero are genuine
+            # collector faults and DO fail the leg. `set +e` around the run so an
+            # exit 2 does not abort under `set -euo pipefail`.
+            set +e
+            npx tsx scripts/drift-report-collector.ts \
+              --out "$GITHUB_WORKSPACE/drift-report-base.json"
+            BASE_EXIT=$?
+            set -e
+            cd "$GITHUB_WORKSPACE"
+            if [ "$BASE_EXIT" -ne 0 ] && [ "$BASE_EXIT" -ne 2 ]; then
+              echo "::error::Base collector faulted (exit $BASE_EXIT) — not a drift signal"
+              exit "$BASE_EXIT"
+            fi
+          fi
+          echo "reused=$REUSED" >> "$GITHUB_OUTPUT"
+
+      # ---- HEAD leg -------------------------------------------------------
+      # Run the collector live against the PR head (the checked-out ref) to
+      # produce the head report the delta compares against the base.
+      #
+      # CRITICAL (this was the wiring bug that hard-failed the required check):
+      # the collector exits 2 whenever it finds ANY critical drift — that is the
+      # EXPECTED "drift present" signal on the head leg, NOT a step failure. The
+      # whole point of the two-report + delta design is that `computeDelta`
+      # (the delta gate below) decides block-vs-advisory by KEY PRESENCE — a
+      # both-present critical is advisory, only a new-in-head key blocks. Letting
+      # the collector's exit 2 fail THIS step meant the delta gate was skipped
+      # and the check died for the wrong reason (every drift-code PR would
+      # red-fail regardless of whether its diff introduced the drift). So exit 2
+      # here is tolerated; the report file is the signal. Exit 5 (quarantine) and
+      # any other non-zero are genuine collector faults and DO fail the leg.
+      #
+      # When no provider key had a usable credential (fork PR / all keys absent),
+      # skip the live head run and write an empty, well-formed head report so the
+      # delta gate has a stable file — it will then neutral-pass with an advisory.
+      - name: Head drift report — run live on PR ref
+        env:
+          LIVE_LEGS_RAN: ${{ steps.preflight.outputs.live_legs_ran }}
+        run: |
+          set -uo pipefail
+          if [ "${LIVE_LEGS_RAN:-true}" != "true" ]; then
+            echo "head: live legs skipped (no keys) — writing empty head report"
+            printf '%s\n' '{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","entries":[]}' \
+              > drift-report-head.json
+            exit 0
+          fi
+          npx tsx scripts/drift-report-collector.ts --out drift-report-head.json
+          HEAD_EXIT=$?
+          if [ "$HEAD_EXIT" -ne 0 ] && [ "$HEAD_EXIT" -ne 2 ]; then
+            echo "::error::Head collector faulted (exit $HEAD_EXIT) — not a drift signal"
+            exit "$HEAD_EXIT"
+          fi
+          echo "head: collector exit $HEAD_EXIT (0 clean / 2 drift-present — both non-fatal here)"
+
+      - name: Upload base drift report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-report-base
+          path: drift-report-base.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload head drift report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-report-head
+          path: drift-report-head.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ===================================================================
+      # D6.3b — DELTA STEP. Load the two reports produced above and run
+      # `computeDelta(base, head)` (scripts/drift-delta.ts, D6.1). Routing is
+      # by KEY PRESENCE only (#292 invariant), NEVER by DriftClass:
+      #   - block[]    → keys NEW in head (absent from base): diff-attributable.
+      #                  ANY block key fails this required check (exit 1) — a
+      #                  new-in-head *critical* blocks, and so does a new-in-head
+      #                  advisory-class finding. Class is annotation only.
+      #   - advisory[] → keys in BOTH base and head: pre-existing / world drift.
+      #                  Surfaced as a NEUTRAL annotation + job-summary line but
+      #                  NEVER fails the check (that is the daily job's concern,
+      #                  not the PR's).
+      #   - fixed[]    → keys in base but gone in head: informational only.
+      # The block-only-on-new-in-head decision is the incident-3 / M-1 backstop:
+      # a PR is blamed strictly for drift its diff introduced.
+      - name: Delta gate - block new-in-head, advisory-annotate base-present
+        env:
+          LIVE_LEGS_RAN: ${{ steps.preflight.outputs.live_legs_ran }}
+        run: |
+          set -euo pipefail
+          # When no provider key had a usable credential (fork PR / all keys
+          # absent), no live leg ran — there is no diff-attributable drift to
+          # evaluate. Neutral-pass with a "live drift leg skipped — no keys"
+          # advisory (the maintainer-dry-run fallback documented below applies),
+          # rather than blocking a drift-code PR on absent keys.
+          if [ "${LIVE_LEGS_RAN:-true}" != "true" ]; then
+            echo "::notice title=drift-live skipped (no keys)::live drift leg skipped — no provider keys configured; delta gate is a neutral pass (maintainer-dry-run fallback applies)"
+            {
+              echo "## Drift delta"
+              echo ""
+              echo "_Live drift leg skipped — no provider keys configured. Neutral pass; the maintainer-dry-run fallback applies._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Drift gate PASSED (neutral): live legs skipped — no keys."
+            exit 0
+          fi
+          # Written at the checkout root (cwd) so the relative drift-delta
+          # import resolves against the repo — same rationale as the preflight
+          # step (ESM relative specifiers key off the module's own location).
+          # Quoted heredoc delimiter: no shell expansion inside the script.
+          DELTA_FILE="$GITHUB_WORKSPACE/.drift-delta-gate.mts"
+          trap 'rm -f "$DELTA_FILE"' EXIT
+          cat > "$DELTA_FILE" <<'DELTAGATE'
+          import { readFileSync, appendFileSync } from "node:fs";
+          import { computeDelta } from "./scripts/drift-delta.js";
+          import type { DeltaKey } from "./scripts/drift-delta.js";
+
+          const read = (p: string) => JSON.parse(readFileSync(p, "utf-8"));
+          const base = read("drift-report-base.json");
+          const head = read("drift-report-head.json");
+
+          const { block, advisory, fixed } = computeDelta(base, head);
+          const fmt = (k: DeltaKey) =>
+            `${k.provider} ${k.id}${k.class ? ` [${k.class}]` : ""}`;
+
+          const summary: string[] = [];
+          summary.push("## Drift delta");
+          summary.push("");
+          summary.push(`- block (new-in-head): ${block.length}`);
+          summary.push(`- advisory (base-present): ${advisory.length}`);
+          summary.push(`- fixed (gone in head): ${fixed.length}`);
+
+          // Advisory: pre-existing / environmental drift. Surface it as a
+          // NEUTRAL annotation (::notice::) and in the summary, but do NOT fail
+          // the check on it — that drift is the daily main job's concern.
+          for (const k of advisory) {
+            console.log(`::notice title=drift-advisory (pre-existing)::${fmt(k)}`);
+          }
+          if (advisory.length > 0) {
+            summary.push("");
+            summary.push("### Advisory (pre-existing on main - not blamed on this PR)");
+            for (const k of advisory) summary.push(`- ${fmt(k)}`);
+          }
+
+          // Block: drift the diff INTRODUCED. Each is a loud error annotation;
+          // a non-empty block list fails the required check.
+          for (const k of block) {
+            console.log(`::error title=drift-block (new-in-head)::${fmt(k)}`);
+          }
+          if (block.length > 0) {
+            summary.push("");
+            summary.push("### Block (introduced by this diff - required check FAILS)");
+            for (const k of block) summary.push(`- ${fmt(k)}`);
+          }
+
+          const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+          if (summaryFile) {
+            appendFileSync(summaryFile, summary.join("\n") + "\n");
+          }
+
+          if (block.length > 0) {
+            console.error(
+              `::error::Drift gate BLOCKED: ${block.length} new-in-head failure(s) introduced by this diff: ${block.map(fmt).join(", ")}`,
+            );
+            process.exit(1);
+          }
+          console.log(
+            advisory.length > 0
+              ? `Drift gate PASSED: ${advisory.length} advisory (pre-existing) finding(s) surfaced, none new-in-head.`
+              : "Drift gate PASSED: no new-in-head drift.",
+          );
+          DELTAGATE
+          npx tsx "$DELTA_FILE"
+
+      # ---- fork → maintainer-dry-run fallback --------------------------------
+      # This whole `drift-live-pr` job is gated on `pull_request` (NOT
+      # `pull_request_target`, O3), so a run originating from a FORK receives a
+      # read-only GITHUB_TOKEN and NO repo secrets — the provider API keys above
+      # are simply empty. Consequently a fork PR cannot run the live base/head
+      # collectors and this delta gate never executes meaningfully for it.
+      #
+      # Fallback protocol (maintainer dry-run): for a fork PR, a maintainer runs
+      # the delta gate manually from a trusted checkout —
+      #   gh pr checkout <PR>              # fetch the fork head
+      #   npx tsx scripts/drift-report-collector.ts --out drift-report-head.json
+      #   # (reuse or run a same-UTC-day main base as drift-report-base.json)
+      #   node --input-type=module -e '<the delta invocation above>'
+      # — and records the block/advisory conclusion as a PR comment. The
+      # branch-protection required-check registration for this job is a manual
+      # orchestrator step outside this diff (the check must be marked required in
+      # branch protection for the block=exit-1 signal to actually gate merges).
+      # ===================================================================

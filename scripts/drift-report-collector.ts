@@ -10,7 +10,8 @@
  * Exit codes:
  *   0 — no critical diffs found (or no drift at all)
  *   2 — at least one critical diff exists
- *   1 — script error (unhandled exception)
+ *   5 — at least one failure was quarantined (unparseable/untrusted — needs review)
+ *   1 — AG-UI drift detection was skipped (infra), or an unhandled script error
  *
  * Usage:
  *   npx tsx scripts/drift-report-collector.ts [--out drift-report.json]
@@ -21,7 +22,13 @@ import { existsSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { DriftEntry, DriftReport, DriftSeverity, ParsedDiff } from "./drift-types.js";
+import type {
+  DriftEntry,
+  DriftReport,
+  DriftSeverity,
+  ParsedDiff,
+  QuarantineEntry,
+} from "./drift-types.js";
 
 // ---------------------------------------------------------------------------
 // Vitest JSON reporter types (subset we care about)
@@ -200,13 +207,17 @@ export function parseDriftBlock(text: string): { context: string; diffs: ParsedD
       );
       continue;
     }
+    const path = match[3].trim();
     diffs.push({
       severity: severity as DriftSeverity,
       issue: match[2].trim(),
-      path: match[3].trim(),
+      path,
       expected: match[4].trim(),
       real: match[5].trim(),
       mock: match[6].trim(),
+      // Stable per-item key derived from the offending path so different paths
+      // yield different delta keys (provider+id) in the D6.1 delta layer.
+      id: path,
     });
   }
 
@@ -596,6 +607,34 @@ function stripStackFrames(msg: string): string {
     .join("\n");
 }
 
+/**
+ * O-1: capture the raw `file:line` (or `file:line:col`) from the FIRST usable
+ * stack frame BEFORE `stripStackFrames` removes it, so a quarantined failure
+ * carries a pointer the human reviewer can jump to. Prefers a project-source
+ * frame (`src/…`) over node_modules/internal frames; falls back to the first
+ * frame with any `path:line` shape. Returns "" when no frame is present.
+ */
+export function extractRawLocation(msg: string): string {
+  const frames = msg.split("\n").filter((line) => /^\s*at\s/.test(line));
+  // Match `path:line` or `path:line:col`, with an optional trailing `)`.
+  const locRe = /((?:\/|\.\/|[A-Za-z]:\\|file:\/\/)?[^\s()]+?:\d+(?::\d+)?)\)?\s*$/;
+  const pick = (predicate: (f: string) => boolean): string | null => {
+    for (const frame of frames) {
+      if (!predicate(frame)) continue;
+      const m = frame.match(locRe);
+      if (m) return m[1];
+    }
+    return null;
+  };
+  // Prefer a project-source frame, skipping node internals / node_modules.
+  return (
+    pick((f) => /src\//.test(f) && !/node_modules/.test(f) && !/node:internal/.test(f)) ??
+    pick((f) => !/node_modules/.test(f) && !/node:internal/.test(f)) ??
+    pick(() => true) ??
+    ""
+  );
+}
+
 export function classifyUnparseableAsInfra(unparseableMessages: string[]): boolean {
   // CLASS 1 — fail-loud on absent evidence. No messages means NO positive infra
   // evidence, so this is NOT a benign "all clear". `[].every(...)` is vacuously
@@ -617,9 +656,22 @@ export function classifyUnparseableAsInfra(unparseableMessages: string[]): boole
   return allInfraErrors && !anyDriftLike;
 }
 
-export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
+/**
+ * The result of collecting drift entries. In addition to the trustworthy drift
+ * `entries`, `quarantine` holds failures that could not be parsed/mapped into a
+ * trustworthy finding AND were not positively classified as benign infra (A1.3).
+ * These no longer crash the collector (exit 1) nor get silently dropped (exit
+ * 0): the caller routes a non-empty `quarantine` to exit 5. Exit 1 is now
+ * reserved for genuine collector bugs (unhandled exceptions).
+ */
+export interface CollectResult {
+  entries: DriftEntry[];
+  quarantine: QuarantineEntry[];
+}
+
+export function collectDriftEntries(results: VitestJsonResult): CollectResult {
   const entries: DriftEntry[] = [];
-  const unmapped: string[] = [];
+  const quarantine: QuarantineEntry[] = [];
   let unparseable = 0;
 
   for (const file of results.testResults) {
@@ -678,6 +730,10 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
                   expected: "(not in knownModels set)",
                   real: id,
                   mock: NO_MOCK_LEG,
+                  // D6.2: set `id` to the model id so the delta layer (D6.1)
+                  // can key by provider+id, yielding one distinct key per model
+                  // rather than collapsing all entries under path:"knownModels".
+                  id,
                 })),
               ]
             : // CLASS 3: only genuine model ids become `real` diffs. The
@@ -692,6 +748,10 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
                   expected: "(not in knownModels set)",
                   real: id,
                   mock: NO_MOCK_LEG,
+                  // D6.2: set `id` to the model id so the delta layer (D6.1)
+                  // can key by provider+id, yielding one distinct key per model
+                  // rather than collapsing all entries under path:"knownModels".
+                  id,
                 })),
                 ...(canary.truncated
                   ? [
@@ -730,15 +790,30 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
 
       // Determine provider from ancestor titles (describe block) or context
       const ancestorText = assertion.ancestorTitles.join(" ");
+      const testName = `${ancestorText} > ${assertion.title}`;
       const provider = extractProviderName(ancestorText) ?? extractProviderName(parsed.context);
       if (!provider) {
-        unmapped.push(`${ancestorText} > ${assertion.title}`);
+        // Unmapped provider: a parseable drift block whose provider we cannot
+        // route to a source file. Held for review (exit 5) rather than crashing
+        // the whole run (was exit 1). O-1: capture the raw frame location BEFORE
+        // any stack stripping.
+        quarantine.push({
+          provider: parsed.context || ancestorText || "unknown",
+          testName,
+          rawLocation: extractRawLocation(fullMessage),
+          message: fullMessage,
+        });
         continue;
       }
 
       const mapping = PROVIDER_MAP[provider];
       if (!mapping) {
-        unmapped.push(`${ancestorText} > ${assertion.title} (provider: ${provider})`);
+        quarantine.push({
+          provider,
+          testName,
+          rawLocation: extractRawLocation(fullMessage),
+          message: fullMessage,
+        });
         continue;
       }
 
@@ -754,26 +829,38 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
     }
   }
 
-  if (unmapped.length > 0) {
-    console.error(`ERROR: ${unmapped.length} drift failure(s) could not be mapped to a provider:`);
-    for (const u of unmapped) console.error(`  - ${u}`);
-    throw new Error(`${unmapped.length} unmapped drift entries — update PROVIDER_MAP`);
+  if (quarantine.length > 0) {
+    console.warn(
+      `WARNING: ${quarantine.length} drift failure(s) could not be mapped to a provider — ` +
+        `quarantined for review (exit 5), not crashed:`,
+    );
+    for (const q of quarantine)
+      console.warn(`  - ${q.testName} @ ${q.rawLocation || "<no frame>"}`);
   }
 
   if (unparseable > 0 && entries.length === 0) {
-    // Collect the unparseable failure messages to classify them
-    const unparseableMessages: string[] = [];
+    // Collect the unparseable failure messages (with their raw pre-strip
+    // locations) to classify them. O-1: capture file:line BEFORE stripping.
+    const unparseableFailures: { message: string; testName: string; rawLocation: string }[] = [];
     for (const file of results.testResults) {
       for (const assertion of file.assertionResults) {
         if (assertion.status !== "failed" || assertion.failureMessages.length === 0) continue;
         const fullMessage = assertion.failureMessages.join("\n");
         const parsed = parseDriftBlock(fullMessage);
         if (!parsed || parsed.diffs.length === 0) {
-          unparseableMessages.push(fullMessage);
+          // Canary shapes are handled above (they became entries) — only truly
+          // unparseable messages reach here.
+          if (parseKnownModelsCanary(fullMessage) !== null) continue;
+          unparseableFailures.push({
+            message: fullMessage,
+            testName: `${assertion.ancestorTitles.join(" ")} > ${assertion.title}`,
+            rawLocation: extractRawLocation(fullMessage),
+          });
         }
       }
     }
 
+    const unparseableMessages = unparseableFailures.map((f) => f.message);
     for (const msg of unparseableMessages) {
       console.warn(`  Unparseable failure message (first 300 chars): ${msg.slice(0, 300)}`);
     }
@@ -784,13 +871,22 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
           `(not drift reports). Continuing with 0 drift entries.`,
       );
     } else {
-      console.error(
-        `ERROR: ${unparseable} test failure(s) could not be parsed as drift reports.`,
-        "This may indicate broken test infrastructure or a changed report format.",
+      // A1.3: genuine-but-unparseable drift is no longer a fail-loud crash (exit
+      // 1). Each such failure is quarantined (exit 5) so it surfaces for human
+      // review without being silently swallowed as a green. Exit 1 is now
+      // reserved for genuine collector bugs (unhandled exceptions).
+      console.warn(
+        `WARNING: ${unparseable} test failure(s) could not be parsed as drift reports — ` +
+          `quarantined for review (exit 5).`,
       );
-      throw new Error(
-        `${unparseable} unparseable test failures with 0 drift entries — investigate`,
-      );
+      for (const f of unparseableFailures) {
+        quarantine.push({
+          provider: "unknown",
+          testName: f.testName,
+          rawLocation: f.rawLocation,
+          message: f.message,
+        });
+      }
     }
   } else if (unparseable > 0) {
     console.warn(
@@ -798,7 +894,7 @@ export function collectDriftEntries(results: VitestJsonResult): DriftEntry[] {
     );
   }
 
-  return entries;
+  return { entries, quarantine };
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1081,39 @@ function collectAgUiDriftEntries(results: VitestJsonResult): DriftEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Exit-code policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Map the three terminal signals a drift run can produce onto the collector's
+ * process exit code. Pure and side-effect-free so the mapping is unit-testable
+ * without spawning the drift suite.
+ *
+ * Precedence (highest first):
+ *   - `criticalCount > 0`  → 2  — at least one trustworthy critical drift.
+ *   - `quarantineCount > 0`→ 5  — a failure could not be parsed/mapped into a
+ *                                 trustworthy finding and was held for review;
+ *                                 distinct from a critical (2) and from a clean
+ *                                 pass (0) so it is never silently swallowed.
+ *   - `agUiSkipped`        → 1  — AG-UI drift detection could not run (infra).
+ *                                 O2: AG-UI-skipped stays exit 1 (unchanged).
+ *   - otherwise            → 0  — no drift.
+ *
+ * Critical wins over quarantine: if the run found a genuine critical drift, that
+ * is the actionable signal even if some other failure was also quarantined.
+ */
+export function computeExitCode(
+  criticalCount: number,
+  quarantineCount: number,
+  agUiSkipped: boolean,
+): 0 | 1 | 2 | 5 {
+  if (criticalCount > 0) return 2;
+  if (quarantineCount > 0) return 5;
+  if (agUiSkipped) return 1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -999,7 +1128,8 @@ function main(): void {
   console.log("Running HTTP API drift tests...");
   const httpResults = runDriftTests();
   console.log("Collecting HTTP API drift entries...");
-  const httpEntries = collectDriftEntries(httpResults);
+  const httpResult = collectDriftEntries(httpResults);
+  const httpEntries = httpResult.entries;
 
   // Collect AG-UI schema drift entries
   console.log("Running AG-UI schema drift tests...");
@@ -1014,10 +1144,12 @@ function main(): void {
   }
 
   const entries = [...httpEntries, ...agUiEntries];
+  const quarantine = httpResult.quarantine;
 
   const report: DriftReport = {
     timestamp: new Date().toISOString(),
     entries,
+    ...(quarantine.length > 0 ? { quarantine } : {}),
   };
 
   try {
@@ -1042,17 +1174,26 @@ function main(): void {
   );
   console.log(`  Critical diffs: ${criticalCount}`);
 
-  if (criticalCount > 0) {
-    console.log("Exiting with code 2 (critical diffs found).");
-    process.exit(2);
-  }
+  const quarantineCount = quarantine.length;
+  console.log(`  Quarantined failures: ${quarantineCount}`);
 
-  if (agUiSkipped) {
-    console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
-    process.exit(1);
+  const exitCode = computeExitCode(criticalCount, quarantineCount, agUiSkipped);
+  switch (exitCode) {
+    case 2:
+      console.log("Exiting with code 2 (critical diffs found).");
+      process.exit(2);
+    // eslint-disable-next-line no-fallthrough
+    case 5:
+      console.warn(`Exiting with code 5 (${quarantineCount} failure(s) quarantined for review).`);
+      process.exit(5);
+    // eslint-disable-next-line no-fallthrough
+    case 1:
+      console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
+      process.exit(1);
+    // eslint-disable-next-line no-fallthrough
+    default:
+      console.log("No critical diffs found.");
   }
-
-  console.log("No critical diffs found.");
 }
 
 /**

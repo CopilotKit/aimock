@@ -27,6 +27,27 @@ interface StreamResult {
   rawEvents: { type: string; data: unknown }[];
 }
 
+/**
+ * Structured error carrying the HTTP status code as a first-class numeric field.
+ *
+ * Downstream classifiers (Slack alerts, preflight checks) MUST key off
+ * `error.status` — never parse the prose message string.
+ *
+ *   401 | 403 → stale-key      (replace the API key)
+ *   429       → rate-limited   (back off)
+ *   5xx       → infra-transient (retry / alert ops)
+ *   network   → no status field (instanceof check first)
+ */
+export class InfraError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "InfraError";
+    this.status = status;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Retry helper
 // ---------------------------------------------------------------------------
@@ -71,7 +92,10 @@ function redactUrl(url: string): string {
 function assertOk(raw: string, status: number, context: string, url?: string): void {
   if (status >= 400) {
     const urlSuffix = url ? ` (${redactUrl(url)})` : "";
-    throw new Error(`${context}: API returned ${status}${urlSuffix}: ${raw.slice(0, 300)}`);
+    throw new InfraError(
+      `${context}: API returned ${status}${urlSuffix}: ${raw.slice(0, 300)}`,
+      status,
+    );
   }
 }
 
@@ -157,7 +181,8 @@ function toSSEEventShapes(events: { type: string; data: unknown }[]): SSEEventSh
 function withInfraErrorTag<T>(provider: string, fn: () => Promise<T>): Promise<T> {
   return fn().catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`INFRA_ERROR: ${provider} — ${msg}`);
+    const status = err instanceof InfraError ? err.status : 0;
+    throw new InfraError(`INFRA_ERROR: ${provider} — ${msg}`, status);
   });
 }
 

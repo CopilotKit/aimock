@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 // Collector exit-code contract (see drift-report-collector.ts header).
 export const EXIT_CLEAN = 0;
 export const EXIT_CRITICAL_DRIFT = 2;
+export const EXIT_QUARANTINE = 5;
 
 // Defaults: keep the fleet of real-API calls small. 3 total attempts with a
 // ~45s backoff mirrors the observed transient window (the Fix Drift workflow
@@ -78,7 +79,7 @@ export interface RetryOptions {
 }
 
 export interface RetryResult {
-  /** Final exit code to propagate (0 = clean/transient, 2 = persistent, other = crash). */
+  /** Final exit code to propagate (0 = clean/transient, 2 = persistent, 5 = quarantine, other = crash). */
   exitCode: number;
   /** True when at least one critical run was seen but a later run cleared it. */
   transient: boolean;
@@ -86,6 +87,8 @@ export interface RetryResult {
   criticalRuns: number;
   /** Per-attempt record, in order. */
   attempts: RetryAttempt[];
+  /** True when the collector exited with EXIT_QUARANTINE (5): unparseable output quarantined. */
+  quarantine?: boolean;
 }
 
 /**
@@ -123,6 +126,19 @@ export function retryUntilStable(opts: RetryOptions): RetryResult {
     if (exitCode === EXIT_CRITICAL_DRIFT) {
       criticalRuns++;
       continue;
+    }
+
+    if (exitCode === EXIT_QUARANTINE) {
+      // Quarantine is a distinct terminal outcome: the collector encountered
+      // output it could not parse/classify. No retry — propagate immediately.
+      opts.log(`Collector exited ${exitCode} (quarantine) — propagating without retry.`);
+      return {
+        exitCode: EXIT_QUARANTINE,
+        transient: false,
+        criticalRuns,
+        attempts,
+        quarantine: true,
+      };
     }
 
     // Any other code = collector crash / infra error. Do not retry — surface it.

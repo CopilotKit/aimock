@@ -19,7 +19,7 @@ import {
 
 import { summarizeDriftReport } from "../../scripts/drift-slack-summary.js";
 
-import type { DriftEntry, DriftReport } from "../../scripts/drift-types.js";
+import type { DriftEntry, DriftReport, QuarantineEntry } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -356,7 +356,9 @@ describe("summarizeDriftReport", () => {
     expect(summary).toContain("*OpenAI Chat*");
     expect(summary).toContain("1 critical");
     expect(summary).toContain("`choices[0].message.refusal`");
-    expect(summary.startsWith("•")).toBe(true);
+    // The first line is now the classification header; bullet lines follow.
+    const bulletLines = summary.split("\n").filter((l) => l.startsWith("•"));
+    expect(bulletLines.length).toBeGreaterThan(0);
   });
 
   it("merges multiple entries for the same provider into one line with combined counts", () => {
@@ -404,11 +406,12 @@ describe("summarizeDriftReport", () => {
         makeEntry(), // OpenAI Chat with a critical
       ],
     });
-    const lines = summary.split("\n");
-    expect(lines).toHaveLength(2);
+    // First line is the classification header; provider bullets follow.
+    const bulletLines = summary.split("\n").filter((l) => l.startsWith("•"));
+    expect(bulletLines).toHaveLength(2);
     // Provider with a critical diff sorts before the warning-only provider
-    expect(lines[0]).toContain("*OpenAI Chat*");
-    expect(lines[1]).toContain("*Anthropic*");
+    expect(bulletLines[0]).toContain("*OpenAI Chat*");
+    expect(bulletLines[1]).toContain("*Anthropic*");
   });
 
   it("caps example paths per provider and reports the remainder", () => {
@@ -437,5 +440,149 @@ describe("summarizeDriftReport", () => {
     });
     expect(summary).toContain("\n");
     expect(summary).not.toContain("\\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeDriftReport — headline class + per-item detail (C5.2)
+// ---------------------------------------------------------------------------
+
+function makeQuarantineEntry(overrides?: Partial<QuarantineEntry>): QuarantineEntry {
+  return {
+    provider: "OpenAI Chat",
+    testName: "OpenAI Chat > non-streaming text > response shape",
+    rawLocation: "src/__tests__/drift/openai-chat.drift.ts:42",
+    message: "Cannot read properties of undefined (reading 'choices')",
+    ...overrides,
+  };
+}
+
+describe("summarizeDriftReport — headline class", () => {
+  it("class: real-drift — report has entries with critical diffs", () => {
+    const report: DriftReport = {
+      timestamp: "t",
+      entries: [
+        makeEntry({
+          diffs: [
+            {
+              severity: "critical",
+              issue: "field missing from mock",
+              path: "choices[0].message.refusal",
+              expected: "null",
+              real: "null",
+              mock: "<absent>",
+            },
+          ],
+        }),
+      ],
+    };
+    const summary = summarizeDriftReport(report);
+    expect(summary).toContain("real-drift");
+    // per-item: provider name present
+    expect(summary).toContain("OpenAI Chat");
+    // per-item: offending path or id
+    expect(summary).toContain("choices[0].message.refusal");
+    // per-item: one-line issue
+    expect(summary).toContain("field missing from mock");
+    // per-item: file reference (builderFile)
+    expect(summary).toContain("src/helpers.ts");
+  });
+
+  it("class: quarantine — report has quarantine[] entries", () => {
+    const report: DriftReport = {
+      timestamp: "t",
+      entries: [],
+      quarantine: [makeQuarantineEntry()],
+    };
+    const summary = summarizeDriftReport(report);
+    expect(summary).toContain("quarantine");
+    // quarantine: provider
+    expect(summary).toContain("OpenAI Chat");
+    // quarantine: rawLocation (file:line)
+    expect(summary).toContain("src/__tests__/drift/openai-chat.drift.ts:42");
+    // quarantine: one-line message
+    expect(summary).toContain("Cannot read properties of undefined");
+  });
+
+  it("class: stale-key — InfraError status 401", () => {
+    const report: DriftReport = { timestamp: "t", entries: [] };
+    const summary = summarizeDriftReport(report, { infraErrorStatus: 401 });
+    expect(summary).toContain("stale-key");
+  });
+
+  it("class: stale-key — InfraError status 403", () => {
+    const report: DriftReport = { timestamp: "t", entries: [] };
+    const summary = summarizeDriftReport(report, { infraErrorStatus: 403 });
+    expect(summary).toContain("stale-key");
+  });
+
+  it("class: infra-transient — InfraError status 429", () => {
+    const report: DriftReport = { timestamp: "t", entries: [] };
+    const summary = summarizeDriftReport(report, { infraErrorStatus: 429 });
+    expect(summary).toContain("infra-transient");
+  });
+
+  it("class: infra-transient — InfraError status 503", () => {
+    const report: DriftReport = { timestamp: "t", entries: [] };
+    const summary = summarizeDriftReport(report, { infraErrorStatus: 503 });
+    expect(summary).toContain("infra-transient");
+  });
+
+  it("class: test-infra-false-positive — exit 0, empty entries, no infraError", () => {
+    const report: DriftReport = { timestamp: "t", entries: [] };
+    const summary = summarizeDriftReport(report, { exitCode: 0 });
+    expect(summary).toContain("test-infra-false-positive");
+  });
+
+  it("quarantine entries appear on their own distinct line with testName", () => {
+    const report: DriftReport = {
+      timestamp: "t",
+      entries: [],
+      quarantine: [
+        makeQuarantineEntry({ provider: "Anthropic", testName: "Anthropic > streaming > shape" }),
+      ],
+    };
+    const summary = summarizeDriftReport(report);
+    const lines = summary.split("\n");
+    const quarantineLine = lines.find((l) => l.includes("Anthropic"));
+    expect(quarantineLine).toBeDefined();
+    expect(quarantineLine).toContain("Anthropic > streaming > shape");
+  });
+
+  it("mixed: real-drift entries + quarantine both appear in summary", () => {
+    const report: DriftReport = {
+      timestamp: "t",
+      entries: [makeEntry()],
+      quarantine: [makeQuarantineEntry({ provider: "Gemini" })],
+    };
+    const summary = summarizeDriftReport(report);
+    // Class is real-drift when entries have critical diffs (quarantine is secondary)
+    expect(summary).toContain("real-drift");
+    // Quarantine section still present
+    expect(summary).toContain("Gemini");
+    expect(summary).toContain("quarantine");
+  });
+
+  it("per-item id is used over path when present", () => {
+    const report: DriftReport = {
+      timestamp: "t",
+      entries: [
+        makeEntry({
+          diffs: [
+            {
+              severity: "critical",
+              issue: "model removed from mock",
+              path: "knownModels",
+              id: "gpt-4o-mini",
+              expected: "present",
+              real: "present",
+              mock: "<absent>",
+            },
+          ],
+        }),
+      ],
+    };
+    const summary = summarizeDriftReport(report);
+    expect(summary).toContain("gpt-4o-mini");
   });
 });

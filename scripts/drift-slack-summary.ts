@@ -29,6 +29,54 @@ import { fileURLToPath } from "node:url";
 import { readDriftReport } from "./fix-drift.js";
 import type { DriftEntry, DriftReport, DriftSeverity } from "./drift-types.js";
 
+// ---------------------------------------------------------------------------
+// Headline classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed headline-class enum for a drift run.
+ *
+ * Derivation priority (highest wins):
+ *   stale-key        — InfraError status 401 or 403
+ *   infra-transient  — InfraError status 429 or ≥500
+ *   quarantine       — report.quarantine[] is non-empty (exit 5)
+ *   real-drift       — at least one entry has a critical diff (exit 2)
+ *   test-infra-false-positive — everything else (exit 0 / advisory only)
+ */
+export type HeadlineClass =
+  | "real-drift"
+  | "test-infra-false-positive"
+  | "infra-transient"
+  | "stale-key"
+  | "quarantine";
+
+/** Optional context the caller may supply to sharpen classification. */
+export interface SummarizeOptions {
+  /** HTTP status from an InfraError that aborted the run, if any. */
+  infraErrorStatus?: number;
+  /** Process exit code produced by the collector/retry wrapper, if known. */
+  exitCode?: number;
+}
+
+function computeHeadlineClass(report: DriftReport, opts: SummarizeOptions): HeadlineClass {
+  const { infraErrorStatus } = opts;
+
+  if (infraErrorStatus === 401 || infraErrorStatus === 403) return "stale-key";
+  if (infraErrorStatus === 429 || (infraErrorStatus !== undefined && infraErrorStatus >= 500))
+    return "infra-transient";
+
+  // Critical drift wins over quarantine — a confirmed critical finding is the
+  // actionable signal even when some failures were also quarantined (mirrors the
+  // computeExitCode contract: crit→2 wins over quarantine→5).
+  const hasCritical = report.entries.some((e) => e.diffs.some((d) => d.severity === "critical"));
+  if (hasCritical) return "real-drift";
+
+  const hasQuarantine = (report.quarantine?.length ?? 0) > 0;
+  if (hasQuarantine) return "quarantine";
+
+  return "test-infra-false-positive";
+}
+
 // Keep the message scannable: cap how many example paths we list per provider
 // and how many total providers we enumerate before collapsing to a count.
 const MAX_PATHS_PER_PROVIDER = 3;
@@ -39,12 +87,19 @@ const SEVERITY_ORDER: DriftSeverity[] = ["critical", "warning", "info"];
 interface ProviderSummary {
   provider: string;
   counts: Record<DriftSeverity, number>;
+  /** Ordered list of changed path strings (de-duplicated). */
   paths: string[];
+  /** Ordered list of per-diff ids (de-duplicated), when present. */
+  ids: string[];
+  /** The builderFile from the first matching entry, for the file reference. */
+  builderFile: string;
+  /** The issue text from the first diff, for one-line context. */
+  firstIssue: string;
 }
 
 /**
  * Group drift entries by provider, tallying severities and collecting a small,
- * de-duplicated set of representative changed paths.
+ * de-duplicated set of representative changed paths and ids.
  */
 function summarizeByProvider(entries: DriftEntry[]): ProviderSummary[] {
   const byProvider = new Map<string, ProviderSummary>();
@@ -56,13 +111,22 @@ function summarizeByProvider(entries: DriftEntry[]): ProviderSummary[] {
         provider: entry.provider,
         counts: { critical: 0, warning: 0, info: 0 },
         paths: [],
+        ids: [],
+        builderFile: entry.builderFile,
+        firstIssue: "",
       };
       byProvider.set(entry.provider, summary);
     }
     for (const diff of entry.diffs) {
       summary.counts[diff.severity]++;
+      if (diff.id && !summary.ids.includes(diff.id)) {
+        summary.ids.push(diff.id);
+      }
       if (diff.path && !summary.paths.includes(diff.path)) {
         summary.paths.push(diff.path);
+      }
+      if (!summary.firstIssue && diff.issue) {
+        summary.firstIssue = diff.issue;
       }
     }
   }
@@ -73,6 +137,18 @@ function summarizeByProvider(entries: DriftEntry[]): ProviderSummary[] {
     if (b.counts.warning !== a.counts.warning) return b.counts.warning - a.counts.warning;
     return a.provider.localeCompare(b.provider);
   });
+}
+
+/**
+ * For a provider summary, return the ordered list of identifiers to use as
+ * per-item references in the Slack bullet.
+ *
+ * When any diff carries a stable `id` (e.g. a model id), prefer those over
+ * raw paths — they're more human-readable in a Slack alert. Fall back to paths
+ * when no ids are present.
+ */
+function buildIdOrPaths(s: ProviderSummary): string[] {
+  return s.ids.length > 0 ? s.ids : s.paths;
 }
 
 /** Format a severity tally like "2 critical, 1 warning" (omitting zeroes). */
@@ -87,32 +163,90 @@ function formatCounts(counts: Record<DriftSeverity, number>): string {
 /**
  * Build the Slack mrkdwn summary lines for the drifted providers.
  *
- * Returns a single string with real `\n` line breaks. Each provider gets a
- * bullet line: `• *Provider* — 2 critical: \`path.a\`, \`path.b\``.
- * Returns an empty string when there are no entries (caller decides fallback).
+ * Returns a single string with real `\n` line breaks. The first line is a
+ * headline classification (`*Classification:* <class>`), followed by per-item
+ * bullets in one of two forms depending on the class:
+ *
+ *   Real-drift/advisory:
+ *     `• *Provider* — 2 critical: \`path.a\`, \`path.b\` (src/helpers.ts)`
+ *
+ *   Quarantine:
+ *     `• [quarantine] Provider — testName (file:line): truncated message`
+ *
+ * Returns an empty string only when no entries, no quarantine, no InfraError
+ * context, and no exitCode hint are present (i.e. caller has nothing to say).
+ *
+ * The `drift_summary` GITHUB_OUTPUT key is the full return value of this
+ * function — callers write it verbatim to `GITHUB_OUTPUT` via writeGithubOutput.
+ * Existing consumers that read `steps.summary.outputs.drift_summary` receive
+ * the augmented text; they pattern-match on its content (not on internal
+ * structure), so the addition of the classification line is backward-compatible.
  */
-export function summarizeDriftReport(report: DriftReport): string {
+export function summarizeDriftReport(report: DriftReport, opts: SummarizeOptions = {}): string {
+  const headlineClass = computeHeadlineClass(report, opts);
+
   const summaries = summarizeByProvider(report.entries);
-  if (summaries.length === 0) return "";
+  const quarantine = report.quarantine ?? [];
 
-  const shown = summaries.slice(0, MAX_PROVIDERS_LISTED);
-  const lines: string[] = [];
-
-  for (const s of shown) {
-    const examplePaths = s.paths.slice(0, MAX_PATHS_PER_PROVIDER).map((p) => `\`${p}\``);
-    const extraPaths = s.paths.length - examplePaths.length;
-    let pathStr = examplePaths.join(", ");
-    if (extraPaths > 0) pathStr += `, +${extraPaths} more`;
-
-    const counts = formatCounts(s.counts);
-    lines.push(
-      pathStr ? `• *${s.provider}* — ${counts}: ${pathStr}` : `• *${s.provider}* — ${counts}`,
-    );
+  // Nothing to say at all — preserve historical empty-string behaviour for a
+  // clean run with no context supplied.
+  if (
+    summaries.length === 0 &&
+    quarantine.length === 0 &&
+    headlineClass === "test-infra-false-positive" &&
+    opts.infraErrorStatus === undefined &&
+    opts.exitCode === undefined
+  ) {
+    return "";
   }
 
-  const hiddenProviders = summaries.length - shown.length;
-  if (hiddenProviders > 0) {
-    lines.push(`• …and ${hiddenProviders} more provider${hiddenProviders === 1 ? "" : "s"}`);
+  const lines: string[] = [];
+
+  // ── Headline classification ────────────────────────────────────────────────
+  lines.push(`*Classification:* ${headlineClass}`);
+
+  // ── Per-entry drift bullets (real-drift / advisory) ───────────────────────
+  if (summaries.length > 0) {
+    const shown = summaries.slice(0, MAX_PROVIDERS_LISTED);
+
+    for (const s of shown) {
+      // Per-item: prefer id over path when present on the first diff that has one.
+      const idOrPaths = buildIdOrPaths(s);
+      const exampleRefs = idOrPaths.slice(0, MAX_PATHS_PER_PROVIDER).map((r) => `\`${r}\``);
+      const extraRefs = idOrPaths.length - exampleRefs.length;
+      let refStr = exampleRefs.join(", ");
+      if (extraRefs > 0) refStr += `, +${extraRefs} more`;
+
+      // Per-item: file reference from the entry's builderFile.
+      const fileRef = s.builderFile ? ` (${s.builderFile})` : "";
+
+      // Per-item: first one-line issue text.
+      const issueStr = s.firstIssue ? ` — _${s.firstIssue}_` : "";
+
+      const counts = formatCounts(s.counts);
+      lines.push(
+        refStr
+          ? `• *${s.provider}* — ${counts}: ${refStr}${issueStr}${fileRef}`
+          : `• *${s.provider}* — ${counts}${issueStr}${fileRef}`,
+      );
+    }
+
+    const hiddenProviders = summaries.length - shown.length;
+    if (hiddenProviders > 0) {
+      lines.push(`• …and ${hiddenProviders} more provider${hiddenProviders === 1 ? "" : "s"}`);
+    }
+  }
+
+  // ── Quarantine entries ─────────────────────────────────────────────────────
+  if (quarantine.length > 0) {
+    lines.push(
+      `*Quarantined* (${quarantine.length} failure${quarantine.length === 1 ? "" : "s"} need human review):`,
+    );
+    for (const q of quarantine) {
+      const loc = q.rawLocation ? ` (${q.rawLocation})` : "";
+      const msg = q.message.slice(0, 120);
+      lines.push(`• [quarantine] *${q.provider}* — ${q.testName}${loc}: ${msg}`);
+    }
   }
 
   return lines.join("\n");

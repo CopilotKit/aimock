@@ -63,6 +63,8 @@ jobs:
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift found, continue
+          elif [ "$EXIT_CODE" -eq 5 ]; then
+            : # quarantine: collector encountered unparseable output, continue without aborting
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit $EXIT_CODE
