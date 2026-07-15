@@ -6,6 +6,11 @@ on:
     paths:
       - "src/agui-types.ts"
       - "src/__tests__/drift/agui-schema.drift.ts"
+      # PR-scoped live drift leg (drift-live-pr job): trigger when the drift
+      # scripts, any drift test, or a drift workflow itself changes.
+      - "scripts/drift-*.ts"
+      - "src/__tests__/drift/**"
+      - ".github/workflows/*drift*"
   workflow_dispatch: # Manual trigger
 
 permissions:
@@ -311,3 +316,147 @@ jobs:
           curl -sf -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+
+  # PR-scoped live drift leg (D6.3a skeleton). Triggered ONLY on `pull_request`
+  # — deliberately NOT `pull_request_target` (O3): a `pull_request` run on a
+  # fork gets a read-only GITHUB_TOKEN and NO repo secrets, so untrusted fork
+  # code can never exfiltrate the provider keys. The trade-off (a fork PR has
+  # no live provider keys and so cannot run the live leg) is handled by the
+  # fork→maintainer-dry-run fallback that D6.3b documents; this skeleton only
+  # produces the two reports on the trusted (non-fork) path.
+  #
+  # The job runs the live drift collector on BOTH the base (`main`) and the
+  # head (the PR ref), emitting two artifacts — `drift-report-base` and
+  # `drift-report-head`. For base it first tries to REUSE the most recent
+  # same-UTC-day, well-formed `main` scheduled report (via
+  # `isBaseReportReusable`); only when no reusable report exists does it run a
+  # fresh live base. The delta comparison / block-vs-advisory decision that
+  # consumes these two reports is intentionally NOT here — that is D6.3b, which
+  # plugs in at the "D6.3b SEAM" marker below.
+  drift-live-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      # HEAD checkout: the PR ref (default checkout behavior on pull_request).
+      # persist-credentials:false — this leg never pushes; keeps the token off
+      # disk on the fork path.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          # Need main's history reachable so the base leg can check it out
+          # into a sibling worktree without a second full clone.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # ---- BASE leg -------------------------------------------------------
+      # Prefer reusing the most recent same-UTC-day, well-formed `main`
+      # scheduled drift report as the delta base — a same-day main baseline
+      # already captures the day's environmental drift, so reusing it avoids a
+      # redundant live run and keeps the PR fast. Only when no reusable report
+      # is available do we fall back to a fresh live base run.
+      #
+      # Reusability is decided by `isBaseReportReusable(report, conclusion,
+      # sameUtcDay)` from scripts/drift-delta.ts (D6.1): non-empty entries +
+      # known-good collector conclusion + same UTC day. The producing step
+      # writes `drift-report-base.json` either way, so downstream steps have a
+      # single stable base path regardless of which path produced it.
+      - name: Base drift report — reuse same-UTC-day main run, else run live
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Attempt reuse: download the most recent successful scheduled
+          # `main` run's drift-report artifact, then let isBaseReportReusable
+          # (D6.1) decide if it is a trustworthy same-UTC-day baseline. On any
+          # failure to obtain a reusable report, fall through to a live run.
+          REUSED=false
+          if BASE_RUN_ID=$(gh run list \
+                --workflow="Drift Tests" --repo="$REPO" --branch=main \
+                --event=schedule --status=success --limit=1 \
+                --json databaseId --jq '.[0].databaseId // empty'); then
+            if [ -n "$BASE_RUN_ID" ]; then
+              rm -rf ./.base-artifact
+              if gh run download "$BASE_RUN_ID" --repo="$REPO" \
+                    --name drift-report --dir ./.base-artifact; then
+                BASE_CONCLUSION=$(gh run view "$BASE_RUN_ID" --repo="$REPO" \
+                  --json conclusion --jq '.conclusion // empty' || echo "")
+                if node --input-type=module -e '
+                  import { readFileSync } from "node:fs";
+                  import { isBaseReportReusable } from "./scripts/drift-delta.ts";
+                  const path = "./.base-artifact/drift-report.json";
+                  let report = null;
+                  try { report = JSON.parse(readFileSync(path, "utf-8")); } catch {}
+                  const conclusion = report?.conclusion ?? process.env.BASE_CONCLUSION ?? "";
+                  const genAt = report?.generatedAt ? new Date(report.generatedAt) : null;
+                  const now = new Date();
+                  const sameUtcDay =
+                    !!genAt &&
+                    genAt.getUTCFullYear() === now.getUTCFullYear() &&
+                    genAt.getUTCMonth() === now.getUTCMonth() &&
+                    genAt.getUTCDate() === now.getUTCDate();
+                  process.exit(isBaseReportReusable(report, conclusion, sameUtcDay) ? 0 : 1);
+                ' BASE_CONCLUSION="$BASE_CONCLUSION"; then
+                  cp ./.base-artifact/drift-report.json drift-report-base.json
+                  REUSED=true
+                  echo "base: reusing same-UTC-day main scheduled report (run $BASE_RUN_ID)"
+                fi
+              fi
+            fi
+          fi
+
+          if [ "$REUSED" != "true" ]; then
+            echo "base: no reusable same-UTC-day main report — running fresh live base"
+            # Check main out into a sibling worktree and run the collector
+            # there, writing the base report back into the workspace root.
+            git worktree add ../base-main origin/main
+            ( cd ../base-main \
+              && pnpm install --frozen-lockfile \
+              && npx tsx scripts/drift-report-collector.ts \
+                   --out "$GITHUB_WORKSPACE/drift-report-base.json" )
+          fi
+          echo "reused=$REUSED" >> "$GITHUB_OUTPUT"
+
+      # ---- HEAD leg -------------------------------------------------------
+      # Always run the collector live against the PR head (the checked-out
+      # ref) to produce the head report the delta compares against the base.
+      - name: Head drift report — run live on PR ref
+        run: npx tsx scripts/drift-report-collector.ts --out drift-report-head.json
+
+      - name: Upload base drift report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-report-base
+          path: drift-report-base.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload head drift report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-report-head
+          path: drift-report-head.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ===================================================================
+      # D6.3b SEAM — the delta comparison / block-vs-advisory decision plugs
+      # in HERE. D6.3b adds a step that invokes `computeDelta(base, head)` from
+      # scripts/drift-delta.ts over drift-report-base.json + drift-report-head.json,
+      # blocks only on new-in-head keys, advisory-annotates base-present keys,
+      # and wires the fork→maintainer-dry-run fallback. This skeleton stops at
+      # producing the two reports above.
+      # ===================================================================
