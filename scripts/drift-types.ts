@@ -15,6 +15,29 @@
  */
 export type DriftSeverity = "critical" | "warning" | "info";
 
+/**
+ * Coarse drift-classification enum used by the delta/summary layers to route a
+ * report to the right terminal outcome (block vs advisory vs quarantine). It is
+ * orthogonal to per-diff `DriftSeverity`: a report is `Quarantine` when its
+ * findings could not be trusted (unparseable / unmapped surface), independent of
+ * whether individual diffs were `critical`. Purely additive — existing consumers
+ * that never read `class` are unaffected.
+ */
+export enum DriftClass {
+  /** At least one critical, trustworthy drift finding — hard failure. */
+  Critical = "critical",
+  /** Non-critical, informational drift — advisory only. */
+  Advisory = "advisory",
+  /**
+   * A failure that could not be parsed/mapped into a trustworthy drift finding.
+   * Neither a clean pass nor a confirmed critical — held aside for human review
+   * so it is never silently swallowed as a green.
+   */
+  Quarantine = "quarantine",
+  /** No drift detected. */
+  None = "none",
+}
+
 export interface ParsedDiff {
   path: string;
   severity: DriftSeverity;
@@ -22,6 +45,35 @@ export interface ParsedDiff {
   expected: string;
   real: string;
   mock: string;
+  /**
+   * Optional stable per-item key (e.g. a model id) used by the delta layer to
+   * key findings by provider+id. Absent on legacy diffs.
+   */
+  id?: string;
+  /** Optional coarse classification for this diff. Absent on legacy diffs. */
+  class?: DriftClass;
+}
+
+/**
+ * A test failure that could not be parsed into a trustworthy drift finding and
+ * was NOT positively classified as benign infrastructure. Rather than crash the
+ * collector (exit 1) or silently drop the failure (exit 0), the failure is
+ * captured here so it can surface as a distinct quarantine outcome (exit 5) for
+ * human review.
+ */
+export interface QuarantineEntry {
+  /** Provider inferred from the failing assertion, or a best-effort label. */
+  provider: string;
+  /** The failing test's name (ancestor titles + title). */
+  testName: string;
+  /**
+   * Raw `file:line` captured from the original stack frame BEFORE stack-frame
+   * stripping, so the human reviewer can locate the failing assertion. Empty
+   * string when no frame was available.
+   */
+  rawLocation: string;
+  /** The (possibly truncated) failure message that could not be parsed. */
+  message: string;
 }
 
 export interface DriftEntry {
@@ -37,4 +89,10 @@ export interface DriftEntry {
 export interface DriftReport {
   timestamp: string;
   entries: DriftEntry[];
+  /**
+   * Optional list of failures held aside for human review (see QuarantineEntry).
+   * Absent/empty when there was nothing to quarantine — legacy consumers that
+   * ignore this field are unaffected.
+   */
+  quarantine?: QuarantineEntry[];
 }
