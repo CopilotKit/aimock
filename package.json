@@ -169,7 +169,7 @@
     "test:exports": "publint && attw --pack .",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "release": "pnpm build && pnpm test && pnpm lint && npm publish",
+    "release": "pnpm format:check && pnpm build && pnpm test && pnpm lint && pnpm test:exports && npm publish",
     "prepare": "husky || true"
   },
   "lint-staged": {
