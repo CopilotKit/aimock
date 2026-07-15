@@ -76,6 +76,9 @@ jobs:
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift persisted across retries, continue
+          elif [ "$EXIT_CODE" -eq 5 ]; then
+            echo "::error::Drift collector quarantined unparseable output (exit 5) — manual triage required"
+            exit "$EXIT_CODE"
           elif [ "$EXIT_CODE" -ne 0 ]; then
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"

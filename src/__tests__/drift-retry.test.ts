@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { retryUntilStable } from "../../scripts/drift-retry.js";
+import { EXIT_QUARANTINE, retryUntilStable } from "../../scripts/drift-retry.js";
 import type { RetryAttempt, RetryOptions, RetryResult } from "../../scripts/drift-retry.js";
 
 // ---------------------------------------------------------------------------
@@ -136,5 +136,22 @@ describe("retryUntilStable", () => {
     const result = retryUntilStable(opts);
 
     expect(result.attempts.map((a: RetryAttempt) => a.exitCode)).toEqual([2, 2, 0]);
+  });
+
+  it("treats exit 5 (quarantine) as a distinct terminal outcome — no retry, quarantine:true", () => {
+    // exit 5 = collector quarantined unparseable output; must propagate immediately
+    // without retrying and mark the result with quarantine:true.
+    const runner = fakeRunner([EXIT_QUARANTINE, 0, 0]);
+    const opts = makeOptions({ runCollector: runner.run });
+    const result: RetryResult = retryUntilStable(opts);
+
+    // Propagated as exit 5, not swallowed into the crash branch
+    expect(result.exitCode).toBe(EXIT_QUARANTINE);
+    // Quarantine flag set
+    expect(result.quarantine).toBe(true);
+    // No retry — only one attempt
+    expect(runner.calls()).toBe(1);
+    // Not treated as a transient drift event
+    expect(result.transient).toBe(false);
   });
 });
