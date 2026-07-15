@@ -1233,6 +1233,34 @@ describe("validateFixtures", () => {
     expect(results.filter((r) => r.message.includes("hasToolResult"))).toHaveLength(0);
   });
 
+  // --- match.toolResultContains type checks ---
+
+  it("error: toolResultContains is a number", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "test", toolResultContains: 42 as never } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("toolResultContains")),
+    ).toBe(true);
+  });
+
+  it("error: toolResultContains is an empty string", () => {
+    const fixtures = [makeFixture({ match: { userMessage: "test", toolResultContains: "" } })];
+    const results = validateFixtures(fixtures);
+    expect(
+      results.some((r) => r.severity === "error" && r.message.includes("toolResultContains")),
+    ).toBe(true);
+  });
+
+  it("no error: toolResultContains is a non-empty string", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "test", toolResultContains: "cancelled" } }),
+    ];
+    const results = validateFixtures(fixtures);
+    expect(results.filter((r) => r.message.includes("toolResultContains"))).toHaveLength(0);
+  });
+
   // --- match.systemMessage type checks ---
 
   it("error: systemMessage is a number", () => {
@@ -1340,6 +1368,18 @@ describe("validateFixtures", () => {
     const fixtures = [
       makeFixture({ match: { userMessage: "hello", hasToolResult: false } }),
       makeFixture({ match: { userMessage: "hello", hasToolResult: true } }),
+    ];
+    const results = validateFixtures(fixtures);
+    const duplicateWarnings = results.filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    expect(duplicateWarnings).toHaveLength(0);
+  });
+
+  it("no warning: same userMessage but different toolResultContains", () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "hello", toolResultContains: "cancelled" } }),
+      makeFixture({ match: { userMessage: "hello", toolResultContains: "chosen_" } }),
     ];
     const results = validateFixtures(fixtures);
     const duplicateWarnings = results.filter(
@@ -1866,6 +1906,15 @@ describe("auto-stringify JSON objects in fixture entries", () => {
     };
     const fixture = entryToFixture(entry);
     expect(fixture.match.systemMessage).toBe("name=Atai");
+  });
+
+  it("passes toolResultContains through entryToFixture", () => {
+    const entry: FixtureFileEntry = {
+      match: { toolCallId: "call_x", toolResultContains: '"cancelled"' },
+      response: { content: "ok" },
+    };
+    const fixture = entryToFixture(entry);
+    expect(fixture.match.toolResultContains).toBe('"cancelled"');
   });
 
   it("stringifies nested objects in arguments", () => {

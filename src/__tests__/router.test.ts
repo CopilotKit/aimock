@@ -586,6 +586,127 @@ describe("matchFixture — toolCallId", () => {
 });
 
 // ---------------------------------------------------------------------------
+// matchFixture — toolResultContains
+// ---------------------------------------------------------------------------
+
+describe("matchFixture — toolResultContains", () => {
+  it("discriminates approve vs cancel legs that share a toolCallId", () => {
+    // The motivating case: a human-in-the-loop suspend tool resumes with the
+    // SAME tool_call_id for both outcomes; only the tool-result JSON differs.
+    const cancelled = makeFixture(
+      { toolCallId: "call_schedule_001", toolResultContains: '"cancelled"' },
+      { content: "No problem — nothing was booked." },
+    );
+    const confirmed = makeFixture(
+      { toolCallId: "call_schedule_001", toolResultContains: '"chosen_' },
+      { content: "Booked: Monday 9:00 AM confirmed." },
+    );
+    const base = [
+      { role: "user" as const, content: "schedule a meeting" },
+      {
+        role: "assistant" as const,
+        content: null,
+        tool_calls: [
+          {
+            id: "call_schedule_001",
+            type: "function" as const,
+            function: { name: "schedule_meeting", arguments: "{}" },
+          },
+        ],
+      },
+    ];
+    const cancelReq = makeReq({
+      messages: [
+        ...base,
+        { role: "tool", content: '{"cancelled": true}', tool_call_id: "call_schedule_001" },
+      ],
+    });
+    const pickReq = makeReq({
+      messages: [
+        ...base,
+        {
+          role: "tool",
+          content: '{"chosen_time": "2026-07-20T09:00:00Z", "chosen_label": "Monday 9:00 AM"}',
+          tool_call_id: "call_schedule_001",
+        },
+      ],
+    });
+    const fixtures = [cancelled, confirmed];
+    expect(matchFixture(fixtures, cancelReq)).toBe(cancelled);
+    expect(matchFixture(fixtures, pickReq)).toBe(confirmed);
+  });
+
+  it("matches when the last tool message contains the substring", () => {
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "do thing" },
+        { role: "tool", content: '{"cancelled": true}', tool_call_id: "call_x" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match when the substring is absent", () => {
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "do thing" },
+        { role: "tool", content: '{"chosen_time": "9am"}', tool_call_id: "call_x" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match a request with no tool message", () => {
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({ messages: [{ role: "user", content: "cancelled my plans" }] });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("does not match when a newer user turn follows the tool message", () => {
+    // Same last-message rule as toolCallId: a stale tool result in history
+    // must not shadow matchers for the new turn.
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "do thing" },
+        { role: "tool", content: '{"cancelled": true}', tool_call_id: "call_x" },
+        { role: "assistant", content: "Cancelled." },
+        { role: "user", content: "something else" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+
+  it("matches array-of-parts tool content", () => {
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "do thing" },
+        {
+          role: "tool",
+          content: [{ type: "text", text: '{"cancelled": true}' }],
+          tool_call_id: "call_x",
+        },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("does not match tool content with no extractable text", () => {
+    const fixture = makeFixture({ toolResultContains: "cancelled" });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "do thing" },
+        { role: "tool", content: null, tool_call_id: "call_x" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // matchFixture — toolName
 // ---------------------------------------------------------------------------
 

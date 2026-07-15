@@ -75,6 +75,7 @@ export function entryToFixture(entry: FixtureFileEntry, logger?: Logger): Fixtur
       systemMessage: entry.match.systemMessage,
       inputText: entry.match.inputText,
       toolCallId: entry.match.toolCallId,
+      toolResultContains: entry.match.toolResultContains,
       toolName: entry.match.toolName,
       model: entry.match.model,
       responseFormat: entry.match.responseFormat,
@@ -821,6 +822,24 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
         message: `match.hasToolResult must be a boolean, got ${typeof f.match.hasToolResult}`,
       });
     }
+    if (f.match.toolResultContains !== undefined) {
+      if (typeof f.match.toolResultContains !== "string") {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: `match.toolResultContains must be a string, got ${typeof f.match.toolResultContains}`,
+        });
+      } else if (f.match.toolResultContains.length === 0) {
+        // An empty substring is always contained, so the gate would silently
+        // act as "last message is any tool result" — reject it as an authoring
+        // mistake rather than let it shadow later fixtures.
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "match.toolResultContains must be a non-empty string",
+        });
+      }
+    }
     if (f.match.systemMessage !== undefined) {
       const sm = f.match.systemMessage;
       if (typeof sm === "string") {
@@ -861,12 +880,13 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
 
     // --- Warning checks ---
 
-    // Duplicate userMessage shadowing — include turnIndex, hasToolResult, and
-    // sequenceIndex in the dedup key so that fixtures which share a userMessage
-    // but differ on those fields are NOT considered duplicates.
+    // Duplicate userMessage shadowing — include turnIndex, hasToolResult,
+    // toolResultContains, and sequenceIndex in the dedup key so that fixtures
+    // which share a userMessage but differ on those fields are NOT considered
+    // duplicates.
     const um = f.match.userMessage;
     if (typeof um === "string" && um) {
-      const dedupKey = `${um}|${f.match.turnIndex}|${f.match.hasToolResult}|${f.match.sequenceIndex}|${f.match.context}`;
+      const dedupKey = `${um}|${f.match.turnIndex}|${f.match.hasToolResult}|${f.match.toolResultContains}|${f.match.sequenceIndex}|${f.match.context}`;
       const prev = seenUserMessages.get(dedupKey);
       if (prev !== undefined) {
         results.push({
@@ -889,6 +909,7 @@ export function validateFixtures(fixtures: Fixture[]): ValidationResult[] {
       match.inputText !== undefined ||
       match.responseFormat !== undefined ||
       match.toolCallId !== undefined ||
+      match.toolResultContains !== undefined ||
       match.toolName !== undefined ||
       match.model !== undefined ||
       match.predicate !== undefined ||

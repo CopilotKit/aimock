@@ -111,6 +111,16 @@
               </td>
             </tr>
             <tr>
+              <td>toolResultContains</td>
+              <td>string</td>
+              <td>
+                Substring match on the text content of the last message when it is a
+                <code>role: "tool"</code> result. Discriminates fixtures whose requests differ only
+                inside the tool-result payload (e.g. approve vs cancel resuming with the same
+                <code>tool_call_id</code>). See <a href="/multi-turn">Multi-Turn Conversations</a>
+              </td>
+            </tr>
+            <tr>
               <td>toolName</td>
               <td>string</td>
               <td>

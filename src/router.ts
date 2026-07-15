@@ -347,6 +347,19 @@ export function matchFixtureDiagnostic(
       if (!last || last.role !== "tool" || last.tool_call_id !== match.toolCallId) continue;
     }
 
+    // toolResultContains — substring gate on the LAST message's text content
+    // when that message is a tool result. Same last-message rule as toolCallId
+    // (a tool-result fixture answers the model's next call after a tool round),
+    // but discriminates on the result PAYLOAD instead of the call id — needed
+    // when approve/cancel resumes share the same toolCallId and differ only
+    // inside the tool-result JSON.
+    if (match.toolResultContains !== undefined) {
+      const last = effective.messages[effective.messages.length - 1];
+      if (!last || last.role !== "tool") continue;
+      const text = getTextContent(last.content);
+      if (text === null || !text.includes(match.toolResultContains)) continue;
+    }
+
     // toolName — match against any tool definition by function.name
     if (match.toolName !== undefined) {
       const tools = effective.tools ?? [];

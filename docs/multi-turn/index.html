@@ -72,6 +72,16 @@
             distinguish the turn that <em>requests</em> a tool from the turn that
             <em>follows up</em> on a tool result.
           </li>
+          <li>
+            <code>toolResultContains</code> (v1.37.0) is a substring match against the
+            <strong>text content of the last tool message</strong> (same last-message rule as
+            <code>toolCallId</code>). Use it when two resume paths share the same
+            <code>tool_call_id</code> and differ only inside the tool-result payload &mdash; e.g. a
+            human-in-the-loop tool where approve resumes with
+            <code>{"chosen_time": &hellip;}</code> and cancel resumes with
+            <code>{"cancelled": true}</code>. Gate the cancel fixture on
+            <code>"toolResultContains": "cancelled"</code> and order it before the approve leg.
+          </li>
         </ul>
         <p>
           A request carrying a 20-message history still only matches on its last user message (and,
