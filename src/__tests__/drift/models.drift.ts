@@ -1,88 +1,146 @@
 /**
- * Model deprecation checks — verify that models referenced in aimock's
- * tests, docs, and examples still exist at each provider.
+ * Model-family drift check — verify that each provider's LIVE `GET /models`
+ * list contains no UNCLASSIFIED text-generation family.
+ *
+ * How it works (no source scraping — that path caused incident 5):
+ *   1. Fetch the provider's live model list (`list*Models`).
+ *   2. Normalize every id to its FAMILY key (`normalizeModelFamily`), so dated
+ *      snapshots and build tags collapse onto their family
+ *      (`gpt-4o-2024-08-06` → `gpt-4o`, `tts-1-1106` → `tts-1`).
+ *   3. Subtract the already-classified space: `includeFamilies[provider] ∪
+ *      excludeFamilies[provider]`, and drop the provider-agnostic
+ *      `NON_MODEL_TOKENS` allowlist.
+ *   4. Whatever remains is an UNCLASSIFIED family — the drift signal. It is
+ *      surfaced as a FAILING assertion wrapped in a `formatDriftReport` block so
+ *      the collector (`scripts/drift-report-collector.ts`) routes it: the
+ *      `API DRIFT DETECTED` block parses into critical entries (exit-2 auto-fix
+ *      lane); anything it cannot map falls to exit-5 quarantine.
+ *
+ * Comparing NORMALIZED families (not raw ids) is what makes this converge:
+ * appending every new dated snapshot to a known-id set never stabilizes and
+ * turns the daily job permanently red on false positives (incident 2). Only a
+ * genuinely NEW family (e.g. `gpt-live`) is ever flagged.
+ *
+ * Because nothing is scraped from source, an aimock "provider mode" prose token
+ * (e.g. `gemini-interactions`) can never enter the pipeline as a candidate id —
+ * the only inputs are the provider's own `/models` payload.
  */
 
 import { describe, it, expect } from "vitest";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { listOpenAIModels, listAnthropicModels, listGeminiModels } from "./providers.js";
+import { normalizeModelFamily } from "./model-family.js";
+import { includeFamilies, excludeFamilies, NON_MODEL_TOKENS } from "./model-registry.js";
+import { formatDriftReport } from "./schema.js";
 
-// ---------------------------------------------------------------------------
-// Scrape referenced models from the codebase
-// ---------------------------------------------------------------------------
+type Provider = "openai" | "anthropic" | "gemini";
 
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
-
-export function scrapeModels(pattern: RegExp, files: string[]): string[] {
-  const models = new Set<string>();
-  for (const file of files) {
-    const filePath = path.join(PROJECT_ROOT, file);
-    if (!fs.existsSync(filePath)) continue;
-    const content = fs.readFileSync(filePath, "utf-8");
-    pattern.lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      models.add(match[1]);
-    }
+/**
+ * Reduce a live `/models` list to the UNCLASSIFIED families: normalize each id,
+ * then drop everything already in `include ∪ exclude` or on the non-model
+ * allowlist. The returned list (sorted, de-duplicated) is the drift signal.
+ *
+ * Exported so the co-located regression suite can exercise the EXACT
+ * enumerate→normalize→subtract pipeline the live check relies on, with an
+ * injected payload — no reimplementation.
+ */
+export function unclassifiedFamilies(modelIds: string[], provider: Provider): string[] {
+  const known = new Set<string>([...includeFamilies[provider], ...excludeFamilies[provider]]);
+  const unclassified = new Set<string>();
+  for (const id of modelIds) {
+    const family = normalizeModelFamily(id, provider);
+    if (known.has(family)) continue;
+    if (NON_MODEL_TOKENS.has(family) || NON_MODEL_TOKENS.has(id)) continue;
+    unclassified.add(family);
   }
-  return [...models];
+  return [...unclassified].sort();
 }
 
-export const sourceFiles = [
-  "src/__tests__/api-conformance.test.ts",
-  "src/__tests__/ws-api-conformance.test.ts",
-  "README.md",
-  "fixtures/example-greeting.json",
-  "fixtures/example-multi-turn.json",
-  "fixtures/example-tool-call.json",
-];
-
-// Regex used to scrape Gemini model ids from the source files above. Greedy
-// on purpose so we catch versioned/dated ids (e.g. gemini-2.5-flash), but that
-// greed also grabs any `gemini-*` token appearing in prose — see the stable
-// filter below for what gets excluded.
-export const GEMINI_MODEL_PATTERN = /\b(gemini-(?:[\w.-]+))\b/g;
-
-// aimock exposes "provider modes" — internal names that route to a real
-// upstream API but are NOT themselves model ids exposed by that provider. The
-// README documents them (e.g. `gemini-interactions` reuses the Gemini upstream
-// key), so the greedy scraper above grabs them as if they were Gemini models.
-// They will never appear in Google's model list, so checking them for drift is
-// a guaranteed false positive. Exclude them explicitly.
-const AIMOCK_GEMINI_PROVIDER_MODES = new Set(["gemini-interactions"]);
-
-// Narrow a raw scrape of `gemini-*` tokens down to real, checkable model ids by
-// dropping (a) experimental/live/preview ids, (b) markdown anchor-link
-// fragments, and (c) aimock provider-mode names that are documentation prose,
-// not provider model ids. Exported so the regression suite can exercise the
-// exact filtering the drift check relies on.
-export function filterStableGeminiModels(referenced: string[]): string[] {
-  return referenced.filter(
-    (m) =>
-      !m.includes("-exp") &&
-      !m.includes("-live") &&
-      !m.includes("bidigeneratecontent") &&
-      !AIMOCK_GEMINI_PROVIDER_MODES.has(m),
-  );
+/**
+ * Assert that a live `/models` list has zero unclassified families. On failure,
+ * emit one critical drift diff per unclassified family inside a
+ * `formatDriftReport` block so the collector routes it to the exit-2 auto-fix
+ * lane (provider names match `PROVIDER_MAP` keys in the collector).
+ */
+function assertNoUnclassifiedFamilies(
+  modelIds: string[],
+  provider: Provider,
+  context: string,
+): void {
+  const unclassified = unclassifiedFamilies(modelIds, provider);
+  const report =
+    unclassified.length > 0
+      ? formatDriftReport(
+          context,
+          unclassified.map((family) => ({
+            path: `models/${family}`,
+            severity: "critical" as const,
+            issue:
+              `Unclassified model family "${family}" in ${provider} /models — ` +
+              `add it to includeFamilies (aimock mocks it) or excludeFamilies ` +
+              `(non-text / retired / preview) in model-registry.ts`,
+            expected: "(family in includeFamilies ∪ excludeFamilies)",
+            real: family,
+            mock: "<no mock leg — live /models family canary>",
+          })),
+        )
+      : `No drift detected: ${context}`;
+  expect(unclassified, report).toEqual([]);
 }
+
+// ---------------------------------------------------------------------------
+// Regression suite (no live keys) — exercises the REAL pipeline with injected
+// `/models` payloads. Runs unconditionally so the drift job proves the
+// enumerate→normalize→subtract behavior even when live keys are absent.
+// ---------------------------------------------------------------------------
+
+describe("model-family pipeline (injected /models)", () => {
+  it("incident 2: dated snapshots of included families produce ZERO drift", () => {
+    // Payload of dated/build-tag snapshots whose FAMILIES are all in
+    // includeFamilies/excludeFamilies. The old scrape+substring path would have
+    // flagged these dated ids as unknown; the normalize+subtract path collapses
+    // each onto its known family, so the unclassified delta must be empty.
+    const openaiPayload = [
+      "gpt-4o-2024-08-06", // → gpt-4o (include)
+      "gpt-4o-mini-2024-07-18", // → gpt-4o-mini (include)
+      "gpt-4.1-2025-04-14", // → gpt-4.1 (include)
+      "gpt-audio-2025-08-28", // → gpt-audio (exclude)
+      "tts-1-1106", // → tts-1 (exclude)
+      "gpt-4o-mini-tts-2025-12-15", // → gpt-4o-mini-tts (exclude)
+    ];
+    expect(unclassifiedFamilies(openaiPayload, "openai")).toEqual([]);
+
+    // Gemini dated variants collapse via the same dated-snapshot strip.
+    const geminiPayload = [
+      "gemini-2.5-flash", // include
+      "gemini-2.0-flash", // include
+      "gemini-1.5-pro-2024-05-14", // → gemini-1.5-pro (include)
+    ];
+    expect(unclassifiedFamilies(geminiPayload, "gemini")).toEqual([]);
+  });
+
+  it("a prose provider-mode token can never enter as a candidate", () => {
+    // Nothing is scraped from source, so a `gemini-interactions`-style token can
+    // only appear if a provider's own /models returned it — and even then it is
+    // on NON_MODEL_TOKENS and never becomes drift.
+    expect(unclassifiedFamilies(["gemini-interactions"], "gemini")).toEqual([]);
+  });
+
+  it("a genuinely new family IS flagged as unclassified drift", () => {
+    // Guard the other side: the canary must still fire for a real new family.
+    expect(unclassifiedFamilies(["gpt-live"], "openai")).toEqual(["gpt-live"]);
+    // Single-digit trailing suffix is NOT a build tag, so it stays unknown.
+    expect(unclassifiedFamilies(["gpt-live-1"], "openai")).toEqual(["gpt-live-1"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // OpenAI
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI model availability", () => {
-  it("models used in aimock tests are still available", async () => {
+describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Chat model-family availability", () => {
+  it("live /models contains no unclassified family", async () => {
     const models = await listOpenAIModels(process.env.OPENAI_API_KEY!);
-    const referenced = scrapeModels(/\b(gpt-4o(?:-mini)?|gpt-4|gpt-3\.5-turbo)\b/g, sourceFiles);
-
-    if (referenced.length === 0) return; // no models found to check
-
-    for (const m of referenced) {
-      // OpenAI model list may include versioned variants — check prefix match
-      const found = models.some((available) => available === m || available.startsWith(`${m}-`));
-      expect(found, `Model ${m} no longer available at OpenAI`).toBe(true);
-    }
+    assertNoUnclassifiedFamilies(models, "openai", "OpenAI Chat (live /models family canary)");
   });
 });
 
@@ -90,41 +148,27 @@ describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI model availability", () => 
 // Anthropic
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic model availability", () => {
-  it("models used in aimock tests are still available", async () => {
-    const models = await listAnthropicModels(process.env.ANTHROPIC_API_KEY!);
-    const referenced = scrapeModels(
-      /\b(claude-3(?:\.\d+)?-(?:opus|sonnet|haiku)(?:-\d{8})?)\b/g,
-      sourceFiles,
-    );
-
-    if (referenced.length === 0) return;
-
-    for (const m of referenced) {
-      const found = models.some((available) => available === m || available.startsWith(m));
-      expect(found, `Model ${m} no longer available at Anthropic`).toBe(true);
-    }
-  });
-});
+describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
+  "Anthropic Claude model-family availability",
+  () => {
+    it("live /models contains no unclassified family", async () => {
+      const models = await listAnthropicModels(process.env.ANTHROPIC_API_KEY!);
+      assertNoUnclassifiedFamilies(
+        models,
+        "anthropic",
+        "Anthropic Claude (live /models family canary)",
+      );
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Gemini
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!process.env.GOOGLE_API_KEY)("Gemini model availability", () => {
-  it("models used in aimock tests are still available", async () => {
+describe.skipIf(!process.env.GOOGLE_API_KEY)("Google Gemini model-family availability", () => {
+  it("live /models contains no unclassified family", async () => {
     const models = await listGeminiModels(process.env.GOOGLE_API_KEY!);
-    const referenced = scrapeModels(GEMINI_MODEL_PATTERN, sourceFiles);
-
-    if (referenced.length === 0) return;
-
-    // Drop experimental/live ids, markdown anchor fragments, and aimock
-    // provider-mode names (see filterStableGeminiModels).
-    const stable = filterStableGeminiModels(referenced);
-
-    for (const m of stable) {
-      const found = models.some((available) => available === m || available.startsWith(m));
-      expect(found, `Model ${m} no longer available at Gemini`).toBe(true);
-    }
+    assertNoUnclassifiedFamilies(models, "gemini", "Google Gemini (live /models family canary)");
   });
 });
