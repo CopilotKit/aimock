@@ -44,6 +44,11 @@ jobs:
       # persisted across every retry). Lets the alert say "confirmed across N
       # runs". Empty on the common green/transient path.
       runs: ${{ steps.drift.outputs.drift_runs }}
+      # Final collector exit code (0 clean/transient, 2 critical drift, 5
+      # quarantine, other = crash). Promoted to a job output so the `notify`
+      # job can classify an exit-5 quarantine distinctly instead of folding it
+      # into the generic "job failed → HTTP drift" fallback (M5 backstop).
+      exit_code: ${{ steps.drift.outputs.exit_code }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
@@ -215,6 +220,7 @@ jobs:
           AGUI_RESULT: ${{ needs.agui-schema-drift.result }}
           DRIFT_SUMMARY: ${{ needs.drift.outputs.summary }}
           DRIFT_RUNS: ${{ needs.drift.outputs.runs }}
+          DRIFT_EXIT_CODE: ${{ needs.drift.outputs.exit_code }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -223,9 +229,17 @@ jobs:
           HTTP_DRIFT=false
           AGUI_DRIFT=false
           INFRA_ERROR=false
+          QUARANTINE=false
 
-          # Determine what happened in each job
-          if [ "$DRIFT_RESULT" = "failure" ]; then
+          # Determine what happened in each job. An exit_code of 5 means the
+          # collector QUARANTINED unparseable output — the drift job concludes
+          # `failure`, but this is NOT real HTTP API drift: it needs human
+          # triage, not a "providers changed formats" alert. Classify it as
+          # quarantine FIRST, before the generic failure→HTTP_DRIFT fallback,
+          # so an exit-5 quarantine is never misreported as real drift.
+          if [ "$DRIFT_EXIT_CODE" = "5" ]; then
+            QUARANTINE=true
+          elif [ "$DRIFT_RESULT" = "failure" ]; then
             HTTP_DRIFT=true
           elif [ "$DRIFT_RESULT" != "success" ] && [ "$DRIFT_RESULT" != "skipped" ]; then
             INFRA_ERROR=true
@@ -261,8 +275,15 @@ jobs:
             CONFIRMED="${NL}_(confirmed across ${DRIFT_RUNS} runs)_"
           fi
 
+          # Quarantine (collector exit 5): unparseable output was quarantined
+          # and needs manual triage. Classified distinctly — NOT real HTTP API
+          # drift — so nobody chases a phantom provider format change. The
+          # DRIFT_SUMMARY already carries the quarantine detail block (C5.2).
+          if [ "$QUARANTINE" = "true" ]; then
+            EMOJI="🔬"
+            MSG="*Drift collector quarantined unparseable output* in aimock — manual triage required (not confirmed API drift).${DETAIL}${NL}${RUN_URL}"
           # Both types of drift
-          if [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
+          elif [ "$HTTP_DRIFT" = "true" ] && [ "$AGUI_DRIFT" = "true" ]; then
             EMOJI="🚨"
             MSG="*Drift detected* in aimock — HTTP API drift + AG-UI schema drift.${DETAIL}${CONFIRMED}${NL}${RUN_URL}"
           # HTTP API drift only
