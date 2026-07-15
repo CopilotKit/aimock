@@ -116,6 +116,17 @@ describe("model-family pipeline (injected /models)", () => {
       "gemini-1.5-pro-2024-05-14", // → gemini-1.5-pro (include)
     ];
     expect(unclassifiedFamilies(geminiPayload, "gemini")).toEqual([]);
+
+    // Anthropic uses a CONTIGUOUS 8-digit snapshot suffix (`-YYYYMMDD`), not the
+    // dashed `-YYYY-MM-DD` form. These must collapse onto their included family
+    // via the anthropic-specific strip, or every dated Claude id false-positives
+    // as drift (the incident-2 class, for Anthropic).
+    const anthropicPayload = [
+      "claude-3-5-sonnet-20241022", // → claude-3-5-sonnet (include)
+      "claude-3-7-sonnet-20250219", // → claude-3-7-sonnet (include)
+      "claude-3-5-haiku-20241022", // → claude-3-5-haiku (include)
+    ];
+    expect(unclassifiedFamilies(anthropicPayload, "anthropic")).toEqual([]);
   });
 
   it("a prose provider-mode token can never enter as a candidate", () => {
