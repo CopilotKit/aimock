@@ -54,6 +54,89 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Per-provider key-freshness PREFLIGHT. Before spending 15 minutes on the
+      # full suite, do a cheap GET /models per provider. A dead/expired/revoked
+      # key returns 401/403 — classify that as `stale-key` and fail the job LOUD
+      # with a "rotate <PROVIDER>_API_KEY" message, so a dead key surfaces up
+      # front instead of as a late, generic streaming failure buried in the
+      # suite (or worse, a misleading green skip). Classification keys off the
+      # numeric InfraError.status (401/403), NEVER the prose message. Transient
+      # statuses (429/5xx/network) are NOT stale keys: the preflight warns and
+      # continues, since the retry-wrapped collector below handles those.
+      # (C5.3b, a separate task, adds the exit_code job-output + notify
+      # plumbing — this step is only the preflight.)
+      - name: Preflight — provider key freshness
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          # Written at the checkout root (cwd) so the relative provider import
+          # below resolves against the repo. ESM relative specifiers key off the
+          # module's own location, not the process cwd — a file under
+          # $RUNNER_TEMP would look for src/ beside itself and fail. Cleaned up
+          # on exit either way.
+          PREFLIGHT_FILE="$GITHUB_WORKSPACE/.drift-preflight.mts"
+          trap 'rm -f "$PREFLIGHT_FILE"' EXIT
+          cat > "$PREFLIGHT_FILE" <<'PREFLIGHT'
+          import {
+            InfraError,
+            listOpenAIModels,
+            listAnthropicModels,
+            listGeminiModels,
+          } from "./src/__tests__/drift/providers.js";
+
+          const PROVIDERS: {
+            name: string;
+            keyEnv: string;
+            list: (key: string) => Promise<string[]>;
+          }[] = [
+            { name: "OpenAI", keyEnv: "OPENAI_API_KEY", list: listOpenAIModels },
+            { name: "Anthropic", keyEnv: "ANTHROPIC_API_KEY", list: listAnthropicModels },
+            { name: "Gemini", keyEnv: "GOOGLE_API_KEY", list: listGeminiModels },
+          ];
+
+          const stale: string[] = [];
+
+          for (const p of PROVIDERS) {
+            const key = process.env[p.keyEnv];
+            if (!key) {
+              console.error(`::error::${p.keyEnv} is not set — cannot run drift for ${p.name}`);
+              stale.push(p.keyEnv);
+              continue;
+            }
+            try {
+              await p.list(key);
+              console.log(`preflight: ${p.name} key OK`);
+            } catch (err) {
+              const status = err instanceof InfraError ? err.status : 0;
+              if (status === 401 || status === 403) {
+                // stale-key: the key is dead/expired/revoked. LOUD, classified.
+                console.error(
+                  `::error title=stale-key::${p.name} preflight got HTTP ${status} — rotate ${p.keyEnv}`,
+                );
+                stale.push(p.keyEnv);
+              } else {
+                // Transient (429/5xx/network) at preflight time is NOT a stale
+                // key — don't block; the retry-wrapped collector handles it.
+                const msg = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  `preflight: ${p.name} non-auth error (status ${status}), continuing: ${msg}`,
+                );
+              }
+            }
+          }
+
+          if (stale.length > 0) {
+            console.error(
+              `::error::Preflight failed (stale-key): rotate ${stale.join(", ")} before drift can run`,
+            );
+            process.exit(1);
+          }
+          console.log("preflight: all provider keys fresh");
+          PREFLIGHT
+          npx tsx "$PREFLIGHT_FILE"
+
       # Run the collector behind a "retry before alert" wrapper. A single
       # critical run can be a transient real-API hiccup (a streaming call
       # failing mid-flight), NOT a format change — so the wrapper re-runs the
