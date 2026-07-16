@@ -23,6 +23,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      checks: read
+      statuses: read
       # issues: write  # removed — no longer creating issues on drift failure
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -36,6 +38,10 @@ jobs:
           private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
+          # Read check runs + commit statuses so the merge gate can assert
+          # the PR is truly green before merging.
+          permission-checks: read
+          permission-statuses: read
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -68,7 +74,7 @@ jobs:
           npx tsx scripts/drift-report-collector.ts
           EXIT_CODE=$?
           set -e
-          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 2 ]; then
             : # critical drift found, continue
           elif [ "$EXIT_CODE" -eq 5 ]; then
@@ -94,11 +100,19 @@ jobs:
         env:
           DETECT_EXIT_CODE: ${{ steps.detect.outputs.exit_code }}
         run: |
+          set -euo pipefail
           if [ "$DETECT_EXIT_CODE" = "2" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "quarantine=false" >> "$GITHUB_OUTPUT"
             echo "Critical drift detected"
+          elif [ "$DETECT_EXIT_CODE" = "5" ]; then
+            # Unparseable / quarantine: NOT a silent skip — a human must look.
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "quarantine=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Drift collector returned quarantine (exit 5) — unparseable output, routing to human alert"
           else
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "quarantine=false" >> "$GITHUB_OUTPUT"
             echo "No critical drift detected (exit code: $DETECT_EXIT_CODE) — skipping fix"
           fi
 
@@ -147,77 +161,283 @@ jobs:
           TOKEN: ${{ steps.app-token.outputs.token }}
 
       # Step 5: Create PR on success
+      #
+      # Select the PR by HEAD-SHA match (not `gh pr list ... .[0]`) so a stale
+      # or unrelated open PR on the same head branch cannot be mistaken for the
+      # one we just pushed.
       - name: Create PR
         id: pr
         if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          set -euo pipefail
           npx tsx scripts/fix-drift.ts --create-pr
-          PR_URL=$(gh pr list --head "$(git branch --show-current)" --json url --jq '.[0].url')
-          if [ -z "$PR_URL" ]; then echo "No PR URL found"; exit 1; fi
-          echo "url=$PR_URL" >> $GITHUB_OUTPUT
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "Pushed head SHA: $HEAD_SHA"
+          # Find the open PR whose headRefOid matches the exact SHA we pushed.
+          PR_URL=""
+          PR_NUMBER=""
+          for attempt in $(seq 1 6); do
+            MATCH="$(gh pr list --state open --json url,number,headRefOid \
+              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>/dev/null || true)"
+            if [ -n "$MATCH" ]; then
+              PR_URL="$(printf '%s' "$MATCH" | jq -r '.url')"
+              PR_NUMBER="$(printf '%s' "$MATCH" | jq -r '.number')"
+              break
+            fi
+            echo "PR for head SHA not indexed yet (attempt $attempt/6), waiting 10s..."
+            sleep 10
+          done
+          if [ -z "$PR_URL" ]; then
+            echo "::error::No open PR found whose head matches pushed SHA $HEAD_SHA"
+            echo "reason=no-pr-match" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "Matched PR #$PR_NUMBER: $PR_URL"
+          {
+            echo "url=$PR_URL"
+            echo "number=$PR_NUMBER"
+            echo "head_sha=$HEAD_SHA"
+          } >> "$GITHUB_OUTPUT"
 
-      # Step 5.5: Auto-merge the drift fix PR
+      # Step 5.5: Auto-merge the drift fix PR behind a REAL green gate.
+      #
+      # A ruleset bypass actor bypasses the entire ruleset, so the green gate
+      # must be enforced HERE, not in branch protection. The old gate counted
+      # `gh pr checks | wc -l` rows (a "no checks" message is a row) and trusted
+      # `--watch --fail-fast`, which exits 0 on empty/pending/skipped/neutral —
+      # a false-green that could merge an unverified PR. We now:
+      #   1. poll on machine-readable JSON length for check REGISTRATION,
+      #   2. `--watch` (with a hard timeout) to let checks run to completion,
+      #   3. re-query JSON and hand it to scripts/ci-merge-gate.sh, which exits
+      #      0 ONLY when pass>=1, nothing pending/fail/cancel, and every
+      #      required context is present and passing.
       - name: Auto-merge PR
+        id: merge
         if: success() && steps.pr.outputs.url != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
-          # Wait for CI to register and pass before merging. A ruleset bypass
-          # actor bypasses the entire ruleset, so the green gate must live here,
-          # not in branch protection. `gh pr checks --watch` blocks until all
-          # checks complete and exits non-zero if any fail; --fail-fast bails on
-          # first failure. Treat "no checks" as NOT-green: require at least one.
-          #
-          # First poll until at least one check is registered (up to ~5 min).
-          count=0
+          set -euo pipefail
+
+          # Phase 1: poll on JSON length until at least one check is registered
+          # (guards against a registration race letting an empty set through).
+          registered=0
           for i in $(seq 1 10); do
-            count=$(gh pr checks "$PR_URL" 2>/dev/null | wc -l)
-            if [ "$count" -gt 0 ]; then
-              echo "CI checks registered ($count rows), proceeding to watch"
-              break
+            # Distinguish a `gh` API error from a genuine zero-check response:
+            # capture stdout and the exit status separately. `|| echo 0` would
+            # collapse a transient API failure into a spurious "no checks" and
+            # could let the poll exhaust on an error rather than a real empty set.
+            if count="$(gh pr checks "$PR_URL" --json name --jq 'length' 2>/dev/null)"; then
+              if [ "${count:-0}" -gt 0 ]; then
+                echo "CI checks registered ($count checks), proceeding to watch"
+                registered=1
+                break
+              fi
+              echo "No checks registered yet (attempt $i/10), waiting 30s..."
+            else
+              echo "::warning::gh pr checks query failed (attempt $i/10) — retrying, not treating as zero checks"
             fi
-            echo "No checks registered yet (attempt $i/10), waiting 30s..."
             sleep 30
           done
-          if [ "$count" -eq 0 ]; then
+          if [ "$registered" -eq 0 ]; then
             echo "::error::No CI checks ever registered — not merging"
+            echo "reason=no-checks" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          gh pr checks "$PR_URL" --watch --fail-fast --interval 30 || {
-            echo "::error::CI checks failed or none present — not merging"; exit 1;
-          }
-          gh pr merge "$PR_URL" --merge
 
-      # Step 7: Slack notification on successful fix
+          # Phase 2: let checks run to completion under a hard timeout so we
+          # never block the job indefinitely. `--watch` exit status is advisory
+          # only — the authoritative decision is the gate in phase 3.
+          if timeout 1200 gh pr checks "$PR_URL" --watch --interval 30; then
+            echo "watch completed"
+          else
+            watch_rc=$?
+            if [ "$watch_rc" -eq 124 ]; then
+              echo "::error::CI checks timed out after 20m — not merging"
+              echo "reason=timeout" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "watch exited non-zero ($watch_rc) — deferring to gate assertion"
+          fi
+
+          # Phase 3: authoritative green-gate assertion on machine-readable JSON.
+          #
+          # `gh pr checks --json` exits NON-ZERO whenever any check is failing or
+          # pending — even in --json mode — so under `set -euo pipefail` the job
+          # would abort HERE and never reach the gate script (reason would never
+          # be set to not-green). Append `|| true` so the JSON capture is
+          # advisory and the gate script is the sole authority on the decision.
+          # The JSON the gate scores MUST be tied to the exact SHA we pushed.
+          # If HEAD_SHA is empty the anti-TOCTOU guarantee is void — HARD-FAIL
+          # here rather than re-querying the live head (which would re-open the
+          # TOCTOU window the pin exists to close). Distinct reason so the Slack
+          # alert names the real cause.
+          if [ -z "${HEAD_SHA:-}" ]; then
+            echo "::error::Merge gate: HEAD_SHA is empty — cannot pin the gate snapshot to the pushed commit, refusing to merge"
+            echo "reason=head-sha-empty" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Score the checks for the pinned SHA. gh does not filter --json by
+          # SHA, so we verify the live head still equals HEAD_SHA before scoring;
+          # if it moved, the snapshot would be stale — bail with a distinct
+          # reason rather than score checks that belong to a different commit.
+          LIVE_SHA="$(gh pr view "$PR_URL" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
+          if [ -z "$LIVE_SHA" ]; then
+            echo "::error::Merge gate: could not read the PR's live head SHA to confirm the gate snapshot — not merging"
+            echo "reason=head-requery-error" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$LIVE_SHA" != "$HEAD_SHA" ]; then
+            echo "::error::Merge gate: head moved ($HEAD_SHA -> $LIVE_SHA) before scoring — snapshot is stale, not merging"
+            echo "reason=head-moved" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          gh pr checks "$PR_URL" --json name,state,bucket > /tmp/pr-checks.json || true
+          if [ ! -s /tmp/pr-checks.json ]; then
+            echo "::error::Merge gate: could not read checks JSON — not merging"
+            echo "reason=not-green" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Run the gate. Exit 2 is a distinct CONFIG/parse error (malformed
+          # input, empty/contradictory required set, jq failure) — it is NOT the
+          # same as "PR is not green" (exit 1) and must be labeled distinctly in
+          # Slack so a human triages a broken gate, not a red PR.
+          set +e
+          ./scripts/ci-merge-gate.sh /tmp/pr-checks.json
+          gate_rc=$?
+          set -e
+          if [ "$gate_rc" -eq 2 ]; then
+            echo "::error::Merge gate: config/parse error (exit 2) — the gate could not score the checks, not merging"
+            echo "reason=gate-config-error" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$gate_rc" -ne 0 ]; then
+            echo "::error::Merge gate refused: PR is not truly green — not merging"
+            echo "reason=not-green" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Re-verify the head SHA at merge time matches the SHA the gate
+          # snapshot was taken against, closing the TOCTOU window where a new
+          # push lands between the gate check and the merge. `--match-head-commit`
+          # makes `gh pr merge` refuse if the head moved. HEAD_SHA is guaranteed
+          # non-empty (asserted above), so there is no live-head fallback.
+          gh pr merge "$PR_URL" --merge --match-head-commit "$HEAD_SHA"
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      # Alert: the autofix step itself failed. Because that step is
+      # `continue-on-error: true`, on failure the job would otherwise sail on
+      # green with no signal. Detect outcome != 'success' (and not the skip
+      # case), alert distinctly, then fail the job.
+      - name: Alert on autofix step failure
+        if: always() && steps.check.outputs.skip != 'true' && steps.autofix.outcome != 'success'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          AUTOFIX_OUTCOME: ${{ steps.autofix.outcome }}
+        run: |
+          set -euo pipefail
+          echo "::error::Auto-fix step outcome was '${AUTOFIX_OUTCOME}' (not success) — failing the job"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send autofix-failure alert"
+          else
+            MSG="🛠️❌ *Drift auto-fix STEP failed* (outcome: ${AUTOFIX_OUTCOME}) — the fixer errored before producing a PR. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+            curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD"
+          fi
+          exit 1
+
+      # Alert: drift collector returned quarantine (exit 5) — unparseable
+      # output that a human must triage. Routed here instead of the silent
+      # no-drift skip path.
+      - name: Alert on drift quarantine
+        if: always() && steps.check.outputs.quarantine == 'true'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send drift-quarantine alert"
+            exit 0
+          fi
+          MSG="⚠️ *Drift quarantine — needs human* — the drift collector produced unparseable output (exit 5). No auto-fix attempted; a human must inspect the drift report artifact.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+
+      # Slack notification on success. Distinguishes "merged to main" (the merge
+      # command returned 0) from "PR open, not yet merged" so the message never
+      # overstates what happened.
       - name: Notify Slack on fix success
         if: success() && steps.pr.outputs.url != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          MERGED: ${{ steps.merge.outputs.merged }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          MSG="✅ *Drift auto-fix PR created with auto-merge enabled*\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-          PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
-          curl -sf -X POST "$SLACK_WEBHOOK" \
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send fix-success alert"
+            exit 0
+          fi
+          if [ "${MERGED:-}" = "true" ]; then
+            MSG="✅ *Drift auto-fix merged to main*\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          else
+            MSG="✅ *Drift auto-fix PR open* (not yet merged — gate did not complete a merge)\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          fi
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
 
-      # Step 8: Slack notification on fix failure
+      # Slack notification on failure. A missing SLACK_WEBHOOK is a VISIBLE
+      # ::error:: annotation (not a silent exit 0). Distinguishes the merge-gate
+      # timeout / not-green reasons.
       - name: Notify Slack on fix failure
-        if: failure() && steps.check.outputs.skip != 'true'
+        if: failure() && steps.check.outputs.skip != 'true' && steps.autofix.outcome == 'success'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          MERGE_REASON: ${{ steps.merge.outputs.reason }}
+          PR_REASON: ${{ steps.pr.outputs.reason }}
         run: |
-          if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          MSG="❌ *Drift auto-fix failed* — manual intervention needed\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-          PAYLOAD=$(jq -n --arg text "$MSG" '{text: $text}')
-          curl -sf -X POST "$SLACK_WEBHOOK" \
+          set -euo pipefail
+          # The merge-step reason takes precedence; fall back to the PR-step
+          # reason so a SHA-match exhaustion in Create PR is not reported blank.
+          REASON="${MERGE_REASON:-${PR_REASON:-}}"
+          case "$REASON" in
+            timeout)            DETAIL=" (CI checks timed out before completing)";;
+            not-green)          DETAIL=" (merge gate refused — PR not truly green)";;
+            gate-config-error)  DETAIL=" (merge gate CONFIG/parse error — the gate could not score checks; not a red PR, the gate itself needs attention)";;
+            head-sha-empty)     DETAIL=" (merge gate could not pin the snapshot — pushed HEAD SHA was empty)";;
+            head-requery-error) DETAIL=" (merge gate could not read the PR live head SHA to confirm the snapshot)";;
+            head-moved)         DETAIL=" (PR head moved before the gate scored it — stale snapshot, refused)";;
+            no-checks)          DETAIL=" (no CI checks ever registered)";;
+            no-pr-match)        DETAIL=" (no open PR matched the pushed head SHA)";;
+            *)                  DETAIL="";;
+          esac
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::Drift auto-fix failed${DETAIL} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            exit 0
+          fi
+          MSG="❌ *Drift auto-fix failed*${DETAIL} — manual intervention needed\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
