@@ -258,10 +258,10 @@
         <p>
           If the router is configured with a <code>requestTransform</code> (typically used to strip
           dynamic data like timestamps or UUIDs from the request before matching), string
-          <code>userMessage</code> and <code>inputText</code> flip to strict equality
-          (<code>===</code>). The rationale: transforms normalize requests to a canonical form, and
-          once normalized, the sensible comparison is exact &mdash; substring matching on a
-          normalized string is more likely to hide bugs than catch flexible input.
+          <code>userMessage</code>, <code>systemMessage</code>, and <code>inputText</code> flip to
+          strict equality (<code>===</code>). The rationale: transforms normalize requests to a
+          canonical form, and once normalized, the sensible comparison is exact &mdash; substring
+          matching on a normalized string is more likely to hide bugs than catch flexible input.
         </p>
 
         <h3>5. Validation warnings surface shadowing at load time</h3>
