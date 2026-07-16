@@ -73,6 +73,29 @@ export function todayStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** GitHub hard limit on PR/issue body length. */
+export const GH_BODY_MAX = 65536;
+/** Safety margin below the hard limit. */
+export const GH_BODY_SAFE_MAX = 60000;
+
+/**
+ * Truncate `body` to at most `max` characters. When truncation occurs, the
+ * HEAD of the body (summary/diffs) is preserved and the tail is replaced with a
+ * marker. The full detail is always available as a workflow artifact.
+ */
+export function truncateBody(body: string, max: number = GH_BODY_SAFE_MAX): string {
+  // Never exceed the hard GitHub limit, even if a caller passes a larger max.
+  const effectiveMax = Math.min(max, GH_BODY_MAX);
+  if (body.length <= effectiveMax) return body;
+  const marker =
+    "\n\n---\n" +
+    "_Body truncated to fit GitHub's 65536-character limit. " +
+    "Full drift report is attached as the `drift-report` workflow artifact._\n";
+  // When the budget can't even fit the marker, hard-cut instead of overflowing.
+  if (effectiveMax <= marker.length) return body.slice(0, effectiveMax);
+  return body.slice(0, effectiveMax - marker.length) + marker;
+}
+
 /**
  * Format an exec error into a human-readable Error object.
  * Includes exit status, signal, and stderr when available.
@@ -553,7 +576,7 @@ export function buildPrBody(report: DriftReport, changedFiles?: string[]): strin
     "</details>",
   );
 
-  return sections.join("\n");
+  return truncateBody(sections.join("\n"));
 }
 
 /**
@@ -706,29 +729,31 @@ function createIssue(report: DriftReport | null): void {
   const claudeOutput =
     readFileIfExists(resolve("claude-code-output.log")) ?? "(no output captured)";
 
-  const issueBody = [
-    "## Drift detected but auto-fix failed",
-    "",
-    "The automated drift remediation pipeline detected API drift but was unable",
-    "to fix it automatically. Manual intervention is required.",
-    "",
-    "### Drift Report",
-    "",
-    "```json",
-    reportJson,
-    "```",
-    "",
-    "### Claude Code Output",
-    "",
-    "<details>",
-    "<summary>Full output</summary>",
-    "",
-    "```",
-    claudeOutput,
-    "```",
-    "",
-    "</details>",
-  ].join("\n");
+  const issueBody = truncateBody(
+    [
+      "## Drift detected but auto-fix failed",
+      "",
+      "The automated drift remediation pipeline detected API drift but was unable",
+      "to fix it automatically. Manual intervention is required.",
+      "",
+      "### Drift Report",
+      "",
+      "```json",
+      reportJson,
+      "```",
+      "",
+      "### Claude Code Output",
+      "",
+      "<details>",
+      "<summary>Full output</summary>",
+      "",
+      "```",
+      claudeOutput,
+      "```",
+      "",
+      "</details>",
+    ].join("\n"),
+  );
 
   const issueTitle = `Drift detected — auto-fix failed (${stamp})`;
 

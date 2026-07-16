@@ -42,6 +42,9 @@ import {
   getChangedFiles,
   affectedSkillSections,
   BUILDER_TO_SKILL_SECTION,
+  truncateBody,
+  GH_BODY_MAX,
+  GH_BODY_SAFE_MAX,
 } from "../../scripts/fix-drift.js";
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -600,6 +603,66 @@ describe("buildPrBody", () => {
     const body = buildPrBody(report);
     const expectedJson = JSON.stringify(report, null, 2);
     expect(body).toContain(expectedJson);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// truncateBody
+// ---------------------------------------------------------------------------
+
+describe("truncateBody", () => {
+  it("exports GH_BODY_MAX and GH_BODY_SAFE_MAX with sensible values", () => {
+    expect(GH_BODY_MAX).toBe(65536);
+    expect(GH_BODY_SAFE_MAX).toBeLessThan(GH_BODY_MAX);
+  });
+
+  it("passes through when under max", () => {
+    expect(truncateBody("hello", 60000)).toBe("hello");
+  });
+
+  it("truncates and appends marker when over max", () => {
+    const out = truncateBody("a".repeat(70000));
+    expect(out.length).toBeLessThanOrEqual(60000);
+    expect(out).toContain("Body truncated");
+  });
+
+  it("never exceeds max when max is smaller than the marker", () => {
+    expect(truncateBody("x".repeat(100), 10).length).toBeLessThanOrEqual(10);
+  });
+
+  it("never exceeds the hard GH_BODY_MAX even when caller passes a larger max", () => {
+    expect(truncateBody("x".repeat(70000), 100000).length).toBeLessThanOrEqual(GH_BODY_MAX);
+  });
+
+  it("returns under-limit input unchanged", () => {
+    expect(truncateBody("hello", 10)).toBe("hello");
+  });
+
+  it("appends marker and stays within effectiveMax when over-limit", () => {
+    const out = truncateBody("x".repeat(70000), 100000);
+    expect(out).toContain("Body truncated");
+    expect(out.length).toBeLessThanOrEqual(GH_BODY_MAX);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPrBody — body length cap
+// ---------------------------------------------------------------------------
+
+describe("buildPrBody — body length cap", () => {
+  it("caps the PR body under GitHub's 65536-char limit for huge reports", () => {
+    const entries = Array.from({ length: 400 }, (_, i) =>
+      makeEntry({ scenario: "x".repeat(500) + String(i) }),
+    );
+    const body = buildPrBody(makeReport({ entries }));
+    expect(body.length).toBeLessThanOrEqual(65536);
+    expect(body).toContain("## Summary");
+    expect(body).toContain("Body truncated");
+  });
+
+  it("leaves small bodies unchanged (no marker)", () => {
+    const body = buildPrBody(makeReport());
+    expect(body).not.toContain("Body truncated");
   });
 });
 
