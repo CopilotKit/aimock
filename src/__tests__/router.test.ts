@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { matchFixture, getLastMessageByRole, getSystemText, getTextContent } from "../router.js";
+import {
+  matchFixture,
+  getLastMessageByRole,
+  getSystemText,
+  getTextContent,
+  getLastUserText,
+} from "../router.js";
 import type { ChatCompletionRequest, ChatMessage, ContentPart, Fixture } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -1222,5 +1228,84 @@ describe("matchFixture — first-match-wins", () => {
     const match = makeFixture({ userMessage: "hello" }, { content: "right" });
     const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
     expect(matchFixture([noMatch, match], req)).toBe(match);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 1 — null-vs-"" empty-body matching
+// ---------------------------------------------------------------------------
+
+describe("getLastUserText — empty-string user message", () => {
+  it("returns '' for an explicit empty-text user message", () => {
+    expect(getLastUserText([{ role: "user", content: "" }])).toBe("");
+  });
+  it("still skips a trailing attachment-only (null-text) user message", () => {
+    const msgs: ChatMessage[] = [
+      { role: "user", content: "describe this" },
+      { role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] as ContentPart[] },
+    ];
+    expect(getLastUserText(msgs)).toBe("describe this");
+  });
+  it("returns null when no user message has any text part", () => {
+    const msgs: ChatMessage[] = [
+      { role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] as ContentPart[] },
+    ];
+    expect(getLastUserText(msgs)).toBeNull();
+  });
+});
+
+describe("matchFixture — empty userMessage", () => {
+  it("matches userMessage:'' against an empty user message (exact)", () => {
+    const fx = makeFixture({ userMessage: "" });
+    const req = makeReq({ messages: [{ role: "user", content: "" }] });
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBe(fx);
+  });
+  it("matches userMessage:/^$/ against an empty user message", () => {
+    const fx = makeFixture({ userMessage: /^$/ });
+    const req = makeReq({ messages: [{ role: "user", content: "" }] });
+    expect(matchFixture([fx], req)).toBe(fx);
+  });
+  it("does NOT match empty userMessage against a non-empty message", () => {
+    const fx = makeFixture({ userMessage: "" });
+    const req = makeReq({ messages: [{ role: "user", content: "hello" }] });
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBeNull();
+  });
+  it("truly-absent user text still skips (attachment-only turn, no fixture match)", () => {
+    const fx = makeFixture({ userMessage: "" });
+    const req = makeReq({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "x" } }] as ContentPart[],
+        },
+      ],
+    });
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBeNull();
+  });
+});
+
+describe("matchFixture — empty inputText", () => {
+  it("matches inputText:'' against embeddingInput:'' (exact)", () => {
+    const fx = makeFixture({ inputText: "" }, { embedding: [0.1] });
+    const req = makeReq({ embeddingInput: "" });
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBe(fx);
+  });
+  it("matches inputText:/^$/ against embeddingInput:''", () => {
+    const fx = makeFixture({ inputText: /^$/ }, { embedding: [0.1] });
+    const req = makeReq({ embeddingInput: "" });
+    expect(matchFixture([fx], req)).toBe(fx);
+  });
+  it("skips when embeddingInput is undefined (absent)", () => {
+    const fx = makeFixture({ inputText: "" }, { embedding: [0.1] });
+    const req = makeReq({});
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBeNull();
+  });
+});
+
+describe("matchFixture — systemMessage empty behavior unchanged", () => {
+  it("systemMessage:'' does NOT match a request with no system message (documented catch-all avoidance)", () => {
+    const fx = makeFixture({ systemMessage: "" });
+    const req = makeReq({ messages: [{ role: "user", content: "hi" }] });
+    expect(matchFixture([fx], req, undefined, (r) => r)).toBeNull();
   });
 });

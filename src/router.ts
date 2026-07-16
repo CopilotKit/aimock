@@ -81,16 +81,19 @@ export function getTextContent(content: string | ContentPart[] | null): string |
  * naive "last user message" lookup returns `null` and — because no fixture can
  * key on empty text — every such multimodal fixture misses. We therefore skip
  * trailing user messages that carry no text and use the nearest preceding user
- * message that does. This is deliberately narrow: it only skips text-LESS user
- * messages, so a genuine multi-message user turn (each message HAS text) is
- * unaffected and still matched on its final message. Returns `null` when no
- * user message carries text.
+ * message that does. This is deliberately narrow: it only skips text-LESS
+ * (`null`) user messages — a message whose text extracts to an explicit empty
+ * string `""` is a present-but-empty body and IS returned (so a fixture can key
+ * on it), while a genuine multi-message user turn (each message HAS text) is
+ * unaffected and still matched on its final message. Returns the nearest
+ * preceding user message whose text is non-null (including `""`); returns `null`
+ * only when no user message carries any text part at all.
  */
 export function getLastUserText(messages: ChatMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role !== "user") continue;
     const text = getTextContent(messages[i].content);
-    if (text !== null && text !== "") return text;
+    if (text !== null) return text;
   }
   return null;
 }
@@ -305,7 +308,11 @@ export function matchFixtureDiagnostic(
       // getLastUserText for why a trailing attachment-only user message
       // (multimodal serialisation split) must not shadow the real prompt.
       const text = getLastUserText(effective.messages);
-      if (!text) continue;
+      // `text === null` means no user message carried any text (e.g. a pure
+      // attachment turn) — skip. An explicit empty-string body (`""`) is a
+      // present-but-empty user message and must be allowed through so a fixture
+      // keyed on empty text can match it (see getLastUserText).
+      if (text === null) continue;
       if (typeof match.userMessage === "string") {
         if (useExactMatch) {
           if (text !== match.userMessage) continue;
@@ -342,6 +349,15 @@ export function matchFixtureDiagnostic(
         // no constraint — fall through to the next predicate
       } else {
         const text = getSystemText(effective.messages);
+        // Deliberately `!text` (not `text === null`): unlike userMessage/inputText,
+        // getSystemText returns `""` for BOTH "a present but empty system message"
+        // AND "no system message at all", so it exposes no absent-vs-empty
+        // distinction at the request level. Allowing `""` through would make a
+        // `systemMessage: ""` / `/^$/` fixture a catch-all firing on every
+        // no-system-message request. There is no shipped-fixture demand for
+        // matching an empty system prompt, so we keep the falsy guard here. If a
+        // real need arises, add a getSystemText sibling that returns `null` when
+        // absent and `""` when present-empty, then switch to `text === null`.
         if (!text) continue;
         if (Array.isArray(sm)) {
           let allPresent = true;
@@ -385,7 +401,10 @@ export function matchFixtureDiagnostic(
     // Same rationale as userMessage above: fixture authors specify exact strings.
     if (match.inputText !== undefined) {
       const embeddingInput = effective.embeddingInput;
-      if (!embeddingInput) continue;
+      // `undefined` means the request carried no embedding input (a non-embedding
+      // request) — skip. An explicit empty string (`""`) is a genuinely-empty
+      // embedding input and must be allowed through so `inputText: ""` can match.
+      if (embeddingInput === undefined) continue;
       if (typeof match.inputText === "string") {
         if (useExactMatch) {
           if (embeddingInput !== match.inputText) continue;
