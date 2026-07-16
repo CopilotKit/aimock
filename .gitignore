@@ -14,3 +14,7 @@ packages/.claude/
 docs/superpowers/
 docs/plans/
 docs/specs/
+
+# fix-drift.ts workflow artifacts (regenerated each run; uploaded via fix-drift.yml)
+claude-code-output.log
+drift-report.json
