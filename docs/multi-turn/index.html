@@ -72,6 +72,17 @@
             distinguish the turn that <em>requests</em> a tool from the turn that
             <em>follows up</em> on a tool result.
           </li>
+          <li>
+            <code>toolResultContains</code> (v1.37.0) is a substring match against the
+            <strong>text content of the last tool message</strong> (same last-message rule as
+            <code>toolCallId</code>). Use it when two resume paths share the same
+            <code>tool_call_id</code> and differ only inside the tool-result payload &mdash; e.g. a
+            human-in-the-loop tool where approve resumes with
+            <code>{"chosen_time": &hellip;}</code> and cancel resumes with
+            <code>{"cancelled": true}</code>. Gate the cancel fixture on
+            <code>"toolResultContains": "\"cancelled\""</code> (match the quoted JSON key so it
+            can&rsquo;t match the word inside prose) and order it before the approve leg.
+          </li>
         </ul>
         <p>
           A request carrying a 20-message history still only matches on its last user message (and,
@@ -100,8 +111,10 @@
             <strong>Substring by default, exact when transformed.</strong>
             <code>userMessage</code> is a substring match by default (<code>"hello"</code> matches
             <code>"say hello world"</code>). When you register a <code>requestTransform</code>,
-            matching flips to <strong>exact string equality</strong> &mdash; but only for
-            <code>userMessage</code> and <code>inputText</code>; other fields like
+            matching flips to <strong>exact string equality</strong> &mdash; but only for the
+            <em>string</em> forms of <code>userMessage</code>, <code>systemMessage</code>, and
+            <code>inputText</code>. Regex and array-of-substrings forms are unaffected, and
+            <code>toolResultContains</code> stays a substring match. Fields like
             <code>toolName</code> and <code>toolCallId</code> are always exact. This trips people up
             &mdash; see <a href="#gotchas">Gotchas</a> below.
           </p>
@@ -292,10 +305,10 @@
         </div>
 
         <h2>
-          Choosing between sequenceIndex, toolCallId, turnIndex, hasToolResult, context, and
-          predicate
+          Choosing between sequenceIndex, toolCallId, toolResultContains, turnIndex, hasToolResult,
+          context, and predicate
         </h2>
-        <p>Five mechanisms handle different shapes of &ldquo;the same prompt twice&rdquo;:</p>
+        <p>Seven mechanisms handle different shapes of &ldquo;the same prompt twice&rdquo;:</p>
 
         <table class="endpoint-table">
           <thead>
@@ -318,8 +331,20 @@
               <td>Different behavior before vs. after tool execution (tool-call round trip)</td>
               <td><code>toolCallId</code></td>
               <td>
-                Matches the <code>tool_call_id</code> of the last <code>role: "tool"</code>
-                message. Turn 1 has no tool message; turn 2 does.
+                Matches when the request&rsquo;s overall last message is a
+                <code>role: "tool"</code> result with that <code>tool_call_id</code>. Turn 1 has no
+                tool result last; turn 2 does.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Two tool-result outcomes that share a <code>tool_call_id</code> and differ only
+                inside the result payload (e.g. approve vs. cancel)
+              </td>
+              <td><code>toolResultContains</code></td>
+              <td>
+                Substring match on the last <code>role: "tool"</code> result&rsquo;s text. Use when
+                <code>toolCallId</code> alone can&rsquo;t tell the outcomes apart. Stateless.
               </td>
             </tr>
             <tr>
@@ -420,19 +445,25 @@
             <strong>Substring vs. exact matching.</strong> Default matching is substring. Adding a
             <code>requestTransform</code> (e.g. to strip timestamps or request ids) flips matching
             to exact string equality &mdash; fixtures that previously matched as substrings will
-            silently stop matching. Only <code>userMessage</code> and <code>inputText</code> flip;
-            fields like <code>toolName</code> and <code>toolCallId</code> are always exact. Pin
-            exact strings in your fixtures when you use a transform.
+            silently stop matching. Only the <em>string</em> forms of <code>userMessage</code>,
+            <code>systemMessage</code>, and <code>inputText</code> flip; regex and
+            array-of-substrings forms are unaffected, and <code>toolResultContains</code> remains a
+            substring match even under a transform. Fields like <code>toolName</code> and
+            <code>toolCallId</code> are always exact. Pin exact strings in your fixtures when you
+            use a transform.
           </li>
           <li>
             <strong>Duplicate <code>userMessage</code> warnings.</strong>
             <code>validateFixtures</code> warns when two fixtures share the same
-            <code>userMessage</code> with identical <code>turnIndex</code>,
-            <code>hasToolResult</code>, and <code>sequenceIndex</code> values. Fixtures that differ
-            on any of these discriminators do not trigger the warning. Other fields like
-            <code>toolCallId</code>, <code>model</code>, and <code>predicate</code> are not factored
-            in, so the warning may still fire when those discriminators are present. Treat it as
-            advisory.
+            <code>userMessage</code> with identical values for <em>every</em> match discriminator
+            the router gates on &mdash; <code>userMessage</code>, <code>systemMessage</code>,
+            <code>inputText</code>, <code>toolCallId</code>, <code>toolResultContains</code>,
+            <code>toolName</code>, <code>model</code>, <code>responseFormat</code>,
+            <code>endpoint</code>, <code>context</code>, <code>sequenceIndex</code>,
+            <code>turnIndex</code>, and <code>hasToolResult</code>. Fixtures that differ on any one
+            of these discriminators do not trigger the warning. A <code>predicate</code> cannot be
+            compared for equivalence, so any fixture carrying one is keyed by its own identity and
+            is never reported as a duplicate. Treat it as advisory.
           </li>
           <li>
             <strong>First-wins ordering.</strong> Fixtures are evaluated in registration order (and,

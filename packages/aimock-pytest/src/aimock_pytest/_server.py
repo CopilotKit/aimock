@@ -182,6 +182,7 @@ class AIMockServer:
             "systemMessage",
             "inputText",
             "toolCallId",
+            "toolResultContains",
             "toolName",
             "model",
             "responseFormat",

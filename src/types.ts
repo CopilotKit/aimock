@@ -92,6 +92,14 @@ export interface FixtureMatch {
   systemMessage?: string | string[] | RegExp;
   inputText?: string | RegExp;
   toolCallId?: string;
+  /**
+   * Substring matched against the text content of the LAST message when that
+   * message is a `tool` result (same last-message rule as `toolCallId`).
+   * Discriminates fixtures whose requests differ ONLY inside the tool-result
+   * payload — e.g. a human-in-the-loop tool where approve and cancel resume
+   * with the same toolCallId but different result JSON.
+   */
+  toolResultContains?: string;
   toolName?: string;
   model?: string | RegExp;
   responseFormat?: string;
@@ -541,6 +549,11 @@ export interface FixtureFileEntry {
     systemMessage?: string | string[];
     inputText?: string;
     toolCallId?: string;
+    /**
+     * Substring matched against the last tool-result message's text content.
+     * Mirrors the runtime FixtureMatch.toolResultContains.
+     */
+    toolResultContains?: string;
     toolName?: string;
     model?: string;
     responseFormat?: string;

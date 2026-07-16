@@ -1,5 +1,17 @@
 # @copilotkit/aimock
 
+## [1.37.0] - 2026-07-15
+
+### Added
+
+- New `match.toolResultContains` string gate: passes when the request's LAST message is a `role: "tool"` result whose text content contains the substring (same last-message rule as `toolCallId`, and composable with it). Discriminates fixtures whose requests differ only inside the tool-result payload — e.g. a human-in-the-loop suspend tool where approve and cancel resume with the same `tool_call_id` but different result JSON. JSON-expressible, so fixture files can finally split those legs without a programmatic `predicate`. Validated at load time (non-empty string — an empty substring would silently act as a catch-all), included in the duplicate-userMessage dedup key and the catch-all discriminator set, and routed through the `aimock-pytest` match-level kwarg keys (aimock-pytest 0.5.0) (#299)
+
+### Fixed
+
+- The duplicate-userMessage shadow check no longer warns for fixtures that share a `userMessage` but are legitimately disambiguated by a matcher the dedup key previously omitted (`systemMessage`, `model`, `toolName`, `toolCallId`, `inputText`, `responseFormat`, `endpoint`). The dedup key now covers every discriminator the router actually matches on and serialises RegExp / array matchers kind-aware so they don't collide; a `predicate`-bearing fixture is keyed by identity so it is never a false duplicate. This only suppresses spurious warnings — the check never dropped or deduped fixtures (#299)
+- Bumped the `aimock-pytest` default server pin (`_version.py`) to 1.37.0 so the auto-download path (used when `AIMOCK_CLI_PATH` is unset) runs a server that supports the new `toolResultContains` match kwarg the client forwards (#299)
+- Guarded `recordedTimings.interChunkDelaysMs` against non-array values: a fixture whose `interChunkDelaysMs` is malformed (null, missing, or not an array) no longer throws during load and silently drops every fixture in that file — the value is coerced to an empty array (#299)
+
 ## [1.36.1] - 2026-07-14
 
 ### Fixed

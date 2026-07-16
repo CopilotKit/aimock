@@ -98,6 +98,16 @@
               </td>
             </tr>
             <tr>
+              <td>systemMessage</td>
+              <td>string | RegExp | string[]</td>
+              <td>
+                Match on the joined text of the request&rsquo;s system messages &mdash; string
+                (case-sensitive substring, or exact when <code>requestTransform</code> is set),
+                regex (pattern match), or an array of strings (all substrings must be present). Gate
+                a fixture on host-supplied context
+              </td>
+            </tr>
+            <tr>
               <td>inputText</td>
               <td>string | RegExp</td>
               <td>Match on embedding input text</td>
@@ -108,6 +118,16 @@
               <td>
                 Match on <code>tool_call_id</code> of the last <code>role: "tool"</code> message.
                 The <code>onToolResult(id, response)</code> helper is sugar over this field
+              </td>
+            </tr>
+            <tr>
+              <td>toolResultContains</td>
+              <td>string</td>
+              <td>
+                Substring match on the text content of the last message when it is a
+                <code>role: "tool"</code> result. Discriminates fixtures whose requests differ only
+                inside the tool-result payload (e.g. approve vs cancel resuming with the same
+                <code>tool_call_id</code>). See <a href="/multi-turn">Multi-Turn Conversations</a>
               </td>
             </tr>
             <tr>
@@ -200,12 +220,16 @@
           tool-round idiom.
         </p>
 
-        <h3>2. <code>toolCallId</code> matches the LAST tool message</h3>
+        <h3>2. <code>toolCallId</code> matches the overall last message</h3>
         <p>
-          <code>toolCallId</code> is compared against the <code>tool_call_id</code> of the
-          <em>last <code>role: "tool"</code> message</em> in the request &mdash; regardless of
-          whether that&rsquo;s the overall last message. If no tool message is present in the
-          history, <code>toolCallId</code> never matches. See
+          <code>toolCallId</code> matches only when the request&rsquo;s
+          <em>overall last message</em> is a <code>role: "tool"</code> result whose
+          <code>tool_call_id</code> equals the given value. This mirrors the API contract: a tool
+          result is the last message only while the model is answering that tool round. If the last
+          message is anything else &mdash; a newer <code>user</code> turn, or no tool result at all
+          &mdash; <code>toolCallId</code> never matches, so a stale tool round can&rsquo;t shadow
+          <code>userMessage</code> matchers. This is the same overall-last-message rule as
+          <code>toolResultContains</code>. See
           <a href="/multi-turn">Multi-Turn Conversations</a> for the tool-round idiom.
         </p>
 
@@ -234,10 +258,10 @@
         <p>
           If the router is configured with a <code>requestTransform</code> (typically used to strip
           dynamic data like timestamps or UUIDs from the request before matching), string
-          <code>userMessage</code> and <code>inputText</code> flip to strict equality
-          (<code>===</code>). The rationale: transforms normalize requests to a canonical form, and
-          once normalized, the sensible comparison is exact &mdash; substring matching on a
-          normalized string is more likely to hide bugs than catch flexible input.
+          <code>userMessage</code>, <code>systemMessage</code>, and <code>inputText</code> flip to
+          strict equality (<code>===</code>). The rationale: transforms normalize requests to a
+          canonical form, and once normalized, the sensible comparison is exact &mdash; substring
+          matching on a normalized string is more likely to hide bugs than catch flexible input.
         </p>
 
         <h3>5. Validation warnings surface shadowing at load time</h3>
@@ -252,15 +276,19 @@
             <code>duplicate userMessage 'hello' — shadows fixture 0</code>, where
             <code>'hello'</code> is the duplicated message and <code>0</code> is the zero-based
             index of the earlier fixture being shadowed. This is advisory, not a hard error: the
-            check now factors in <code>turnIndex</code>, <code>hasToolResult</code>,
-            <code>context</code>, and <code>sequenceIndex</code> when deciding whether two fixtures
-            truly collide, but it does <em>not</em> consider <code>toolCallId</code>,
-            <code>model</code>, or <code>predicate</code>, so the warning may still fire when those
-            discriminators are present. Treat it as advisory: if a runtime differentiator is in
-            place, the fixtures won't actually shadow each other at match time. Only fixtures with
-            no differentiator at all will truly shadow on match &mdash; that's the case where the
-            second is never reached because the first wins. Safe to ignore in the former case;
-            investigate in the latter.
+            check factors in <em>every</em> match discriminator the router gates on when deciding
+            whether two fixtures truly collide &mdash; <code>userMessage</code>,
+            <code>systemMessage</code>, <code>inputText</code>, <code>toolCallId</code>,
+            <code>toolResultContains</code>, <code>toolName</code>, <code>model</code>,
+            <code>responseFormat</code>, <code>endpoint</code>, <code>context</code>,
+            <code>sequenceIndex</code>, <code>turnIndex</code>, and
+            <code>hasToolResult</code> &mdash; so two fixtures that differ on any one of them do not
+            trigger the warning. A <code>predicate</code> is a function that cannot be compared for
+            equivalence, so any fixture carrying one is keyed by its own identity: it is treated as
+            unconditionally distinct and never reported as a duplicate (and two fixtures with
+            distinct predicates are likewise treated as distinct). Only fixtures with no
+            differentiator at all will truly shadow on match &mdash; that's the case where the
+            second is never reached because the first wins. That is the case worth investigating.
           </li>
           <li>
             <strong>Catch-all not last</strong> &mdash; a fixture with an empty <code>match</code>

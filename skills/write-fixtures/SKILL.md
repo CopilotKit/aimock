@@ -19,25 +19,26 @@ aimock is a zero-dependency mock infrastructure for AI apps. Fixture-driven. Mul
 
 ## Match Field Reference
 
-| Field            | Type                                      | Matches Against                                                                                                                                                                                                                                                                                              |
-| ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `userMessage`    | `string`                                  | Substring of last `role: "user"` message text                                                                                                                                                                                                                                                                |
-| `userMessage`    | `RegExp`                                  | Pattern test on last `role: "user"` message text                                                                                                                                                                                                                                                             |
-| `systemMessage`  | `string`                                  | Substring of the concatenated text of every `role: "system"` message in the request. Use to gate a fixture on host-supplied context (persona, agent-context entries) so changes to that context cause the fixture to fall through instead of returning a stale baked response                                |
-| `systemMessage`  | `string[]`                                | Array of substrings — ALL must be present in the joined system text (AND semantics). Use when the gate must combine multiple non-adjacent tokens whose serialisation order isn't stable                                                                                                                      |
-| `systemMessage`  | `RegExp`                                  | Pattern test on the concatenated system-message text                                                                                                                                                                                                                                                         |
-| `inputText`      | `string`                                  | Substring of embedding input text (concatenated if multiple inputs)                                                                                                                                                                                                                                          |
-| `inputText`      | `RegExp`                                  | Pattern test on embedding input text                                                                                                                                                                                                                                                                         |
-| `toolName`       | `string`                                  | Exact match on any tool in request's `tools[]` array (by `function.name`)                                                                                                                                                                                                                                    |
-| `toolCallId`     | `string`                                  | Exact match on `tool_call_id` of last `role: "tool"` message                                                                                                                                                                                                                                                 |
-| `model`          | `string`                                  | Exact match on `req.model`                                                                                                                                                                                                                                                                                   |
-| `model`          | `RegExp`                                  | Pattern test on `req.model`                                                                                                                                                                                                                                                                                  |
-| `responseFormat` | `string`                                  | Exact match on `req.response_format.type` (`"json_object"`, `"json_schema"`)                                                                                                                                                                                                                                 |
-| `sequenceIndex`  | `number`                                  | Matches only when this fixture's match count equals the given index (0-based)                                                                                                                                                                                                                                |
-| `turnIndex`      | `number`                                  | Stateless conversation-depth matching. Counts `role: "assistant"` messages in the request; matches when that count equals the value. `turnIndex: 0` = first turn (no prior assistant messages). Use instead of `sequenceIndex` for shared/deployed instances where stateful counters break under concurrency |
-| `hasToolResult`  | `boolean`                                 | Stateless tool-message presence matching. `true` matches when any `role: "tool"` message exists in the request; `false` matches when none exist. Provider-consistent across all aimock handlers (OpenAI, Claude, Gemini, Bedrock, Ollama, Cohere)                                                            |
-| `endpoint`       | `string`                                  | Restrict to endpoint type: `"chat"`, `"image"`, `"speech"`, `"transcription"`, `"video"`, `"embedding"`                                                                                                                                                                                                      |
-| `predicate`      | `(req: ChatCompletionRequest) => boolean` | Custom function — full access to request                                                                                                                                                                                                                                                                     |
+| Field                | Type                                      | Matches Against                                                                                                                                                                                                                                                                                                  |
+| -------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userMessage`        | `string`                                  | Substring of last `role: "user"` message text                                                                                                                                                                                                                                                                    |
+| `userMessage`        | `RegExp`                                  | Pattern test on last `role: "user"` message text                                                                                                                                                                                                                                                                 |
+| `systemMessage`      | `string`                                  | Substring of the concatenated text of every `role: "system"` message in the request. Use to gate a fixture on host-supplied context (persona, agent-context entries) so changes to that context cause the fixture to fall through instead of returning a stale baked response                                    |
+| `systemMessage`      | `string[]`                                | Array of substrings — ALL must be present in the joined system text (AND semantics). Use when the gate must combine multiple non-adjacent tokens whose serialisation order isn't stable                                                                                                                          |
+| `systemMessage`      | `RegExp`                                  | Pattern test on the concatenated system-message text                                                                                                                                                                                                                                                             |
+| `inputText`          | `string`                                  | Substring of embedding input text (concatenated if multiple inputs)                                                                                                                                                                                                                                              |
+| `inputText`          | `RegExp`                                  | Pattern test on embedding input text                                                                                                                                                                                                                                                                             |
+| `toolName`           | `string`                                  | Exact match on any tool in request's `tools[]` array (by `function.name`)                                                                                                                                                                                                                                        |
+| `toolCallId`         | `string`                                  | Exact match on `tool_call_id` of last `role: "tool"` message                                                                                                                                                                                                                                                     |
+| `toolResultContains` | `string`                                  | Substring of the last tool message's text content, gated on that message being the request's LAST message (same rule as `toolCallId`). Discriminates resume paths that share a `tool_call_id` and differ only inside the tool-result payload (e.g. approve `{"chosen_time": …}` vs cancel `{"cancelled": true}`) |
+| `model`              | `string`                                  | Exact match on `req.model`                                                                                                                                                                                                                                                                                       |
+| `model`              | `RegExp`                                  | Pattern test on `req.model`                                                                                                                                                                                                                                                                                      |
+| `responseFormat`     | `string`                                  | Exact match on `req.response_format.type` (`"json_object"`, `"json_schema"`)                                                                                                                                                                                                                                     |
+| `sequenceIndex`      | `number`                                  | Matches only when this fixture's match count equals the given index (0-based)                                                                                                                                                                                                                                    |
+| `turnIndex`          | `number`                                  | Stateless conversation-depth matching. Counts `role: "assistant"` messages in the request; matches when that count equals the value. `turnIndex: 0` = first turn (no prior assistant messages). Use instead of `sequenceIndex` for shared/deployed instances where stateful counters break under concurrency     |
+| `hasToolResult`      | `boolean`                                 | Stateless tool-message presence matching. `true` matches when any `role: "tool"` message exists in the request; `false` matches when none exist. Provider-consistent across all aimock handlers (OpenAI, Claude, Gemini, Bedrock, Ollama, Cohere)                                                                |
+| `endpoint`           | `string`                                  | Restrict to endpoint type: `"chat"`, `"image"`, `"speech"`, `"transcription"`, `"video"`, `"embedding"`                                                                                                                                                                                                          |
+| `predicate`          | `(req: ChatCompletionRequest) => boolean` | Custom function — full access to request                                                                                                                                                                                                                                                                         |
 
 **AND logic**: all specified fields must match. Empty match `{}` = catch-all.
 
@@ -45,14 +46,15 @@ Multi-part content (e.g., `[{type: "text", text: "hello"}]`) is automatically ex
 
 ### When to Use Each Multi-turn Matching Approach
 
-| Approach        | Stateless? | Best For                                                                                                  |
-| --------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| `turnIndex`     | Yes        | Shared/deployed instances; matches on conversation depth (count of assistant messages in request)         |
-| `hasToolResult` | Yes        | Simplest option for 2-step tool flows — boolean: are there tool results in the request?                   |
-| `sequenceIndex` | No         | Single-client unit tests with repeated identical requests (server-side counter, breaks under concurrency) |
-| `toolCallId`    | Yes        | Matching specific tool result IDs in the conversation history                                             |
+| Approach             | Stateless? | Best For                                                                                                  |
+| -------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `turnIndex`          | Yes        | Shared/deployed instances; matches on conversation depth (count of assistant messages in request)         |
+| `hasToolResult`      | Yes        | Simplest option for 2-step tool flows — boolean: are there tool results in the request?                   |
+| `sequenceIndex`      | No         | Single-client unit tests with repeated identical requests (server-side counter, breaks under concurrency) |
+| `toolCallId`         | Yes        | Matching specific tool result IDs in the conversation history                                             |
+| `toolResultContains` | Yes        | Same tool call id, different outcomes — match on the tool-result payload (approve vs cancel legs)         |
 
-**Prefer stateless approaches** (`turnIndex`, `hasToolResult`) for shared aimock instances (deployed via Docker, used by multiple test runners). Use `sequenceIndex` only in isolated single-client unit tests where the counter won't be corrupted by concurrent requests.
+**Prefer stateless approaches** (`turnIndex`, `hasToolResult`, `toolResultContains`) for shared aimock instances (deployed via Docker, used by multiple test runners). Use `sequenceIndex` only in isolated single-client unit tests where the counter won't be corrupted by concurrent requests.
 
 ### Multi-turn fixture examples
 
@@ -64,6 +66,11 @@ Multi-part content (e.g., `[{type: "text", text: "hello"}]`) is automatically ex
 // Same thing with hasToolResult (simpler for 2-step)
 {"match": {"userMessage": "trip to mars", "hasToolResult": false}, "response": {"toolCalls": [{"id": "call_001", "name": "generate_steps", "arguments": "{}"}]}}
 {"match": {"userMessage": "trip to mars", "hasToolResult": true}, "response": {"content": "Great choices!"}}
+
+// HITL suspend tool where approve and cancel resume with the SAME tool call id —
+// discriminate on the tool-result payload; put the cancel leg first (first match wins)
+{"match": {"toolCallId": "call_001", "toolResultContains": "\"cancelled\""}, "response": {"content": "No problem — nothing was booked."}}
+{"match": {"toolCallId": "call_001"}, "response": {"content": "Booked: Monday 9:00 AM confirmed."}}
 ```
 
 ## Response Types
@@ -255,7 +262,7 @@ mock.on(
 mock.on({ userMessage: "status", sequenceIndex: 1 }, { content: "All systems operational." });
 ```
 
-Match counts are tracked per fixture group and reset with `reset()` or `resetMatchCounts()`.
+Match counts are tracked per fixture group. Use `resetMatchCounts()` between tests to reset counts while keeping loaded fixtures. `reset()` also clears the fixture pool, so avoid it between tests that share a loaded fixture set.
 
 ### Streaming physics (realistic timing)
 
@@ -500,7 +507,7 @@ These fields map correctly across all provider formats — for example, `finishR
 
 10. **Embeddings auto-generate if no fixture matches** — deterministic vectors are generated from the input text hash. You don't need a catch-all for embedding requests.
 
-11. **Sequential response counts are tracked per fixture** — counts reset with `reset()` or `resetMatchCounts()`. The count increments after each match of that fixture group (all fixtures sharing the same non-`sequenceIndex` match fields).
+11. **Sequential response counts are tracked per fixture** — use `resetMatchCounts()` between tests to reset counts while keeping loaded fixtures; `reset()` also clears the fixture pool, so don't use it between tests that share a loaded fixture set. The count increments after each match of that fixture group (all fixtures sharing the same non-`sequenceIndex` match fields).
 
 12. **Bedrock uses Anthropic Messages format internally** — the adapter normalizes Bedrock requests to `ChatCompletionRequest`, so the same fixtures work. Bedrock supports both non-streaming (`/invoke`, `/converse`) and streaming (`/invoke-with-response-stream`, `/converse-stream`) endpoints.
 
@@ -549,7 +556,7 @@ await suite.start();
 // suite.llm — the LLMock instance
 // suite.url — base URL
 
-afterEach(() => suite.reset()); // resets everything
+afterEach(() => suite.llm.resetMatchCounts()); // reset sequence counts, keep fixtures
 afterAll(() => suite.stop());
 ```
 
@@ -684,8 +691,8 @@ mock.loadFixtureDir("./fixtures");
 await mock.start();
 process.env.OPENAI_BASE_URL = `${mock.url}/v1`;
 
-// Per-test cleanup
-afterEach(() => mock.reset()); // clears fixtures AND journal
+// Per-test cleanup — reset sequence match counts, keep the loaded fixtures
+afterEach(() => mock.resetMatchCounts());
 
 // Teardown
 afterAll(async () => await mock.stop());
@@ -735,6 +742,8 @@ const mock = await LLMock.create({ port: 0 }); // creates + starts in one call
 | `mount(path, handler)`                   | Mount a Mountable (VectorMock, etc.)        |
 | `url` / `baseUrl`                        | Server URL (throws if not started)          |
 | `port`                                   | Server port number                          |
+
+Between tests that share a loaded fixture set, use `resetMatchCounts()` (not `reset()`, which also clears fixtures). For a `MockSuite`, call `suite.llm.resetMatchCounts()` — the suite itself has no `resetMatchCounts()`.
 
 Sequential responses use `on()` with `sequenceIndex` in the match — there is no dedicated convenience method.
 

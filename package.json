@@ -1,6 +1,6 @@
 {
   "name": "@copilotkit/aimock",
-  "version": "1.36.1",
+  "version": "1.37.0",
   "description": "Mock infrastructure for AI application testing — LLM APIs, image generation, image editing, text-to-speech, transcription, audio translation, audio generation, video generation, embeddings, MCP tools, A2A agents, AG-UI event streams, vector databases, search, rerank, and moderation. One package, one port, zero dependencies.",
   "license": "MIT",
   "keywords": [
@@ -169,7 +169,7 @@
     "test:exports": "publint && attw --pack .",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "release": "pnpm build && pnpm test && pnpm lint && npm publish",
+    "release": "pnpm format:check && pnpm build && pnpm test && pnpm lint && pnpm test:exports && npm publish",
     "prepare": "husky || true"
   },
   "lint-staged": {
