@@ -1,5 +1,15 @@
 # @copilotkit/aimock
 
+## [1.37.2] - 2026-07-17
+
+### Fixed
+
+- Prevent `Invalid string length` crash on `GET /__aimock/journal` by capping retained request bodies at 64 KB (#308)
+
+### Changed
+
+- Log full error stack on unhandled request errors for prod diagnosis (#308)
+
 ## [1.37.1] - 2026-07-16
 
 ### Fixed
