@@ -121,6 +121,33 @@ jobs:
             echo "No critical drift detected (exit code: $DETECT_EXIT_CODE) — skipping fix"
           fi
 
+      # Step 2b: PIN the PRE-fix report OUTSIDE the repo before the autofix LLM
+      # runs (INTEGRITY GUARANTEE — CR round-3 F-A).
+      #
+      # The drift-success predicate derives its ALLOWLIST's sanctioned-target set
+      # (union of every entry's builderFile/typesFile) from the PRE-fix report. The
+      # autofix step below grants the Claude Code subprocess unrestricted Write/Edit
+      # scoped to the repo checkout (its cwd), so a repo-committed `drift-report.json`
+      # is LLM-writable: a malicious/confused fix could overwrite it to name an
+      # arbitrary fixture as a builderFile and thereby expand the allowlist.
+      #
+      # Pinning the report to $RUNNER_TEMP — which is OUTSIDE the repo checkout and
+      # therefore outside the autofix tool's writable scope — makes the sanctioned
+      # set immutable across the autofix. Both the "Assert" and "Create PR" steps
+      # read `--report` from this pinned copy, NEVER the in-repo file the LLM can
+      # touch. The POST-fix report is separately re-generated after autofix (Step
+      # 4c) and so needs no pin. Runs AFTER "Check for critical diffs" (so it is
+      # gated by the same skip guard) and BEFORE "Auto-fix drift" (so the pin is
+      # captured before the LLM can touch the on-disk report).
+      - name: Pin pre-fix drift report (integrity)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
+        run: |
+          set -euo pipefail
+          cp drift-report.json "$PINNED_REPORT"
+          echo "Pinned pre-fix drift report to $PINNED_REPORT (outside the LLM-writable repo checkout)"
+
       # Step 3: Invoke Claude Code to fix
       - name: Auto-fix drift
         id: autofix
@@ -205,9 +232,14 @@ jobs:
           # Run the predicate to a log file so we capture its REAL exit code
           # directly (a `VAR="$(pipeline)"` assignment would report the
           # assignment's own status via PIPESTATUS, never the predicate's).
+          #
+          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
+          # drift-report.json the autofix LLM could have overwritten — the
+          # allowlist's sanctioned-target set is derived from it, so it must be
+          # the untamperable copy (CR round-3 F-A).
           set +e
           npx tsx scripts/drift-success-predicate.ts \
-            --report drift-report.json \
+            --report "${PINNED_REPORT}" \
             --post-fix-report drift-report.post-fix.json \
             --post-fix-exit "${POST_FIX_EXIT}" 2>&1 | tee predicate.log
           PRED_EXIT=${PIPESTATUS[0]}
@@ -222,6 +254,7 @@ jobs:
           echo "Drift-success predicate: drift truly resolved"
         env:
           POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
 
       # Inject git credentials only when needed for push (persist-credentials: false above)
       - name: Configure git for push
@@ -241,6 +274,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
         run: |
           set -euo pipefail
           # Defense-in-depth: the workflow already asserted the predicate in the
@@ -248,7 +282,13 @@ jobs:
           # (via --post-fix-report/--post-fix-exit) as an in-script gate BEFORE
           # any git add/commit, so a cheat opens no PR even if the step guard is
           # ever bypassed.
+          #
+          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
+          # drift-report.json — same integrity guarantee as the Assert step: the
+          # in-script predicate's sanctioned-target set must come from the copy
+          # the autofix LLM could not overwrite (CR round-3 F-A).
           npx tsx scripts/fix-drift.ts --create-pr \
+            --report "${PINNED_REPORT}" \
             --post-fix-report drift-report.post-fix.json \
             --post-fix-exit "${POST_FIX_EXIT}"
           HEAD_SHA="$(git rev-parse HEAD)"

@@ -1046,3 +1046,176 @@ describe("exit-code distinctness lock", () => {
     expect(new Set(codes).size).toBe(codes.length); // all distinct
   });
 });
+
+// ---------------------------------------------------------------------------
+// CR round-3 slot-3 LOW gaps — unrecognized collector exit code + `..`/absolute
+// canonicalization variants driven end-to-end through the predicate/runCli.
+// ---------------------------------------------------------------------------
+
+describe("unrecognized collector exit code fails closed → COLLECTOR_INFRA", () => {
+  // The `postFixCollectorExit !== 0` catch-all (COLLECTOR_INFRA / exit 15) had
+  // no locking test. Tests only fed 0/1/2/5. A future refactor could let an
+  // unknown exit fall through to a clean accept — this pins it closed.
+  for (const exit of [3, 7, 99]) {
+    it(`exit ${exit} (unrecognized) with a production change → COLLECTOR_INFRA / exit 15`, () => {
+      const verdict = evaluateDriftResolved({
+        changedFiles: ["src/helpers.ts"],
+        report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+        postFixCollectorExit: exit,
+        postFixCriticalCount: 0,
+      });
+      expect(verdict.resolved).toBe(false);
+      expect(verdict.reason).toBe(PredicateReason.COLLECTOR_INFRA);
+      expect(REASON_EXIT_CODE[verdict.reason]).toBe(15);
+    });
+  }
+});
+
+describe("`..`-segment and absolute path variants block/fail-closed THROUGH the predicate", () => {
+  it("a `..`-containing spelling of the SDK leg canonicalizes and BLOCKS (COMPARISON_LEG_ONLY)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/__tests__/drift/foo/../sdk-shapes.ts"],
+      report: report(),
+      postFixCollectorExit: 0,
+      postFixCriticalCount: 0,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.COMPARISON_LEG_ONLY);
+  });
+
+  it("an absolute changed-file path throws PredicateConfigError from evaluateDriftResolved", () => {
+    expect(() =>
+      evaluateDriftResolved({
+        changedFiles: ["/etc/passwd"],
+        report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+        postFixCollectorExit: 0,
+        postFixCriticalCount: 0,
+      }),
+    ).toThrow(PredicateConfigError);
+  });
+
+  it("a `..`-escaping changed-file path throws PredicateConfigError from evaluateDriftResolved", () => {
+    expect(() =>
+      evaluateDriftResolved({
+        changedFiles: ["src/../../etc/passwd"],
+        report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+        postFixCollectorExit: 0,
+        postFixCriticalCount: 0,
+      }),
+    ).toThrow(PredicateConfigError);
+  });
+});
+
+describe("runCli maps a repo-escaping/absolute changed-file to CONFIG_ERROR (exit 2)", () => {
+  let dir: string | null = null;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  // Drive an absolute/`..`-escaping path all the way through runCli. A supplied
+  // --changed-file cross-checks against git first, so an absolute path that git
+  // never reports would be rejected by the cross-check (still exit 2). To pin the
+  // fix #8 canonicalize-throw path specifically, we assert the CONFIG_ERROR exit.
+  it("runCli exits 2 (CONFIG_ERROR) when a --changed-file is an absolute path", () => {
+    dir = mkdtempSync(join(tmpdir(), "ws2-canon-"));
+    const preP = join(dir, "drift-report.json");
+    const postP = join(dir, "drift-report.post-fix.json");
+    writeFileSync(preP, JSON.stringify(report()), "utf-8");
+    writeFileSync(postP, JSON.stringify(report([])), "utf-8");
+    const code = runCli([
+      "--report",
+      preP,
+      "--post-fix-report",
+      postP,
+      "--post-fix-exit",
+      "0",
+      "--changed-file",
+      "/etc/passwd",
+    ]);
+    expect(code).toBe(REASON_EXIT_CODE[PredicateReason.CONFIG_ERROR]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CR round-3 F3 — readReport ENTRY-LEVEL validation aligned with
+// fix-drift.ts:readDriftReport. A structurally-valid report whose entries are
+// malformed at the fields the predicate reads must fail-closed with a DISTINCT,
+// NAMED PredicateConfigError (not a bare TypeError caught as an unnamed error).
+// ---------------------------------------------------------------------------
+
+describe("readReport entry-level validation (F3)", () => {
+  let dir: string | null = null;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  function writeAndRead(obj: unknown): void {
+    dir = mkdtempSync(join(tmpdir(), "ws2-f3-"));
+    const p = join(dir, "r.json");
+    writeFileSync(p, JSON.stringify(obj), "utf-8");
+    readReport(p);
+  }
+
+  it("throws a named PredicateConfigError when an entry is missing its diffs array", () => {
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [{ provider: "OpenAI", builderFile: "src/helpers.ts", typesFile: null }],
+      }),
+    ).toThrow(PredicateConfigError);
+  });
+
+  it('throws a named PredicateConfigError when "diffs" is present via the message', () => {
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [{ provider: "OpenAI", builderFile: "src/helpers.ts", typesFile: null }],
+      }),
+    ).toThrow(/diffs/);
+  });
+
+  it("throws when an entry has a non-string builderFile (cannot derive sanctioned set)", () => {
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [{ provider: "OpenAI", builderFile: 123, typesFile: null, diffs: [] }],
+      }),
+    ).toThrow(PredicateConfigError);
+  });
+
+  it("throws when an entry has an empty builderFile", () => {
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [{ provider: "OpenAI", builderFile: "", typesFile: null, diffs: [] }],
+      }),
+    ).toThrow(/builderFile/);
+  });
+
+  it("throws when an entry has a numeric typesFile (must be string or null)", () => {
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [{ provider: "OpenAI", builderFile: "src/helpers.ts", typesFile: 42, diffs: [] }],
+      }),
+    ).toThrow(/typesFile/);
+  });
+
+  it("throws when an entry is not an object", () => {
+    expect(() => writeAndRead({ timestamp: "t", entries: [null] })).toThrow(PredicateConfigError);
+  });
+
+  it("still ACCEPTS a well-formed report (empty entries + valid entries both OK)", () => {
+    expect(() => writeAndRead({ timestamp: "t", entries: [] })).not.toThrow();
+    expect(() =>
+      writeAndRead({
+        timestamp: "t",
+        entries: [
+          { provider: "OpenAI", builderFile: "src/helpers.ts", typesFile: null, diffs: [] },
+        ],
+      }),
+    ).not.toThrow();
+  });
+});

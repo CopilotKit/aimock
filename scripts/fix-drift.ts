@@ -29,11 +29,17 @@
  *     12 — SUPPRESSION_SUSPECTED         (allowlist / *.drift.ts assertion edited)
  *     13 — STILL_DIRTY                   (post-fix collector still reports critical drift)
  *     14 — QUARANTINE_AFTER_FIX          (post-fix collector returned quarantine)
- *     15 — COLLECTOR_INFRA               (post-fix collector infra failure)
+ *     15 — COLLECTOR_INFRA               (post-fix collector infra failure, OR the
+ *                                         MANDATORY post-fix args were not supplied)
  *     16 — PRODUCTION_CHANGE_OFF_TARGET  (production change not in report's target set)
+ *     17 — UNSANCTIONED_CHANGE           (a changed file is not on the allowlist)
  *   The legacy exit 4 (no source files changed) is subsumed by 10/11. The
- *   predicate runs ONLY when the workflow supplies --post-fix-report and
- *   --post-fix-exit; without them createPr falls back to the legacy exit-4 guard.
+ *   drift-success predicate is MANDATORY in --create-pr mode: BOTH
+ *   --post-fix-report and --post-fix-exit are required (there is no legacy
+ *   no-post-fix fallback — a missing pair fails closed to COLLECTOR_INFRA rather
+ *   than opening a PR). The real workflow also supplies --report pointing at the
+ *   PINNED pre-fix report (see .github/workflows/fix-drift.yml) so the
+ *   sanctioned-target set cannot be forged by the autofix LLM.
  */
 
 import { spawn, execSync, execFileSync } from "node:child_process";
@@ -45,6 +51,10 @@ import {
   evaluateDriftResolved,
   readReport as readPostFixReport,
   countCriticalDiffs,
+  canonicalizePath,
+  gitChangedFiles,
+  isProductionFile,
+  sanctionedTargets,
   REASON_EXIT_CODE,
   PredicateReason,
 } from "./drift-success-predicate.js";
@@ -639,36 +649,72 @@ export interface PostFixCollectorResult {
   exitCode: number;
 }
 
+/**
+ * The GATED commit groups for a RESOLVED verdict (CR round-3 F-C / F2). Given
+ * the canonicalized changed-file set and the report's sanctioned-target set,
+ * partition into the ONLY groups createPr is permitted to stage:
+ *   - `builderFiles`  — production mock-builder source (always allowlisted).
+ *   - `testFiles`     — ONLY report-named fixture targets under src/__tests__/
+ *                       (any other test file would have BLOCKED at the gate, so
+ *                       it must never be staged).
+ *   - `skillFiles`    — skills/ files (NOT allowlisted by the predicate; a
+ *                       RESOLVED verdict implies this is empty — kept for
+ *                       defensive completeness).
+ * `stragglers` is every canonicalized changed file that is NOT in one of those
+ * gated groups. On a RESOLVED verdict it MUST be empty (the predicate allowlist
+ * already rejected any unclassified file); createPr never `git add`s it. The
+ * version bump + CHANGELOG are added separately by exact path and are not part
+ * of this changed-file partition.
+ */
+export function gatedCommitFiles(
+  changedFiles: string[],
+  sanctioned: ReadonlySet<string>,
+): {
+  builderFiles: string[];
+  testFiles: string[];
+  skillFiles: string[];
+  stragglers: string[];
+} {
+  const builderFiles = changedFiles.filter(isProductionFile);
+  const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/") && sanctioned.has(f));
+  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
+  const gated = new Set([...builderFiles, ...testFiles, ...skillFiles]);
+  const stragglers = changedFiles.filter((f) => !gated.has(f));
+  return { builderFiles, testFiles, skillFiles, stragglers };
+}
+
 function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
   const stamp = todayStamp();
 
   // Detect uncommitted changes (staged + unstaged) BEFORE any git write ops so
   // the drift-success predicate can gate PR-open ahead of branch/commit/push.
-  const changedFiles = getChangedFiles();
-
-  const builderFiles = changedFiles.filter(
-    (f) => f.startsWith("src/") && !f.startsWith("src/__tests__/"),
-  );
-  const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/"));
-  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
+  //
+  // Use the predicate's OWN `gitChangedFiles()` (which runs
+  // `git -c core.quotePath=false status --porcelain`) and canonicalize every
+  // path with the predicate's `canonicalizePath` (CR round-3 F-C). This keeps
+  // classification/staging BYTE-FOR-BYTE identical to what the predicate scored:
+  // both callers now read the same git invocation and the same canonical spelling,
+  // so a non-ASCII/C-quoted path or a `./`-prefixed spelling cannot be classified
+  // one way by the verdict and staged another way here.
+  const changedFiles = gitChangedFiles().map(canonicalizePath);
 
   // PR-OPEN GATE (WS-2). When the workflow supplies the post-fix collector
   // result, the drift-success predicate is the authoritative decision: it
   // rejects fixture-relaxation cheats (a diff that changed ONLY comparison-leg
   // files, or silenced the detector) and drifts that were not actually
   // resolved. This runs BEFORE any git add/commit — a blocked verdict opens no
-  // PR (and therefore never reaches auto-merge). Without --post-fix-* args,
-  // fall back to the legacy "no source files changed" guard (exit 4).
-  // FIX #5 — the drift-success predicate is MANDATORY. The old legacy fallback
-  // (accept a PR when `builderFiles.length || testFiles.length`) re-opened the
-  // original fixture-only cheat: a run that changed only comparison-leg test
-  // files satisfied `testFiles.length > 0` and sailed through to a PR. There is
-  // no safe "no post-fix result" path — without the authoritative post-fix
+  // PR (and therefore never reaches auto-merge).
+  // FIX #5 — the drift-success predicate is MANDATORY; there is NO legacy
+  // no-post-fix fallback. The old fallback (accept a PR when
+  // `builderFiles.length || testFiles.length`) re-opened the original
+  // fixture-only cheat: a run that changed only comparison-leg test files
+  // satisfied `testFiles.length > 0` and sailed through to a PR. There is no
+  // safe "no post-fix result" path — without the authoritative post-fix
   // collector signal we cannot tell a real fix from a relaxation, so we
   // fail-closed to human review (COLLECTOR_INFRA) rather than open a PR. The
-  // real workflow (fix-drift.yml "Create PR" step) always supplies
-  // --post-fix-report/--post-fix-exit, so this only fires on a misconfigured
-  // invocation — which must NOT auto-merge.
+  // real workflow (fix-drift.yml "Create PR" step) ALWAYS supplies --report
+  // (the PINNED pre-fix report), --post-fix-report, and --post-fix-exit, so this
+  // only fires on a misconfigured invocation — which must NOT auto-merge.
   if (!postFix) {
     console.error(
       "ERROR: PR-open gate requires the post-fix collector result " +
@@ -724,6 +770,17 @@ function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
     console.log(`Created branch ${branchName}`);
   }
 
+  // Stage ONLY the GATED set (CR round-3 F-C / F2). The predicate already
+  // verified that EVERY changed file is on the sanctioned allowlist — production
+  // mock-builder source OR a fixture the report explicitly named. We stage
+  // exactly that allowlisted set here (grouped by commit purpose) and NEVER a
+  // catch-all `git add` of "whatever is still dirty": a straggler-add re-widened
+  // the PR past the verdict (any unclassified file the predicate did not judge —
+  // an unnamed fixture, a config file — would have BLOCKED at the gate, so
+  // sweeping it in AFTER the pass silently defeats the allowlist).
+  const sanctioned = sanctionedTargets(report);
+  const { builderFiles, testFiles, skillFiles } = gatedCommitFiles(changedFiles, sanctioned);
+
   if (builderFiles.length > 0) {
     execFileSafe("git", ["add", ...builderFiles]);
     execFileSafe("git", ["commit", "-m", "fix: auto-remediate API drift in builder functions"]);
@@ -743,6 +800,10 @@ function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
     ]);
   }
 
+  // The version bump + CHANGELOG are an EXPLICIT, gated part of the fix set — a
+  // release always accompanies an auto-remediation — not an unclassified
+  // straggler. They are workflow-authored (never LLM-authored) and staged by an
+  // exact path list, so they do not re-open the allowlist.
   try {
     const newVersion = patchBumpVersion();
     console.log(`Bumped version to ${newVersion}`);
@@ -750,19 +811,12 @@ function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
     addChangelogEntry(report, newVersion);
     console.log("Added CHANGELOG.md entry");
 
-    // Always commit version bump + changelog
+    // Commit version bump + changelog by EXACT path (not a catch-all).
     execFileSafe("git", ["add", "package.json", "CHANGELOG.md"]);
     execFileSafe("git", ["commit", "-m", `chore: bump version to ${newVersion}`, "--allow-empty"]);
   } catch (err) {
     console.warn("Version bump failed, skipping:", err);
     // Continue with PR creation without version bump
-  }
-
-  // Catch any remaining files
-  const remaining = getChangedFiles();
-  if (remaining.length > 0) {
-    execFileSafe("git", ["add", ...remaining]);
-    execFileSafe("git", ["commit", "-m", "fix: remaining drift remediation changes"]);
   }
 
   execFileSafe("git", ["push", "-u", "origin", branchName]);

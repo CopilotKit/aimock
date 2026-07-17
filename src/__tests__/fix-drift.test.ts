@@ -41,12 +41,14 @@ import {
   parseMode,
   hasPostFixArgs,
   getChangedFiles,
+  gatedCommitFiles,
   affectedSkillSections,
   BUILDER_TO_SKILL_SECTION,
   truncateBody,
   GH_BODY_MAX,
   GH_BODY_SAFE_MAX,
 } from "../../scripts/fix-drift.js";
+import { sanctionedTargets } from "../../scripts/drift-success-predicate.js";
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -845,6 +847,95 @@ describe("getChangedFiles", () => {
 // ---------------------------------------------------------------------------
 // affectedSkillSections
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CR round-3 F-C / F2 — gatedCommitFiles: createPr stages ONLY the allowlisted
+// set (production source + report-named fixture targets), NEVER a straggler
+// catch-all. A file the predicate would have blocked (config/manifest/unnamed
+// fixture) must land in `stragglers`, which createPr never `git add`s.
+// ---------------------------------------------------------------------------
+
+describe("gatedCommitFiles (F-C: no straggler catch-all)", () => {
+  const sanctioned = new Set([
+    "src/helpers.ts",
+    "src/__tests__/drift/model-registry.ts",
+    "src/types.ts",
+  ]);
+
+  it("groups production source into builderFiles", () => {
+    const g = gatedCommitFiles(["src/helpers.ts", "src/types.ts"], sanctioned);
+    expect(g.builderFiles).toEqual(["src/helpers.ts", "src/types.ts"]);
+    expect(g.stragglers).toEqual([]);
+  });
+
+  it("stages a report-named fixture target as a testFile", () => {
+    const g = gatedCommitFiles(["src/__tests__/drift/model-registry.ts"], sanctioned);
+    expect(g.testFiles).toEqual(["src/__tests__/drift/model-registry.ts"]);
+    expect(g.stragglers).toEqual([]);
+  });
+
+  it("EXCLUDES an UNSANCTIONED src/__tests__ file — it lands in stragglers, never testFiles", () => {
+    const g = gatedCommitFiles(["src/__tests__/drift/sdk-shapes.ts"], sanctioned);
+    expect(g.testFiles).toEqual([]);
+    expect(g.stragglers).toEqual(["src/__tests__/drift/sdk-shapes.ts"]);
+  });
+
+  it("puts package.json / lockfiles / config in stragglers (never staged)", () => {
+    const g = gatedCommitFiles(
+      ["src/helpers.ts", "package.json", "pnpm-lock.yaml", "tsconfig.json"],
+      sanctioned,
+    );
+    expect(g.builderFiles).toEqual(["src/helpers.ts"]);
+    expect(g.stragglers).toEqual(["package.json", "pnpm-lock.yaml", "tsconfig.json"]);
+  });
+
+  it("stragglers is empty for a clean allowlisted set (the RESOLVED-verdict invariant)", () => {
+    const g = gatedCommitFiles(
+      ["src/helpers.ts", "src/__tests__/drift/model-registry.ts"],
+      sanctioned,
+    );
+    expect(g.stragglers).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CR round-3 F-A — the sanctioned/allowlist set is derived SOLELY from the
+// (pinned) report object passed to createPr, NOT from any on-disk file. The
+// workflow pins the pre-fix report OUTSIDE the LLM-writable repo checkout and
+// passes THAT copy via --report; here we prove that a DIFFERENT on-disk report
+// cannot expand the allowlist, because the set is a pure function of the passed
+// report — the file the LLM could overwrite has no bearing on the sanctioned set.
+// ---------------------------------------------------------------------------
+
+describe("F-A: sanctioned set comes from the passed (pinned) report, not on-disk", () => {
+  it("sanctionedTargets is a pure function of the report — a forged on-disk file cannot widen it", () => {
+    // The PINNED report names only the production builder as a target.
+    const pinned = makeReport({
+      entries: [makeEntry({ builderFile: "src/helpers.ts", typesFile: null })],
+    });
+    // A FORGED report (what an autofix LLM might write to drift-report.json in the
+    // repo) tries to sanction the SDK-shape fixture as a target.
+    const forged = makeReport({
+      entries: [makeEntry({ builderFile: "src/__tests__/drift/sdk-shapes.ts", typesFile: null })],
+    });
+
+    const pinnedSet = sanctionedTargets(pinned);
+    const forgedSet = sanctionedTargets(forged);
+
+    // The sanctioned set is derived purely from the object passed in.
+    expect(pinnedSet.has("src/helpers.ts")).toBe(true);
+    expect(pinnedSet.has("src/__tests__/drift/sdk-shapes.ts")).toBe(false);
+    // The forged set (only relevant if createPr were fed the LLM-writable file)
+    // would sanction the fixture — which is EXACTLY why the workflow must pin the
+    // pre-fix report and pass THAT copy, never the in-repo drift-report.json.
+    expect(forgedSet.has("src/__tests__/drift/sdk-shapes.ts")).toBe(true);
+    // The two sets are disjoint on the fixture: pinning the report is what keeps
+    // the fixture OUT of the allowlist.
+    expect(pinnedSet.has("src/__tests__/drift/sdk-shapes.ts")).not.toBe(
+      forgedSet.has("src/__tests__/drift/sdk-shapes.ts"),
+    );
+  });
+});
 
 describe("affectedSkillSections", () => {
   it("returns empty array when no builder files are present", () => {

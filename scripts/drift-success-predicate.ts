@@ -677,6 +677,36 @@ export function readReport(path: string): DriftReport {
       `Drift report at ${path} is missing a string "timestamp" — corrupt/truncated report, failing closed`,
     );
   }
+
+  // F3 — ENTRY-LEVEL validation, aligned with fix-drift.ts:readDriftReport. The
+  // predicate reads `entry.builderFile` / `entry.typesFile` (sanctionedTargets)
+  // and `entry.diffs` (countCriticalDiffs); a structurally-valid report whose
+  // entries are malformed at those fields would otherwise throw a bare TypeError
+  // deep inside classification, caught only by the outer runCli try/catch and
+  // surfaced as an UNNAMED config-error. Validate here so every malformed shape
+  // fails-closed with a DISTINCT, named PredicateConfigError → CONFIG_ERROR.
+  const entries = (parsed as { entries: unknown[] }).entries;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i] as Record<string, unknown> | null | undefined;
+    if (!entry || typeof entry !== "object") {
+      throw new PredicateConfigError(`Drift report at ${path} entry[${i}] is not an object`);
+    }
+    if (typeof entry.builderFile !== "string" || entry.builderFile === "") {
+      throw new PredicateConfigError(
+        `Drift report at ${path} entry[${i}] has a missing/empty "builderFile" — cannot derive the sanctioned target set, failing closed`,
+      );
+    }
+    if (entry.typesFile !== null && typeof entry.typesFile !== "string") {
+      throw new PredicateConfigError(
+        `Drift report at ${path} entry[${i}] "typesFile" must be a string or null, failing closed`,
+      );
+    }
+    if (!Array.isArray(entry.diffs)) {
+      throw new PredicateConfigError(
+        `Drift report at ${path} entry[${i}] is missing a "diffs" array — cannot score criticalCount, failing closed`,
+      );
+    }
+  }
   return parsed as DriftReport;
 }
 
