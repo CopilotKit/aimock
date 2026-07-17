@@ -32,8 +32,8 @@ import {
   infraIndicatorSample,
 } from "../../scripts/drift-report-collector.js";
 import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
-import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS } from "./drift/surface-registry.js";
-import { existsSync } from "node:fs";
+import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS, isKnownSurface } from "./drift/surface-registry.js";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { isBaseReportReusable } from "../../scripts/drift-delta.js";
 import type { DriftReport } from "../../scripts/drift-types.js";
@@ -1381,30 +1381,45 @@ describe("WS-5 — previously-quarantined surfaces now route to exit-2 entries",
   // A drift block for a surface that today is NOT a PROVIDER_MAP key. On old
   // code these route to a quarantine (exit 5) because extractProviderName
   // returns null. With the surface marker + registry they become auto-fixable
-  // exit-2 entries. (≥3 surfaces to satisfy the ≥3-cell rule.)
+  // exit-2 entries.
+  //
+  // CRITICAL — each title below is NEUTRAL PROSE that contains NO registry
+  // provider label (nor a legacy alias) as a substring, in either the ancestor
+  // title OR the emitted context. That is deliberate: it means the legacy
+  // `extractProviderName` fallback returns null for every one of these, so the
+  // ONLY thing that can route them to an entry is the `Surface:` marker seam. If
+  // the WS-5 seam is reverted, ALL of these go RED (verified). This closes the
+  // F1 gap where fal/elevenlabs stayed green on revert because their titles
+  // happened to contain the legacy label substring. (≥3 cells; 4 for margin.)
   const CASES: { surface: string; title: string; provider: string; builderFile: string }[] = [
     {
-      surface: "cohere-chat",
-      title: "Cohere /v2/chat (non-streaming)",
-      provider: "Cohere Chat",
-      builderFile: "src/cohere.ts",
+      surface: "moderation",
+      title: "content-safety endpoint 400 payload",
+      provider: "OpenAI Moderations",
+      builderFile: "src/moderation.ts",
     },
     {
-      surface: "fal-sync",
-      title: "fal.ai sync-run (image payload)",
-      provider: "fal.ai sync-run",
-      builderFile: "src/fal.ts",
+      surface: "video",
+      title: "async media generation status poll",
+      provider: "OpenAI Video",
+      builderFile: "src/video.ts",
     },
     {
-      surface: "elevenlabs",
-      title: "ElevenLabs /v1/sound-generation 400 error",
-      provider: "ElevenLabs",
-      builderFile: "src/elevenlabs-audio.ts",
+      surface: "transcription",
+      title: "audio-to-text multipart upload",
+      provider: "Transcription",
+      builderFile: "src/transcription.ts",
+    },
+    {
+      surface: "rerank",
+      title: "document relevance scoring endpoint",
+      provider: "Cohere Rerank",
+      builderFile: "src/rerank.ts",
     },
   ];
 
   for (const c of CASES) {
-    it(`RED→GREEN: "${c.surface}" drift → exit-2 entry (was exit-5 quarantine)`, () => {
+    it(`RED→GREEN: "${c.surface}" drift → exit-2 entry (marker-only, legacy label CANNOT rescue)`, () => {
       const block = formatDriftReport(c.title, [SAMPLE_DIFF], c.surface);
       const result = makeResult([
         makeAssertion({
@@ -1413,6 +1428,12 @@ describe("WS-5 — previously-quarantined surfaces now route to exit-2 entries",
           failureMessages: [`AssertionError: ${block}`],
         }),
       ]);
+
+      // Guard the guard: the neutral prose title must NOT be resolvable via the
+      // legacy provider-label path, so the marker seam is genuinely required. If
+      // this ever starts returning non-null, the RED→GREEN below is a false lock.
+      expect(extractProviderName(`${c.title} drift`)).toBeNull();
+      expect(extractProviderName(c.title)).toBeNull();
 
       const { entries, quarantine } = collectDriftEntries(result);
       // The fix: routed to a trustworthy entry, NOT quarantined.
@@ -1497,6 +1518,35 @@ describe("WS-5 — unknown surface slug fails LOUD (throws), never silent quaran
       /unknown drift surface "not-a-real-surface"/,
     );
   });
+
+  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"])(
+    "throws (not garbage entry) when the marker slug is the Object.prototype member %s",
+    (protoSlug) => {
+      // A prototype-chain bracket lookup (SURFACE_REGISTRY[slug]) would resolve
+      // these to a truthy INHERITED member and skip the throw, emitting a
+      // DriftEntry with builderFile: undefined. The Object.hasOwn / isKnownSurface
+      // guard must treat them as unknown and THROW loudly.
+      const block =
+        `\nAPI DRIFT DETECTED: Prototype Slug\n` +
+        `  Surface: ${protoSlug}\n\n` +
+        "  1. [critical] LLMOCK DRIFT — mismatch detected\n" +
+        "     Path:    a.b.c\n" +
+        "     SDK:     null\n" +
+        "     Real:    null\n" +
+        "     Mock:    <absent>\n";
+      const result = makeResult([
+        makeAssertion({
+          ancestorTitles: ["Prototype Slug drift"],
+          title: "shape matches SDK",
+          failureMessages: [`AssertionError: ${block}`],
+        }),
+      ]);
+
+      expect(() => collectDriftEntries(result)).toThrow(
+        new RegExp(`Unknown drift surface "${protoSlug.replace(/[$]/g, "\\$&")}"`),
+      );
+    },
+  );
 });
 
 describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () => {
@@ -1549,13 +1599,126 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     // No conclusion field → falls back to undefined → not reusable.
     expect(isBaseReportReusable(legacy, legacy.conclusion, true)).toBe(false);
   });
+
+  it("generatedAt drives sameUtcDay staleness: same-day report reuses, prior-day does not", () => {
+    // Mirrors the sameUtcDay derivation the drift workflow computes from
+    // report.generatedAt (.github/workflows/test-drift.yml). This locks the
+    // *semantics* of generatedAt (a stale-day base is rejected), not merely that
+    // the field is written. A clean report identical in every way EXCEPT its
+    // generatedAt day must flip reusability.
+    const sameUtcDay = (generatedAt: string, now: Date): boolean => {
+      const g = new Date(generatedAt);
+      return (
+        g.getUTCFullYear() === now.getUTCFullYear() &&
+        g.getUTCMonth() === now.getUTCMonth() &&
+        g.getUTCDate() === now.getUTCDate()
+      );
+    };
+
+    const now = new Date("2026-07-15T12:00:00.000Z");
+    const cleanReport = (generatedAt: string): DriftReport => ({
+      timestamp: generatedAt,
+      generatedAt,
+      conclusion: conclusionForExitCode(0),
+      entries: [
+        {
+          provider: "OpenAI Chat",
+          scenario: "non-streaming text",
+          builderFile: "src/helpers.ts",
+          builderFunctions: ["buildTextCompletion"],
+          typesFile: "src/types.ts",
+          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+          diffs: [],
+        },
+      ],
+    });
+
+    // Same UTC day (later hour, same date) → derivation true → reusable.
+    const today = cleanReport("2026-07-15T03:00:00.000Z");
+    expect(sameUtcDay(today.generatedAt!, now)).toBe(true);
+    expect(isBaseReportReusable(today, today.conclusion, sameUtcDay(today.generatedAt!, now))).toBe(
+      true,
+    );
+
+    // Prior UTC day → derivation false → NOT reusable, despite an otherwise
+    // identical clean report. generatedAt is what makes the difference.
+    const yesterday = cleanReport("2026-07-14T23:59:59.000Z");
+    expect(sameUtcDay(yesterday.generatedAt!, now)).toBe(false);
+    expect(
+      isBaseReportReusable(
+        yesterday,
+        yesterday.conclusion,
+        sameUtcDay(yesterday.generatedAt!, now),
+      ),
+    ).toBe(false);
+  });
 });
 
+/**
+ * Statically extract every `surface` slug that a `*.drift.ts` emitter passes as
+ * the THIRD argument of `formatDriftReport(context, diffs, surface)`.
+ *
+ * This scans the real source via the TypeScript AST (NOT regex/text lexing — a
+ * text scan would mis-hit `formatDriftReport` inside strings/comments and cannot
+ * reliably pick the 3rd argument across multiline calls). Only string-literal
+ * 3rd args are collected: a 2-arg call (legacy, no marker — e.g. models.drift.ts)
+ * or a non-literal arg contributes no slug and is intentionally skipped.
+ */
+function collectEmittedSurfaceSlugs(): { slugs: Set<string>; scannedFiles: string[] } {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ts = require("typescript") as typeof import("typescript");
+  const driftDir = resolve(__dirname, "drift");
+  const files = readdirSync(driftDir).filter((f) => f.endsWith(".drift.ts"));
+  const slugs = new Set<string>();
+
+  for (const file of files) {
+    const abs = resolve(driftDir, file);
+    const source = readFileSync(abs, "utf8");
+    const sf = ts.createSourceFile(abs, source, ts.ScriptTarget.Latest, true);
+
+    const visit = (node: import("typescript").Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "formatDriftReport" &&
+        node.arguments.length >= 3
+      ) {
+        const third = node.arguments[2];
+        if (ts.isStringLiteral(third) || ts.isNoSubstitutionTemplateLiteral(third)) {
+          slugs.add(third.text);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return { slugs, scannedFiles: files };
+}
+
 describe("WS-5 — SURFACE_REGISTRY coverage & integrity", () => {
-  it("every KNOWN_SURFACE_SLUGS entry is a registry key", () => {
-    for (const slug of KNOWN_SURFACE_SLUGS) {
-      expect(SURFACE_REGISTRY[slug]).toBeDefined();
-    }
+  it("every slug an emitter passes to formatDriftReport is a registered surface", () => {
+    // Independent derivation (F2/F3): scan the ACTUAL emitter call sites rather
+    // than iterating the registry's own keys (which is a tautology). This locks
+    // the "every emitter is registered" invariant at TEST time, so a new
+    // unregistered emitter fails CI even on a credential-less run where no drift
+    // is ever emitted and the collector's runtime throw is never reached.
+    const { slugs, scannedFiles } = collectEmittedSurfaceSlugs();
+    expect(scannedFiles.length, "found *.drift.ts files to scan").toBeGreaterThan(0);
+    expect(slugs.size, "found at least one emitted surface slug").toBeGreaterThan(0);
+
+    const unregistered = [...slugs].filter((slug) => !isKnownSurface(slug));
+    expect(
+      unregistered,
+      `emitter slug(s) missing from SURFACE_REGISTRY: ${unregistered.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("SURFACE_REGISTRY has no orphan slugs (every registered surface is emitted)", () => {
+    // Reverse direction: an entry no emitter uses is dead weight. Kept as a
+    // separate assertion so a future intentional pre-registration is easy to see.
+    const { slugs } = collectEmittedSurfaceSlugs();
+    const orphans = KNOWN_SURFACE_SLUGS.filter((slug) => !slugs.has(slug));
+    expect(orphans, `registered but never emitted: ${orphans.join(", ")}`).toEqual([]);
   });
 
   it("every registry entry resolves to an existing builderFile with non-empty builderFunctions", () => {

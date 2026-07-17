@@ -22,7 +22,7 @@ import { existsSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SURFACE_REGISTRY } from "../src/__tests__/drift/surface-registry.js";
+import { SURFACE_REGISTRY, isKnownSurface } from "../src/__tests__/drift/surface-registry.js";
 import type { SurfaceMapping } from "../src/__tests__/drift/surface-registry.js";
 
 import type {
@@ -763,19 +763,30 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
       let provider: string;
       let mapping: ProviderMapping;
       if (surfaceKey !== null) {
-        const registered = SURFACE_REGISTRY[surfaceKey];
-        if (!registered) {
+        // `surfaceKey` is untrusted text (extractSurfaceKey → `\S+`). Guard with
+        // own-property check BEFORE indexing: a plain-object bracket lookup walks
+        // the prototype chain, so a slug like `constructor`/`toString`/`__proto__`
+        // would otherwise resolve to a truthy inherited member and skip the throw,
+        // emitting a garbage entry (`builderFile: undefined`). isKnownSurface uses
+        // Object.prototype.hasOwnProperty.call — the same guard the emit side uses.
+        if (!isKnownSurface(surfaceKey)) {
           throw new Error(
             `Unknown drift surface "${surfaceKey}" — add it to SURFACE_REGISTRY ` +
               `in src/__tests__/drift/surface-registry.ts (test: ${testName})`,
           );
         }
+        const registered = SURFACE_REGISTRY[surfaceKey];
         provider = registered.provider;
         mapping = registered;
       } else {
         // Legacy no-marker fallback: match the human provider label.
         const label = extractProviderName(ancestorText) ?? extractProviderName(parsed.context);
-        const legacyMapping = label ? PROVIDER_LABEL_MAP[label] : undefined;
+        // Own-property guard for parity with the marker-path lookup above: even
+        // though extractProviderName only returns real PROVIDER_LABEL_MAP keys
+        // today, indexing without hasOwn would resolve prototype members
+        // (`constructor`, etc.) to a truthy value if such a label were ever added.
+        const legacyMapping =
+          label && Object.hasOwn(PROVIDER_LABEL_MAP, label) ? PROVIDER_LABEL_MAP[label] : undefined;
         if (!label || !legacyMapping) {
           // Parseable drift block we cannot route to a source file. Held for
           // review (exit 5) rather than crashing the whole run. O-1: capture the
