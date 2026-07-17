@@ -19,6 +19,21 @@
  *   3 — unhandled error (e.g. bad arguments, missing report, git/gh command failure)
  *   124 — Claude Code timed out (default mode)
  *   In default mode, the exit code is passed through from Claude Code.
+ *
+ *   In --create-pr mode, the drift-success predicate (drift-success-predicate.ts)
+ *   gates PR creation BEFORE any git add/commit. When it rejects the fix (e.g. a
+ *   fixture-relaxation cheat rather than a real mock change), createPr exits with
+ *   the predicate's reason code instead of opening a PR:
+ *     10 — NO_PRODUCTION_CHANGE          (zero production mock-builder files changed)
+ *     11 — COMPARISON_LEG_ONLY           (only comparison-leg files changed — the cheat)
+ *     12 — SUPPRESSION_SUSPECTED         (allowlist / *.drift.ts assertion edited)
+ *     13 — STILL_DIRTY                   (post-fix collector still reports critical drift)
+ *     14 — QUARANTINE_AFTER_FIX          (post-fix collector returned quarantine)
+ *     15 — COLLECTOR_INFRA               (post-fix collector infra failure)
+ *     16 — PRODUCTION_CHANGE_OFF_TARGET  (production change not in report's target set)
+ *   The legacy exit 4 (no source files changed) is subsumed by 10/11. The
+ *   predicate runs ONLY when the workflow supplies --post-fix-report and
+ *   --post-fix-exit; without them createPr falls back to the legacy exit-4 guard.
  */
 
 import { spawn, execSync, execFileSync } from "node:child_process";
@@ -26,6 +41,12 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  evaluateDriftResolved,
+  readReport as readPostFixReport,
+  countCriticalDiffs,
+  REASON_EXIT_CODE,
+} from "./drift-success-predicate.js";
 import type { DriftReport, DriftSeverity } from "./drift-types.js";
 
 // ---------------------------------------------------------------------------
@@ -604,8 +625,67 @@ export function getChangedFiles(): string[] {
   return exec("git status --porcelain").split("\n").filter(Boolean).map(parsePorcelainLine);
 }
 
-function createPr(report: DriftReport): void {
+/**
+ * Optional post-fix collector result, supplied by the workflow so createPr does
+ * not re-shell the (2-3 min) collector. When present, the drift-success
+ * predicate is the authoritative PR-open gate; when absent, createPr falls back
+ * to the legacy "no source files changed" guard (exit 4).
+ */
+export interface PostFixCollectorResult {
+  /** Parsed post-fix drift report (from --post-fix-report). */
+  report: DriftReport;
+  /** Exit code of the re-run collector (from --post-fix-exit). */
+  exitCode: number;
+}
+
+function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
   const stamp = todayStamp();
+
+  // Detect uncommitted changes (staged + unstaged) BEFORE any git write ops so
+  // the drift-success predicate can gate PR-open ahead of branch/commit/push.
+  const changedFiles = getChangedFiles();
+
+  const builderFiles = changedFiles.filter(
+    (f) => f.startsWith("src/") && !f.startsWith("src/__tests__/"),
+  );
+  const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/"));
+  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
+
+  // PR-OPEN GATE (WS-2). When the workflow supplies the post-fix collector
+  // result, the drift-success predicate is the authoritative decision: it
+  // rejects fixture-relaxation cheats (a diff that changed ONLY comparison-leg
+  // files, or silenced the detector) and drifts that were not actually
+  // resolved. This runs BEFORE any git add/commit — a blocked verdict opens no
+  // PR (and therefore never reaches auto-merge). Without --post-fix-* args,
+  // fall back to the legacy "no source files changed" guard (exit 4).
+  if (postFix) {
+    const verdict = evaluateDriftResolved({
+      changedFiles,
+      report,
+      postFixCollectorExit: postFix.exitCode,
+      postFixCriticalCount: countCriticalDiffs(postFix.report),
+    });
+    if (!verdict.resolved) {
+      console.error(`ERROR: Drift NOT resolved [${verdict.reason}]: ${verdict.detail}`);
+      if (verdict.offendingFiles.length > 0) {
+        console.error(`Offending files: ${verdict.offendingFiles.join(", ")}`);
+      }
+      console.error("Aborting PR creation — this fix will be routed to human review.");
+      console.log(`reason=${verdict.reason}`);
+      process.exit(REASON_EXIT_CODE[verdict.reason]);
+    }
+    console.log(`Drift-success predicate: RESOLVED — ${verdict.detail}`);
+  } else {
+    // Legacy guard: abort if no source files changed (a version-bump-only PR
+    // would be misleading). Superseded by the predicate above when present.
+    if (builderFiles.length === 0 && testFiles.length === 0) {
+      console.error(
+        "ERROR: No source files changed. Claude Code may not have made any fixes, " +
+          "or all changes were reverted during verification. Aborting PR creation.",
+      );
+      process.exit(4); // no source files changed (distinct from exit 2 = critical drift)
+    }
+  }
 
   // Determine branch name
   let currentBranch: string;
@@ -623,24 +703,6 @@ function createPr(report: DriftReport): void {
   if (branchName !== currentBranch) {
     execFileSafe("git", ["checkout", "-b", branchName]);
     console.log(`Created branch ${branchName}`);
-  }
-
-  // Stage and commit in groups — detect uncommitted changes (staged + unstaged)
-  const changedFiles = getChangedFiles();
-
-  const builderFiles = changedFiles.filter(
-    (f) => f.startsWith("src/") && !f.startsWith("src/__tests__/"),
-  );
-  const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/"));
-  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
-
-  // Abort if no source files were changed — a version-bump-only PR would be misleading
-  if (builderFiles.length === 0 && testFiles.length === 0) {
-    console.error(
-      "ERROR: No source files changed. Claude Code may not have made any fixes, " +
-        "or all changes were reverted during verification. Aborting PR creation.",
-    );
-    process.exit(4); // no source files changed (distinct from exit 2 = critical drift)
   }
 
   if (builderFiles.length > 0) {
@@ -826,7 +888,30 @@ async function main(): Promise<void> {
   console.log(`Loaded drift report: ${report.entries.length} entries from ${report.timestamp}`);
 
   if (mode === "pr") {
-    createPr(report);
+    // Parse the optional post-fix collector result. When BOTH flags are
+    // supplied, the drift-success predicate gates PR creation. If only one is
+    // supplied the args are malformed — fail rather than silently skip the gate.
+    const postFixReportIdx = args.indexOf("--post-fix-report");
+    const postFixExitIdx = args.indexOf("--post-fix-exit");
+    const hasPostFixReport = postFixReportIdx !== -1 && args[postFixReportIdx + 1] !== undefined;
+    const hasPostFixExit = postFixExitIdx !== -1 && args[postFixExitIdx + 1] !== undefined;
+
+    let postFix: PostFixCollectorResult | undefined;
+    if (hasPostFixReport || hasPostFixExit) {
+      if (!hasPostFixReport || !hasPostFixExit) {
+        throw new Error(
+          "--post-fix-report and --post-fix-exit must be supplied together (the drift-success predicate needs both)",
+        );
+      }
+      const postFixExit = Number(args[postFixExitIdx + 1]);
+      if (!Number.isInteger(postFixExit)) {
+        throw new Error(`--post-fix-exit must be an integer, got "${args[postFixExitIdx + 1]}"`);
+      }
+      const postFixReport = readPostFixReport(resolve(args[postFixReportIdx + 1]));
+      postFix = { report: postFixReport, exitCode: postFixExit };
+    }
+
+    createPr(report, postFix);
   } else {
     const prompt = buildPrompt(report);
     console.log("Invoking Claude Code CLI...");
