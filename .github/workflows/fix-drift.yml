@@ -562,6 +562,7 @@ jobs:
             # auto-fix tried to game the drift detector rather than fix the mock.
             comparison-leg-only)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed ONLY comparison-leg fixtures — a fixture-relaxation cheat, NOT a real mock fix. See run logs for the offending files)";;
             suppression-suspected) DETAIL=" (🚨 NEEDS HUMAN: auto-fix edited the drift allowlist or a *.drift.ts assertion — silencing the detector, never a valid fix. See run logs)";;
+            unsanctioned-change)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed a file NOT on the sanctioned allowlist — deps/config/manifests, unrelated tests, or an unnamed fixture that could game the collector. See run logs for the offending files)";;
             no-production-change) DETAIL=" (NEEDS HUMAN: auto-fix changed zero production mock-builder files — nothing shippable)";;
             still-dirty)          DETAIL=" (NEEDS HUMAN: post-fix collector still reports critical drift — the fix did not resolve it)";;
             quarantine-after-fix) DETAIL=" (NEEDS HUMAN: post-fix collector returned quarantine — unparseable/untrusted output after the fix)";;

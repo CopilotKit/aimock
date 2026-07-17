@@ -678,12 +678,23 @@ function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
     console.log(`reason=${PredicateReason.COLLECTOR_INFRA}`);
     process.exit(REASON_EXIT_CODE[PredicateReason.COLLECTOR_INFRA]);
   }
-  const verdict = evaluateDriftResolved({
-    changedFiles,
-    report,
-    postFixCollectorExit: postFix.exitCode,
-    postFixCriticalCount: countCriticalDiffs(postFix.report),
-  });
+  let verdict;
+  try {
+    verdict = evaluateDriftResolved({
+      changedFiles,
+      report,
+      postFixCollectorExit: postFix.exitCode,
+      postFixCriticalCount: countCriticalDiffs(postFix.report),
+    });
+  } catch (err: unknown) {
+    // A malformed report or a repo-escaping changed-file path throws from the
+    // predicate — fail-closed to a NAMED config-error rather than an uncaught
+    // stacktrace, so the workflow's Slack alert names the cause (mirrors runCli).
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`ERROR: unable to score the drift reports: ${msg}`);
+    console.log(`reason=${PredicateReason.CONFIG_ERROR}`);
+    process.exit(REASON_EXIT_CODE[PredicateReason.CONFIG_ERROR]);
+  }
   if (!verdict.resolved) {
     console.error(`ERROR: Drift NOT resolved [${verdict.reason}]: ${verdict.detail}`);
     if (verdict.offendingFiles.length > 0) {

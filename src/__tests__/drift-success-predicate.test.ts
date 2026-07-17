@@ -27,6 +27,8 @@ import {
   isComparisonLeg,
   isSuppressionSurface,
   isGameableLeg,
+  canonicalizePath,
+  isAllowlisted,
   sanctionedTargets,
   countCriticalDiffs,
   parseCliArgs,
@@ -347,16 +349,18 @@ describe("evaluateDriftResolved — GREEN (real fix) cases", () => {
     expect(REASON_EXIT_CODE[verdict.reason]).toBe(0);
   });
 
-  it("legit canary: model-registry.ts + ws-realtime.ts (report sanctions ws-realtime.ts) → RESOLVED", () => {
+  it("legit canary: model-registry.ts + ws-realtime.ts (report sanctions BOTH) → RESOLVED", () => {
     // The known-models canary routes its fix to the production ws-realtime.ts
-    // (builderFile), while the model list lives in the model-registry fixture.
+    // (builderFile) AND the model list fixture (typesFile). Under the allowlist a
+    // fixture is accepted ONLY when the report names it as a target — so the
+    // report here sanctions model-registry.ts via typesFile.
     const canary = report([
       entry({
         provider: "OpenAI Realtime",
         scenario: "known-models canary",
         builderFile: "src/ws-realtime.ts",
         builderFunctions: ["buildRealtimeSession"],
-        typesFile: null,
+        typesFile: "src/__tests__/drift/model-registry.ts",
         diffs: [
           diff({ path: "knownModels", issue: "Unknown realtime model detected", mock: "<none>" }),
         ],
@@ -394,17 +398,255 @@ describe("evaluateDriftResolved — GREEN (real fix) cases", () => {
     expect(verdict.reason).toBe(PredicateReason.RESOLVED);
   });
 
-  it("production change + accompanying legit canary fixture (not a comparison leg) → RESOLVED", () => {
-    // model-family.ts is a legit fixture target, not a gameable comparison leg,
-    // so accompanying a real production change it does not trip the cheat guard.
+  it("production change + accompanying report-NAMED canary fixture → RESOLVED", () => {
+    // model-family.ts is accepted as an accompanying change ONLY because the
+    // report names it (typesFile) — under the allowlist a fixture is not a free
+    // pass by static membership; it must be sanctioned by the report for this run.
     const verdict = evaluateDriftResolved({
       changedFiles: ["src/ws-realtime.ts", "src/__tests__/drift/model-family.ts"],
-      report: report([entry({ builderFile: "src/ws-realtime.ts", typesFile: null })]),
+      report: report([
+        entry({
+          builderFile: "src/ws-realtime.ts",
+          typesFile: "src/__tests__/drift/model-family.ts",
+        }),
+      ]),
       postFixCollectorExit: 0,
       postFixCriticalCount: 0,
     });
     expect(verdict.resolved).toBe(true);
     expect(verdict.reason).toBe(PredicateReason.RESOLVED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ALLOWLIST INVERSION (round-2 CR F1/F2/F3) — a fix is RESOLVED only when EVERY
+// changed file is on the allowlist. Anything not recognized as production source
+// or a report-sanctioned fixture target BLOCKS. This closes path-spelling
+// sneak-ins, stale-denylist gaps, and in-diff vectors (package.json / lockfiles
+// / sub-fixtures / unknown paths).
+// ---------------------------------------------------------------------------
+
+describe("allowlist inversion — non-allowlisted changed files ALWAYS block", () => {
+  // A report that sanctions src/helpers.ts as the fix target, so the production
+  // edit itself is legitimately allowlisted; the SECOND file is the attack.
+  const sanctioned = () =>
+    report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]);
+
+  const cleanSignal = { postFixCollectorExit: 0, postFixCriticalCount: 0 };
+
+  it("package.json changed alongside a real production fix → UNSANCTIONED_CHANGE (block)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "package.json"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+    expect(verdict.offendingFiles).toContain("package.json");
+    expect(REASON_EXIT_CODE[verdict.reason]).toBe(17);
+  });
+
+  it("pnpm-lock.yaml changed alongside a real production fix → UNSANCTIONED_CHANGE (block)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "pnpm-lock.yaml"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+    expect(verdict.offendingFiles).toContain("pnpm-lock.yaml");
+  });
+
+  it("tsconfig.json changed alongside a real production fix → UNSANCTIONED_CHANGE (block)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "tsconfig.json"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+  });
+
+  it("an unknown/unrecognized path alongside a real production fix → UNSANCTIONED_CHANGE (block)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "scripts/fix-drift.ts"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+    expect(verdict.offendingFiles).toContain("scripts/fix-drift.ts");
+  });
+
+  it("a drift-dir *.test.ts (NOT a *.drift.ts) alongside a real production fix → UNSANCTIONED_CHANGE (closes the drift-dir .test.ts gap)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "src/__tests__/drift/model-registry.test.ts"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    // A drift-dir unit test is not a gameable comparison leg (isGameableLeg is
+    // false for it) and is not allowlisted → UNSANCTIONED_CHANGE.
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+    expect(verdict.offendingFiles).toContain("src/__tests__/drift/model-registry.test.ts");
+  });
+
+  it("a non-drift __tests__ file alongside a real production fix → UNSANCTIONED_CHANGE (block)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "src/__tests__/server.test.ts"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+  });
+
+  it("model-registry.ts fixture NOT named by the report + prod fix → UNSANCTIONED_CHANGE (fixtures allowlisted ONLY when report-named)", () => {
+    // model-registry.ts is a legit fixture target but the report does NOT name it
+    // (builderFile/typesFile are src/helpers.ts / src/types.ts). It is therefore
+    // NOT on the allowlist for THIS run and must block.
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts", "src/__tests__/drift/model-registry.ts"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+    expect(verdict.offendingFiles).toContain("src/__tests__/drift/model-registry.ts");
+  });
+
+  it("a report-NAMED fixture target (builderFile) + clean collector → RESOLVED", () => {
+    // The collector sanctions the fixture as the fix target (canary routing).
+    const canary = report([
+      entry({
+        provider: "OpenAI Realtime",
+        scenario: "known-models canary",
+        builderFile: "src/__tests__/drift/model-registry.ts",
+        builderFunctions: ["knownModels"],
+        typesFile: null,
+        diffs: [diff({ path: "knownModels", issue: "new model shipped" })],
+      }),
+    ]);
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/__tests__/drift/model-registry.ts"],
+      report: canary,
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(true);
+    expect(verdict.reason).toBe(PredicateReason.RESOLVED);
+  });
+
+  it("production-source-only fix (no fixtures at all) + clean collector → RESOLVED", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src/helpers.ts"],
+      report: sanctioned(),
+      ...cleanSignal,
+    });
+    expect(verdict.resolved).toBe(true);
+    expect(verdict.reason).toBe(PredicateReason.RESOLVED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PATH CANONICALIZATION (round-2 CR slot-1/slot-2 F1) — a leg edit presented
+// under an equivalent-but-non-identical spelling must still be recognized and
+// blocked; classification runs on the canonical form.
+// ---------------------------------------------------------------------------
+
+describe("path canonicalization defeats spelling-variant leg sneak-ins", () => {
+  it("./src/... leading-dot spelling of the SDK leg still blocks", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["./src/__tests__/drift/sdk-shapes.ts"],
+      report: report(),
+      postFixCollectorExit: 0,
+      postFixCriticalCount: 0,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.COMPARISON_LEG_ONLY);
+  });
+
+  it("doubled-slash spelling of the SDK leg + prod edit still blocks (SUPPRESSION_SUSPECTED)", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["src//__tests__/drift/sdk-shapes.ts", "src/helpers.ts"],
+      report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+      postFixCollectorExit: 0,
+      postFixCriticalCount: 0,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.SUPPRESSION_SUSPECTED);
+  });
+
+  it("trailing-dot-segment spelling of a production target canonicalizes and RESOLVES", () => {
+    const verdict = evaluateDriftResolved({
+      changedFiles: ["./src/helpers.ts"],
+      report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+      postFixCollectorExit: 0,
+      postFixCriticalCount: 0,
+    });
+    expect(verdict.resolved).toBe(true);
+    expect(verdict.reason).toBe(PredicateReason.RESOLVED);
+  });
+
+  it("canonicalizePath normalizes ./ , // and . segments", () => {
+    expect(canonicalizePath("./src/helpers.ts")).toBe("src/helpers.ts");
+    expect(canonicalizePath("src//__tests__/drift/sdk-shapes.ts")).toBe(
+      "src/__tests__/drift/sdk-shapes.ts",
+    );
+    expect(canonicalizePath("src/./helpers.ts")).toBe("src/helpers.ts");
+    expect(canonicalizePath("src/helpers.ts")).toBe("src/helpers.ts");
+  });
+
+  it("canonicalizePath rejects a path escaping the repo root (fail-closed)", () => {
+    expect(() => canonicalizePath("../ag-ui/events.ts")).toThrow(PredicateConfigError);
+    expect(() => canonicalizePath("src/../../etc/passwd")).toThrow(PredicateConfigError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F6 — empty / non-integer --post-fix-exit must FAIL CLOSED (Number("")===0
+// must NOT be treated as a clean exit 0).
+// ---------------------------------------------------------------------------
+
+describe("F6 — --post-fix-exit fails closed on empty/whitespace", () => {
+  it("throws on an empty --post-fix-exit (Number('')===0 must not slip through)", () => {
+    expect(() =>
+      parseCliArgs(["--report", "a.json", "--post-fix-report", "b.json", "--post-fix-exit", ""]),
+    ).toThrow(PredicateConfigError);
+  });
+
+  it("throws on a whitespace-only --post-fix-exit", () => {
+    expect(() =>
+      parseCliArgs(["--report", "a.json", "--post-fix-report", "b.json", "--post-fix-exit", "  "]),
+    ).toThrow(PredicateConfigError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F8 — a malformed post-fix report that crashes countCriticalDiffs must be
+// caught and mapped to a NAMED config-error reason, not a bare stacktrace.
+// ---------------------------------------------------------------------------
+
+describe("F8 — malformed post-fix report → named config-error (not a bare crash)", () => {
+  let dir: string | null = null;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it("runCli exits 2 (CONFIG_ERROR) when the post-fix report has entries with no diffs array", () => {
+    dir = mkdtempSync(join(tmpdir(), "ws2-f8-"));
+    const preP = join(dir, "drift-report.json");
+    const postP = join(dir, "drift-report.post-fix.json");
+    writeFileSync(preP, JSON.stringify(report()), "utf-8");
+    // Structurally passes readReport (timestamp + entries array) but each entry
+    // is missing `diffs`, so countCriticalDiffs would throw.
+    writeFileSync(
+      postP,
+      JSON.stringify({ timestamp: "t", entries: [{ provider: "OpenAI" }] }),
+      "utf-8",
+    );
+    const code = runCli(["--report", preP, "--post-fix-report", postP, "--post-fix-exit", "0"]);
+    expect(code).toBe(REASON_EXIT_CODE[PredicateReason.CONFIG_ERROR]);
   });
 });
 
@@ -462,6 +704,24 @@ describe("file classification", () => {
     expect(isGameableLeg("src/__tests__/drift/model-registry.ts")).toBe(false);
     expect(isGameableLeg("src/__tests__/drift/model-family.ts")).toBe(false);
     expect(isGameableLeg("src/helpers.ts")).toBe(false);
+  });
+
+  it("isAllowlisted: production source is allowed; config/manifests/tests are not", () => {
+    const targets = new Set<string>(["src/helpers.ts", "src/__tests__/drift/model-registry.ts"]);
+    // Production source (non-test) is always allowlisted.
+    expect(isAllowlisted("src/helpers.ts", targets)).toBe(true);
+    expect(isAllowlisted("src/agui-types.ts", targets)).toBe(true);
+    // A report-named fixture target is allowlisted.
+    expect(isAllowlisted("src/__tests__/drift/model-registry.ts", targets)).toBe(true);
+    // A fixture NOT named by the report is not allowlisted.
+    expect(isAllowlisted("src/__tests__/drift/model-family.ts", targets)).toBe(false);
+    // Config/manifests/lockfiles/unknown paths are not allowlisted.
+    expect(isAllowlisted("package.json", targets)).toBe(false);
+    expect(isAllowlisted("pnpm-lock.yaml", targets)).toBe(false);
+    expect(isAllowlisted("tsconfig.json", targets)).toBe(false);
+    expect(isAllowlisted("scripts/fix-drift.ts", targets)).toBe(false);
+    // A non-production src config-ish manifest is not allowlisted.
+    expect(isAllowlisted("src/__tests__/server.test.ts", targets)).toBe(false);
   });
 
   it("sanctionedTargets unions builderFile + non-null typesFile", () => {
@@ -733,18 +993,45 @@ describe("revert guard — old always-accept predicate would FAIL these locks", 
     expect(verdict.resolved).toBe(false);
     expect(verdict.reason).toBe(PredicateReason.SUPPRESSION_SUSPECTED);
   });
+
+  // ALLOWLIST-INVERSION revert lock: the OLD denylist only blocked KNOWN gameable
+  // legs, so an in-diff vector NOT on the denylist (package.json, a lockfile, an
+  // unknown path) paired with an on-target production edit sailed through to
+  // RESOLVED. The allowlist inverts that: anything not explicitly allowed blocks.
+  // Reverting evaluateDriftResolved to a denylist model flips these to RESOLVED
+  // and breaks the suite.
+  function denylistWouldAccept(changedFiles: string[]): boolean {
+    // Old denylist model: block ONLY if a changed file is a known gameable leg;
+    // otherwise (production + package.json/lockfile/unknown) accept.
+    return !changedFiles.some(isGameableLeg) && changedFiles.some(isProductionFile);
+  }
+
+  it("in-diff vector (package.json + prod): old DENYLIST accepts, allowlist BLOCKS (UNSANCTIONED_CHANGE)", () => {
+    const vector = ["src/helpers.ts", "package.json"];
+    // The old denylist would have accepted (no known leg in the set).
+    expect(denylistWouldAccept(vector)).toBe(true);
+    const verdict = evaluateDriftResolved({
+      changedFiles: vector,
+      report: report([entry({ builderFile: "src/helpers.ts", typesFile: "src/types.ts" })]),
+      postFixCollectorExit: 0,
+      postFixCriticalCount: 0,
+    });
+    expect(verdict.resolved).toBe(false);
+    expect(verdict.reason).toBe(PredicateReason.UNSANCTIONED_CHANGE);
+  });
 });
 
-describe("RED-count lock", () => {
-  // A structural lock: exactly this many distinct block reasons must reject.
-  // NOTE: the current RED-case count in the top describe block is 9 (NOT 10) —
-  // HEADLINE, schema+builder, *.drift.ts, no-change, still-dirty(exit2),
-  // criticalCount>0, quarantine, infra, off-target. The WS-2b / dual-class /
-  // empty-targets / exit5+critical / exit1+critical additions raise the total.
+describe("exit-code distinctness lock", () => {
+  // Structural lock on the reason→exit-code contract: every block reason maps to
+  // a distinct NON-ZERO exit code and RESOLVED alone is 0. This does NOT count
+  // RED test cases (it asserts the code table, not the number of scenarios) — it
+  // guarantees the workflow can route each cause to its own Slack DETAIL without
+  // two reasons colliding on one exit code.
   const BLOCK_REASONS = [
     PredicateReason.NO_PRODUCTION_CHANGE,
     PredicateReason.COMPARISON_LEG_ONLY,
     PredicateReason.SUPPRESSION_SUSPECTED,
+    PredicateReason.UNSANCTIONED_CHANGE,
     PredicateReason.STILL_DIRTY,
     PredicateReason.QUARANTINE_AFTER_FIX,
     PredicateReason.COLLECTOR_INFRA,

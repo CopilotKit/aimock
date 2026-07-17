@@ -9,6 +9,23 @@
  * triangulation schema/allowlist, the real-API harness, or a `*.drift.ts`
  * assertion).
  *
+ * ALLOWLIST MODEL (round-2 CR — replaces the earlier denylist). A denylist of
+ * "known gameable legs" leaks: any editable collector input NOT on the list
+ * (package.json/lockfile pinning a vendored SDK, a tsconfig, an imported
+ * sub-fixture, an unknown path, a drift-dir `*.test.ts`) could accompany a token
+ * on-target production edit and reach `resolved:true`. So the predicate INVERTS
+ * to an allowlist: a fix is RESOLVED only when EVERY changed file is on the
+ * allowlist, which is (a) PRODUCTION SOURCE — `src/**` that is NOT under
+ * `src/__tests__/` and is not a config/manifest — PLUS (b) a fixture file
+ * EXPLICITLY NAMED for a drift entry in the report (`entry.builderFile` /
+ * `entry.typesFile`, e.g. a canary model-registry.ts the collector sanctioned).
+ * ANYTHING else blocks: any other `src/__tests__/**` file (legs, `*.drift.ts`,
+ * `*.test.ts`, providers/ws-providers/schema/sdk-shapes), package.json /
+ * lockfiles / manifests / config, and any unrecognized path. All paths are
+ * CANONICALIZED (strip `./`, collapse `//`, resolve `.`/`..`, reject repo-root
+ * escapes) before classification so a spelling variant cannot sneak a leg past
+ * the matcher.
+ *
  * The hole this closes: the drift tests are three-way triangulations
  * (SDK vs real API vs mock). The SDK leg is literally the repo fixture
  * `src/__tests__/drift/sdk-shapes.ts`. Deleting a field from that fixture makes
@@ -58,8 +75,16 @@
  *                                      over criticalCount)
  *   16 — PRODUCTION_CHANGE_OFF_TARGET (off-target OR zero sanctioned targets;
  *                                      WARNING, still blocks)
- *   2  — CONFIG_ERROR                 (missing/unreadable report, bad args, or a
- *                                      --changed-file list that disagrees w/ git)
+ *   17 — UNSANCTIONED_CHANGE          (a changed file is NOT on the allowlist —
+ *                                      package.json/lockfile/config/unknown path/
+ *                                      non-drift or drift `*.test.ts`; a real fix
+ *                                      touches only production source + report-
+ *                                      named fixture targets)
+ *   2  — CONFIG_ERROR                 (missing/unreadable report, bad args, a
+ *                                      --changed-file list that disagrees w/ git,
+ *                                      a path escaping the repo root, or a
+ *                                      malformed post-fix report that cannot be
+ *                                      scored)
  *
  * Usage:
  *   npx tsx scripts/drift-success-predicate.ts \
@@ -91,6 +116,7 @@ export enum PredicateReason {
   NO_PRODUCTION_CHANGE = "no-production-change",
   COMPARISON_LEG_ONLY = "comparison-leg-only",
   SUPPRESSION_SUSPECTED = "suppression-suspected",
+  UNSANCTIONED_CHANGE = "unsanctioned-change",
   STILL_DIRTY = "still-dirty",
   QUARANTINE_AFTER_FIX = "quarantine-after-fix",
   COLLECTOR_INFRA = "collector-infra",
@@ -104,6 +130,7 @@ export const REASON_EXIT_CODE: Record<PredicateReason, number> = {
   [PredicateReason.NO_PRODUCTION_CHANGE]: 10,
   [PredicateReason.COMPARISON_LEG_ONLY]: 11,
   [PredicateReason.SUPPRESSION_SUSPECTED]: 12,
+  [PredicateReason.UNSANCTIONED_CHANGE]: 17,
   [PredicateReason.STILL_DIRTY]: 13,
   [PredicateReason.QUARANTINE_AFTER_FIX]: 14,
   [PredicateReason.COLLECTOR_INFRA]: 15,
@@ -124,11 +151,24 @@ export interface PredicateInputs {
    * FIX #7 — INDEPENDENCE CAVEAT: this signal (and the collector exit code) is
    * derived from the SAME fixtures the fixer was told to make pass, so it is
    * NOT independent of a fixture-relaxation cheat — a run that relaxed the SDK
-   * leg reports clean here too. It is therefore only trustworthy BECAUSE fix #1
-   * now blocks ANY gameable-leg edit (see isGameableLeg / the SUPPRESSION_SUSPECTED
-   * + COMPARISON_LEG_ONLY branches) regardless of production files. That
-   * always-block rule is load-bearing: it is what makes a clean post-fix signal
-   * mean "the mock was really fixed" rather than "the leg was relaxed".
+   * leg reports clean here too. It is therefore only trustworthy BECAUSE the
+   * ALLOWLIST gate now requires EVERY changed file to be production source or a
+   * report-named fixture target (see isAllowlisted / the UNSANCTIONED_CHANGE +
+   * SUPPRESSION_SUSPECTED + COMPARISON_LEG_ONLY branches). Any leg/fixture/config
+   * edit that could relax the collector's own inputs is NOT allowlisted and
+   * blocks, regardless of production files. That default-deny rule is
+   * load-bearing: it is what makes a clean post-fix signal mean "the mock was
+   * really fixed" rather than "an input the collector reads was relaxed".
+   *
+   * FIX #4 (assess) — the criticalCount and the post-fix exit code are both
+   * scored from the AUTHORITATIVE in-workflow re-collect output
+   * (drift-report.post-fix.json, written by the "Re-collect drift" step), NOT a
+   * repo-committed file the fixer could forge: neither the pre-fix report nor the
+   * post-fix report is committed to the repo (see .github/workflows/fix-drift.yml
+   * — both are produced by collector invocations in-workflow). The re-collect
+   * runs AFTER autofix and OVERWRITES anything written to that path during the
+   * fix, so the predicate scores a freshly-generated report, not attacker
+   * content.
    */
   postFixCriticalCount: number;
 }
@@ -142,9 +182,43 @@ export interface PredicateResult {
   offendingFiles: string[];
 }
 
+/** Thrown for malformed CLI args / unreadable inputs / bad paths — maps to exit 2. */
+export class PredicateConfigError extends Error {}
+
 // ---------------------------------------------------------------------------
 // File classification (see spec §2)
 // ---------------------------------------------------------------------------
+
+/**
+ * Canonicalize a git-reported path to a stable repo-relative POSIX form BEFORE
+ * classification, so an equivalent-but-non-identical spelling of a leg cannot
+ * sneak past the exact-string matchers (round-2 CR F1 / slot-1 / slot-2):
+ *   - strip a leading `./`
+ *   - collapse doubled slashes (`//` → `/`)
+ *   - resolve `.` segments and interior `..` segments
+ *   - FAIL CLOSED (PredicateConfigError → exit 2) on any path that escapes the
+ *     repo root (a leading `..` after resolution) or is absolute — such a path
+ *     was never a legitimate in-repo change and must not be silently reclassified.
+ */
+export function canonicalizePath(file: string): string {
+  if (file.startsWith("/")) {
+    throw new PredicateConfigError(`Refusing to classify an absolute path: ${file}`);
+  }
+  const rawSegments = file.split("/");
+  const out: string[] = [];
+  for (const seg of rawSegments) {
+    if (seg === "" || seg === ".") continue; // drop empty (//, leading ./) and `.`
+    if (seg === "..") {
+      if (out.length === 0) {
+        throw new PredicateConfigError(`Path escapes the repo root (fail-closed): ${file}`);
+      }
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join("/");
+}
 
 /**
  * The triangulation SCHEMA file. Editing it (esp. its ALLOWLISTED_PATHS set)
@@ -267,10 +341,31 @@ export function isComparisonLeg(file: string): boolean {
 export function sanctionedTargets(report: DriftReport): Set<string> {
   const targets = new Set<string>();
   for (const entry of report.entries) {
-    if (entry.builderFile) targets.add(entry.builderFile);
-    if (entry.typesFile) targets.add(entry.typesFile);
+    if (entry.builderFile) targets.add(canonicalizePath(entry.builderFile));
+    if (entry.typesFile) targets.add(canonicalizePath(entry.typesFile));
   }
   return targets;
+}
+
+/**
+ * ALLOWLIST membership (round-2 CR F1/F2/F3 — the inversion). A changed file is
+ * SANCTIONED for an auto-fix run when it is either:
+ *   (a) PRODUCTION SOURCE — `src/**` that is NOT under `src/__tests__/` (a mock
+ *       builder / type file, the legitimate fix target); OR
+ *   (b) a fixture file EXPLICITLY NAMED for a drift entry in the report
+ *       (`entry.builderFile` / `entry.typesFile`, e.g. a canary model-registry.ts
+ *       the collector itself sanctioned as the fix target for this run).
+ *
+ * EVERYTHING else is NOT allowlisted and blocks: any other `src/__tests__/**`
+ * file (comparison legs, `*.drift.ts`, `*.test.ts`, providers/schema/sdk-shapes),
+ * `package.json` / lockfiles / manifests / config, and any unrecognized path.
+ * `file` MUST already be canonicalized; `sanctioned` is the canonicalized
+ * sanctioned-target set (see sanctionedTargets).
+ */
+export function isAllowlisted(file: string, sanctioned: ReadonlySet<string>): boolean {
+  if (isProductionFile(file)) return true;
+  if (sanctioned.has(file)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +373,12 @@ export function sanctionedTargets(report: DriftReport): Set<string> {
 // ---------------------------------------------------------------------------
 
 export function evaluateDriftResolved(i: PredicateInputs): PredicateResult {
-  const { changedFiles, report, postFixCollectorExit, postFixCriticalCount } = i;
+  const { report, postFixCollectorExit, postFixCriticalCount } = i;
+  // Canonicalize every changed path BEFORE classification so a spelling variant
+  // (`./src/...`, `src//...`, `.`/`..` segments) of a leg cannot slip past the
+  // exact-string matchers (round-2 CR F1). An absolute path or a repo-root escape
+  // throws PredicateConfigError from canonicalizePath → CONFIG_ERROR at the CLI.
+  const changedFiles = i.changedFiles.map(canonicalizePath);
 
   // ---- Signal 1: AUTHORITATIVE — collector clean on re-run. -------------
   // Checked FIRST: a dirty/quarantine/infra collector makes any file-set moot.
@@ -329,6 +429,7 @@ export function evaluateDriftResolved(i: PredicateInputs): PredicateResult {
   }
 
   // ---- Classify the changed-file set. -----------------------------------
+  const targets = sanctionedTargets(report);
   const productionFiles = changedFiles.filter(isProductionFile);
   const gameableLegFiles = changedFiles.filter(isGameableLeg);
   const suppressionFiles = changedFiles.filter(isSuppressionSurface);
@@ -386,44 +487,66 @@ export function evaluateDriftResolved(i: PredicateInputs): PredicateResult {
     };
   }
 
-  // ---- Signal 2: PRODUCTION change present. ------------------------------
-  if (productionFiles.length === 0) {
+  // ---- ALLOWLIST GATE (round-2 CR F1/F2/F3 — the inversion): EVERY changed file
+  // must be on the allowlist. The suppression + gameable-leg branches above give
+  // the KNOWN gameable legs their own LOUD, specific reasons; this gate catches
+  // EVERYTHING ELSE that is not sanctioned — package.json / lockfiles / manifests
+  // / config, a drift-dir `*.test.ts`, a non-drift `__tests__` file, an imported
+  // sub-fixture the report did not name, or any unrecognized path. A denylist of
+  // "known legs" leaks these; an allowlist does not (default-deny). This is what
+  // closes the in-diff vectors (F3) and the drift-dir `.test.ts` gap.
+  const unsanctionedFiles = changedFiles.filter((f) => !isAllowlisted(f, targets));
+  if (unsanctionedFiles.length > 0) {
+    return {
+      resolved: false,
+      reason: PredicateReason.UNSANCTIONED_CHANGE,
+      detail:
+        "Fix changed files that are NOT on the sanctioned allowlist " +
+        `(${unsanctionedFiles.join(", ")}) — a real drift fix touches only production mock-builder ` +
+        "source and the fixture targets the report named. Any other change (deps/config/manifests, " +
+        "unrelated tests, unnamed fixtures) could game the collector. Fail-closed, needs human review.",
+      offendingFiles: unsanctionedFiles,
+    };
+  }
+
+  // ---- Signal 2: a REAL fix change is present. --------------------------
+  // A legitimate fix touches either production mock-builder source or a fixture
+  // the report explicitly named (the canary model-list case). An empty diff (or a
+  // diff of only files that are neither) means nothing shippable was attempted.
+  const onTargetFiles = changedFiles.filter((f) => targets.has(f));
+  if (productionFiles.length === 0 && onTargetFiles.length === 0) {
     return {
       resolved: false,
       reason: PredicateReason.NO_PRODUCTION_CHANGE,
       detail:
-        "Fix changed zero PRODUCTION mock-builder files — a clean collector is meaningless without a real mock change. Nothing shippable.",
+        "Fix changed zero production mock-builder files and no report-named fixture target — a clean collector is meaningless without a real fix. Nothing shippable.",
       offendingFiles: [],
     };
   }
 
-  // ---- Signal 3 (off-target): production change must intersect the report's
-  // sanctioned target set. A shared helper MAY legitimately be the real fix, so
-  // this WARNS and blocks but is distinct from a cheat.
+  // ---- Signal 3 (on-target): the change must land on a file the report named as
+  // a fix target. A production change to an UNNAMED file (a shared helper) MAY be
+  // a legitimate fix, so it WARNS and blocks (distinct from a cheat).
   //
-  // FIX #3 — an EMPTY sanctioned-target set is fail-closed, not a free pass. The
-  // old `targets.size > 0` guard disabled the off-target check entirely when the
-  // report named no targets, accepting ANY production change. An empty target set
-  // means the report could not name where to fix the drift — route to human
-  // rather than rubber-stamp an unverifiable production change.
-  const targets = sanctionedTargets(report);
+  // FIX #3 — an EMPTY sanctioned-target set is fail-closed, not a free pass. An
+  // empty target set means the report could not name where to fix the drift —
+  // route to human rather than rubber-stamp an unverifiable change.
   if (targets.size === 0) {
     return {
       resolved: false,
       reason: PredicateReason.PRODUCTION_CHANGE_OFF_TARGET,
       detail:
         "Drift report named ZERO sanctioned fix targets (no builderFile/typesFile) — cannot verify the " +
-        `production change (${productionFiles.join(", ")}) landed where the drift lives. Fail-closed, needs human review.`,
+        `change (${productionFiles.join(", ")}) landed where the drift lives. Fail-closed, needs human review.`,
       offendingFiles: productionFiles,
     };
   }
-  const onTarget = productionFiles.some((f) => targets.has(f));
-  if (!onTarget) {
+  if (onTargetFiles.length === 0) {
     return {
       resolved: false,
       reason: PredicateReason.PRODUCTION_CHANGE_OFF_TARGET,
       detail:
-        "Production change did not touch any file the drift report named as a fix target " +
+        "Change did not touch any file the drift report named as a fix target " +
         `(changed: ${productionFiles.join(", ")}; sanctioned: ${[...targets].join(", ")}). ` +
         "May be a legitimate shared-helper fix — needs human review.",
       offendingFiles: productionFiles,
@@ -436,7 +559,8 @@ export function evaluateDriftResolved(i: PredicateInputs): PredicateResult {
     reason: PredicateReason.RESOLVED,
     detail:
       "Drift genuinely resolved: post-fix collector clean, " +
-      `real production change (${productionFiles.join(", ")}), no comparison-leg relaxation.`,
+      `the change landed on a report-named fix target (${onTargetFiles.join(", ")}), and every ` +
+      "changed file is on the sanctioned allowlist (production source + report-named fixture targets only).",
     offendingFiles: [],
   };
 }
@@ -444,9 +568,6 @@ export function evaluateDriftResolved(i: PredicateInputs): PredicateResult {
 // ---------------------------------------------------------------------------
 // CLI wrapper
 // ---------------------------------------------------------------------------
-
-/** Thrown for malformed CLI args / unreadable inputs — maps to exit 2. */
-export class PredicateConfigError extends Error {}
 
 interface CliArgs {
   reportPath: string;
@@ -481,6 +602,15 @@ export function parseCliArgs(argv: string[]): CliArgs {
       case "--post-fix-exit": {
         if (next === undefined)
           throw new PredicateConfigError("--post-fix-exit requires a numeric argument");
+        // FIX #6 — fail CLOSED on an empty/whitespace value. `Number("")` and
+        // `Number("  ")` are both 0, which Number.isInteger accepts, so a missing
+        // recollect output (`--post-fix-exit ""`) would masquerade as a clean
+        // exit 0 and be trusted as authoritative-clean. Reject it explicitly.
+        if (next.trim() === "") {
+          throw new PredicateConfigError(
+            "--post-fix-exit is empty/whitespace — a missing collector exit code must fail closed, not be treated as clean exit 0",
+          );
+        }
         const parsed = Number(next);
         if (!Number.isInteger(parsed)) {
           throw new PredicateConfigError(`--post-fix-exit must be an integer, got "${next}"`);
@@ -573,9 +703,16 @@ export function parsePorcelainLine(line: string): string {
   return path;
 }
 
-/** Changed files from `git status --porcelain`. */
+/**
+ * Changed files from `git status --porcelain`. `-c core.quotePath=false` keeps
+ * non-ASCII paths verbatim (UTF-8) rather than C-quoted/octal-escaped, so a leg
+ * path with a special character is not mangled into a non-matching spelling
+ * before classification (round-2 CR slot-1/slot-2 path finding).
+ */
 export function gitChangedFiles(): string[] {
-  const out = execSync("git status --porcelain", { encoding: "utf-8" }).trimEnd();
+  const out = execSync("git -c core.quotePath=false status --porcelain", {
+    encoding: "utf-8",
+  }).trimEnd();
   return out.split("\n").filter(Boolean).map(parsePorcelainLine);
 }
 
@@ -646,12 +783,28 @@ export function runCli(argv: string[]): number {
     return REASON_EXIT_CODE[PredicateReason.CONFIG_ERROR];
   }
 
-  const verdict = evaluateDriftResolved({
-    changedFiles,
-    report,
-    postFixCollectorExit: args.postFixExit,
-    postFixCriticalCount: countCriticalDiffs(postFixReport),
-  });
+  // FIX #8 — a post-fix report that structurally passes readReport (has a
+  // string timestamp + an entries array) can still be malformed at the entry
+  // level (e.g. an entry missing its `diffs` array), which would make
+  // countCriticalDiffs throw a bare TypeError. evaluateDriftResolved can also
+  // throw PredicateConfigError from canonicalizePath (a repo-root-escaping or
+  // absolute changed-file path). Catch both here and map to a NAMED CONFIG_ERROR
+  // so the human gets a named cause instead of an uncaught stacktrace with an
+  // empty reason= line.
+  let verdict: PredicateResult;
+  try {
+    verdict = evaluateDriftResolved({
+      changedFiles,
+      report,
+      postFixCollectorExit: args.postFixExit,
+      postFixCriticalCount: countCriticalDiffs(postFixReport),
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`CONFIG_ERROR: unable to score the drift reports: ${msg}`);
+    console.log(`reason=${PredicateReason.CONFIG_ERROR}`);
+    return REASON_EXIT_CODE[PredicateReason.CONFIG_ERROR];
+  }
 
   if (verdict.resolved) {
     console.log(verdict.detail);
