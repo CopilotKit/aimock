@@ -177,6 +177,8 @@ export {
   collapseCohereSSE,
   collapseBedrockEventStream,
   collapseStreamingResponse,
+  MAX_COLLAPSE_STRING_LENGTH,
+  setCollapseStringLimitForTests,
 } from "./stream-collapse.js";
 export type { CollapseResult } from "./stream-collapse.js";
 
@@ -224,7 +226,12 @@ export type {
 
 // AG-UI
 export { AGUIMock } from "./agui-mock.js";
-export { proxyAndRecordAGUI } from "./agui-recorder.js";
+export {
+  proxyAndRecordAGUI,
+  DEFAULT_AGUI_RECORD_BUFFER_BYTES,
+  AGUI_RECORD_BUFFER_HARD_CEILING,
+  setAGUIRecordBufferCeilingForTests,
+} from "./agui-recorder.js";
 export type {
   AGUIMockOptions,
   AGUIRunAgentInput,

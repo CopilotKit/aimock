@@ -411,4 +411,17 @@ export interface AGUIRecordConfig {
   upstream: string;
   fixturePath?: string;
   proxyOnly?: boolean;
+  /**
+   * Maximum number of bytes the AG-UI recorder will accumulate in memory from a
+   * single proxied upstream SSE stream in order to parse + journal it. The full
+   * stream is still relayed to the client byte-for-byte in real time; this cap
+   * only bounds the in-memory buffer that is later `Buffer.concat`-ed and
+   * stringified for fixture construction. Once exceeded the recorder stops
+   * appending to the buffer, marks the recording truncated, and skips fixture
+   * construction — preventing both unbounded heap growth and the
+   * `RangeError: Invalid string length` a >512MB `Buffer.concat(chunks).toString()`
+   * would otherwise throw. Clamped to `AGUI_RECORD_BUFFER_HARD_CEILING`.
+   * Default: 64 MiB.
+   */
+  maxRecordBufferBytes?: number;
 }

@@ -27,10 +27,18 @@ import { DEFAULT_TEST_ID } from "./constants.js";
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
 /**
  * Default ceiling (bytes) for the in-memory proxy-path buffer. Chosen well
- * under V8's ~512 MiB max string length so `rawBuffer.toString()` /
- * stream-collapse never throws `RangeError: Invalid string length`, and so a
- * single huge proxied response cannot spike the heap unbounded. Overridable
- * via `RecordConfig.maxProxyBufferBytes` / `--max-proxy-buffer-bytes`.
+ * under V8's ~512 MiB max string length so `rawBuffer.toString()` cannot throw
+ * `RangeError: Invalid string length`, and so a single huge proxied response
+ * cannot spike the heap unbounded. Overridable via
+ * `RecordConfig.maxProxyBufferBytes` / `--max-proxy-buffer-bytes`.
+ *
+ * NOTE: this byte cap bounds the RAW BUFFER only. `stream-collapse` accumulates
+ * its own per-channel strings (`content`/`reasoning`/tool `arguments`/etc.) from
+ * that buffer and is ALSO reachable directly (exported from index.ts), so it
+ * carries its OWN independent guard (`MAX_COLLAPSE_STRING_LENGTH`) rather than
+ * relying on this cap — an earlier version of this comment wrongly asserted
+ * stream-collapse "never throws Invalid string length", which was false for the
+ * unbounded `content += delta` accumulators (the ~1/sec prod RangeError).
  */
 export const DEFAULT_MAX_PROXY_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MiB
 

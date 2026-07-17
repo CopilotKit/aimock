@@ -13,6 +13,85 @@ import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
 
 // ---------------------------------------------------------------------------
+// Accumulated-string cap (RangeError: Invalid string length guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard ceiling (UTF-16 code units) for any SINGLE string a collapser
+ * accumulates across deltas (`content`, `reasoning`, a tool call's
+ * `arguments`, `audioB64`, `argsStr`, and the coalesced text of `orderAtoms`).
+ *
+ * V8's maximum string length on 64-bit is 2^29 - 1 (~536.8M UTF-16 code
+ * units); appending past it throws `RangeError: Invalid string length`. The
+ * proxy path bounds the raw BYTE buffer under `PROXY_BUFFER_HARD_CEILING`
+ * (256 MiB) before collapse, but the collapser is ALSO reachable directly
+ * (exported from index.ts) and — even on the proxy path — a single accumulator
+ * can approach the byte budget in code units, so it needs its own guard rather
+ * than relying on the byte cap alone. 256Mi code units is comfortably below
+ * V8's limit while leaving huge headroom for any real completion (whose
+ * accumulated content can never exceed the total streamed body).
+ *
+ * When an append would cross the ceiling the accumulator keeps the ceiling's
+ * worth of characters, drops the overflow, and marks itself truncated — never
+ * throwing — mirroring the proxy buffer's "bound then mark truncated, never
+ * fail the client" discipline.
+ */
+export const MAX_COLLAPSE_STRING_LENGTH = 256 * 1024 * 1024; // 256 Mi UTF-16 code units
+
+/**
+ * Test-only override of {@link MAX_COLLAPSE_STRING_LENGTH}. Lets the cap suite
+ * exercise the truncation path with a tiny budget instead of building a
+ * multi-hundred-MB string. `undefined` (the default) uses the real ceiling.
+ * NEVER set from production code.
+ */
+let collapseStringLimitOverride: number | undefined;
+
+/** @internal test-only — see {@link collapseStringLimitOverride}. */
+export function setCollapseStringLimitForTests(value: number | undefined): void {
+  collapseStringLimitOverride = value;
+}
+
+/** Effective accumulated-string ceiling, honoring any active test-only override. */
+function effectiveCollapseStringLimit(): number {
+  return collapseStringLimitOverride ?? MAX_COLLAPSE_STRING_LENGTH;
+}
+
+/**
+ * Guard a raw collapse-input body against V8's max string length BEFORE any
+ * per-delta accumulation begins. Every collapser accumulates `content` /
+ * `reasoning` / a tool call's `arguments` / `audioB64` / `argsStr` (and the
+ * coalesced text of `orderAtoms`) from fragments of `body`; the sum of any one
+ * of those accumulators can never exceed the total input length, so bounding
+ * the INPUT under the ceiling bounds EVERY accumulator at once — no per-`+=`
+ * site can then build a string past the limit and throw
+ * `RangeError: Invalid string length` (the ~1/sec prod crash).
+ *
+ * Returns the body UNCHANGED when it is within the ceiling. When it exceeds the
+ * ceiling this returns a hard-truncated prefix (never throwing) — the collapse
+ * result the caller builds from it is marked incomplete via `truncated: true`
+ * (see {@link isCollapseInputTruncated}). This mirrors the proxy buffer's
+ * "bound then mark truncated, never fail the client" discipline: on the proxy
+ * path a body this large has already tripped the byte cap and skipped recording,
+ * so this is a defense-in-depth backstop that also covers the direct (exported)
+ * collapse callers where no byte cap ran.
+ */
+function guardCollapseBody(body: string): string {
+  const limit = effectiveCollapseStringLimit();
+  if (body.length <= limit) return body;
+  return body.slice(0, limit);
+}
+
+/**
+ * True when a body exceeded the accumulated-string ceiling and had to be
+ * truncated by {@link guardCollapseBody}. Collapsers stamp `truncated: true` on
+ * their result in this case so the recorder skips journaling a partial fixture,
+ * exactly like a transport-truncated stream.
+ */
+function isCollapseInputTruncated(body: string): boolean {
+  return body.length > effectiveCollapseStringLimit();
+}
+
+// ---------------------------------------------------------------------------
 // Result type shared by all collapse functions
 // ---------------------------------------------------------------------------
 
@@ -277,7 +356,9 @@ function extractSSEData(lines: string[]): string | undefined {
  *   data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}\n\n
  *   data: [DONE]\n\n
  */
-export function collapseOpenAISSE(body: string): CollapseResult {
+export function collapseOpenAISSE(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
@@ -487,6 +568,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -498,6 +580,7 @@ export function collapseOpenAISSE(body: string): CollapseResult {
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
     ...(harmonyNote ? { harmonyNote } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
@@ -512,7 +595,9 @@ export function collapseOpenAISSE(body: string): CollapseResult {
  *   event: message_start\ndata: {...}\n\n
  *   event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Hello"}}\n\n
  */
-export function collapseAnthropicSSE(body: string): CollapseResult {
+export function collapseAnthropicSSE(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const blocks = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
@@ -679,6 +764,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
       ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -689,6 +775,7 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
     ...(redactedThinking.length > 0 ? { redactedThinking } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
@@ -702,7 +789,9 @@ export function collapseAnthropicSSE(body: string): CollapseResult {
  * Format (data-only, no event prefix, no [DONE]):
  *   data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}\n\n
  */
-export function collapseGeminiSSE(body: string): CollapseResult {
+export function collapseGeminiSSE(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
@@ -809,6 +898,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
       ...(normalizedToolCalls.length > 0 ? { toolCalls: normalizedToolCalls } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -821,6 +911,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -829,6 +920,7 @@ export function collapseGeminiSSE(body: string): CollapseResult {
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
@@ -850,7 +942,9 @@ export function collapseGeminiSSE(body: string): CollapseResult {
  * content is run through the same fail-safe {@link parseHarmonyContent} gate to
  * capture structured tool calls / reasoning instead of leaking raw tokens.
  */
-export function collapseOllamaNDJSON(body: string): CollapseResult {
+export function collapseOllamaNDJSON(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const lines = body.split("\n").filter((l) => l.trim().length > 0);
   let content = "";
   let reasoning = "";
@@ -954,6 +1048,7 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
       ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
       ...(harmonyNote ? { harmonyNote } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -964,6 +1059,7 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
     ...(harmonyUnparsed ? { harmonyUnparsed: true } : {}),
     ...(harmonyNote ? { harmonyNote } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
@@ -977,7 +1073,9 @@ export function collapseOllamaNDJSON(body: string): CollapseResult {
  * Format:
  *   event: content-delta\ndata: {"type":"content-delta","delta":{"message":{"content":{"text":"Hello"}}}}\n\n
  */
-export function collapseCohereSSE(body: string): CollapseResult {
+export function collapseCohereSSE(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const blocks = splitSSEEvents(body);
   let content = "";
   // Reasoning text assembled from `thinking` content-delta blocks. Cohere's
@@ -1129,6 +1227,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -1137,6 +1236,7 @@ export function collapseCohereSSE(body: string): CollapseResult {
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
@@ -1254,8 +1354,18 @@ function decodeEventStreamFrames(buf: Buffer): {
  * Each frame contains a JSON payload with event types like:
  *   contentBlockDelta, contentBlockStart, etc.
  */
-export function collapseBedrockEventStream(body: Buffer): CollapseResult {
-  const { frames, truncated } = decodeEventStreamFrames(body);
+export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
+  // Bound the input under V8's max string length before decoding: `content` /
+  // `reasoning` / a tool call's `arguments` accumulate across frames and can
+  // never exceed the total decoded bytes, so capping the input buffer bounds
+  // every accumulator and prevents `RangeError: Invalid string length`. An
+  // over-ceiling buffer is truncated (a partial trailing frame simply fails CRC
+  // and stops parsing) and the result is marked `truncated`.
+  const limit = effectiveCollapseStringLimit();
+  const inputTruncated = rawBody.byteLength > limit;
+  const body = inputTruncated ? rawBody.subarray(0, limit) : rawBody;
+  const { frames, truncated: frameTruncated } = decodeEventStreamFrames(body);
+  const truncated = frameTruncated || inputTruncated;
   let content = "";
   // Reasoning text assembled from Converse `reasoningContent.text` deltas. The
   // Bedrock Converse stream interleaves a `delta.reasoningContent` block carrying
@@ -1498,7 +1608,9 @@ export function collapseBedrockEventStream(body: Buffer): CollapseResult {
  * delta) are still accepted for backward compatibility with previously
  * recorded fixtures.
  */
-export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
+export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
+  const inputTruncated = isCollapseInputTruncated(rawBody);
+  const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
   let content = "";
   let reasoning = "";
@@ -1658,6 +1770,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
       ...(reasoning ? { reasoning } : {}),
       ...(droppedChunks > 0 ? { droppedChunks } : {}),
       ...(firstDroppedSample ? { firstDroppedSample } : {}),
+      ...(inputTruncated ? { truncated: true } : {}),
     };
   }
 
@@ -1666,6 +1779,7 @@ export function collapseGeminiInteractionsSSE(body: string): CollapseResult {
     ...(reasoning ? { reasoning } : {}),
     ...(droppedChunks > 0 ? { droppedChunks } : {}),
     ...(firstDroppedSample ? { firstDroppedSample } : {}),
+    ...(inputTruncated ? { truncated: true } : {}),
   };
 }
 
