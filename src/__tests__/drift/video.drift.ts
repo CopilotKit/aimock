@@ -127,7 +127,7 @@ describe("Video API drift", () => {
       expect(res.status).toBe(200);
       const mockShape = extractShape(JSON.parse(res.body));
       const diffs = compareShapes(expected, mockShape);
-      const report = formatDriftReport("Video create (completed)", diffs);
+      const report = formatDriftReport("Video create (completed)", diffs, "video");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -147,7 +147,7 @@ describe("Video API drift", () => {
       const body = JSON.parse(res.body);
       const mockShape = extractShape(body);
       const diffs = compareShapes(expected, mockShape);
-      const report = formatDriftReport("Video create (processing)", diffs);
+      const report = formatDriftReport("Video create (processing)", diffs, "video");
 
       // Processing response must NOT include url
       expect(body.url).toBeUndefined();
@@ -173,7 +173,7 @@ describe("Video API drift", () => {
       expect(res.status).toBe(200);
       const mockShape = extractShape(JSON.parse(res.body));
       const diffs = compareShapes(expected, mockShape);
-      const report = formatDriftReport("Video status (completed)", diffs);
+      const report = formatDriftReport("Video status (completed)", diffs, "video");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -195,7 +195,7 @@ describe("Video API drift", () => {
       const body = JSON.parse(res.body);
       const mockShape = extractShape(body);
       const diffs = compareShapes(expected, mockShape);
-      const report = formatDriftReport("Video status (processing)", diffs);
+      const report = formatDriftReport("Video status (processing)", diffs, "video");
 
       // Processing status must NOT include url
       expect(body.url).toBeUndefined();

@@ -174,7 +174,11 @@ describe("ElevenLabs drift — sound generation", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("ElevenLabs /v1/sound-generation 400 error", diffs);
+    const report = formatDriftReport(
+      "ElevenLabs /v1/sound-generation 400 error",
+      diffs,
+      "elevenlabs",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -241,7 +245,7 @@ describe("ElevenLabs drift — music endpoints", () => {
 
     // Three-way comparison: use SDK shape as both expected and real
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("ElevenLabs /v1/music/plan", diffs);
+    const report = formatDriftReport("ElevenLabs /v1/music/plan", diffs, "elevenlabs");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -265,7 +269,7 @@ describe("ElevenLabs drift — music endpoints", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(expectedShape, expectedShape, mockShape);
-    const report = formatDriftReport("ElevenLabs /v1/music 400 error", diffs);
+    const report = formatDriftReport("ElevenLabs /v1/music 400 error", diffs, "elevenlabs");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

@@ -3,6 +3,8 @@
  * for drift detection between SDK types, real API responses, and aimock output.
  */
 
+import { isKnownSurface } from "./surface-registry.js";
+
 // ---------------------------------------------------------------------------
 // Shape types
 // ---------------------------------------------------------------------------
@@ -451,11 +453,35 @@ export function compareSSESequences(
 // Report formatting
 // ---------------------------------------------------------------------------
 
-export function formatDriftReport(context: string, diffs: ShapeDiff[]): string {
+/**
+ * Format a drift report block for a vitest failure message.
+ *
+ * @param context Human-readable prose title (kept for humans + the legacy
+ *   no-marker collector fallback).
+ * @param diffs   The shape diffs to render.
+ * @param surface Optional stable surface slug (see `surface-registry.ts`). When
+ *   provided it MUST be a registered slug — an unknown slug throws at emit time
+ *   so a typo/forgotten registry entry fails loudly locally. When present, a
+ *   machine-readable `Surface: <slug>` marker line is emitted so the collector
+ *   resolves the block structurally (→ auto-fixable exit 2) instead of
+ *   substring-matching the prose title.
+ */
+export function formatDriftReport(context: string, diffs: ShapeDiff[], surface?: string): string {
+  if (surface !== undefined && !isKnownSurface(surface)) {
+    throw new Error(
+      `formatDriftReport: unknown drift surface "${surface}" — add it to SURFACE_REGISTRY ` +
+        `in src/__tests__/drift/surface-registry.ts`,
+    );
+  }
+
   if (diffs.length === 0) return `No drift detected: ${context}`;
 
   const lines: string[] = [];
-  lines.push(`\nAPI DRIFT DETECTED: ${context}\n`);
+  lines.push(`\nAPI DRIFT DETECTED: ${context}`);
+  if (surface !== undefined) {
+    lines.push(`  Surface: ${surface}`);
+  }
+  lines.push("");
 
   for (let i = 0; i < diffs.length; i++) {
     const d = diffs[i];

@@ -123,7 +123,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Cohere Rerank drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/rerank", diffs);
+    const report = formatDriftReport("Cohere /v2/rerank", diffs, "rerank");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -199,7 +199,7 @@ describe("Cohere Rerank mock-only shape validation", () => {
 
     // Two-way: SDK vs mock (no real API needed)
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/rerank (mock vs SDK)", diffs);
+    const report = formatDriftReport("Cohere /v2/rerank (mock vs SDK)", diffs, "rerank");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

@@ -201,7 +201,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
     if (mockRes.status === 200) {
       const mockShape = extractShape(JSON.parse(mockRes.body));
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("Bedrock Invoke", diffs);
+      const report = formatDriftReport("Bedrock Invoke", diffs, "bedrock-invoke");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -261,7 +261,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
       if (!mockEvent) continue; // already asserted presence above
 
       const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
-      const report = formatDriftReport(`Bedrock InvokeStream:${sdkEvent.type}`, diffs);
+      const report = formatDriftReport(
+        `Bedrock InvokeStream:${sdkEvent.type}`,
+        diffs,
+        "bedrock-invoke-stream",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -291,7 +295,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
     if (mockRes.status === 200) {
       const mockShape = extractShape(JSON.parse(mockRes.body));
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("Bedrock Converse", diffs);
+      const report = formatDriftReport("Bedrock Converse", diffs, "bedrock-converse");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -397,7 +401,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
       if (!mockEvent) continue; // already asserted presence above
 
       const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
-      const report = formatDriftReport(`Bedrock ConverseStream:${sdkEvent.type}`, diffs);
+      const report = formatDriftReport(
+        `Bedrock ConverseStream:${sdkEvent.type}`,
+        diffs,
+        "bedrock-converse-stream",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -482,7 +490,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
       if (!mockEvent) continue;
 
       const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
-      const report = formatDriftReport(`Bedrock ConverseStream Tool:${sdkEvent.type}`, diffs);
+      const report = formatDriftReport(
+        `Bedrock ConverseStream Tool:${sdkEvent.type}`,
+        diffs,
+        "bedrock-converse-stream",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -597,6 +609,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Bedrock drift", () => {
         const report = formatDriftReport(
           `Bedrock ConverseStream Reasoning:${sdkEvent.type}`,
           diffs,
+          "bedrock-converse-stream",
         );
 
         expect(

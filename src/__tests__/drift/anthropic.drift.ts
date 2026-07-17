@@ -58,7 +58,7 @@ describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic Claude Messages drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("Anthropic Claude (non-streaming text)", diffs);
+    const report = formatDriftReport("Anthropic Claude (non-streaming text)", diffs, "anthropic");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -90,7 +90,11 @@ describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic Claude Messages drift", () => {
     }));
 
     const diffs = compareSSESequences(sdkEvents, realStream.events, mockSSEShapes);
-    const report = formatDriftReport("Anthropic Claude (streaming text events)", diffs);
+    const report = formatDriftReport(
+      "Anthropic Claude (streaming text events)",
+      diffs,
+      "anthropic",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -128,7 +132,11 @@ describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic Claude Messages drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("Anthropic Claude (non-streaming tool call)", diffs);
+    const report = formatDriftReport(
+      "Anthropic Claude (non-streaming tool call)",
+      diffs,
+      "anthropic",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -179,7 +187,11 @@ describe.skipIf(!ANTHROPIC_API_KEY)("Anthropic Claude Messages drift", () => {
     }));
 
     const diffs = compareSSESequences(sdkEvents, realStream.events, mockSSEShapes);
-    const report = formatDriftReport("Anthropic Claude (streaming tool call events)", diffs);
+    const report = formatDriftReport(
+      "Anthropic Claude (streaming tool call events)",
+      diffs,
+      "anthropic",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -221,7 +233,11 @@ describe("Anthropic Claude extended thinking shapes", () => {
 
     // Shape triangulation (mock-only, no real API call for thinking)
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Anthropic Claude (non-streaming thinking)", diffs);
+    const report = formatDriftReport(
+      "Anthropic Claude (non-streaming thinking)",
+      diffs,
+      "anthropic",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -283,7 +299,11 @@ describe("Anthropic Claude extended thinking shapes", () => {
     }));
 
     const diffs = compareSSESequences(sdkEvents, sdkEvents, mockSSEShapes);
-    const report = formatDriftReport("Anthropic Claude (streaming thinking events)", diffs);
+    const report = formatDriftReport(
+      "Anthropic Claude (streaming thinking events)",
+      diffs,
+      "anthropic",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

@@ -106,7 +106,7 @@ describe("fal.ai queue lifecycle shapes", () => {
     // Shape comparison
     const mockShape = extractShape(envelope);
     const diffs = compareShapes(expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai queue submit envelope", diffs);
+    const report = formatDriftReport("fal.ai queue submit envelope", diffs, "fal-queue");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -145,7 +145,7 @@ describe("fal.ai queue lifecycle shapes", () => {
 
     const mockShape = extractShape(body);
     const diffs = compareShapes(expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai queue status", diffs);
+    const report = formatDriftReport("fal.ai queue status", diffs, "fal-queue");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -182,7 +182,7 @@ describe("fal.ai queue lifecycle shapes", () => {
 
     const mockShape = extractShape(body);
     const diffs = compareShapes(expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai queue result", diffs);
+    const report = formatDriftReport("fal.ai queue result", diffs, "fal-queue");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -219,7 +219,7 @@ describe("fal.ai queue lifecycle shapes", () => {
 
     const mockShape = extractShape(body);
     const diffs = compareShapes(expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai queue cancel", diffs);
+    const report = formatDriftReport("fal.ai queue cancel", diffs, "fal-queue");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

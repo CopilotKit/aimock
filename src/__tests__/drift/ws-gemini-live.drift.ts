@@ -141,7 +141,7 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Live WS drift", () => {
     expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
     const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
-    const report = formatDriftReport("Gemini Live WS (text events)", diffs);
+    const report = formatDriftReport("Gemini Live WS (text events)", diffs, "gemini-live");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -218,7 +218,7 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Live WS drift", () => {
     expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
     const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
-    const report = formatDriftReport("Gemini Live WS (tool call events)", diffs);
+    const report = formatDriftReport("Gemini Live WS (tool call events)", diffs, "gemini-live");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

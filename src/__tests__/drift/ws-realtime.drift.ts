@@ -182,7 +182,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
       expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
       const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
-      const report = formatDriftReport("OpenAI Realtime WS (GA text events)", diffs);
+      const report = formatDriftReport(
+        "OpenAI Realtime WS (GA text events)",
+        diffs,
+        "openai-realtime",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -279,7 +283,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
       expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
       const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
-      const report = formatDriftReport("OpenAI Realtime WS (GA tool call events)", diffs);
+      const report = formatDriftReport(
+        "OpenAI Realtime WS (GA tool call events)",
+        diffs,
+        "openai-realtime",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),

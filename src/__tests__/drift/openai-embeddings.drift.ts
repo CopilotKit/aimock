@@ -48,7 +48,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Embeddings drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("OpenAI Embeddings", diffs);
+    const report = formatDriftReport("OpenAI Embeddings", diffs, "openai-embeddings");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -71,7 +71,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Embeddings drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("OpenAI Embeddings (multiple inputs)", diffs);
+    const report = formatDriftReport(
+      "OpenAI Embeddings (multiple inputs)",
+      diffs,
+      "openai-embeddings",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

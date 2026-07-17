@@ -77,7 +77,11 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Interactions API drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("Gemini Interactions (non-streaming text)", diffs);
+    const report = formatDriftReport(
+      "Gemini Interactions (non-streaming text)",
+      diffs,
+      "gemini-interactions",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -120,6 +124,7 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Interactions API drift", () => {
     const report = formatDriftReport(
       "Gemini Interactions (non-streaming text, Step[] input)",
       diffs,
+      "gemini-interactions",
     );
 
     expect(
@@ -162,7 +167,11 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Interactions API drift", () => {
     }));
 
     const diffs = compareSSESequences(sdkEvents, realStream.events, mockSSEShapes);
-    const report = formatDriftReport("Gemini Interactions (streaming text events)", diffs);
+    const report = formatDriftReport(
+      "Gemini Interactions (streaming text events)",
+      diffs,
+      "gemini-interactions",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -218,7 +227,11 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Interactions API drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("Gemini Interactions (non-streaming tool call)", diffs);
+    const report = formatDriftReport(
+      "Gemini Interactions (non-streaming tool call)",
+      diffs,
+      "gemini-interactions",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -276,7 +289,11 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Interactions API drift", () => {
     }));
 
     const diffs = compareSSESequences(sdkEvents, realStream.events, mockSSEShapes);
-    const report = formatDriftReport("Gemini Interactions (streaming tool call events)", diffs);
+    const report = formatDriftReport(
+      "Gemini Interactions (streaming tool call events)",
+      diffs,
+      "gemini-interactions",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

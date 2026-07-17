@@ -21,6 +21,7 @@ import type { ShapeDiff } from "./drift/schema.js";
 import {
   parseDriftBlock,
   extractProviderName,
+  extractSurfaceKey,
   extractScenario,
   parseKnownModelsCanary,
   collectDriftEntries,
@@ -30,6 +31,9 @@ import {
   infraIndicatorSample,
 } from "../../scripts/drift-report-collector.js";
 import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
+import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS } from "./drift/surface-registry.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Helpers for the A1.3 CollectResult shape ({ entries, quarantine }).
@@ -1347,5 +1351,181 @@ describe("D6.2 — per-item id on ParsedDiff", () => {
     for (const diff of parsed!.diffs) {
       expect(diff.id).toBe(diff.path);
     }
+  });
+});
+
+// ===========================================================================
+// WS-5 — structural surface keying via SURFACE_REGISTRY
+// ===========================================================================
+
+describe("WS-5 extractSurfaceKey", () => {
+  it("reads the Surface: marker line emitted by formatDriftReport(surface)", () => {
+    const block = formatDriftReport(
+      "Cohere /v2/chat (non-streaming)",
+      [SAMPLE_DIFF],
+      "cohere-chat",
+    );
+    expect(extractSurfaceKey(block)).toBe("cohere-chat");
+  });
+
+  it("returns null for a legacy block with no Surface: marker", () => {
+    const block = formatDriftReport("Cohere /v2/chat (non-streaming)", [SAMPLE_DIFF]);
+    expect(extractSurfaceKey(block)).toBeNull();
+  });
+});
+
+describe("WS-5 — previously-quarantined surfaces now route to exit-2 entries", () => {
+  // A drift block for a surface that today is NOT a PROVIDER_MAP key. On old
+  // code these route to a quarantine (exit 5) because extractProviderName
+  // returns null. With the surface marker + registry they become auto-fixable
+  // exit-2 entries. (≥3 surfaces to satisfy the ≥3-cell rule.)
+  const CASES: { surface: string; title: string; provider: string; builderFile: string }[] = [
+    {
+      surface: "cohere-chat",
+      title: "Cohere /v2/chat (non-streaming)",
+      provider: "Cohere Chat",
+      builderFile: "src/cohere.ts",
+    },
+    {
+      surface: "fal-sync",
+      title: "fal.ai sync-run (image payload)",
+      provider: "fal.ai sync-run",
+      builderFile: "src/fal.ts",
+    },
+    {
+      surface: "elevenlabs",
+      title: "ElevenLabs /v1/sound-generation 400 error",
+      provider: "ElevenLabs",
+      builderFile: "src/elevenlabs-audio.ts",
+    },
+  ];
+
+  for (const c of CASES) {
+    it(`RED→GREEN: "${c.surface}" drift → exit-2 entry (was exit-5 quarantine)`, () => {
+      const block = formatDriftReport(c.title, [SAMPLE_DIFF], c.surface);
+      const result = makeResult([
+        makeAssertion({
+          ancestorTitles: [`${c.title} drift`],
+          title: "shape matches SDK",
+          failureMessages: [`AssertionError: ${block}`],
+        }),
+      ]);
+
+      const { entries, quarantine } = collectDriftEntries(result);
+      // The fix: routed to a trustworthy entry, NOT quarantined.
+      expect(quarantine).toHaveLength(0);
+      expect(entries).toHaveLength(1);
+
+      const entry = entries[0];
+      expect(entry.provider).toBe(c.provider);
+      expect(entry.builderFile).toBe(c.builderFile);
+      expect(entry.builderFunctions.length).toBeGreaterThan(0);
+      expect(entry.sdkShapesFile.length).toBeGreaterThan(0);
+
+      // Exit code: 2 (auto-fixable), not 5 (quarantine).
+      expect(exitCodeOf(result)).toBe(2);
+    });
+  }
+
+  it("legacy no-marker fallback: a truly un-keyable block still quarantines (exit 5)", () => {
+    // A marker-less block whose prose title matches NO registry provider label
+    // routes to quarantine exactly as before WS-5 — the defensive legacy net is
+    // preserved for genuinely un-attributable output.
+    const block = formatDriftReport("SomeBrandNewProvider /v9/widgets", [SAMPLE_DIFF]);
+    const result = makeResult([
+      makeAssertion({
+        ancestorTitles: ["SomeBrandNewProvider drift"],
+        title: "shape matches SDK",
+        failureMessages: [`AssertionError: ${block}`],
+      }),
+    ]);
+    const { entries, quarantine } = collectDriftEntries(result);
+    expect(entries).toHaveLength(0);
+    expect(quarantine).toHaveLength(1);
+    expect(exitCodeOf(result)).toBe(5);
+  });
+
+  it("legacy no-marker fallback still resolves a known provider LABEL to an entry", () => {
+    // Back-compat: an unmigrated block that carries no Surface: marker but whose
+    // prose title contains a registered provider label still routes to an entry.
+    const block = formatDriftReport("Cohere Chat completions", [SAMPLE_DIFF]);
+    const result = makeResult([
+      makeAssertion({
+        ancestorTitles: ["Cohere Chat drift"],
+        title: "shape matches SDK",
+        failureMessages: [`AssertionError: ${block}`],
+      }),
+    ]);
+    const { entries, quarantine } = collectDriftEntries(result);
+    expect(quarantine).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].builderFile).toBe("src/cohere.ts");
+  });
+});
+
+describe("WS-5 — unknown surface slug fails LOUD (throws), never silent quarantine", () => {
+  it("collectDriftEntries throws on a marker with a slug not in the registry", () => {
+    // Build the block manually — formatDriftReport(surface) would itself throw
+    // on an unknown slug, so synthesize the marker directly to exercise the
+    // COLLECTOR's runtime throw.
+    const block =
+      "\nAPI DRIFT DETECTED: Totally New Surface\n" +
+      "  Surface: totally-new-surface\n\n" +
+      "  1. [critical] LLMOCK DRIFT — mismatch detected\n" +
+      "     Path:    a.b.c\n" +
+      "     SDK:     null\n" +
+      "     Real:    null\n" +
+      "     Mock:    <absent>\n";
+    const result = makeResult([
+      makeAssertion({
+        ancestorTitles: ["Totally New Surface drift"],
+        title: "shape matches SDK",
+        failureMessages: [`AssertionError: ${block}`],
+      }),
+    ]);
+
+    expect(() => collectDriftEntries(result)).toThrow(
+      /Unknown drift surface "totally-new-surface"/,
+    );
+  });
+
+  it("formatDriftReport throws at emit time on an unknown slug", () => {
+    expect(() => formatDriftReport("X", [SAMPLE_DIFF], "not-a-real-surface")).toThrow(
+      /unknown drift surface "not-a-real-surface"/,
+    );
+  });
+});
+
+describe("WS-5 — SURFACE_REGISTRY coverage & integrity", () => {
+  it("every KNOWN_SURFACE_SLUGS entry is a registry key", () => {
+    for (const slug of KNOWN_SURFACE_SLUGS) {
+      expect(SURFACE_REGISTRY[slug]).toBeDefined();
+    }
+  });
+
+  it("every registry entry resolves to an existing builderFile with non-empty builderFunctions", () => {
+    // Mirrors the fix-drift.ts validation so a bad entry fails locally, not in CI.
+    const repoRoot = resolve(__dirname, "..", "..");
+    for (const [slug, mapping] of Object.entries(SURFACE_REGISTRY)) {
+      expect(mapping.provider.length, `${slug} provider`).toBeGreaterThan(0);
+      expect(mapping.builderFunctions.length, `${slug} builderFunctions`).toBeGreaterThan(0);
+      expect(
+        mapping.builderFunctions.every((f) => typeof f === "string" && f.length > 0),
+        `${slug} builderFunctions all non-empty strings`,
+      ).toBe(true);
+      const abs = resolve(repoRoot, mapping.builderFile);
+      expect(existsSync(abs), `${slug} builderFile exists: ${mapping.builderFile}`).toBe(true);
+      if (mapping.typesFile !== null) {
+        expect(
+          existsSync(resolve(repoRoot, mapping.typesFile)),
+          `${slug} typesFile exists: ${mapping.typesFile}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("provider labels are unique (legacy fallback reverse-index has no collisions)", () => {
+    const labels = Object.values(SURFACE_REGISTRY).map((m) => m.provider);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });

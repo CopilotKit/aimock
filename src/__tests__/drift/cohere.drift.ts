@@ -156,7 +156,7 @@ describe("Cohere error shapes", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/chat malformed JSON error", diffs);
+    const report = formatDriftReport("Cohere /v2/chat malformed JSON error", diffs, "cohere-chat");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -176,7 +176,7 @@ describe("Cohere error shapes", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/chat missing model error", diffs);
+    const report = formatDriftReport("Cohere /v2/chat missing model error", diffs, "cohere-chat");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -196,7 +196,11 @@ describe("Cohere error shapes", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/chat missing messages error", diffs);
+    const report = formatDriftReport(
+      "Cohere /v2/chat missing messages error",
+      diffs,
+      "cohere-chat",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -217,7 +221,11 @@ describe("Cohere error shapes", () => {
     const mockShape = extractShape(body);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Cohere /v2/chat no fixture match error", diffs);
+    const report = formatDriftReport(
+      "Cohere /v2/chat no fixture match error",
+      diffs,
+      "cohere-chat",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -248,7 +256,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Cohere drift", () => {
       const mockShape = extractShape(JSON.parse(mockRes.body));
 
       const diffs = triangulate(sdkShape, realShape, mockShape);
-      const report = formatDriftReport("Cohere /v2/chat (non-streaming)", diffs);
+      const report = formatDriftReport("Cohere /v2/chat (non-streaming)", diffs, "cohere-chat");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -284,7 +292,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Cohere drift", () => {
         const mockChunkShape = extractShape(mockChunks[0]);
 
         const diffs = triangulate(sdkChunkShape, realChunkShape, mockChunkShape);
-        const report = formatDriftReport("Cohere /v2/chat (streaming first chunk)", diffs);
+        const report = formatDriftReport(
+          "Cohere /v2/chat (streaming first chunk)",
+          diffs,
+          "cohere-chat",
+        );
 
         expect(
           diffs.filter((d) => d.severity === "critical"),
@@ -308,7 +320,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Cohere drift", () => {
         const mockLastShape = extractShape(mockChunks[mockChunks.length - 1]);
 
         const lastDiffs = triangulate(sdkLastChunkShape, realLastShape, mockLastShape);
-        const lastReport = formatDriftReport("Cohere /v2/chat (streaming last chunk)", lastDiffs);
+        const lastReport = formatDriftReport(
+          "Cohere /v2/chat (streaming last chunk)",
+          lastDiffs,
+          "cohere-chat",
+        );
 
         expect(
           lastDiffs.filter((d) => d.severity === "critical"),

@@ -130,7 +130,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
       const mockShape = extractShape(JSON.parse(mockRes.body));
 
       const diffs = triangulate(sdkShape, realShape, mockShape);
-      const report = formatDriftReport("Ollama /api/chat", diffs);
+      const report = formatDriftReport("Ollama /api/chat", diffs, "ollama");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -168,7 +168,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
       const mockFirstShape = extractShape(mockChunks[0]);
 
       const diffs = triangulate(sdkChunkShape, realFirstShape, mockFirstShape);
-      const report = formatDriftReport("Ollama /api/chat (streaming chunk)", diffs);
+      const report = formatDriftReport("Ollama /api/chat (streaming chunk)", diffs, "ollama");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -199,7 +199,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
       const mockShape = extractShape(JSON.parse(mockRes.body));
 
       const diffs = triangulate(sdkShape, realShape, mockShape);
-      const report = formatDriftReport("Ollama /api/generate", diffs);
+      const report = formatDriftReport("Ollama /api/generate", diffs, "ollama");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),

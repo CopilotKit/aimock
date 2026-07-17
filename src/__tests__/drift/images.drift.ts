@@ -116,7 +116,7 @@ describe("OpenAI Images API drift", () => {
 
     // Two-way: SDK vs mock (no real API call — DALL-E is expensive)
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("OpenAI Images (url variant)", diffs);
+    const report = formatDriftReport("OpenAI Images (url variant)", diffs, "images");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -138,7 +138,7 @@ describe("OpenAI Images API drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("OpenAI Images (b64_json variant)", diffs);
+    const report = formatDriftReport("OpenAI Images (b64_json variant)", diffs, "images");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -163,7 +163,7 @@ describe("OpenAI Images API drift", () => {
     const mockShape = extractShape(parsed);
 
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("OpenAI Images (multi-image)", diffs);
+    const report = formatDriftReport("OpenAI Images (multi-image)", diffs, "images");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

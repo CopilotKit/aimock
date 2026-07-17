@@ -58,7 +58,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("OpenAI Chat (non-streaming text)", diffs);
+    const report = formatDriftReport("OpenAI Chat (non-streaming text)", diffs, "openai-chat");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -87,7 +87,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
     const mockChunkShape = extractShape(mockChunks[0]);
 
     const diffs = triangulate(sdkChunkShape, realChunkShape, mockChunkShape);
-    const report = formatDriftReport("OpenAI Chat (streaming text chunks)", diffs);
+    const report = formatDriftReport("OpenAI Chat (streaming text chunks)", diffs, "openai-chat");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -127,7 +127,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
     const mockShape = extractShape(JSON.parse(mockRes.body));
 
     const diffs = triangulate(sdkShape, realShape, mockShape);
-    const report = formatDriftReport("OpenAI Chat (non-streaming tool call)", diffs);
+    const report = formatDriftReport("OpenAI Chat (non-streaming tool call)", diffs, "openai-chat");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -172,7 +172,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
     const mockChunkShape = extractShape(mockChunks[0]);
 
     const diffs = triangulate(sdkChunkShape, realChunkShape, mockChunkShape);
-    const report = formatDriftReport("OpenAI Chat (streaming tool call chunks)", diffs);
+    const report = formatDriftReport(
+      "OpenAI Chat (streaming tool call chunks)",
+      diffs,
+      "openai-chat",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -239,7 +243,7 @@ describe("OpenAI Chat Completions error shapes", () => {
       const mockShape = extractShape(body);
 
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("OpenAI Chat error fixture (400)", diffs);
+      const report = formatDriftReport("OpenAI Chat error fixture (400)", diffs, "openai-chat");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -274,7 +278,7 @@ describe("OpenAI Chat Completions error shapes", () => {
       const mockShape = extractShape(body);
 
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("OpenAI Chat no-fixture-match (404)", diffs);
+      const report = formatDriftReport("OpenAI Chat no-fixture-match (404)", diffs, "openai-chat");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -330,7 +334,7 @@ describe("OpenAI Chat Completions error shapes", () => {
       const mockShape = extractShape(body);
 
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("OpenAI Chat malformed JSON (400)", diffs);
+      const report = formatDriftReport("OpenAI Chat malformed JSON (400)", diffs, "openai-chat");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -387,7 +391,11 @@ describe("OpenAI Chat Completions reasoning shapes", () => {
       const mockShape = extractShape(body);
 
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("OpenAI Chat (non-streaming reasoning)", diffs);
+      const report = formatDriftReport(
+        "OpenAI Chat (non-streaming reasoning)",
+        diffs,
+        "openai-chat",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -462,7 +470,11 @@ describe("OpenAI Chat Completions reasoning shapes", () => {
       const mockChunkShape = extractShape(reasoningChunks[0]);
 
       const diffs = triangulate(sdkChunkShape, sdkChunkShape, mockChunkShape);
-      const report = formatDriftReport("OpenAI Chat (streaming reasoning chunks)", diffs);
+      const report = formatDriftReport(
+        "OpenAI Chat (streaming reasoning chunks)",
+        diffs,
+        "openai-chat",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),

@@ -63,7 +63,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS drift", () => {
     expect(mockResult.events.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
     const diffs = compareSSESequences(sdkEvents, realResult.events, mockResult.events);
-    const report = formatDriftReport("OpenAI Responses WS (text events)", diffs);
+    const report = formatDriftReport(
+      "OpenAI Responses WS (text events)",
+      diffs,
+      "openai-responses-ws",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -119,7 +123,11 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses WS drift", () => {
     expect(mockResult.events.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
     const diffs = compareSSESequences(sdkEvents, realResult.events, mockResult.events);
-    const report = formatDriftReport("OpenAI Responses WS (tool call events)", diffs);
+    const report = formatDriftReport(
+      "OpenAI Responses WS (tool call events)",
+      diffs,
+      "openai-responses-ws",
+    );
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

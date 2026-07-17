@@ -22,6 +22,9 @@ import { existsSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SURFACE_REGISTRY } from "../src/__tests__/drift/surface-registry.js";
+import type { SurfaceMapping } from "../src/__tests__/drift/surface-registry.js";
+
 import type {
   DriftEntry,
   DriftReport,
@@ -50,111 +53,45 @@ interface VitestAssertion {
 }
 
 // ---------------------------------------------------------------------------
-// Provider → file mapping
+// Surface → file mapping (single source of truth in surface-registry.ts)
 // ---------------------------------------------------------------------------
 
-interface ProviderMapping {
-  builderFile: string;
-  builderFunctions: string[];
-  typesFile: string | null;
-  sdkShapesFile?: string;
-}
+/**
+ * A resolved surface mapping. Structurally identical to the registry's
+ * `SurfaceMapping` (kept as a local alias so the rest of this module reads
+ * unchanged from the pre-registry `ProviderMapping`).
+ */
+type ProviderMapping = SurfaceMapping;
 
-const OPENAI_CHAT_MAPPING: ProviderMapping = {
-  builderFile: "src/helpers.ts",
-  builderFunctions: [
-    "buildTextCompletion",
-    "buildToolCallCompletion",
-    "buildTextChunks",
-    "buildToolCallChunks",
-  ],
-  typesFile: "src/types.ts",
-};
+const SDK_SHAPES_FILE = "src/__tests__/drift/sdk-shapes.ts";
 
-const OPENAI_RESPONSES_MAPPING: ProviderMapping = {
-  builderFile: "src/responses.ts",
-  builderFunctions: [
-    "buildTextResponse",
-    "buildToolCallResponse",
-    "buildTextStreamEvents",
-    "buildToolCallStreamEvents",
-  ],
-  typesFile: null,
-};
-
-const ANTHROPIC_MAPPING: ProviderMapping = {
-  builderFile: "src/messages.ts",
-  builderFunctions: [
-    "buildClaudeTextResponse",
-    "buildClaudeToolCallResponse",
-    "buildClaudeTextStreamEvents",
-    "buildClaudeToolCallStreamEvents",
-  ],
-  typesFile: null,
-};
-
-const GEMINI_MAPPING: ProviderMapping = {
-  builderFile: "src/gemini.ts",
-  builderFunctions: [
-    "buildGeminiTextResponse",
-    "buildGeminiToolCallResponse",
-    "buildGeminiTextStreamChunks",
-    "buildGeminiToolCallStreamChunks",
-  ],
-  typesFile: null,
-};
-
-const OPENAI_EMBEDDINGS_MAPPING: ProviderMapping = {
-  builderFile: "src/helpers.ts",
-  builderFunctions: ["buildEmbeddingResponse", "generateDeterministicEmbedding"],
-  typesFile: null,
-  sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+/**
+ * Legacy label aliases → registry slug. The pre-WS-5 `PROVIDER_MAP` keyed some
+ * surfaces by SHORTER titles than the registry's canonical `provider` label
+ * (e.g. a bare `"Gemini"`/`"Anthropic"` describe-block title, or `"Bedrock
+ * Invoke"` prose without a colon suffix). These map onto the canonical slug so
+ * the LEGACY no-marker fallback keeps recognizing an unmigrated block whose
+ * prose title uses the shorter form. Newer blocks resolve structurally via the
+ * `Surface:` marker and never touch this table.
+ */
+const LEGACY_LABEL_ALIASES: Record<string, keyof typeof SURFACE_REGISTRY> = {
+  Gemini: "gemini",
+  Anthropic: "anthropic",
 };
 
 /**
- * Maps provider names (from drift test describe blocks) to source files
- * and builder function names. The function names are builder functions for
- * each provider (internal or exported) — they are included so Claude Code
- * can locate them via Read/Grep.
+ * Reverse index from a human provider label to its mapping, for the LEGACY
+ * no-marker fallback (`extractProviderName`). Built from the registry's
+ * canonical `provider` labels PLUS the legacy aliases above. Newer emitters
+ * declare a `Surface:` slug marker (resolved structurally); this table only
+ * serves blocks that predate the marker or a path not yet migrated.
  */
-const PROVIDER_MAP: Record<string, ProviderMapping> = {
-  "OpenAI Chat": OPENAI_CHAT_MAPPING,
-  "OpenAI Responses": OPENAI_RESPONSES_MAPPING,
-  Anthropic: ANTHROPIC_MAPPING,
-  "Anthropic Claude": ANTHROPIC_MAPPING,
-  "Google Gemini": GEMINI_MAPPING,
-  Gemini: GEMINI_MAPPING,
-  "OpenAI Realtime": {
-    builderFile: "src/ws-realtime.ts",
-    builderFunctions: ["handleWebSocketRealtime", "realtimeItemsToMessages"],
-    typesFile: null,
-  },
-  "OpenAI Responses WS": {
-    builderFile: "src/ws-responses.ts",
-    builderFunctions: ["handleWebSocketResponses"],
-    typesFile: null,
-  },
-  "Gemini Live": {
-    builderFile: "src/ws-gemini-live.ts",
-    builderFunctions: ["handleWebSocketGeminiLive"],
-    typesFile: null,
-  },
-  "OpenAI Embeddings": OPENAI_EMBEDDINGS_MAPPING,
-  "Gemini Interactions": {
-    builderFile: "src/gemini-interactions.ts",
-    builderFunctions: [
-      "buildInteractionsTextResponse",
-      "buildInteractionsToolCallResponse",
-      "buildInteractionsContentWithToolCallsResponse",
-      "buildInteractionsTextSSEEvents",
-      "buildInteractionsToolCallSSEEvents",
-      "buildInteractionsContentWithToolCallsSSEEvents",
-    ],
-    typesFile: null,
-  },
+const PROVIDER_LABEL_MAP: Record<string, ProviderMapping> = {
+  ...Object.fromEntries(Object.values(SURFACE_REGISTRY).map((m) => [m.provider, m])),
+  ...Object.fromEntries(
+    Object.entries(LEGACY_LABEL_ALIASES).map(([label, slug]) => [label, SURFACE_REGISTRY[slug]]),
+  ),
 };
-
-const SDK_SHAPES_FILE = "src/__tests__/drift/sdk-shapes.ts";
 
 // ---------------------------------------------------------------------------
 // AG-UI schema drift constants
@@ -230,16 +167,35 @@ export function parseDriftBlock(text: string): { context: string; diffs: ParsedD
 }
 
 /**
- * Extract provider name from the describe block title or the drift report context.
+ * Extract the machine-readable surface slug from a drift block's `Surface:`
+ * marker line (emitted by `formatDriftReport(context, diffs, surface)`), if
+ * present. Returns null when no marker line exists (a legacy/unmigrated block).
+ *
+ * The marker sits between the `API DRIFT DETECTED:` header and the numbered
+ * entries, e.g.:
+ *
+ *   API DRIFT DETECTED: Cohere /v2/chat (non-streaming)
+ *     Surface: cohere-chat
+ *     1. [critical] …
+ */
+export function extractSurfaceKey(text: string): string | null {
+  const match = text.match(/^\s*Surface:\s*(\S+)\s*$/m);
+  return match ? match[1] : null;
+}
+
+/**
+ * LEGACY provider-name fallback for a drift block that carries NO `Surface:`
+ * marker (predates the slug marker, or a path not yet migrated). Matches the
+ * text against the registry's human `provider` labels (longest first to avoid
+ * partial matches). Newer blocks resolve structurally via `extractSurfaceKey`;
+ * this exists only as a defensive back-compat net.
  *
  * Examples:
  *   "OpenAI Chat Completions drift" → "OpenAI Chat"
- *   "OpenAI Chat (non-streaming text)" → "OpenAI Chat"
  *   "Anthropic Claude drift" → "Anthropic Claude"
  */
 export function extractProviderName(text: string): string | null {
-  // Try matching against known provider keys (longest first to avoid partial matches)
-  const sorted = Object.keys(PROVIDER_MAP).sort((a, b) => b.length - a.length);
+  const sorted = Object.keys(PROVIDER_LABEL_MAP).sort((a, b) => b.length - a.length);
   for (const key of sorted) {
     if (text.includes(key)) return key;
   }
@@ -688,7 +644,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         // never crashed as unparseable (exit 1).
         const canary = parseKnownModelsCanary(fullMessage);
         if (canary !== null) {
-          const mapping = PROVIDER_MAP["OpenAI Realtime"];
+          const mapping = SURFACE_REGISTRY["openai-realtime"];
 
           // Build the critical diffs. F4: severity MUST be "critical" — the Fix
           // Drift workflow (.github/workflows/fix-drift.yml) gates remediation
@@ -788,33 +744,52 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         continue;
       }
 
-      // Determine provider from ancestor titles (describe block) or context
       const ancestorText = assertion.ancestorTitles.join(" ");
       const testName = `${ancestorText} > ${assertion.title}`;
-      const provider = extractProviderName(ancestorText) ?? extractProviderName(parsed.context);
-      if (!provider) {
-        // Unmapped provider: a parseable drift block whose provider we cannot
-        // route to a source file. Held for review (exit 5) rather than crashing
-        // the whole run (was exit 1). O-1: capture the raw frame location BEFORE
-        // any stack stripping.
-        quarantine.push({
-          provider: parsed.context || ancestorText || "unknown",
-          testName,
-          rawLocation: extractRawLocation(fullMessage),
-          message: fullMessage,
-        });
-        continue;
-      }
 
-      const mapping = PROVIDER_MAP[provider];
-      if (!mapping) {
-        quarantine.push({
-          provider,
-          testName,
-          rawLocation: extractRawLocation(fullMessage),
-          message: fullMessage,
-        });
-        continue;
+      // Resolution order (see WS-5 spec §3c):
+      //
+      //   1. `Surface:` marker present → structural lookup in SURFACE_REGISTRY.
+      //      - hit  → auto-fixable DriftEntry (exit-2 lane). THIS IS THE FIX.
+      //      - miss → a NEW surface whose author forgot the registry entry.
+      //               Do NOT silently quarantine — THROW (collector-fault, exit
+      //               1) so it is loud, distinct and actionable. fix-drift.yml
+      //               treats a non-{2,5} collector exit as a "collector crashed"
+      //               alert, so this cannot be ignored.
+      //   2. No marker (legacy/unmigrated block) → fall back to the human
+      //      provider-label match. Hit → entry; miss → quarantine (exit 5),
+      //      exactly as before this change.
+      const surfaceKey = extractSurfaceKey(fullMessage) ?? extractSurfaceKey(parsed.context);
+      let provider: string;
+      let mapping: ProviderMapping;
+      if (surfaceKey !== null) {
+        const registered = SURFACE_REGISTRY[surfaceKey];
+        if (!registered) {
+          throw new Error(
+            `Unknown drift surface "${surfaceKey}" — add it to SURFACE_REGISTRY ` +
+              `in src/__tests__/drift/surface-registry.ts (test: ${testName})`,
+          );
+        }
+        provider = registered.provider;
+        mapping = registered;
+      } else {
+        // Legacy no-marker fallback: match the human provider label.
+        const label = extractProviderName(ancestorText) ?? extractProviderName(parsed.context);
+        const legacyMapping = label ? PROVIDER_LABEL_MAP[label] : undefined;
+        if (!label || !legacyMapping) {
+          // Parseable drift block we cannot route to a source file. Held for
+          // review (exit 5) rather than crashing the whole run. O-1: capture the
+          // raw frame location BEFORE any stack stripping.
+          quarantine.push({
+            provider: label || parsed.context || ancestorText || "unknown",
+            testName,
+            rawLocation: extractRawLocation(fullMessage),
+            message: fullMessage,
+          });
+          continue;
+        }
+        provider = label;
+        mapping = legacyMapping;
       }
 
       entries.push({
@@ -823,7 +798,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         builderFile: mapping.builderFile,
         builderFunctions: mapping.builderFunctions,
         typesFile: mapping.typesFile,
-        sdkShapesFile: SDK_SHAPES_FILE,
+        sdkShapesFile: mapping.sdkShapesFile ?? SDK_SHAPES_FILE,
         diffs: parsed.diffs,
       });
     }

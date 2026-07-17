@@ -51,7 +51,7 @@ describe("OpenAI Moderations drift", () => {
 
     const mockShape = extractShape(mockBody);
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("OpenAI Moderations", diffs);
+    const report = formatDriftReport("OpenAI Moderations", diffs, "moderation");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

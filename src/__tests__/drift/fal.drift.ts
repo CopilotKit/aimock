@@ -142,7 +142,7 @@ describe("fal.ai sync-run response shape", () => {
     // Two-way triangulation: expected shape is both the "SDK" and "real" reference
     // since fal passthrough should be identity.
     const diffs = triangulate(expectedShape, expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai sync-run (image payload)", diffs);
+    const report = formatDriftReport("fal.ai sync-run (image payload)", diffs, "fal-sync");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -168,7 +168,7 @@ describe("fal.ai sync-run response shape", () => {
     // Shape match via triangulation
     const mockShape = extractShape(parsed);
     const diffs = triangulate(expectedShape, expectedShape, mockShape);
-    const report = formatDriftReport("fal.ai sync-run (flat payload)", diffs);
+    const report = formatDriftReport("fal.ai sync-run (flat payload)", diffs, "fal-sync");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),

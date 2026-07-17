@@ -91,7 +91,7 @@ describe.skipIf(!HAS_CREDENTIALS)("Vertex AI drift", () => {
     if (mockRes.status === 200) {
       const mockShape = extractShape(JSON.parse(mockRes.body));
       const diffs = triangulate(sdkShape, sdkShape, mockShape);
-      const report = formatDriftReport("Vertex AI generateContent", diffs);
+      const report = formatDriftReport("Vertex AI generateContent", diffs, "vertex-ai");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -156,7 +156,11 @@ describe.skipIf(!HAS_CREDENTIALS)("Vertex AI drift", () => {
       const lastChunk = chunks[chunks.length - 1];
       const lastShape = extractShape(lastChunk);
       const diffs = triangulate(sdkChunkShape, sdkChunkShape, lastShape);
-      const report = formatDriftReport("Vertex AI streamGenerateContent (last chunk)", diffs);
+      const report = formatDriftReport(
+        "Vertex AI streamGenerateContent (last chunk)",
+        diffs,
+        "vertex-ai",
+      );
 
       expect(
         diffs.filter((d) => d.severity === "critical"),

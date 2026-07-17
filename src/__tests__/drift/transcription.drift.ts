@@ -117,7 +117,7 @@ describe("Transcription API shape validation", () => {
     const mockShape = extractShape(mockRes.body);
     // Two-way comparison: SDK vs mock (no real API call needed)
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Transcription basic JSON", diffs);
+    const report = formatDriftReport("Transcription basic JSON", diffs, "transcription");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -145,7 +145,7 @@ describe("Transcription API shape validation", () => {
 
     const mockShape = extractShape(body);
     const diffs = triangulate(sdkShape, sdkShape, mockShape);
-    const report = formatDriftReport("Transcription verbose JSON", diffs);
+    const report = formatDriftReport("Transcription verbose JSON", diffs, "transcription");
 
     expect(
       diffs.filter((d) => d.severity === "critical"),
@@ -302,7 +302,7 @@ describe.skipIf(!OPENAI_API_KEY)("Transcription drift (three-way)", () => {
       const mockShape = extractShape(mockRes.body);
 
       const diffs = triangulate(sdkShape, realShape, mockShape);
-      const report = formatDriftReport("Transcription basic (three-way)", diffs);
+      const report = formatDriftReport("Transcription basic (three-way)", diffs, "transcription");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
@@ -327,7 +327,7 @@ describe.skipIf(!OPENAI_API_KEY)("Transcription drift (three-way)", () => {
       const mockShape = extractShape(mockRes.body);
 
       const diffs = triangulate(sdkShape, realShape, mockShape);
-      const report = formatDriftReport("Transcription verbose (three-way)", diffs);
+      const report = formatDriftReport("Transcription verbose (three-way)", diffs, "transcription");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
