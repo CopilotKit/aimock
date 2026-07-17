@@ -49,9 +49,12 @@
 #   2  usage / malformed-input / configuration error. This is a FAIL-CLOSED
 #      assertion, not a downstream side effect: a non-array/non-object input, a
 #      non-string .bucket/.state, an empty/contradictory required set, or ANY
-#      jq failure while scoring (preflight or a count that is not a
-#      non-negative integer) exits 2 here rather than silently defaulting a
-#      failed count to 0. The gate never merges on a count it could not trust.
+#      failure of the SINGLE guarded verdict computation (jq parse/runtime
+#      error, empty jq output, or a verdict object lacking a boolean .green)
+#      exits 2 here rather than reading an emptied jq result as green. The whole
+#      pass/fail decision is computed by ONE jq program and validated ONCE
+#      before the shell reads any field; the gate never merges on a verdict it
+#      could not trust.
 
 set -euo pipefail
 
@@ -187,136 +190,136 @@ JQ_BUCKET='
     | if (known | index($b)) != null then $b else "unknown" end;
 '
 
-# jq preflight: run the WHOLE JQ_BUCKET program over every element once so a
-# parse/runtime failure surfaces HERE as a hard config error (exit 2) rather
-# than downstream as an empty count silently defaulted to 0. If jq cannot
-# evaluate eff_bucket across the input, the gate cannot make a trustworthy
-# decision — fail closed by ASSERTION, never merge.
-if ! echo "$CHECKS_JSON" | jq -e "$JQ_BUCKET"' all(.[]; (. | eff_bucket) | type == "string")' >/dev/null 2>&1; then
-  echo "::error::ci-merge-gate: jq failed to evaluate the bucket program over the input (parse/runtime error) — cannot score checks, treating as config error" >&2
+# ---------------------------------------------------------------------------
+# SINGLE GUARDED VERDICT (the structural fix that kills the recurring
+# "bare-jq-assignment defaults to empty → green-signal" class).
+#
+# INVARIANT: there is EXACTLY ONE jq computation over the check data, and its
+# output is validated ONCE before the shell reads any field from it. The old
+# gate scored the checks through ~9 separate `VAR="$(echo "$CHECKS_JSON" | jq
+# ...)"` command-substitutions. `set -e` does NOT guard a command-substitution
+# RHS, so a jq crash in any of them produced an EMPTY string — and for several
+# (notably UNACCEPTED_CHECKS and MISSING_REQUIRED, whose emptiness means "no
+# unaccepted checks" / "no missing required") that empty read as the GREEN
+# signal. Consolidating into one call + one assertion means ANY jq/parse
+# failure is caught HERE as exit 2 (fail-closed), and it is structurally
+# impossible for an unguarded empty jq result to be interpreted as green.
+#
+# The jq program computes the ENTIRE decision — the green/not-green boolean AND
+# the human reason AND every scalar — inside jq, so the shell only consumes the
+# already-validated object. It emits ONE JSON object:
+#   { green: bool, reason: string, total, pass, pending, fail, cancel, skip,
+#     unknown, unaccepted: [string], missing_required: [string] }
+# The shell then asserts jq exited 0 AND produced non-empty valid JSON with a
+# boolean `.green`; otherwise `::error::` + exit 2. There is NO bare
+# `VAR=$(jq)` whose emptiness can be read as green anywhere below.
+# ---------------------------------------------------------------------------
+
+# shellcheck disable=SC2016  # jq program; $-vars are jq's, must NOT be shell-expanded
+JQ_VERDICT="$JQ_BUCKET"'
+  ('"$REQUIRED_JSON"') as $required
+  | ('"$IGNORE_JSON"') as $ignored
+  | . as $checks
+  # Per-check effective bucket, computed once.
+  | [ $checks[] | { name: .name, b: (. | eff_bucket) } ] as $scored
+  | ($scored | length) as $total
+  | ([ $scored[] | select(.b == "pass")     ] | length) as $pass
+  | ([ $scored[] | select(.b == "pending")  ] | length) as $pending
+  | ([ $scored[] | select(.b == "fail")     ] | length) as $fail
+  | ([ $scored[] | select(.b == "cancel")   ] | length) as $cancel
+  | ([ $scored[] | select(.b == "skipping") ] | length) as $skip
+  | ([ $scored[] | select(.b == "unknown")  ] | length) as $unknown
+  | ($pass + $pending + $fail + $cancel + $skip) as $recognized_sum
+  # Non-passing checks that are neither required nor on the ignore allow-list.
+  # Capture the element into $c first: inside `$required | index(...)` the pipe
+  # rebinds `.` to $required (the array), so `.name` there would index the array
+  # (jq error) — reference the captured $c.name instead.
+  | [ $scored[]
+      | . as $c
+      | select($c.b != "pass")
+      | select( ($required | index($c.name)) == null )
+      | select( ($ignored  | index($c.name)) == null )
+      | "\($c.name) [\($c.b)]"
+    ] as $unaccepted
+  # Required contexts that are NOT present-and-passing. Only STRING names of
+  # pass-bucket checks can satisfy a requirement: a pass check with a
+  # null/absent/non-string name counts toward pass>=1 but must NOT resolve a
+  # named requirement.
+  | ( [ $scored[] | select(.b == "pass") | .name | select(type == "string") ] ) as $passing
+  | ( $required | map(. as $name | select( ($passing | index($name)) == null )) ) as $missing_required
+  # ALL triggered reasons, in the same order the old sequence of `if` blocks
+  # emitted them (a single check can trip more than one, e.g. a required
+  # context in the cancel bucket trips BOTH "cancelled/stale" AND
+  # "required context missing"). We collect every applicable reason rather than
+  # short-circuiting on the first so the human-facing diagnostics — and the
+  # tests that assert on specific reasons — see exactly the same messages as
+  # before. An empty reasons array == green.
+  | ( [ (if ($recognized_sum != $total) then "bucket sum mismatch — recognized=\($recognized_sum) total=\($total) (unknown-bucket check(s) present) — NOT green" else empty end),
+        (if ($unknown > 0)              then "\($unknown) check(s) in an unrecognized bucket/state — NOT green" else empty end),
+        (if ($pass < 1)                 then "no checks in '"'"'pass'"'"' bucket (pass=\($pass)) — NOT green" else empty end),
+        (if ($pending > 0)              then "\($pending) check(s) still pending/queued/in_progress — NOT green" else empty end),
+        (if ($fail > 0)                 then "\($fail) check(s) failed/errored — NOT green" else empty end),
+        (if ($cancel > 0)               then "\($cancel) check(s) cancelled/stale — NOT green" else empty end),
+        (if (($unaccepted | length) > 0) then "non-passing check(s) not required and not on IGNORE_CONTEXTS allow-list — NOT green" else empty end),
+        (if (($missing_required | length) > 0) then "required context(s) missing or not passing" else empty end)
+      ] ) as $reasons
+  | {
+      green: (($reasons | length) == 0),
+      reasons: $reasons,
+      total: $total,
+      pass: $pass,
+      pending: $pending,
+      fail: $fail,
+      cancel: $cancel,
+      skip: $skip,
+      unknown: $unknown,
+      unaccepted: $unaccepted,
+      missing_required: $missing_required
+    }
+'
+
+# THE one guarded jq computation. Capture and IMMEDIATELY assert: jq exited 0
+# AND emitted a non-empty object with a boolean `.green`. Any failure (parse
+# error, runtime crash, empty output, missing/non-boolean `.green`) is a hard
+# config error — exit 2, NEVER green. This assertion is what makes it
+# impossible for an emptied jq result to be read as a pass.
+set +e
+VERDICT="$(echo "$CHECKS_JSON" | jq -c "$JQ_VERDICT")"
+verdict_rc=$?
+set -e
+if [ "$verdict_rc" -ne 0 ] || [ -z "${VERDICT//[[:space:]]/}" ] \
+  || ! printf '%s' "$VERDICT" | jq -e 'type == "object" and (.green | type == "boolean")' >/dev/null 2>&1; then
+  echo "::error::ci-merge-gate: jq failed to compute a valid verdict over the input (parse/runtime error, empty output, or missing boolean .green) — cannot score checks, treating as config error" >&2
   exit 2
 fi
 
-# assert_count NAME VALUE — every count must be a NON-EMPTY, non-negative
-# integer. A jq crash produces empty output; the old `${VAR:-0}` default turned
-# that silently into 0 and the gate then fail-closed only by luck of the
-# sum-check. We instead ASSERT: any empty / non-integer count is a jq failure
-# and a hard config error (exit 2). The gate fails closed by assertion.
-assert_count() {
-  case "$2" in
-    "" | *[!0-9]*)
-      echo "::error::ci-merge-gate: $1 is not a non-negative integer ('$2') — jq failed to produce a count, treating as config error" >&2
-      exit 2
-      ;;
-  esac
-}
+# Extract scalars from the ALREADY-VALIDATED verdict object. These reads are
+# safe: the object was asserted to be valid JSON with a boolean .green above,
+# so a jq extraction here cannot silently produce a green-reading empty.
+GREEN="$(printf '%s' "$VERDICT" | jq -r '.green')"
+PASS_COUNT="$(printf '%s' "$VERDICT" | jq -r '.pass')"
+SKIP_COUNT="$(printf '%s' "$VERDICT" | jq -r '.skip')"
 
-# Total number of checks and per-bucket counts.
-TOTAL_COUNT="$(echo "$CHECKS_JSON" | jq 'length')"
-PASS_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "pass") ] | length')"
-PENDING_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "pending") ] | length')"
-FAIL_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "fail") ] | length')"
-CANCEL_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "cancel") ] | length')"
-SKIP_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "skipping") ] | length')"
-UNKNOWN_COUNT="$(echo "$CHECKS_JSON" | jq "$JQ_BUCKET"' [ .[] | select((. | eff_bucket) == "unknown") ] | length')"
-
-# Assert each count is a real integer — NEVER default a failed count to 0.
-assert_count TOTAL_COUNT "$TOTAL_COUNT"
-assert_count PASS_COUNT "$PASS_COUNT"
-assert_count PENDING_COUNT "$PENDING_COUNT"
-assert_count FAIL_COUNT "$FAIL_COUNT"
-assert_count CANCEL_COUNT "$CANCEL_COUNT"
-assert_count SKIP_COUNT "$SKIP_COUNT"
-assert_count UNKNOWN_COUNT "$UNKNOWN_COUNT"
-
-# Non-required, non-passing checks that are NOT on the ignore allow-list. These
-# fail the gate: we never silently accept a skipped/neutral/unknown check just
-# because it is not in REQUIRED_CONTEXTS. To tolerate one, name it in
-# IGNORE_CONTEXTS.
-UNACCEPTED_CHECKS="$(
-  echo "$CHECKS_JSON" | jq -r "$JQ_BUCKET"'
-    ('"$REQUIRED_JSON"') as $required
-    | ('"$IGNORE_JSON"') as $ignored
-    | .[]
-    | . as $c
-    | ($c | eff_bucket) as $b
-    | select($b != "pass")
-    | select( ($required | index($c.name)) == null )
-    | select( ($ignored  | index($c.name)) == null )
-    | "\($c.name) [\($b)]"
-  '
-)"
-
-# Required contexts that are NOT present-and-passing. A required context is
-# satisfied iff there exists a check with that exact name whose effective
-# bucket is "pass". `$passing` keeps only STRING names: a pass-bucket check with
-# a null/absent/non-string `.name` is a real passing check (it counts toward
-# pass>=1) but has no name to match a required context, so it must NOT be able
-# to satisfy one — dropping non-strings here prevents a nameless pass from
-# spuriously resolving a required name.
-MISSING_REQUIRED="$(
-  echo "$CHECKS_JSON" | jq -r "$JQ_BUCKET"'
-    ('"$REQUIRED_JSON"') as $required
-    | ( [ .[] | select((. | eff_bucket) == "pass") | .name | select(type == "string") ] ) as $passing
-    | $required
-    | map(. as $name | select( ($passing | index($name)) == null ))
-    | .[]
-  '
-)"
-
-FAILED=0
-
-# Sum-check: every check must land in exactly one recognized bucket. If the
-# recognized buckets do not sum to the total, some check fell through the
-# mapping — treat that as NOT green rather than trust a partial count.
-RECOGNIZED_SUM=$((PASS_COUNT + PENDING_COUNT + FAIL_COUNT + CANCEL_COUNT + SKIP_COUNT))
-if [ "$RECOGNIZED_SUM" -ne "$TOTAL_COUNT" ]; then
-  echo "::error::ci-merge-gate: bucket sum mismatch — recognized=$RECOGNIZED_SUM total=$TOTAL_COUNT (unknown-bucket check(s) present) — NOT green" >&2
-  FAILED=1
-fi
-
-if [ "$UNKNOWN_COUNT" -gt 0 ]; then
-  echo "::error::ci-merge-gate: $UNKNOWN_COUNT check(s) in an unrecognized bucket/state — NOT green" >&2
-  FAILED=1
-fi
-
-if [ "$PASS_COUNT" -lt 1 ]; then
-  echo "::error::ci-merge-gate: no checks in 'pass' bucket (pass=$PASS_COUNT) — NOT green" >&2
-  FAILED=1
-fi
-
-if [ "$PENDING_COUNT" -gt 0 ]; then
-  echo "::error::ci-merge-gate: $PENDING_COUNT check(s) still pending/queued/in_progress — NOT green" >&2
-  FAILED=1
-fi
-
-if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo "::error::ci-merge-gate: $FAIL_COUNT check(s) failed/errored — NOT green" >&2
-  FAILED=1
-fi
-
-if [ "$CANCEL_COUNT" -gt 0 ]; then
-  echo "::error::ci-merge-gate: $CANCEL_COUNT check(s) cancelled/stale — NOT green" >&2
-  FAILED=1
-fi
-
-if [ -n "$UNACCEPTED_CHECKS" ]; then
-  echo "::error::ci-merge-gate: non-passing check(s) not required and not on IGNORE_CONTEXTS allow-list — NOT green:" >&2
-  while IFS= read -r line; do
-    [ -n "$line" ] && echo "::error::  - $line" >&2
-  done <<<"$UNACCEPTED_CHECKS"
-  FAILED=1
-fi
-
-if [ -n "$MISSING_REQUIRED" ]; then
-  echo "::error::ci-merge-gate: required context(s) missing or not passing:" >&2
-  while IFS= read -r line; do
-    [ -n "$line" ] && echo "::error::  - $line" >&2
-  done <<<"$MISSING_REQUIRED"
-  FAILED=1
-fi
-
-if [ "$FAILED" -ne 0 ]; then
+if [ "$GREEN" != "true" ]; then
+  # Emit every triggered reason, and — right after the unaccepted-checks reason
+  # and the missing-required reason — the per-line `- <name>` detail so the
+  # human-facing diagnostics match the previous multi-if output exactly.
+  while IFS= read -r reason; do
+    [ -z "$reason" ] && continue
+    echo "::error::ci-merge-gate: $reason" >&2
+    case "$reason" in
+      "non-passing check(s) not required and not on IGNORE_CONTEXTS allow-list"*)
+        printf '%s' "$VERDICT" | jq -r '.unaccepted[]?' | while IFS= read -r line; do
+          [ -n "$line" ] && echo "::error::  - $line" >&2
+        done
+        ;;
+      "required context(s) missing or not passing"*)
+        printf '%s' "$VERDICT" | jq -r '.missing_required[]?' | while IFS= read -r line; do
+          [ -n "$line" ] && echo "::error::  - $line" >&2
+        done
+        ;;
+    esac
+  done < <(printf '%s' "$VERDICT" | jq -r '.reasons[]?')
   exit 1
 fi
 

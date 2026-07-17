@@ -80,7 +80,12 @@ jobs:
           elif [ "$EXIT_CODE" -eq 5 ]; then
             : # quarantine: collector encountered unparseable output, continue without aborting
           elif [ "$EXIT_CODE" -ne 0 ]; then
-            echo "::error::Collector script crashed with exit code $EXIT_CODE"
+            # A Step-1 collector crash is a DISTINCT failure cause from an
+            # auto-fix step failure. Record it as an output BEFORE aborting so
+            # the dedicated collector-crash alert (not the "auto-fix STEP
+            # failed" alert) fires and names the real cause.
+            echo "collector_crashed=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Drift collector (Step 1) crashed with exit code $EXIT_CODE — this is a collector failure, NOT an auto-fix step failure"
             exit $EXIT_CODE
           fi
 
@@ -329,15 +334,56 @@ jobs:
           # push lands between the gate check and the merge. `--match-head-commit`
           # makes `gh pr merge` refuse if the head moved. HEAD_SHA is guaranteed
           # non-empty (asserted above), so there is no live-head fallback.
+          #
+          # If the merge command itself fails (head moved and --match-head-commit
+          # refused, a merge conflict, a transient API error, etc.) set a
+          # SPECIFIC reason so the Slack alert names "merge command failed"
+          # rather than falling back to a generic/blank detail.
+          set +e
           gh pr merge "$PR_URL" --merge --match-head-commit "$HEAD_SHA"
+          merge_rc=$?
+          set -e
+          if [ "$merge_rc" -ne 0 ]; then
+            echo "::error::Merge gate: 'gh pr merge --match-head-commit' failed (rc=$merge_rc) — head may have moved after the gate scored it, or the merge was rejected"
+            echo "reason=merge-command-failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      # Alert: the Step-1 drift collector crashed (exit code other than
+      # 0/2/5). This is a DISTINCT cause from an auto-fix step failure — the
+      # fixer never ran because we could not even produce a drift report — so it
+      # gets its own message instead of the misleading "auto-fix STEP failed".
+      - name: Alert on collector crash
+        if: always() && steps.detect.outputs.collector_crashed == 'true'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COLLECTOR_EXIT: ${{ steps.detect.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          echo "::error::Drift collector (Step 1) crashed (exit ${COLLECTOR_EXIT}) — no drift report produced, auto-fix never ran"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send collector-crash alert"
+          else
+            MSG="💥❌ *Drift collector crashed* (Step 1, exit ${COLLECTOR_EXIT}) — no drift report was produced and no auto-fix was attempted. This is a collector failure, not an auto-fix failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+            curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD"
+          fi
+          exit 1
 
       # Alert: the autofix step itself failed. Because that step is
       # `continue-on-error: true`, on failure the job would otherwise sail on
       # green with no signal. Detect outcome != 'success' (and not the skip
       # case), alert distinctly, then fail the job.
       - name: Alert on autofix step failure
-        if: always() && steps.check.outputs.skip != 'true' && steps.autofix.outcome != 'success'
+        if: >-
+          always() && steps.check.outputs.skip != 'true' &&
+          steps.autofix.outcome != 'success' &&
+          steps.detect.outputs.collector_crashed != 'true'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
@@ -368,9 +414,12 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # A missing webhook must NOT swallow a quarantine — it is a real
+          # needs-human event. Emit a VISIBLE ::error:: and FAIL the step (same
+          # discipline as the autofix-failure alert), never a silent exit 0.
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::SLACK_WEBHOOK not set — cannot send drift-quarantine alert"
-            exit 0
+            echo "::error::Drift quarantine (exit 5) — a human must inspect the drift report — AND SLACK_WEBHOOK is not set, so no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            exit 1
           fi
           MSG="⚠️ *Drift quarantine — needs human* — the drift collector produced unparseable output (exit 5). No auto-fix attempted; a human must inspect the drift report artifact.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
@@ -428,6 +477,7 @@ jobs:
             head-sha-empty)     DETAIL=" (merge gate could not pin the snapshot — pushed HEAD SHA was empty)";;
             head-requery-error) DETAIL=" (merge gate could not read the PR live head SHA to confirm the snapshot)";;
             head-moved)         DETAIL=" (PR head moved before the gate scored it — stale snapshot, refused)";;
+            merge-command-failed) DETAIL=" (the merge command failed — head moved after the gate scored it, or the merge was rejected)";;
             no-checks)          DETAIL=" (no CI checks ever registered)";;
             no-pr-match)        DETAIL=" (no open PR matched the pushed head SHA)";;
             *)                  DETAIL="";;

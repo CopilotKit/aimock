@@ -124,7 +124,8 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
   it("pending-only — REFUSES (exit 1)", () => {
     const r = runGate([{ name: "test (20)", state: "IN_PROGRESS", bucket: "pending" }]);
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/pending/);
+    // Specific pending reason — not any stray occurrence of "pending".
+    expect(r.stderr).toMatch(/check\(s\) still pending\/queued\/in_progress — NOT green/);
   });
 
   it("skipped/neutral-only — REFUSES (exit 1), skips never count as pass", () => {
@@ -157,7 +158,10 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
     );
     const r = runGate(checks);
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/pending/);
+    expect(r.stderr).toMatch(/check\(s\) still pending\/queued\/in_progress — NOT green/);
+    // A required context that is pending is ALSO missing-required (not passing).
+    expect(r.stderr).toMatch(/required context\(s\) missing or not passing/);
+    expect(r.stderr).toMatch(/- test \(24\)$/m);
   });
 
   it("a check in the cancel/stale bucket — REFUSES (exit 1)", () => {
@@ -174,6 +178,33 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/failed\/errored/);
   });
+
+  // Exercise each derived-state leg INDIVIDUALLY (bucket field absent, so
+  // eff_bucket derives the bucket from raw .state). Each state maps to a
+  // specific effective bucket with a specific refusal reason; a single lumped
+  // assertion could pass on the wrong mapping, so we pin each leg to its exact
+  // reason. The single required "only-check" is present-and-passing, so the
+  // ONLY reason to refuse is the extra check's derived bucket.
+  const DERIVED_STATE_LEGS: Array<{ state: string; reason: RegExp }> = [
+    { state: "ERROR", reason: /check\(s\) failed\/errored — NOT green/ },
+    { state: "STARTUP_FAILURE", reason: /check\(s\) failed\/errored — NOT green/ },
+    { state: "TIMED_OUT", reason: /check\(s\) failed\/errored — NOT green/ },
+    { state: "CANCELED", reason: /check\(s\) cancelled\/stale — NOT green/ },
+    { state: "NEUTRAL", reason: /not required and not on IGNORE_CONTEXTS/ },
+  ];
+  for (const { state, reason } of DERIVED_STATE_LEGS) {
+    it(`derived-state leg '${state}' (no bucket field) maps to its bucket and REFUSES (exit 1)`, () => {
+      const r = runGate(
+        [
+          { name: "only-check", state: "SUCCESS", bucket: "pass" },
+          { name: "extra", state },
+        ],
+        { REQUIRED_CONTEXTS: "only-check" },
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(reason);
+    });
+  }
 
   it("a non-required skipped check NOT on the ignore-list — REFUSES (exit 1)", () => {
     // Guards finding #1: a newly-added gating check that resolves skipped must
@@ -199,15 +230,24 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
       { REQUIRED_CONTEXTS: "only-check" },
     );
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/unrecognized bucket|bucket sum mismatch/);
+    // An unknown-bucket check trips BOTH the unknown-count reason AND the sum
+    // mismatch (it does not land in any recognized bucket). Assert both specific
+    // reasons rather than an either-or match.
+    expect(r.stderr).toMatch(/check\(s\) in an unrecognized bucket\/state — NOT green/);
+    expect(r.stderr).toMatch(/bucket sum mismatch — recognized=\d+ total=\d+/);
   });
 
-  it("malformed JSON (array of non-objects [1,2,3]) — exit 2 per contract", () => {
+  it("malformed JSON (array of non-objects [1,2,3]) — exit 2, SPECIFICALLY the object-guard branch", () => {
     // Guards finding #4: this used to slip past the type=="array" guard and
-    // crash jq with an undocumented exit 5.
+    // crash jq with an undocumented exit 5. Assert the SPECIFIC object-guard
+    // message so this cannot pass on the field-type guard's "non-string .bucket
+    // or .state" message instead — the two guards catch different malformations
+    // and a test that matched either would not lock the object-guard branch.
     const r = runGate("[1,2,3]");
     expect(r.code).toBe(2);
-    expect(r.stderr).toMatch(/non-object element|malformed/);
+    expect(r.stderr).toMatch(/check JSON array contains a non-object element/);
+    // NOT the field-type guard: [1,2,3] fails the object guard first.
+    expect(r.stderr).not.toMatch(/non-string \.bucket or \.state/);
   });
 
   it("malformed JSON (not an array) — exit 2 per contract", () => {
@@ -263,13 +303,19 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
       REQUIRED_CONTEXTS: "only-check",
     });
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/unrecognized bucket|bucket sum mismatch/);
+    expect(r.stderr).toMatch(/check\(s\) in an unrecognized bucket\/state — NOT green/);
+    expect(r.stderr).toMatch(/bucket sum mismatch — recognized=\d+ total=\d+/);
   });
 
-  it("non-string .bucket (object) — exit 2 config error, never a jq crash (exit 5)", () => {
-    // Guards the new field-type guard: a valid object with a non-string .bucket
-    // used to throw "explode input must be a string" inside ascii_downcase and
-    // exit 5 (outside the 0/1/2 contract). It must now fail closed as exit 2.
+  it("non-string .bucket (object) with state SUCCESS — exit 2 config error (closes a false-GREEN, not a jq crash)", () => {
+    // CORRECTED RATIONALE: the coerce_str helper already maps a non-string
+    // .bucket to "" (no ascii_downcase crash / exit 5). The REAL hole this
+    // field-type guard closes is a FALSE-GREEN via the state fallback: a check
+    // with a non-string .bucket but state="SUCCESS" would, absent the guard,
+    // fall through coerce_str ("") into the state branch and resolve to the
+    // "pass" bucket — a malformed check silently scored as passing. The guard
+    // rejects it as the documented config error (exit 2) instead. The
+    // ISOLATED-VECTOR test below proves that flip directly.
     const r = runGate('[{"name":"x","state":"SUCCESS","bucket":{"weird":true}}]', {
       REQUIRED_CONTEXTS: "x",
     });
@@ -277,7 +323,35 @@ describe("ci-merge-gate.sh — refuses every false-green shape (real gate invoke
     expect(r.stderr).toMatch(/non-string \.bucket or \.state/);
   });
 
-  it("non-string .state (number) — exit 2 config error, never a jq crash (exit 5)", () => {
+  it("ISOLATED VECTOR: non-string .bucket→state-fallback false-green (guard removed → GREEN; present → refused)", () => {
+    // Prove the guard's VALUE, not just its presence: the same malformed input
+    // (non-string .bucket, state SUCCESS) flips from a false-GREEN to a refusal
+    // when the field-type guard is present. Mutating the guard out demonstrates
+    // the exact false-green the guard closes.
+    const payload = '[{"name":"x","state":"SUCCESS","bucket":{"weird":true}}]';
+    // Guard REMOVED: the non-string bucket coerces to "" → state fallback →
+    // "pass" bucket → the gate would MERGE this malformed check (false-green).
+    const withoutGuard = runMutatedGate(
+      (src) =>
+        src.replace(
+          /# Field-type guard:[\s\S]*?exit 2\nfi\n/,
+          "# field-type guard removed for this test\n",
+        ),
+      payload,
+      { REQUIRED_CONTEXTS: "x" },
+    );
+    expect(withoutGuard.code).toBe(0);
+    expect(withoutGuard.stdout).toMatch(/GREEN/);
+    // Guard PRESENT (real gate): the malformed check is refused as exit 2.
+    const withGuard = runGate(payload, { REQUIRED_CONTEXTS: "x" });
+    expect(withGuard.code).toBe(2);
+    expect(withGuard.stderr).toMatch(/non-string \.bucket or \.state/);
+  });
+
+  it("non-string .state (number) — exit 2 config error (malformed check data, not a jq crash)", () => {
+    // Same field-type guard on .state: a numeric state is malformed check data
+    // from gh and must fail closed as the documented config error, not be
+    // coerced and scored.
     const r = runGate('[{"name":"x","state":123}]', { REQUIRED_CONTEXTS: "x" });
     expect(r.code).toBe(2);
     expect(r.stderr).toMatch(/non-string \.bucket or \.state/);
@@ -331,7 +405,7 @@ describe("ci-merge-gate.sh — accepts genuine true-green (real gate invoked)", 
     ];
     const r = runGate(checks);
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/pending/);
+    expect(r.stderr).toMatch(/check\(s\) still pending\/queued\/in_progress — NOT green/);
   });
 
   it("honors REQUIRED_CONTEXTS override (comma-separated)", () => {
@@ -372,7 +446,7 @@ describe("ci-merge-gate.sh — file-argument input path (real gate invoked)", ()
   it("reads JSON from a FILE ARG and refuses a false-green (exit 1)", () => {
     const r = runGateWithFile([{ name: "test (20)", state: "IN_PROGRESS", bucket: "pending" }]);
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/pending/);
+    expect(r.stderr).toMatch(/check\(s\) still pending\/queued\/in_progress — NOT green/);
   });
 
   it("file-not-found → exit 2 config error", () => {
@@ -414,39 +488,73 @@ describe("ci-merge-gate.sh — drift + revert guards", () => {
     expect(scriptList).toEqual(["notify", "drift"]);
   });
 
-  it("EXPLICIT-ASSERTION GUARD: a count-jq failure exits 2, never masks to 0", () => {
-    // Guards finding #1: with the old `${VAR:-0}` masking, a jq failure while
-    // computing a count silently became 0 and the gate proceeded to score on a
-    // false count. Mutate the bucket program so eff_bucket throws at runtime and
-    // assert the gate now fails CLOSED with the documented config-error exit 2
-    // (the jq preflight / assert_count), NOT a scored 0/1 decision or exit 5.
+  it("CONSOLIDATED-VERDICT GUARD: a runtime jq failure in the verdict program exits 2, never masks to green", () => {
+    // Structural fix (single guarded verdict): the entire decision is computed
+    // by ONE jq program whose output is validated ONCE before the shell reads
+    // any field. Mutate a shared helper (coerce_str) so eff_bucket — and thus
+    // the whole verdict program — throws at runtime, and assert the gate fails
+    // CLOSED with the documented config-error exit 2 (the verdict validity
+    // assertion), NOT a scored 0/1 decision, not a false-green, not exit 5.
     const r = runMutatedGate(
       (src) => src.replace(/def coerce_str:[^\n]*\n/, "def coerce_str: (undefined_fn);\n"),
       [{ name: "x", state: "SUCCESS", bucket: "pass" }],
       { REQUIRED_CONTEXTS: "x" },
     );
     expect(r.code).toBe(2);
-    expect(r.stderr).toMatch(
-      /jq failed to evaluate the bucket program|is not a non-negative integer/,
-    );
+    // The SPECIFIC consolidated-verdict assertion message — not a generic match.
+    expect(r.stderr).toMatch(/jq failed to compute a valid verdict over the input/);
   });
 
-  it("EXPLICIT-ASSERTION GUARD: an empty count (assert_count) exits 2, never defaults to 0", () => {
-    // Belt-to-the-preflight's-suspenders: even if a count command emitted empty
-    // output, assert_count must reject it as a config error rather than let
-    // `${VAR:-0}` turn it into a false-green 0. Mutate PASS_COUNT's assignment to
-    // emit nothing and confirm the assertion fires (exit 2).
+  it("CONSOLIDATED-VERDICT GUARD: an EMPTY verdict (jq emits nothing) exits 2, never reads as green", () => {
+    // This is the crux of the recurring class: `set -e` does NOT guard a
+    // command-substitution RHS, so a crashed jq yields an EMPTY VERDICT. The
+    // old scattered `UNACCEPTED_CHECKS`/`MISSING_REQUIRED` assignments read that
+    // empty as "no unaccepted / no missing" = GREEN. Force the single verdict
+    // capture to emit nothing and confirm the validity assertion rejects it as
+    // exit 2 — an empty verdict can NEVER be interpreted as a pass.
     const r = runMutatedGate(
       (src) =>
         src.replace(
-          /PASS_COUNT="\$\(echo "\$CHECKS_JSON" \| jq [^\n]*\)"/,
-          'PASS_COUNT="$(printf %s "")"',
+          /VERDICT="\$\(echo "\$CHECKS_JSON" \| jq -c "\$JQ_VERDICT"\)"/,
+          'VERDICT="$(printf %s "")"',
         ),
       [{ name: "x", state: "SUCCESS", bucket: "pass" }],
       { REQUIRED_CONTEXTS: "x" },
     );
     expect(r.code).toBe(2);
-    expect(r.stderr).toMatch(/PASS_COUNT is not a non-negative integer/);
+    expect(r.stderr).toMatch(/jq failed to compute a valid verdict over the input/);
+  });
+
+  it("CONSOLIDATED-VERDICT GUARD: a verdict object with a non-boolean .green exits 2, never green", () => {
+    // The validity assertion requires .green to be a BOOLEAN. A verdict whose
+    // .green somehow becomes a non-boolean (e.g. a string) must fail closed as
+    // exit 2 rather than let `[ "$GREEN" != "true" ]` misfire. Mutate the
+    // verdict program to emit green as a string and confirm exit 2.
+    const r = runMutatedGate(
+      (src) => src.replace(/green: \(\(\$reasons \| length\) == 0\),/, 'green: "yes",'),
+      [{ name: "x", state: "SUCCESS", bucket: "pass" }],
+      { REQUIRED_CONTEXTS: "x" },
+    );
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/jq failed to compute a valid verdict over the input/);
+  });
+
+  it("STRUCTURAL INVARIANT: no bare `VAR=$(jq ...)` whose emptiness could read as green", () => {
+    // The recurring bug class is a scattered `VAR="$(echo "$CHECKS_JSON" | jq
+    // ...)"` whose crash-emptied output is later interpreted as a green signal.
+    // Lock the invariant structurally: the ONLY jq invocation that consumes
+    // $CHECKS_JSON to score checks is the single guarded $JQ_VERDICT capture.
+    // No `$CHECKS_JSON | jq` assignment may exist outside that one line.
+    const src = readFileSync(GATE, "utf8");
+    const checksJsonJqAssignments = src
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l)) // ignore comment lines
+      .filter((l) => /=\s*"?\$\(\s*echo "\$CHECKS_JSON" \| jq/.test(l));
+    // Exactly one: the guarded VERDICT capture.
+    expect(checksJsonJqAssignments.length).toBe(1);
+    expect(checksJsonJqAssignments[0]).toMatch(
+      /VERDICT="\$\(echo "\$CHECKS_JSON" \| jq -c "\$JQ_VERDICT"\)"/,
+    );
   });
 
   it("REVERT GUARD: the old row-count logic would NOT pass this suite", () => {
