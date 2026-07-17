@@ -495,6 +495,35 @@ describe("Journal", () => {
       expect(entry.body).toEqual(smallBody);
     });
 
+    it("truncates multibyte (CJK) bodies whose UTF-8 byte size exceeds 64 KB even when code-unit length does not", () => {
+      // Regression: the original gate used serialized.length (UTF-16 code units).
+      // CJK characters are 3 bytes in UTF-8 but 1 JS code unit, so a body whose
+      // byte size > 64 KB can have code-unit length << 64 K.
+      // This test proves the byte-based gate catches what the code-unit gate missed.
+      //
+      // 22,000 CJK chars × 3 UTF-8 bytes = 66,000 bytes, plus ~60 bytes of JSON
+      // envelope → ~66,060 bytes total (> 65,536 cap).
+      // Code-unit length: 22,000 + ~60 = ~22,060 (well under 65,536).
+      const journal = new Journal();
+      // U+4E2D (中) is a 3-byte UTF-8 character; repeat 22,000 times.
+      const cjkContent = "中".repeat(22_000);
+      const body = {
+        model: "gpt-4o",
+        messages: [{ role: "user" as const, content: cjkContent }],
+      };
+      // Verify our test invariant: byte size > cap, code-unit length < cap.
+      const serialized = JSON.stringify(body);
+      expect(serialized.length).toBeLessThan(BODY_CAP); // code-unit gate would MISS this
+      expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(BODY_CAP); // byte gate catches it
+
+      const entry = journal.add(makeEntry({ body }));
+
+      // With a byte-based gate, the body MUST be truncated.
+      const stored = entry.body as Record<string, unknown>;
+      expect(stored.__aimock_truncated).toBe(true);
+      expect(stored.originalByteSize as number).toBeGreaterThan(BODY_CAP);
+    });
+
     it("JSON.stringify(journal.getAll()) does not throw with 1000 large-body entries", () => {
       // Regression anchor for RangeError: Invalid string length (ISL).
       // 1000 entries × 100 KB body each = 100 MB without cap → exceeds V8 limit.
