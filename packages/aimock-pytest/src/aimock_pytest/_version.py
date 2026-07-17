@@ -8,4 +8,4 @@ contains any new server routes/features the client calls (e.g. the reset-split
 control routes ship in the next release). Keep it tracking npm releases.
 """
 
-AIMOCK_VERSION = "1.37.0"
+AIMOCK_VERSION = "1.37.2"
