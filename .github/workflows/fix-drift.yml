@@ -62,16 +62,25 @@ jobs:
           git config user.email "drift-bot@copilotkit.ai"
           git checkout -B "fix/drift-$(date +%Y-%m-%d)-${RUN_ID}"
 
-      # Step 1: Detect drift and produce report
+      # Step 1: Detect drift and produce report.
+      #
+      # FIX #F3 (round-4) — write the report OUTSIDE the repo checkout, to
+      # $RUNNER_TEMP. A collector output left in the repo cwd shows up as an
+      # untracked file in `git status --porcelain`, which the drift-success
+      # predicate scores as an UNSANCTIONED_CHANGE (fail-closed) and would break
+      # the happy path. $RUNNER_TEMP is outside the checkout, so neither the
+      # predicate's changed-file scan nor createPr's staging ever sees it. (The
+      # .gitignore also covers `drift-report*.json` as belt-and-suspenders.)
       - name: Collect drift report
         id: detect
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
         run: |
           set +e
-          npx tsx scripts/drift-report-collector.ts
+          npx tsx scripts/drift-report-collector.ts --out "$PRE_FIX_REPORT"
           EXIT_CODE=$?
           set -e
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -89,13 +98,13 @@ jobs:
             exit $EXIT_CODE
           fi
 
-      # Always upload the report as an artifact
+      # Always upload the report as an artifact (from $RUNNER_TEMP — see Step 1).
       - name: Upload drift report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: drift-report
-          path: drift-report.json
+          path: ${{ runner.temp }}/drift-report.json
           if-no-files-found: warn
           retention-days: 30
 
@@ -120,6 +129,34 @@ jobs:
             echo "quarantine=false" >> "$GITHUB_OUTPUT"
             echo "No critical drift detected (exit code: $DETECT_EXIT_CODE) — skipping fix"
           fi
+
+      # Step 2b: PIN the PRE-fix report OUTSIDE the repo before the autofix LLM
+      # runs (INTEGRITY GUARANTEE — CR round-3 F-A).
+      #
+      # The drift-success predicate derives its ALLOWLIST's sanctioned-target set
+      # (union of every entry's builderFile/typesFile) from the PRE-fix report. The
+      # autofix step below grants the Claude Code subprocess unrestricted Write/Edit
+      # scoped to the repo checkout (its cwd), so a repo-committed `drift-report.json`
+      # is LLM-writable: a malicious/confused fix could overwrite it to name an
+      # arbitrary fixture as a builderFile and thereby expand the allowlist.
+      #
+      # Pinning the report to $RUNNER_TEMP — which is OUTSIDE the repo checkout and
+      # therefore outside the autofix tool's writable scope — makes the sanctioned
+      # set immutable across the autofix. Both the "Assert" and "Create PR" steps
+      # read `--report` from this pinned copy, NEVER the in-repo file the LLM can
+      # touch. The POST-fix report is separately re-generated after autofix (Step
+      # 4c) and so needs no pin. Runs AFTER "Check for critical diffs" (so it is
+      # gated by the same skip guard) and BEFORE "Auto-fix drift" (so the pin is
+      # captured before the LLM can touch the on-disk report).
+      - name: Pin pre-fix drift report (integrity)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
+        run: |
+          set -euo pipefail
+          cp "$PRE_FIX_REPORT" "$PINNED_REPORT"
+          echo "Pinned pre-fix drift report to $PINNED_REPORT (outside the LLM-writable repo checkout)"
 
       # Step 3: Invoke Claude Code to fix
       - name: Auto-fix drift
@@ -150,6 +187,10 @@ jobs:
         if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
         run: pnpm test
 
+      # `pnpm test:drift` is a FAST fail here, but it is NO LONGER the
+      # authoritative signal — it is the same suite the fixer was told to make
+      # pass, so a fixture-relaxation cheat sails through it. The authoritative
+      # signal is the fresh re-collect + drift-success predicate below.
       - name: Verify drift resolved
         if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
         env:
@@ -157,6 +198,88 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: pnpm test:drift
+
+      # Step 4c: Re-collect drift AUTHORITATIVELY against the LIVE SDK, writing
+      # to a DISTINCT path so the pre-fix report is preserved for classification.
+      # This is a fresh collector invocation (same capture pattern as Step 1) —
+      # its exit code is the authoritative "is the drift gone?" signal that the
+      # predicate scores. A cheat that relaxed the SDK-shape fixture still
+      # reports clean HERE (its own SDK leg reads the relaxed fixture), which is
+      # exactly why the predicate ALSO requires a real production change.
+      #
+      # FIX #F3 (round-4) — write the post-fix report to $RUNNER_TEMP, OUTSIDE
+      # the repo checkout, for the same reason as Step 1: a post-fix report left
+      # in the repo cwd is an untracked file that the predicate's changed-file
+      # scan would score as UNSANCTIONED_CHANGE, breaking the happy path. Writing
+      # it outside the checkout (and out of the autofix LLM's writable scope)
+      # keeps it out of `git status --porcelain` entirely.
+      - name: Re-collect drift (authoritative)
+        id: recollect
+        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
+        run: |
+          set +e
+          npx tsx scripts/drift-report-collector.ts --out "$POST_FIX_REPORT"
+          POST_FIX_EXIT=$?
+          set -e
+          echo "post_fix_exit=$POST_FIX_EXIT" >> "$GITHUB_OUTPUT"
+          echo "Post-fix collector exited with code $POST_FIX_EXIT"
+
+      - name: Upload post-fix drift report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-report-post-fix
+          path: ${{ runner.temp }}/drift-report.post-fix.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Step 4d: Assert the drift was TRULY resolved (not a fixture relaxation).
+      # The predicate scores three independent signals — post-fix collector
+      # clean, a real production mock-builder change, and no comparison-leg
+      # relaxation — and exits non-zero (with a distinct reason) on a cheat.
+      # A non-zero exit blocks the pipeline: no PR is opened, so nothing merges.
+      - name: Assert drift truly resolved
+        id: assert
+        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
+        run: |
+          # Run the predicate to a log file so we capture its REAL exit code
+          # directly (a `VAR="$(pipeline)"` assignment would report the
+          # assignment's own status via PIPESTATUS, never the predicate's).
+          #
+          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
+          # drift-report.json the autofix LLM could have overwritten — the
+          # allowlist's sanctioned-target set is derived from it, so it must be
+          # the untamperable copy (CR round-3 F-A).
+          # Write the predicate log OUTSIDE the repo checkout ($RUNNER_TEMP):
+          # the predicate scans `git status --porcelain` in this same working
+          # directory, so a predicate.log written into cwd would appear as an
+          # untracked file and be scored as UNSANCTIONED_CHANGE, breaking the
+          # happy path (FIX #F3).
+          set +e
+          npx tsx scripts/drift-success-predicate.ts \
+            --report "${PINNED_REPORT}" \
+            --post-fix-report "${POST_FIX_REPORT}" \
+            --post-fix-exit "${POST_FIX_EXIT}" 2>&1 | tee "${PREDICATE_LOG}"
+          PRED_EXIT=${PIPESTATUS[0]}
+          set -e
+          REASON="$(grep '^reason=' "${PREDICATE_LOG}" | tail -n1)"
+          REASON="${REASON#reason=}"
+          echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
+          if [ "$PRED_EXIT" -ne 0 ]; then
+            echo "::error::Drift-success predicate refused (exit ${PRED_EXIT}, reason=${REASON}) — not a real drift fix, blocking PR"
+            exit "$PRED_EXIT"
+          fi
+          echo "Drift-success predicate: drift truly resolved"
+        env:
+          POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
+          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
+          PREDICATE_LOG: ${{ runner.temp }}/predicate.log
 
       # Inject git credentials only when needed for push (persist-credentials: false above)
       - name: Configure git for push
@@ -175,9 +298,27 @@ jobs:
         if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
+          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
+          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
         run: |
           set -euo pipefail
-          npx tsx scripts/fix-drift.ts --create-pr
+          # Defense-in-depth: the workflow already asserted the predicate in the
+          # "Assert drift truly resolved" step, but fix-drift.ts runs it AGAIN
+          # (via --post-fix-report/--post-fix-exit) as an in-script gate BEFORE
+          # any git add/commit, so a cheat opens no PR even if the step guard is
+          # ever bypassed. This opens the PR and STOPS — a human reviews and
+          # merges (see the "NO AUTO-MERGE" comment below); fix-drift.ts records
+          # the predicate verdict in the PR body for that reviewer.
+          #
+          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
+          # drift-report.json — same integrity guarantee as the Assert step: the
+          # in-script predicate's sanctioned-target set must come from the copy
+          # the autofix LLM could not overwrite (CR round-3 F-A).
+          npx tsx scripts/fix-drift.ts --create-pr \
+            --report "${PINNED_REPORT}" \
+            --post-fix-report "${POST_FIX_REPORT}" \
+            --post-fix-exit "${POST_FIX_EXIT}"
           HEAD_SHA="$(git rev-parse HEAD)"
           echo "Pushed head SHA: $HEAD_SHA"
           # Find the open PR whose headRefOid matches the exact SHA we pushed.
@@ -206,149 +347,30 @@ jobs:
             echo "head_sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
 
-      # Step 5.5: Auto-merge the drift fix PR behind a REAL green gate.
+      # NO AUTO-MERGE FOR THE DRIFT PATH (WS-2, round-4 — user-approved design).
       #
-      # A ruleset bypass actor bypasses the entire ruleset, so the green gate
-      # must be enforced HERE, not in branch protection. The old gate counted
-      # `gh pr checks | wc -l` rows (a "no checks" message is a row) and trusted
-      # `--watch --fail-fast`, which exits 0 on empty/pending/skipped/neutral —
-      # a false-green that could merge an unverified PR. We now:
-      #   1. poll on machine-readable JSON length for check REGISTRATION,
-      #   2. `--watch` (with a hard timeout) to let checks run to completion,
-      #   3. re-query JSON and hand it to scripts/ci-merge-gate.sh, which exits
-      #      0 ONLY when pass>=1, nothing pending/fail/cancel, and every
-      #      required context is present and passing.
-      - name: Auto-merge PR
-        id: merge
-        if: success() && steps.pr.outputs.url != ''
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_URL: ${{ steps.pr.outputs.url }}
-          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-
-          # Phase 1: poll on JSON length until at least one check is registered
-          # (guards against a registration race letting an empty set through).
-          registered=0
-          for i in $(seq 1 10); do
-            # Distinguish a `gh` API error from a genuine zero-check response:
-            # capture stdout and the exit status separately. `|| echo 0` would
-            # collapse a transient API failure into a spurious "no checks" and
-            # could let the poll exhaust on an error rather than a real empty set.
-            if count="$(gh pr checks "$PR_URL" --json name --jq 'length' 2>/dev/null)"; then
-              if [ "${count:-0}" -gt 0 ]; then
-                echo "CI checks registered ($count checks), proceeding to watch"
-                registered=1
-                break
-              fi
-              echo "No checks registered yet (attempt $i/10), waiting 30s..."
-            else
-              echo "::warning::gh pr checks query failed (attempt $i/10) — retrying, not treating as zero checks"
-            fi
-            sleep 30
-          done
-          if [ "$registered" -eq 0 ]; then
-            echo "::error::No CI checks ever registered — not merging"
-            echo "reason=no-checks" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          # Phase 2: let checks run to completion under a hard timeout so we
-          # never block the job indefinitely. `--watch` exit status is advisory
-          # only — the authoritative decision is the gate in phase 3.
-          if timeout 1200 gh pr checks "$PR_URL" --watch --interval 30; then
-            echo "watch completed"
-          else
-            watch_rc=$?
-            if [ "$watch_rc" -eq 124 ]; then
-              echo "::error::CI checks timed out after 20m — not merging"
-              echo "reason=timeout" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            echo "watch exited non-zero ($watch_rc) — deferring to gate assertion"
-          fi
-
-          # Phase 3: authoritative green-gate assertion on machine-readable JSON.
-          #
-          # `gh pr checks --json` exits NON-ZERO whenever any check is failing or
-          # pending — even in --json mode — so under `set -euo pipefail` the job
-          # would abort HERE and never reach the gate script (reason would never
-          # be set to not-green). Append `|| true` so the JSON capture is
-          # advisory and the gate script is the sole authority on the decision.
-          # The JSON the gate scores MUST be tied to the exact SHA we pushed.
-          # If HEAD_SHA is empty the anti-TOCTOU guarantee is void — HARD-FAIL
-          # here rather than re-querying the live head (which would re-open the
-          # TOCTOU window the pin exists to close). Distinct reason so the Slack
-          # alert names the real cause.
-          if [ -z "${HEAD_SHA:-}" ]; then
-            echo "::error::Merge gate: HEAD_SHA is empty — cannot pin the gate snapshot to the pushed commit, refusing to merge"
-            echo "reason=head-sha-empty" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          # Score the checks for the pinned SHA. gh does not filter --json by
-          # SHA, so we verify the live head still equals HEAD_SHA before scoring;
-          # if it moved, the snapshot would be stale — bail with a distinct
-          # reason rather than score checks that belong to a different commit.
-          LIVE_SHA="$(gh pr view "$PR_URL" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
-          if [ -z "$LIVE_SHA" ]; then
-            echo "::error::Merge gate: could not read the PR's live head SHA to confirm the gate snapshot — not merging"
-            echo "reason=head-requery-error" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$LIVE_SHA" != "$HEAD_SHA" ]; then
-            echo "::error::Merge gate: head moved ($HEAD_SHA -> $LIVE_SHA) before scoring — snapshot is stale, not merging"
-            echo "reason=head-moved" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          gh pr checks "$PR_URL" --json name,state,bucket > /tmp/pr-checks.json || true
-          if [ ! -s /tmp/pr-checks.json ]; then
-            echo "::error::Merge gate: could not read checks JSON — not merging"
-            echo "reason=not-green" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          # Run the gate. Exit 2 is a distinct CONFIG/parse error (malformed
-          # input, empty/contradictory required set, jq failure) — it is NOT the
-          # same as "PR is not green" (exit 1) and must be labeled distinctly in
-          # Slack so a human triages a broken gate, not a red PR.
-          set +e
-          ./scripts/ci-merge-gate.sh /tmp/pr-checks.json
-          gate_rc=$?
-          set -e
-          if [ "$gate_rc" -eq 2 ]; then
-            echo "::error::Merge gate: config/parse error (exit 2) — the gate could not score the checks, not merging"
-            echo "reason=gate-config-error" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          if [ "$gate_rc" -ne 0 ]; then
-            echo "::error::Merge gate refused: PR is not truly green — not merging"
-            echo "reason=not-green" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          # Re-verify the head SHA at merge time matches the SHA the gate
-          # snapshot was taken against, closing the TOCTOU window where a new
-          # push lands between the gate check and the merge. `--match-head-commit`
-          # makes `gh pr merge` refuse if the head moved. HEAD_SHA is guaranteed
-          # non-empty (asserted above), so there is no live-head fallback.
-          #
-          # If the merge command itself fails (head moved and --match-head-commit
-          # refused, a merge conflict, a transient API error, etc.) set a
-          # SPECIFIC reason so the Slack alert names "merge command failed"
-          # rather than falling back to a generic/blank detail.
-          set +e
-          gh pr merge "$PR_URL" --merge --match-head-commit "$HEAD_SHA"
-          merge_rc=$?
-          set -e
-          if [ "$merge_rc" -ne 0 ]; then
-            echo "::error::Merge gate: 'gh pr merge --match-head-commit' failed (rc=$merge_rc) — head may have moved after the gate scored it, or the merge was rejected"
-            echo "reason=merge-command-failed" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "merged=true" >> "$GITHUB_OUTPUT"
+      # The drift-success predicate is a strong AUTO-FILTER, NOT a provable merge
+      # gate. Its authoritative "is the drift gone?" signal comes from the in-
+      # workflow RE-COLLECT (Step 4c), which is NOT independent of the fix: the
+      # collector's SDK/expected leg reads the very fixtures the autofix touched,
+      # so a run that relaxed an input leg reports clean here too. The allowlist +
+      # always-block-on-leg-edit rules make that clean signal trustworthy enough
+      # to FILTER OUT cheats and never-fixed drift, but they cannot PROVE the mock
+      # was genuinely fixed (that requires an independent SDK leg — WS-2b, out of
+      # scope). Given that fundamental residual, the drift path opens a PR and
+      # STOPS: a HUMAN reviews CI + the committed diff + the predicate verdict
+      # (recorded in the PR body) and merges. The merge gate is the human plus the
+      # branch ruleset's one-approval requirement — NOT an unattended in-workflow
+      # merge command. The predicate having already filtered the PR down to
+      # genuine-looking fixes means the human review is a confirmation step, not a
+      # from-scratch triage.
+      #
+      # Accepted residuals under this backstop (documented, not fixed):
+      #   • F6 — working-tree-vs-committed TOCTOU: the predicate scores the working
+      #     tree; the committed diff is a gated subset. Mitigated by human review
+      #     of the COMMITTED diff and CI running on the pushed SHA.
+      #   • WS-2b — no independent SDK leg: the re-collect is not independent of the
+      #     fix. Mitigated by the human confirming the diff is a real mock change.
 
       # Alert: the Step-1 drift collector crashed (exit code other than
       # 0/2/5). This is a DISTINCT cause from an auto-fix step failure — the
@@ -427,15 +449,15 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
 
-      # Slack notification on success. Distinguishes "merged to main" (the merge
-      # command returned 0) from "PR open, not yet merged" so the message never
-      # overstates what happened.
+      # Slack notification on success. The drift path NEVER auto-merges (see the
+      # "NO AUTO-MERGE" comment above): a passing predicate opens a PR that a
+      # human must review and merge. The message says exactly that — it never
+      # claims "merged to main".
       - name: Notify Slack on fix success
         if: success() && steps.pr.outputs.url != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           PR_URL: ${{ steps.pr.outputs.url }}
-          MERGED: ${{ steps.merge.outputs.merged }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -444,42 +466,46 @@ jobs:
             echo "::error::SLACK_WEBHOOK not set — cannot send fix-success alert"
             exit 0
           fi
-          if [ "${MERGED:-}" = "true" ]; then
-            MSG="✅ *Drift auto-fix merged to main*\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-          else
-            MSG="✅ *Drift auto-fix PR open* (not yet merged — gate did not complete a merge)\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-          fi
+          MSG="✅ *Drift-fix PR opened — needs human review + merge*\nThe drift-success predicate passed (verdict in the PR body); a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
 
       # Slack notification on failure. A missing SLACK_WEBHOOK is a VISIBLE
-      # ::error:: annotation (not a silent exit 0). Distinguishes the merge-gate
-      # timeout / not-green reasons.
+      # ::error:: annotation (not a silent exit 0). The drift path has no merge
+      # step, so the failure reasons are the PR-step reason and the drift-success
+      # predicate's reason (the "Assert drift truly resolved" step).
       - name: Notify Slack on fix failure
         if: failure() && steps.check.outputs.skip != 'true' && steps.autofix.outcome == 'success'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-          MERGE_REASON: ${{ steps.merge.outputs.reason }}
           PR_REASON: ${{ steps.pr.outputs.reason }}
+          ASSERT_REASON: ${{ steps.assert.outputs.reason }}
         run: |
           set -euo pipefail
-          # The merge-step reason takes precedence; fall back to the PR-step
-          # reason so a SHA-match exhaustion in Create PR is not reported blank.
-          REASON="${MERGE_REASON:-${PR_REASON:-}}"
+          # The PR-step reason takes precedence, then the drift-success
+          # predicate's reason (the "Assert drift truly resolved" step) so a
+          # blocked cheat is named rather than reported blank. The predicate
+          # reasons below (WS-6 needs-human tie-in) name the attempted-cheat /
+          # not-actually-fixed cause explicitly.
+          REASON="${PR_REASON:-${ASSERT_REASON:-}}"
           case "$REASON" in
-            timeout)            DETAIL=" (CI checks timed out before completing)";;
-            not-green)          DETAIL=" (merge gate refused — PR not truly green)";;
-            gate-config-error)  DETAIL=" (merge gate CONFIG/parse error — the gate could not score checks; not a red PR, the gate itself needs attention)";;
-            head-sha-empty)     DETAIL=" (merge gate could not pin the snapshot — pushed HEAD SHA was empty)";;
-            head-requery-error) DETAIL=" (merge gate could not read the PR live head SHA to confirm the snapshot)";;
-            head-moved)         DETAIL=" (PR head moved before the gate scored it — stale snapshot, refused)";;
-            merge-command-failed) DETAIL=" (the merge command failed — head moved after the gate scored it, or the merge was rejected)";;
-            no-checks)          DETAIL=" (no CI checks ever registered)";;
             no-pr-match)        DETAIL=" (no open PR matched the pushed head SHA)";;
+            # Drift-success predicate reasons — NEEDS HUMAN. The LOUD cheat
+            # reasons (comparison-leg-only / suppression-suspected) mean the
+            # auto-fix tried to game the drift detector rather than fix the mock.
+            comparison-leg-only)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed ONLY comparison-leg fixtures — a fixture-relaxation cheat, NOT a real mock fix. See run logs for the offending files)";;
+            suppression-suspected) DETAIL=" (🚨 NEEDS HUMAN: auto-fix edited the drift allowlist or a *.drift.ts assertion — silencing the detector, never a valid fix. See run logs)";;
+            unsanctioned-change)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed a file NOT on the sanctioned allowlist — deps/config/manifests, unrelated tests, or an unnamed fixture that could game the collector. See run logs for the offending files)";;
+            no-production-change) DETAIL=" (NEEDS HUMAN: auto-fix changed zero production mock-builder files — nothing shippable)";;
+            still-dirty)          DETAIL=" (NEEDS HUMAN: post-fix collector still reports critical drift — the fix did not resolve it)";;
+            quarantine-after-fix) DETAIL=" (NEEDS HUMAN: post-fix collector returned quarantine — unparseable/untrusted output after the fix)";;
+            collector-infra)      DETAIL=" (NEEDS HUMAN: post-fix collector infra failure — cannot trust a clean signal)";;
+            production-change-off-target) DETAIL=" (NEEDS HUMAN: production change did not touch any file the drift report named as a fix target — may be a legit shared-helper fix)";;
+            config-error)         DETAIL=" (drift-success predicate CONFIG error — missing/unreadable report or bad args; the gate itself needs attention)";;
             *)                  DETAIL="";;
           esac
           if [ -z "${SLACK_WEBHOOK:-}" ]; then

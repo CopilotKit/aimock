@@ -16,5 +16,8 @@ docs/plans/
 docs/specs/
 
 # fix-drift.ts workflow artifacts (regenerated each run; uploaded via fix-drift.yml)
+# The workflow writes these to $RUNNER_TEMP (outside the checkout) so the
+# drift-success predicate's `git status` scan never sees them; this glob is
+# belt-and-suspenders for local runs and covers the post-fix / pinned variants.
 claude-code-output.log
-drift-report.json
+drift-report*.json

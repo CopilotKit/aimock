@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { resolve } from "node:path";
 
 import type {
@@ -39,13 +39,18 @@ import {
   readFileIfExists,
   execFileSafe,
   parseMode,
+  hasPostFixArgs,
+  parsePostFixExit,
   getChangedFiles,
+  gatedCommitFiles,
+  createPr,
   affectedSkillSections,
   BUILDER_TO_SKILL_SECTION,
   truncateBody,
   GH_BODY_MAX,
   GH_BODY_SAFE_MAX,
 } from "../../scripts/fix-drift.js";
+import { sanctionedTargets } from "../../scripts/drift-success-predicate.js";
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
@@ -779,6 +784,64 @@ describe("parseMode", () => {
 });
 
 // ---------------------------------------------------------------------------
+// FIX #5 — hasPostFixArgs: PR mode REQUIRES both post-fix flags. The old legacy
+// no-post-fix fallback re-opened the fixture-only cheat (a test-file-only change
+// satisfied it and opened a PR), so main() throws unless BOTH are present. A
+// live subprocess red-green confirmed the OLD code proceeded to `gh pr create`
+// with no post-fix args while the NEW code fails-closed BEFORE any git op.
+// ---------------------------------------------------------------------------
+describe("hasPostFixArgs (fix #5 legacy-fallback closure)", () => {
+  it("false when NO post-fix flags (the legacy cheat path — must be rejected)", () => {
+    expect(hasPostFixArgs(["--create-pr", "--report", "drift-report.json"])).toBe(false);
+  });
+
+  it("false when only --post-fix-report is present", () => {
+    expect(hasPostFixArgs(["--create-pr", "--post-fix-report", "post.json"])).toBe(false);
+  });
+
+  it("false when only --post-fix-exit is present", () => {
+    expect(hasPostFixArgs(["--create-pr", "--post-fix-exit", "0"])).toBe(false);
+  });
+
+  it("false when a flag is present but its value is missing (trailing flag)", () => {
+    expect(hasPostFixArgs(["--post-fix-report", "post.json", "--post-fix-exit"])).toBe(false);
+  });
+
+  it("true only when BOTH flags carry values", () => {
+    expect(
+      hasPostFixArgs(["--create-pr", "--post-fix-report", "post.json", "--post-fix-exit", "0"]),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX #F7 (round-4) — parsePostFixExit: the PR path must fail CLOSED on an
+// empty/whitespace --post-fix-exit rather than accept Number("")===0 as a clean
+// collector exit 0. Mirrors the predicate CLI's guard so a missing recollect
+// output never masquerades as clean and opens a PR on an unverified fix.
+// ---------------------------------------------------------------------------
+describe("parsePostFixExit (fix #F7 empty-exit fail-closed)", () => {
+  it("throws on an empty string (Number('')===0 must NOT slip through as clean)", () => {
+    expect(() => parsePostFixExit("")).toThrow(/empty\/whitespace/);
+  });
+
+  it("throws on a whitespace-only value", () => {
+    expect(() => parsePostFixExit("   ")).toThrow(/empty\/whitespace/);
+  });
+
+  it("throws on a non-integer value", () => {
+    expect(() => parsePostFixExit("abc")).toThrow(/integer/);
+    expect(() => parsePostFixExit("1.5")).toThrow(/integer/);
+  });
+
+  it("returns the integer for a valid value", () => {
+    expect(parsePostFixExit("0")).toBe(0);
+    expect(parsePostFixExit("2")).toBe(2);
+    expect(parsePostFixExit("-1")).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getChangedFiles
 // ---------------------------------------------------------------------------
 
@@ -813,6 +876,190 @@ describe("getChangedFiles", () => {
 // ---------------------------------------------------------------------------
 // affectedSkillSections
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CR round-3 F-C / F2 — gatedCommitFiles: createPr stages ONLY the allowlisted
+// set (production source + report-named fixture targets), NEVER a straggler
+// catch-all. A file the predicate would have blocked (config/manifest/unnamed
+// fixture) must land in `stragglers`, which createPr never `git add`s.
+// ---------------------------------------------------------------------------
+
+describe("gatedCommitFiles (F-C: no straggler catch-all)", () => {
+  const sanctioned = new Set([
+    "src/helpers.ts",
+    "src/__tests__/drift/model-registry.ts",
+    "src/types.ts",
+  ]);
+
+  it("groups production source into builderFiles", () => {
+    const g = gatedCommitFiles(["src/helpers.ts", "src/types.ts"], sanctioned);
+    expect(g.builderFiles).toEqual(["src/helpers.ts", "src/types.ts"]);
+    expect(g.stragglers).toEqual([]);
+  });
+
+  it("stages a report-named fixture target as a testFile", () => {
+    const g = gatedCommitFiles(["src/__tests__/drift/model-registry.ts"], sanctioned);
+    expect(g.testFiles).toEqual(["src/__tests__/drift/model-registry.ts"]);
+    expect(g.stragglers).toEqual([]);
+  });
+
+  it("EXCLUDES an UNSANCTIONED src/__tests__ file — it lands in stragglers, never testFiles", () => {
+    const g = gatedCommitFiles(["src/__tests__/drift/sdk-shapes.ts"], sanctioned);
+    expect(g.testFiles).toEqual([]);
+    expect(g.stragglers).toEqual(["src/__tests__/drift/sdk-shapes.ts"]);
+  });
+
+  it("puts package.json / lockfiles / config in stragglers (never staged)", () => {
+    const g = gatedCommitFiles(
+      ["src/helpers.ts", "package.json", "pnpm-lock.yaml", "tsconfig.json"],
+      sanctioned,
+    );
+    expect(g.builderFiles).toEqual(["src/helpers.ts"]);
+    expect(g.stragglers).toEqual(["package.json", "pnpm-lock.yaml", "tsconfig.json"]);
+  });
+
+  it("stragglers is empty for a clean allowlisted set (the RESOLVED-verdict invariant)", () => {
+    const g = gatedCommitFiles(
+      ["src/helpers.ts", "src/__tests__/drift/model-registry.ts"],
+      sanctioned,
+    );
+    expect(g.stragglers).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX #F5 (round-4) — createPr MUST fail-closed if any changed file falls
+// outside every gated commit group (a straggler): staging it as part of an
+// allowlisted group would silently drop or mis-stage it. Because the predicate
+// allowlist already blocks any non-production, non-report-named file BEFORE
+// createPr stages, an unclassified working-tree file causes createPr to exit
+// with UNSANCTIONED_CHANGE and stage NOTHING — the straggler is never `git add`ed.
+//
+// Driven against the REAL createPr with git mocked (no autofix subprocess).
+// ---------------------------------------------------------------------------
+describe("createPr straggler / unsanctioned fail-closed (fix #F5)", () => {
+  const mockedExecSync = vi.mocked(execSync);
+  let logSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let errSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let exitSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__exit__${code}`);
+    }) as never);
+    void errSpy;
+    void exitSpy;
+  });
+
+  afterEach(() => {
+    logSpy?.mockRestore();
+    errSpy?.mockRestore();
+    exitSpy?.mockRestore();
+  });
+
+  function stdoutLines(): string[] {
+    return (logSpy?.mock.calls ?? []).map((c) => String(c[0]));
+  }
+
+  const rep: DriftReport = {
+    timestamp: "2026-07-16T00:00:00.000Z",
+    entries: [
+      {
+        provider: "OpenAI",
+        scenario: "chat completion",
+        builderFile: "src/helpers.ts",
+        builderFunctions: ["buildChatCompletion"],
+        typesFile: null,
+        sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+        diffs: [
+          {
+            path: "x",
+            severity: "critical",
+            issue: "missing",
+            expected: "string",
+            real: "string",
+            mock: "<missing>",
+          },
+        ],
+      },
+    ],
+  };
+
+  it("exits UNSANCTIONED_CHANGE (17) and stages NOTHING when an unclassified file is in the tree", () => {
+    // A production fix (helpers.ts, allowlisted) PLUS an unclassified root file.
+    // createPr fail-closes (the root file is neither allowlisted nor a gated
+    // group) BEFORE any staging — the straggler is never git-added.
+    mockedExecSync.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === "string" && cmd.includes("status --porcelain")) {
+        return "M  src/helpers.ts\n?? weird-root-file.txt\n" as unknown as string;
+      }
+      return "" as unknown as string;
+    });
+
+    expect(() => createPr(rep, { report: { timestamp: "t", entries: [] }, exitCode: 0 })).toThrow(
+      /__exit__17/,
+    );
+
+    const addedStraggler = mockedExecFileSync.mock.calls.some(
+      (c) =>
+        c[0] === "git" && Array.isArray(c[1]) && (c[1] as string[]).includes("weird-root-file.txt"),
+    );
+    expect(addedStraggler).toBe(false);
+    expect(stdoutLines()).toContain("reason=unsanctioned-change");
+  });
+
+  it("gatedCommitFiles never leaves a production or report-named file as a straggler (the invariant createPr asserts)", () => {
+    // The straggler guard in createPr is defense-in-depth: prove the partition
+    // it relies on classifies every allowlisted file into a gated group so
+    // stragglers is empty on any RESOLVED-shaped set.
+    const s = sanctionedTargets(rep);
+    const g = gatedCommitFiles(["src/helpers.ts", "src/foo.ts"], s);
+    expect(g.stragglers).toEqual([]);
+    expect(g.builderFiles).toEqual(["src/helpers.ts", "src/foo.ts"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CR round-3 F-A — the sanctioned/allowlist set is derived SOLELY from the
+// (pinned) report object passed to createPr, NOT from any on-disk file. The
+// workflow pins the pre-fix report OUTSIDE the LLM-writable repo checkout and
+// passes THAT copy via --report; here we prove that a DIFFERENT on-disk report
+// cannot expand the allowlist, because the set is a pure function of the passed
+// report — the file the LLM could overwrite has no bearing on the sanctioned set.
+// ---------------------------------------------------------------------------
+
+describe("F-A: sanctioned set comes from the passed (pinned) report, not on-disk", () => {
+  it("sanctionedTargets is a pure function of the report — a forged on-disk file cannot widen it", () => {
+    // The PINNED report names only the production builder as a target.
+    const pinned = makeReport({
+      entries: [makeEntry({ builderFile: "src/helpers.ts", typesFile: null })],
+    });
+    // A FORGED report (what an autofix LLM might write to drift-report.json in the
+    // repo) tries to sanction the SDK-shape fixture as a target.
+    const forged = makeReport({
+      entries: [makeEntry({ builderFile: "src/__tests__/drift/sdk-shapes.ts", typesFile: null })],
+    });
+
+    const pinnedSet = sanctionedTargets(pinned);
+    const forgedSet = sanctionedTargets(forged);
+
+    // The sanctioned set is derived purely from the object passed in.
+    expect(pinnedSet.has("src/helpers.ts")).toBe(true);
+    expect(pinnedSet.has("src/__tests__/drift/sdk-shapes.ts")).toBe(false);
+    // The forged set (only relevant if createPr were fed the LLM-writable file)
+    // would sanction the fixture — which is EXACTLY why the workflow must pin the
+    // pre-fix report and pass THAT copy, never the in-repo drift-report.json.
+    expect(forgedSet.has("src/__tests__/drift/sdk-shapes.ts")).toBe(true);
+    // The two sets are disjoint on the fixture: pinning the report is what keeps
+    // the fixture OUT of the allowlist.
+    expect(pinnedSet.has("src/__tests__/drift/sdk-shapes.ts")).not.toBe(
+      forgedSet.has("src/__tests__/drift/sdk-shapes.ts"),
+    );
+  });
+});
 
 describe("affectedSkillSections", () => {
   it("returns empty array when no builder files are present", () => {
@@ -902,17 +1149,5 @@ describe("buildPrBody — skill sections", () => {
     expect(body).toContain("- Bedrock");
     expect(body).toContain("- Gemini");
     expect(body).toContain("- Responses API");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildPrompt — skill file reference
-// ---------------------------------------------------------------------------
-
-describe("buildPrompt — skill file", () => {
-  it("includes skill file update instructions", () => {
-    const prompt = buildPrompt(makeReport());
-    expect(prompt).toContain("## Skill file update");
-    expect(prompt).toContain("skills/write-fixtures/SKILL.md");
   });
 });
