@@ -1151,15 +1151,3 @@ describe("buildPrBody — skill sections", () => {
     expect(body).toContain("- Responses API");
   });
 });
-
-// ---------------------------------------------------------------------------
-// buildPrompt — skill file reference
-// ---------------------------------------------------------------------------
-
-describe("buildPrompt — skill file", () => {
-  it("includes skill file update instructions", () => {
-    const prompt = buildPrompt(makeReport());
-    expect(prompt).toContain("## Skill file update");
-    expect(prompt).toContain("skills/write-fixtures/SKILL.md");
-  });
-});

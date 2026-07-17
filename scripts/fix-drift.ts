@@ -72,8 +72,6 @@ const KILL_GRACE_MS = 10_000;
 
 const VALID_SEVERITIES: ReadonlySet<DriftSeverity> = new Set(["critical", "warning", "info"]);
 
-const SKILL_FILE = "skills/write-fixtures/SKILL.md";
-
 /**
  * Map builder source files to the corresponding section names in the
  * write-fixtures skill documentation.  Used to flag which skill sections
@@ -333,14 +331,6 @@ export function buildPrompt(report: DriftReport): string {
     lines.push("");
   }
 
-  lines.push("## Skill file update");
-  lines.push("");
-  lines.push("If any builder's output format changed (new fields, renamed fields, changed event");
-  lines.push("types), update the write-fixtures skill documentation to match:");
-  lines.push(`  File: ${SKILL_FILE}`);
-  lines.push("Only update the Response Types and API Endpoints sections that correspond to the");
-  lines.push("changed builders. Do not rewrite unrelated sections.");
-  lines.push("");
   // Add AG-UI specific guidance if any AG-UI entries exist
   const hasAgUiDrift = report.entries.some((e) => e.provider === "AG-UI");
   if (hasAgUiDrift) {
@@ -674,9 +664,6 @@ export interface PostFixCollectorResult {
  *   - `testFiles`     — ONLY report-named fixture targets under src/__tests__/
  *                       (any other test file would have BLOCKED at the gate, so
  *                       it must never be staged).
- *   - `skillFiles`    — skills/ files (NOT allowlisted by the predicate; a
- *                       RESOLVED verdict implies this is empty — kept for
- *                       defensive completeness).
  * `stragglers` is every canonicalized changed file that is NOT in one of those
  * gated groups. On a RESOLVED verdict it MUST be empty (the predicate allowlist
  * already rejected any unclassified file); createPr never `git add`s it. The
@@ -689,15 +676,13 @@ export function gatedCommitFiles(
 ): {
   builderFiles: string[];
   testFiles: string[];
-  skillFiles: string[];
   stragglers: string[];
 } {
   const builderFiles = changedFiles.filter(isProductionFile);
   const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/") && sanctioned.has(f));
-  const skillFiles = changedFiles.filter((f) => f.startsWith("skills/"));
-  const gated = new Set([...builderFiles, ...testFiles, ...skillFiles]);
+  const gated = new Set([...builderFiles, ...testFiles]);
   const stragglers = changedFiles.filter((f) => !gated.has(f));
-  return { builderFiles, testFiles, skillFiles, stragglers };
+  return { builderFiles, testFiles, stragglers };
 }
 
 export function createPr(report: DriftReport, postFix?: PostFixCollectorResult): void {
@@ -796,10 +781,7 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
   // an unnamed fixture, a config file — would have BLOCKED at the gate, so
   // sweeping it in AFTER the pass silently defeats the allowlist).
   const sanctioned = sanctionedTargets(report);
-  const { builderFiles, testFiles, skillFiles, stragglers } = gatedCommitFiles(
-    changedFiles,
-    sanctioned,
-  );
+  const { builderFiles, testFiles, stragglers } = gatedCommitFiles(changedFiles, sanctioned);
 
   // FIX #F5 (round-4) — on a RESOLVED verdict `stragglers` MUST be empty: the
   // predicate allowlist already rejected any file that is neither production
@@ -827,15 +809,6 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
   if (testFiles.length > 0) {
     execFileSafe("git", ["add", ...testFiles]);
     execFileSafe("git", ["commit", "-m", "test: update SDK shapes for drift remediation"]);
-  }
-
-  if (skillFiles.length > 0) {
-    execFileSafe("git", ["add", ...skillFiles]);
-    execFileSafe("git", [
-      "commit",
-      "-m",
-      "docs: update write-fixtures skill for builder format changes",
-    ]);
   }
 
   // The version bump + CHANGELOG are an EXPLICIT, gated part of the fix set — a
