@@ -1088,6 +1088,25 @@ export function computeExitCode(
   return 0;
 }
 
+/**
+ * Map a collector exit code to the coarse `conclusion` written into the drift
+ * report, so the base-report reuse guard (`isBaseReportReusable`) can read
+ * `report.conclusion` directly. Only exit 0 ("clean") is a reusable baseline;
+ * "critical"/"quarantine" (and the exit-1 "skipped" case) are not.
+ */
+export function conclusionForExitCode(exitCode: 0 | 1 | 2 | 5): string {
+  switch (exitCode) {
+    case 0:
+      return "clean";
+    case 2:
+      return "critical";
+    case 5:
+      return "quarantine";
+    default:
+      return "skipped";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1121,8 +1140,23 @@ function main(): void {
   const entries = [...httpEntries, ...agUiEntries];
   const quarantine = httpResult.quarantine;
 
+  const criticalCount = entries.reduce(
+    (sum, e) => sum + e.diffs.filter((d) => d.severity === "critical").length,
+    0,
+  );
+  const quarantineCount = quarantine.length;
+
+  // Compute the exit code BEFORE writing so the report can carry the coarse
+  // `conclusion` derived from it (base-report reuse contract).
+  const exitCode = computeExitCode(criticalCount, quarantineCount, agUiSkipped);
+
+  const timestamp = new Date().toISOString();
   const report: DriftReport = {
-    timestamp: new Date().toISOString(),
+    timestamp,
+    // Alias of `timestamp` read by the reuse guard; `timestamp` kept for
+    // back-compat with existing consumers.
+    generatedAt: timestamp,
+    conclusion: conclusionForExitCode(exitCode),
     entries,
     ...(quarantine.length > 0 ? { quarantine } : {}),
   };
@@ -1142,17 +1176,9 @@ function main(): void {
     console.log(`  AG-UI schema entries: ${agUiEntries.length}`);
   }
   console.log(`  Total entries: ${entries.length}`);
-
-  const criticalCount = entries.reduce(
-    (sum, e) => sum + e.diffs.filter((d) => d.severity === "critical").length,
-    0,
-  );
   console.log(`  Critical diffs: ${criticalCount}`);
-
-  const quarantineCount = quarantine.length;
   console.log(`  Quarantined failures: ${quarantineCount}`);
 
-  const exitCode = computeExitCode(criticalCount, quarantineCount, agUiSkipped);
   switch (exitCode) {
     case 2:
       console.log("Exiting with code 2 (critical diffs found).");

@@ -88,6 +88,20 @@ export interface DriftEntry {
 
 export interface DriftReport {
   timestamp: string;
+  /**
+   * ISO-8601 alias of `timestamp`, written so the base-report reuse guard
+   * (`isBaseReportReusable` via `test-drift.yml`) can read `report.generatedAt`.
+   * `timestamp` is retained for back-compat with existing consumers
+   * (drift-slack-summary.ts, etc.). Absent on legacy reports.
+   */
+  generatedAt?: string;
+  /**
+   * Coarse run outcome derived from the collector exit code
+   * (0→"clean", 2→"critical", 5→"quarantine"), written so the reuse guard can
+   * read `report.conclusion` instead of relying solely on the CI run
+   * conclusion. Absent on legacy reports.
+   */
+  conclusion?: string;
   entries: DriftEntry[];
   /**
    * Optional list of failures held aside for human review (see QuarantineEntry).

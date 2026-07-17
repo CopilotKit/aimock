@@ -26,6 +26,7 @@ import {
   parseKnownModelsCanary,
   collectDriftEntries,
   computeExitCode,
+  conclusionForExitCode,
   classifyUnparseableAsInfra,
   INFRA_INDICATOR_SOURCES,
   infraIndicatorSample,
@@ -34,6 +35,8 @@ import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
 import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS } from "./drift/surface-registry.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { isBaseReportReusable } from "../../scripts/drift-delta.js";
+import type { DriftReport } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers for the A1.3 CollectResult shape ({ entries, quarantine }).
@@ -1493,6 +1496,58 @@ describe("WS-5 — unknown surface slug fails LOUD (throws), never silent quaran
     expect(() => formatDriftReport("X", [SAMPLE_DIFF], "not-a-real-surface")).toThrow(
       /unknown drift surface "not-a-real-surface"/,
     );
+  });
+});
+
+describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () => {
+  it("conclusionForExitCode maps exit codes to coarse conclusions", () => {
+    expect(conclusionForExitCode(0)).toBe("clean");
+    expect(conclusionForExitCode(2)).toBe("critical");
+    expect(conclusionForExitCode(5)).toBe("quarantine");
+    expect(conclusionForExitCode(1)).toBe("skipped");
+  });
+
+  it("isBaseReportReusable accepts a written clean report (reuse works)", () => {
+    // A report shaped like what main() now writes for a clean run.
+    const timestamp = new Date().toISOString();
+    const report: DriftReport = {
+      timestamp,
+      generatedAt: timestamp,
+      conclusion: conclusionForExitCode(0),
+      entries: [
+        {
+          provider: "OpenAI Chat",
+          scenario: "non-streaming text",
+          builderFile: "src/helpers.ts",
+          builderFunctions: ["buildTextCompletion"],
+          typesFile: "src/types.ts",
+          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+          diffs: [],
+        },
+      ],
+    };
+    // Same-UTC-day + known-good conclusion + non-empty entries → reusable.
+    expect(isBaseReportReusable(report, report.conclusion, true)).toBe(true);
+  });
+
+  it("a report WITHOUT conclusion is not reusable (documents the pre-fix gap)", () => {
+    const timestamp = new Date().toISOString();
+    const legacy: DriftReport = {
+      timestamp,
+      entries: [
+        {
+          provider: "OpenAI Chat",
+          scenario: "non-streaming text",
+          builderFile: "src/helpers.ts",
+          builderFunctions: ["buildTextCompletion"],
+          typesFile: "src/types.ts",
+          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+          diffs: [],
+        },
+      ],
+    };
+    // No conclusion field → falls back to undefined → not reusable.
+    expect(isBaseReportReusable(legacy, legacy.conclusion, true)).toBe(false);
   });
 });
 
