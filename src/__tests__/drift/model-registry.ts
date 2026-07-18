@@ -176,6 +176,9 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "gpt-image-1.5",
     "gpt-image-2",
     "chatgpt-image-latest",
+    // Bare chat alias — a moving alias (not a stable mocked family); matches the
+    // *-latest exclude policy (chatgpt-image-latest, omni-moderation-latest, etc.)
+    "chat-latest",
     // Video generation (non-text)
     "sora-2",
     "sora-2-pro",

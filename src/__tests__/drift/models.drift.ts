@@ -266,6 +266,9 @@ describe("full live /models wave is fully classified (2026-07-16 drift)", () => 
       "sora-2-pro",
       "omni-moderation",
       "omni-moderation-latest",
+      // bare chat alias (fixture-vs-live gap: present in live /models, was absent
+      // from the static wave — this is the 2026-07-18 canary residual)
+      "chat-latest",
     ];
     expect(unclassifiedFamilies(openaiLive, "openai")).toEqual([]);
   });
