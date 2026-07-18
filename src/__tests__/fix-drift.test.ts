@@ -1061,6 +1061,118 @@ describe("F-A: sanctioned set comes from the passed (pinned) report, not on-disk
   });
 });
 
+// ---------------------------------------------------------------------------
+// WS-8 — version-bump failure must FAIL CLOSED, not warn-and-continue.
+//
+// The original createPr wrapped patchBumpVersion()+changelog+version-commit in
+// a try/catch that did `console.warn("Version bump failed, skipping")` and
+// CONTINUED to push + open the PR — shipping an UNVERSIONED "fix" that a human
+// might merge but which never publishes a release (silent value loss). The fix
+// makes a bump failure a HARD, fail-closed error: exit VERSION_BUMP_FAILED (18)
+// with a named reason and NO push / NO PR.
+//
+// Driven against the REAL createPr with git mocked so the version-bump commit
+// throws (no autofix subprocess).
+// ---------------------------------------------------------------------------
+describe("createPr version-bump fail-closed (WS-8)", () => {
+  const mockedExecSync = vi.mocked(execSync);
+  let logSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let errSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let exitSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__exit__${code}`);
+    }) as never);
+    void errSpy;
+    void exitSpy;
+  });
+
+  afterEach(() => {
+    logSpy?.mockRestore();
+    errSpy?.mockRestore();
+    warnSpy?.mockRestore();
+    exitSpy?.mockRestore();
+  });
+
+  function stdoutLines(): string[] {
+    return (logSpy?.mock.calls ?? []).map((c) => String(c[0]));
+  }
+
+  // A clean RESOLVED-shaped report: ONE production builder changed (helpers.ts,
+  // sanctioned), no stragglers — so createPr proceeds PAST the straggler guard
+  // into the version-bump step.
+  const rep: DriftReport = {
+    timestamp: "2026-07-16T00:00:00.000Z",
+    entries: [
+      {
+        provider: "OpenAI",
+        scenario: "chat completion",
+        builderFile: "src/helpers.ts",
+        builderFunctions: ["buildChatCompletion"],
+        typesFile: null,
+        sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+        diffs: [
+          {
+            path: "x",
+            severity: "critical",
+            issue: "missing",
+            expected: "string",
+            real: "string",
+            mock: "<missing>",
+          },
+        ],
+      },
+    ],
+  };
+
+  function onlyHelpersChanged(cmd: unknown): string {
+    if (typeof cmd === "string" && cmd.includes("status --porcelain")) {
+      return "M  src/helpers.ts\n" as unknown as string;
+    }
+    return "" as unknown as string;
+  }
+
+  it("exits VERSION_BUMP_FAILED (18) with a named reason and opens NO PR when the version-bump commit throws", () => {
+    mockedExecSync.mockImplementation(onlyHelpersChanged as never);
+    // Make the version-bump git commit throw (mock git so the bump step fails).
+    mockedExecFileSync.mockImplementation((file: unknown, args: unknown) => {
+      if (
+        file === "git" &&
+        Array.isArray(args) &&
+        (args as string[]).includes("commit") &&
+        (args as string[]).some((a) => typeof a === "string" && a.includes("bump version"))
+      ) {
+        throw new Error("simulated git failure during version-bump commit");
+      }
+      return Buffer.from("") as unknown as void;
+    });
+
+    expect(() => createPr(rep, { report: { timestamp: "t", entries: [] }, exitCode: 0 })).toThrow(
+      /__exit__18/,
+    );
+
+    // Named, fail-closed reason emitted for the workflow's failure alert.
+    expect(stdoutLines()).toContain("reason=version-bump-failed");
+
+    // FAIL CLOSED: it must NOT warn-and-continue, and must NEVER push or open a PR.
+    expect(warnSpy?.mock.calls ?? []).toEqual([]);
+    const pushed = mockedExecFileSync.mock.calls.some(
+      (c) => c[0] === "git" && Array.isArray(c[1]) && (c[1] as string[]).includes("push"),
+    );
+    const openedPr = mockedExecFileSync.mock.calls.some(
+      (c) => c[0] === "gh" && Array.isArray(c[1]) && (c[1] as string[]).includes("pr"),
+    );
+    expect(pushed).toBe(false);
+    expect(openedPr).toBe(false);
+  });
+});
+
 describe("affectedSkillSections", () => {
   it("returns empty array when no builder files are present", () => {
     expect(affectedSkillSections(["src/__tests__/foo.test.ts", "package.json"])).toEqual([]);

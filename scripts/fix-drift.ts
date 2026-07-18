@@ -364,6 +364,66 @@ export function buildPrompt(report: DriftReport): string {
 // Claude Code invocation (default mode)
 // ---------------------------------------------------------------------------
 
+/**
+ * Kill an entire process GROUP by its leader pid.
+ *
+ * `spawn(..., { detached: true })` makes the child a group leader whose group
+ * id equals its pid, so `process.kill(-pid, signal)` signals the child AND all
+ * of its descendants (e.g. the `npx` wrapper's `@anthropic-ai/claude-code`
+ * grandchild). Signalling the child pid alone (`child.kill()`) reaches only the
+ * `npx` wrapper and leaves a wedged grandchild alive to burn the job budget.
+ *
+ * Swallows ESRCH (group already gone) and EPERM (nothing left we own to
+ * signal) — both mean "there is nothing more to kill", which is success for a
+ * best-effort teardown. Returns true if a signal was delivered, false if the
+ * group was already gone / unkillable.
+ */
+export function killProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    // Negative pid targets the whole process group led by `pid`.
+    process.kill(-pid, signal);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH" || code === "EPERM") {
+      // ESRCH: the group has already fully exited. EPERM: nothing we still own
+      // to signal in that group. Either way, nothing left to kill.
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Escalating timeout kill for a detached subprocess: deliver SIGTERM to the
+ * whole GROUP, then after a grace period escalate to SIGKILL on the GROUP —
+ * but ONLY if the process has NOT already exited.
+ *
+ * The has-exited signal is the caller-supplied `hasExited()` predicate, which
+ * MUST be backed by the real `close` event (not `child.killed`). Node sets
+ * `child.killed = true` the instant a signal is DELIVERED, long before the
+ * process actually exits, so a `!child.killed` guard makes the SIGKILL
+ * escalation dead code — the original WS-4 defect. Gating on a real exit flag
+ * is what makes the escalation actually fire against a process that ignores
+ * SIGTERM.
+ *
+ * Returns the grace timer so the caller can cancel it from its `close` handler
+ * (a clean early exit must not leave a pending SIGKILL escalation queued).
+ */
+export function scheduleEscalatingKill(
+  pid: number,
+  hasExited: () => boolean,
+  graceMs: number = KILL_GRACE_MS,
+): NodeJS.Timeout {
+  killProcessGroup(pid, "SIGTERM");
+  return setTimeout(() => {
+    if (!hasExited()) {
+      console.error("Process group did not exit after SIGTERM. Sending SIGKILL to the group...");
+      killProcessGroup(pid, "SIGKILL");
+    }
+  }, graceMs);
+}
+
 function invokeClaudeCode(prompt: string): Promise<number> {
   return new Promise((done, reject) => {
     const args = [
@@ -392,26 +452,35 @@ function invokeClaudeCode(prompt: string): Promise<number> {
       "50",
     ];
 
+    // `detached: true` puts the child in its OWN process group (gpid === pid),
+    // so a timeout can signal the WHOLE group — the `npx` wrapper AND its
+    // `@anthropic-ai/claude-code` grandchild — via `process.kill(-pid, …)`.
+    // Without it, killing the child pid reaches only the wrapper and a wedged
+    // grandchild survives to burn the 30-min job budget.
     const child = spawn("npx", args, {
       stdio: ["inherit", "pipe", "pipe"],
+      detached: true,
     });
 
     const logChunks: Buffer[] = [];
     let killGraceTimer: NodeJS.Timeout | undefined;
     let timedOut = false;
+    // REAL has-exited flag, flipped by the `close` handler. The SIGKILL
+    // escalation is gated on THIS, never `child.killed` (which is true the
+    // instant SIGTERM is delivered, making the escalation dead code).
+    let exited = false;
 
     const killTimer = setTimeout(() => {
       timedOut = true;
       console.error(
-        `Claude Code timed out after ${CLAUDE_TIMEOUT_MS / 60000} minutes. Sending SIGTERM...`,
+        `Claude Code timed out after ${CLAUDE_TIMEOUT_MS / 60000} minutes. ` +
+          "Sending SIGTERM to the process group...",
       );
-      child.kill("SIGTERM");
-      killGraceTimer = setTimeout(() => {
-        if (!child.killed) {
-          console.error("Process did not exit after SIGTERM. Sending SIGKILL...");
-          child.kill("SIGKILL");
-        }
-      }, KILL_GRACE_MS);
+      // child.pid can be undefined if the spawn failed; the `error` handler
+      // covers that path, so only escalate when we have a real group leader.
+      if (typeof child.pid === "number") {
+        killGraceTimer = scheduleEscalatingKill(child.pid, () => exited);
+      }
     }, CLAUDE_TIMEOUT_MS);
 
     child.on("error", (err) => {
@@ -439,6 +508,9 @@ function invokeClaudeCode(prompt: string): Promise<number> {
     });
 
     child.on("close", (code, signal) => {
+      // Mark real exit BEFORE clearing timers so any in-flight grace timer that
+      // fires in the same tick sees `exited === true` and skips the SIGKILL.
+      exited = true;
       clearTimeout(killTimer);
       if (killGraceTimer) clearTimeout(killGraceTimer);
       const logContent = Buffer.concat(logChunks).toString("utf-8");
@@ -815,6 +887,14 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
   // release always accompanies an auto-remediation — not an unclassified
   // straggler. They are workflow-authored (never LLM-authored) and staged by an
   // exact path list, so they do not re-open the allowlist.
+  //
+  // WS-8 — this step is MANDATORY, so a failure here is a HARD, fail-closed
+  // error: opening an UNVERSIONED PR would ship a "fix" that a human might merge
+  // but which never publishes a release, silently delivering no value. We exit
+  // with a distinct VERSION_BUMP_FAILED reason (routed to the workflow's
+  // human-review alert) rather than warn-and-continue. No push has happened yet,
+  // and the builder/test commits above are local-only until the push below —
+  // which we never reach — so no partial/unversioned PR is ever opened.
   try {
     const newVersion = patchBumpVersion();
     console.log(`Bumped version to ${newVersion}`);
@@ -826,8 +906,13 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
     execFileSafe("git", ["add", "package.json", "CHANGELOG.md"]);
     execFileSafe("git", ["commit", "-m", `chore: bump version to ${newVersion}`, "--allow-empty"]);
   } catch (err) {
-    console.warn("Version bump failed, skipping:", err);
-    // Continue with PR creation without version bump
+    console.error(
+      "ERROR: version bump / CHANGELOG step failed — refusing to open an UNVERSIONED " +
+        "drift-fix PR that would merge a fix which never publishes a release:",
+      err instanceof Error ? err.message : err,
+    );
+    console.log(`reason=${PredicateReason.VERSION_BUMP_FAILED}`);
+    process.exit(REASON_EXIT_CODE[PredicateReason.VERSION_BUMP_FAILED]);
   }
 
   execFileSafe("git", ["push", "-u", "origin", branchName]);

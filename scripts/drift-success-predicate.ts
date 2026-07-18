@@ -80,6 +80,11 @@
  *                                      non-drift or drift `*.test.ts`; a real fix
  *                                      touches only production source + report-
  *                                      named fixture targets)
+ *   18 — VERSION_BUMP_FAILED          (NOT scored by the predicate — surfaced by
+ *                                      fix-drift.ts's createPr when the mandatory
+ *                                      version bump / CHANGELOG step fails, so an
+ *                                      unversioned fix that never publishes is
+ *                                      never opened as a PR; fail-closed to human)
  *   2  — CONFIG_ERROR                 (missing/unreadable report, bad args, a
  *                                      --changed-file list that disagrees w/ git,
  *                                      a path escaping the repo root, or a
@@ -122,6 +127,15 @@ export enum PredicateReason {
   COLLECTOR_INFRA = "collector-infra",
   PRODUCTION_CHANGE_OFF_TARGET = "production-change-off-target",
   CONFIG_ERROR = "config-error",
+  /**
+   * The version bump / CHANGELOG step failed while opening a drift-fix PR. A
+   * release ALWAYS accompanies an auto-remediation; without it the PR would
+   * merge a fix that never publishes (silent value loss). This is a hard,
+   * fail-closed reason surfaced by fix-drift.ts's createPr — never produced by
+   * the predicate's own scoring — routed to human review like any other
+   * needs-human reason.
+   */
+  VERSION_BUMP_FAILED = "version-bump-failed",
 }
 
 /** Stable exit code for each reason (see module header). */
@@ -136,6 +150,7 @@ export const REASON_EXIT_CODE: Record<PredicateReason, number> = {
   [PredicateReason.COLLECTOR_INFRA]: 15,
   [PredicateReason.PRODUCTION_CHANGE_OFF_TARGET]: 16,
   [PredicateReason.CONFIG_ERROR]: 2,
+  [PredicateReason.VERSION_BUMP_FAILED]: 18,
 };
 
 export interface PredicateInputs {

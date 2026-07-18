@@ -301,6 +301,7 @@ jobs:
           POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
           POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
           PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
+          CREATE_PR_LOG: ${{ runner.temp }}/create-pr.log
         run: |
           set -euo pipefail
           # Defense-in-depth: the workflow already asserted the predicate in the
@@ -315,10 +316,24 @@ jobs:
           # drift-report.json — same integrity guarantee as the Assert step: the
           # in-script predicate's sanctioned-target set must come from the copy
           # the autofix LLM could not overwrite (CR round-3 F-A).
+          # Capture the script's own exit code + emitted `reason=` line so a
+          # fail-closed exit (e.g. version-bump-failed) is NAMED in the failure
+          # alert rather than reported blank. Write the log OUTSIDE the repo
+          # checkout ($RUNNER_TEMP) so it is never scored by any git scan.
+          set +e
           npx tsx scripts/fix-drift.ts --create-pr \
             --report "${PINNED_REPORT}" \
             --post-fix-report "${POST_FIX_REPORT}" \
-            --post-fix-exit "${POST_FIX_EXIT}"
+            --post-fix-exit "${POST_FIX_EXIT}" 2>&1 | tee "${CREATE_PR_LOG}"
+          PR_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "$PR_EXIT" -ne 0 ]; then
+            PR_REASON="$(grep '^reason=' "${CREATE_PR_LOG}" | tail -n1)"
+            PR_REASON="${PR_REASON#reason=}"
+            echo "::error::Create-PR step failed (exit ${PR_EXIT}, reason=${PR_REASON:-unknown})"
+            echo "reason=${PR_REASON}" >> "$GITHUB_OUTPUT"
+            exit "$PR_EXIT"
+          fi
           HEAD_SHA="$(git rev-parse HEAD)"
           echo "Pushed head SHA: $HEAD_SHA"
           # Find the open PR whose headRefOid matches the exact SHA we pushed.
@@ -401,9 +416,14 @@ jobs:
       # `continue-on-error: true`, on failure the job would otherwise sail on
       # green with no signal. Detect outcome != 'success' (and not the skip
       # case), alert distinctly, then fail the job.
+      # NOTE: also require the `check` step to have RUN (skip output is one of
+      # 'true'/'false', never empty). Without that guard this step would ALSO
+      # fire on an EARLY-infra failure (checkout/token/pnpm/clone/git-config —
+      # all before `detect`/`check`), mislabelling it "auto-fix STEP failed"
+      # when the fixer never ran. The end-of-job catch-all owns that window.
       - name: Alert on autofix step failure
         if: >-
-          always() && steps.check.outputs.skip != 'true' &&
+          always() && steps.check.outputs.skip == 'false' &&
           steps.autofix.outcome != 'success' &&
           steps.detect.outputs.collector_crashed != 'true'
         env:
@@ -505,6 +525,7 @@ jobs:
             quarantine-after-fix) DETAIL=" (NEEDS HUMAN: post-fix collector returned quarantine — unparseable/untrusted output after the fix)";;
             collector-infra)      DETAIL=" (NEEDS HUMAN: post-fix collector infra failure — cannot trust a clean signal)";;
             production-change-off-target) DETAIL=" (NEEDS HUMAN: production change did not touch any file the drift report named as a fix target — may be a legit shared-helper fix)";;
+            version-bump-failed)  DETAIL=" (NEEDS HUMAN: the version bump / CHANGELOG step failed — refused to open an UNVERSIONED PR that would merge a fix which never publishes a release. See run logs)";;
             config-error)         DETAIL=" (drift-success predicate CONFIG error — missing/unreadable report or bad args; the gate itself needs attention)";;
             *)                  DETAIL="";;
           esac
@@ -513,6 +534,48 @@ jobs:
             exit 0
           fi
           MSG="❌ *Drift auto-fix failed*${DETAIL} — manual intervention needed\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+
+      # End-of-job CATCH-ALL for ANY job failure the specific alerts above did
+      # NOT cover — chiefly the EARLY-infra window (checkout / mint-app-token /
+      # pnpm install / clone ag-ui / git config) that runs BEFORE `detect`/
+      # `check` set their outputs. Those early steps leave collector_crashed,
+      # quarantine, and check.outputs.skip all EMPTY, so none of the four
+      # specific alerts fire and the job would otherwise die red with ZERO Slack
+      # signal. This step is UNCONDITIONAL on the earlier step outputs (only
+      # `failure()` + the anti-double-alert guard below), so it fires whenever
+      # nothing else did.
+      #
+      # Anti-double-alert: the four specific alerts fire iff collector_crashed
+      # or quarantine is set, OR the fixer actually ran (check.outputs.skip is
+      # 'true'/'false' — never empty — once `check` executed). So this catch-all
+      # only fires when NONE of those hold: collector_crashed != 'true' AND
+      # quarantine != 'true' AND check.outputs.skip is empty (check never ran).
+      # That is exactly the early-infra window, and it never overlaps with the
+      # specific alerts.
+      - name: Alert on early-infra failure (catch-all)
+        if: >-
+          failure() && steps.detect.outputs.collector_crashed != 'true' &&
+          steps.check.outputs.quarantine != 'true' &&
+          steps.check.outputs.skip == ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # This is an INFRA/SETUP failure — the fixer never ran (checkout /
+          # token mint / pnpm install / ag-ui clone / git config failed), so it
+          # is distinct from a drift-fix failure. A missing webhook must NOT
+          # swallow it: emit a VISIBLE ::error:: and fail the step.
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::Drift-fix job failed during INFRA/SETUP (before the collector ran) AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            exit 1
+          fi
+          MSG="🧱❌ *Drift-fix job — INFRA/SETUP failure* — the job failed during setup (checkout / token mint / pnpm install / ag-ui clone / git config) BEFORE the drift collector ran; this is not a drift-fix failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
