@@ -80,6 +80,11 @@
  *                                      non-drift or drift `*.test.ts`; a real fix
  *                                      touches only production source + report-
  *                                      named fixture targets)
+ *   18 — VERSION_BUMP_FAILED          (NOT scored by the predicate — surfaced by
+ *                                      fix-drift.ts's createPr when the mandatory
+ *                                      version bump / CHANGELOG step fails, so an
+ *                                      unversioned fix that never publishes is
+ *                                      never opened as a PR; fail-closed to human)
  *   2  — CONFIG_ERROR                 (missing/unreadable report, bad args, a
  *                                      --changed-file list that disagrees w/ git,
  *                                      a path escaping the repo root, or a
@@ -122,6 +127,32 @@ export enum PredicateReason {
   COLLECTOR_INFRA = "collector-infra",
   PRODUCTION_CHANGE_OFF_TARGET = "production-change-off-target",
   CONFIG_ERROR = "config-error",
+  /**
+   * The version bump / CHANGELOG step failed while opening a drift-fix PR. A
+   * release ALWAYS accompanies an auto-remediation; without it the PR would
+   * merge a fix that never publishes (silent value loss). This is a hard,
+   * fail-closed reason surfaced by fix-drift.ts's createPr — never produced by
+   * the predicate's own scoring — routed to human review like any other
+   * needs-human reason.
+   */
+  VERSION_BUMP_FAILED = "version-bump-failed",
+  /**
+   * The `--post-fix-*` arguments were present but could not be parsed/read
+   * while opening a drift-fix PR (e.g. an empty/non-integer `--post-fix-exit`
+   * from a skipped recollect, or an unreadable post-fix report). fix-drift.ts
+   * already fails CLOSED on this (no PR), but the throw historically reached the
+   * top-level catch with a BLANK `reason=`; this names the cause so the Slack
+   * alert is not blank. Surfaced by fix-drift.ts's main(), never the predicate.
+   */
+  POST_FIX_PARSE_ERROR = "post-fix-parse-error",
+  /**
+   * A git operation (checkout / add / commit / push) failed while opening a
+   * drift-fix PR. This fails CLOSED (no PR is opened — the push never completed,
+   * so no partial/unversioned PR ships) but historically alerted with a BLANK
+   * `reason=`; this names the cause. Surfaced by fix-drift.ts's createPr, never
+   * the predicate.
+   */
+  GIT_PUSH_FAILED = "git-push-failed",
 }
 
 /** Stable exit code for each reason (see module header). */
@@ -136,6 +167,9 @@ export const REASON_EXIT_CODE: Record<PredicateReason, number> = {
   [PredicateReason.COLLECTOR_INFRA]: 15,
   [PredicateReason.PRODUCTION_CHANGE_OFF_TARGET]: 16,
   [PredicateReason.CONFIG_ERROR]: 2,
+  [PredicateReason.VERSION_BUMP_FAILED]: 18,
+  [PredicateReason.POST_FIX_PARSE_ERROR]: 19,
+  [PredicateReason.GIT_PUSH_FAILED]: 20,
 };
 
 export interface PredicateInputs {

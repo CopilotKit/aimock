@@ -33,6 +33,9 @@
  *                                         MANDATORY post-fix args were not supplied)
  *     16 — PRODUCTION_CHANGE_OFF_TARGET  (production change not in report's target set)
  *     17 — UNSANCTIONED_CHANGE           (a changed file is not on the allowlist)
+ *     18 — VERSION_BUMP_FAILED           (version bump / CHANGELOG step failed)
+ *     19 — POST_FIX_PARSE_ERROR          (unparseable --post-fix-exit / -report)
+ *     20 — GIT_PUSH_FAILED               (git checkout/add/commit/push failed)
  *   The legacy exit 4 (no source files changed) is subsumed by 10/11. The
  *   drift-success predicate is MANDATORY in --create-pr mode: BOTH
  *   --post-fix-report and --post-fix-exit are required (there is no legacy
@@ -364,7 +367,99 @@ export function buildPrompt(report: DriftReport): string {
 // Claude Code invocation (default mode)
 // ---------------------------------------------------------------------------
 
-function invokeClaudeCode(prompt: string): Promise<number> {
+/**
+ * Kill an entire process GROUP by its leader pid.
+ *
+ * `spawn(..., { detached: true })` makes the child a group leader whose group
+ * id equals its pid, so `process.kill(-pid, signal)` signals the child AND all
+ * of its descendants (e.g. the `npx` wrapper's `@anthropic-ai/claude-code`
+ * grandchild). Signalling the child pid alone (`child.kill()`) reaches only the
+ * `npx` wrapper and leaves a wedged grandchild alive to burn the job budget.
+ *
+ * ESRCH (group already gone) is a benign "nothing left to kill" and is swallowed
+ * to `false`. EPERM is DIFFERENT and must NOT be treated as benign: `kill(2)`
+ * returns EPERM when the target process(es) EXIST but the caller lacks
+ * permission to signal them — e.g. a grandchild that changed credentials (a
+ * setuid postinstall) or was re-parented under a remapped container user. Such a
+ * process can be STILL ALIVE and STILL BURNING the job budget — exactly the
+ * WS-4 leak this guards against. So on EPERM we log a VISIBLE warning (never
+ * silently claim success) and attempt a single-PID fallback (`kill(pid)` rather
+ * than the whole group) in case only the group-leader escaped our permission.
+ * The job's `timeout-minutes: 30` ceiling remains the ultimate backstop.
+ *
+ * Returns true if a group signal was delivered, false if the group was already
+ * gone (ESRCH) or is present-but-unkillable (EPERM after the fallback attempt).
+ */
+export function killProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    // Negative pid targets the whole process group led by `pid`.
+    process.kill(-pid, signal);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") {
+      // The group has already fully exited — nothing left to kill.
+      return false;
+    }
+    if (code === "EPERM") {
+      // NOT a benign "nothing to kill": the group (or part of it) exists but is
+      // unkillable by us. Surface it loudly and try a single-PID fallback in
+      // case only the leader escaped our permission.
+      console.error(
+        `WARNING: EPERM signalling process group ${pid} with ${signal} — the group may ` +
+          "still be ALIVE and unkillable by us (re-credentialed / re-parented child). " +
+          "Attempting single-PID fallback; the 30-min job ceiling is the final backstop.",
+      );
+      try {
+        process.kill(pid, signal);
+        return true;
+      } catch (fallbackErr) {
+        const fallbackCode = (fallbackErr as NodeJS.ErrnoException).code;
+        if (fallbackCode === "ESRCH") {
+          return false;
+        }
+        console.error(
+          `WARNING: single-PID fallback kill of ${pid} with ${signal} also failed ` +
+            `(${fallbackCode ?? "unknown"}) — process may leak until the job timeout.`,
+        );
+        return false;
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Escalating timeout kill for a detached subprocess: deliver SIGTERM to the
+ * whole GROUP, then after a grace period escalate to SIGKILL on the GROUP —
+ * but ONLY if the process has NOT already exited.
+ *
+ * The has-exited signal is the caller-supplied `hasExited()` predicate, which
+ * MUST be backed by the real `close` event (not `child.killed`). Node sets
+ * `child.killed = true` the instant a signal is DELIVERED, long before the
+ * process actually exits, so a `!child.killed` guard makes the SIGKILL
+ * escalation dead code — the original WS-4 defect. Gating on a real exit flag
+ * is what makes the escalation actually fire against a process that ignores
+ * SIGTERM.
+ *
+ * Returns the grace timer so the caller can cancel it from its `close` handler
+ * (a clean early exit must not leave a pending SIGKILL escalation queued).
+ */
+export function scheduleEscalatingKill(
+  pid: number,
+  hasExited: () => boolean,
+  graceMs: number = KILL_GRACE_MS,
+): NodeJS.Timeout {
+  killProcessGroup(pid, "SIGTERM");
+  return setTimeout(() => {
+    if (!hasExited()) {
+      console.error("Process group did not exit after SIGTERM. Sending SIGKILL to the group...");
+      killProcessGroup(pid, "SIGKILL");
+    }
+  }, graceMs);
+}
+
+export function invokeClaudeCode(prompt: string): Promise<number> {
   return new Promise((done, reject) => {
     const args = [
       "@anthropic-ai/claude-code",
@@ -392,26 +487,35 @@ function invokeClaudeCode(prompt: string): Promise<number> {
       "50",
     ];
 
+    // `detached: true` puts the child in its OWN process group (gpid === pid),
+    // so a timeout can signal the WHOLE group — the `npx` wrapper AND its
+    // `@anthropic-ai/claude-code` grandchild — via `process.kill(-pid, …)`.
+    // Without it, killing the child pid reaches only the wrapper and a wedged
+    // grandchild survives to burn the 30-min job budget.
     const child = spawn("npx", args, {
       stdio: ["inherit", "pipe", "pipe"],
+      detached: true,
     });
 
     const logChunks: Buffer[] = [];
     let killGraceTimer: NodeJS.Timeout | undefined;
     let timedOut = false;
+    // REAL has-exited flag, flipped by the `close` handler. The SIGKILL
+    // escalation is gated on THIS, never `child.killed` (which is true the
+    // instant SIGTERM is delivered, making the escalation dead code).
+    let exited = false;
 
     const killTimer = setTimeout(() => {
       timedOut = true;
       console.error(
-        `Claude Code timed out after ${CLAUDE_TIMEOUT_MS / 60000} minutes. Sending SIGTERM...`,
+        `Claude Code timed out after ${CLAUDE_TIMEOUT_MS / 60000} minutes. ` +
+          "Sending SIGTERM to the process group...",
       );
-      child.kill("SIGTERM");
-      killGraceTimer = setTimeout(() => {
-        if (!child.killed) {
-          console.error("Process did not exit after SIGTERM. Sending SIGKILL...");
-          child.kill("SIGKILL");
-        }
-      }, KILL_GRACE_MS);
+      // child.pid can be undefined if the spawn failed; the `error` handler
+      // covers that path, so only escalate when we have a real group leader.
+      if (typeof child.pid === "number") {
+        killGraceTimer = scheduleEscalatingKill(child.pid, () => exited);
+      }
     }, CLAUDE_TIMEOUT_MS);
 
     child.on("error", (err) => {
@@ -428,17 +532,37 @@ function invokeClaudeCode(prompt: string): Promise<number> {
       reject(err);
     });
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      process.stdout.write(chunk);
-      logChunks.push(chunk);
-    });
+    // Wire the stream + close handlers inside a guard so a SYNCHRONOUS throw
+    // here (e.g. `child.stdout` is null on a spawn edge case, making
+    // `child.stdout.on(...)` a TypeError) cannot strand the already-armed
+    // `killTimer`. Without this, such a throw rejects the Promise via the
+    // executor's synchronous-throw semantics BUT the 30-min timer stays live and
+    // would later group-kill a possibly-reused PID. Clear the timer, then reject.
+    try {
+      if (!child.stdout || !child.stderr) {
+        throw new Error(
+          "Claude Code child has no stdout/stderr pipe (spawn produced null streams)",
+        );
+      }
+      child.stdout.on("data", (chunk: Buffer) => {
+        process.stdout.write(chunk);
+        logChunks.push(chunk);
+      });
 
-    child.stderr.on("data", (chunk: Buffer) => {
-      process.stderr.write(chunk);
-      logChunks.push(chunk);
-    });
+      child.stderr.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        logChunks.push(chunk);
+      });
+    } catch (setupErr) {
+      clearTimeout(killTimer);
+      reject(setupErr instanceof Error ? setupErr : new Error(String(setupErr)));
+      return;
+    }
 
     child.on("close", (code, signal) => {
+      // Mark real exit BEFORE clearing timers so any in-flight grace timer that
+      // fires in the same tick sees `exited === true` and skips the SIGKILL.
+      exited = true;
       clearTimeout(killTimer);
       if (killGraceTimer) clearTimeout(killGraceTimer);
       const logContent = Buffer.concat(logChunks).toString("utf-8");
@@ -754,12 +878,18 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
   }
   console.log(`Drift-success predicate: RESOLVED — ${verdict.detail}`);
 
-  // Determine branch name
+  // Determine branch name. A git failure here fails CLOSED with a NAMED reason
+  // (git-push-failed) rather than a blank-reason exit 3 (see the catch at the
+  // end of the git-op sequence below).
   let currentBranch: string;
   try {
     currentBranch = exec("git rev-parse --abbrev-ref HEAD");
   } catch (err: unknown) {
-    throw new Error(`Cannot determine current branch for PR creation: ${(err as Error).message}`);
+    console.error(
+      `ERROR: cannot determine current branch for PR creation: ${(err as Error).message}`,
+    );
+    console.log(`reason=${PredicateReason.GIT_PUSH_FAILED}`);
+    process.exit(REASON_EXIT_CODE[PredicateReason.GIT_PUSH_FAILED]);
   }
 
   const branchName =
@@ -767,8 +897,26 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
       ? `fix/drift-${stamp}`
       : currentBranch;
 
+  // A git checkout/stage/commit/push failure anywhere below fails CLOSED (no PR
+  // — the push never completes, so no partial/unversioned PR ships) but the raw
+  // throw would reach the top-level catch with a BLANK `reason=`. `gitOp` names
+  // the cause (git-push-failed) so the operator alert is not blank. The
+  // version-bump block keeps its OWN distinct VERSION_BUMP_FAILED reason.
+  const gitOp = (label: string, fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      console.error(
+        `ERROR: git operation failed (${label}) while opening the drift-fix PR — no PR opened:`,
+        err instanceof Error ? err.message : err,
+      );
+      console.log(`reason=${PredicateReason.GIT_PUSH_FAILED}`);
+      process.exit(REASON_EXIT_CODE[PredicateReason.GIT_PUSH_FAILED]);
+    }
+  };
+
   if (branchName !== currentBranch) {
-    execFileSafe("git", ["checkout", "-b", branchName]);
+    gitOp("checkout -b", () => execFileSafe("git", ["checkout", "-b", branchName]));
     console.log(`Created branch ${branchName}`);
   }
 
@@ -802,19 +950,31 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
   }
 
   if (builderFiles.length > 0) {
-    execFileSafe("git", ["add", ...builderFiles]);
-    execFileSafe("git", ["commit", "-m", "fix: auto-remediate API drift in builder functions"]);
+    gitOp("add builders", () => execFileSafe("git", ["add", ...builderFiles]));
+    gitOp("commit builders", () =>
+      execFileSafe("git", ["commit", "-m", "fix: auto-remediate API drift in builder functions"]),
+    );
   }
 
   if (testFiles.length > 0) {
-    execFileSafe("git", ["add", ...testFiles]);
-    execFileSafe("git", ["commit", "-m", "test: update SDK shapes for drift remediation"]);
+    gitOp("add tests", () => execFileSafe("git", ["add", ...testFiles]));
+    gitOp("commit tests", () =>
+      execFileSafe("git", ["commit", "-m", "test: update SDK shapes for drift remediation"]),
+    );
   }
 
   // The version bump + CHANGELOG are an EXPLICIT, gated part of the fix set — a
   // release always accompanies an auto-remediation — not an unclassified
   // straggler. They are workflow-authored (never LLM-authored) and staged by an
   // exact path list, so they do not re-open the allowlist.
+  //
+  // WS-8 — this step is MANDATORY, so a failure here is a HARD, fail-closed
+  // error: opening an UNVERSIONED PR would ship a "fix" that a human might merge
+  // but which never publishes a release, silently delivering no value. We exit
+  // with a distinct VERSION_BUMP_FAILED reason (routed to the workflow's
+  // human-review alert) rather than warn-and-continue. No push has happened yet,
+  // and the builder/test commits above are local-only until the push below —
+  // which we never reach — so no partial/unversioned PR is ever opened.
   try {
     const newVersion = patchBumpVersion();
     console.log(`Bumped version to ${newVersion}`);
@@ -826,11 +986,16 @@ export function createPr(report: DriftReport, postFix?: PostFixCollectorResult):
     execFileSafe("git", ["add", "package.json", "CHANGELOG.md"]);
     execFileSafe("git", ["commit", "-m", `chore: bump version to ${newVersion}`, "--allow-empty"]);
   } catch (err) {
-    console.warn("Version bump failed, skipping:", err);
-    // Continue with PR creation without version bump
+    console.error(
+      "ERROR: version bump / CHANGELOG step failed — refusing to open an UNVERSIONED " +
+        "drift-fix PR that would merge a fix which never publishes a release:",
+      err instanceof Error ? err.message : err,
+    );
+    console.log(`reason=${PredicateReason.VERSION_BUMP_FAILED}`);
+    process.exit(REASON_EXIT_CODE[PredicateReason.VERSION_BUMP_FAILED]);
   }
 
-  execFileSafe("git", ["push", "-u", "origin", branchName]);
+  gitOp("push", () => execFileSafe("git", ["push", "-u", "origin", branchName]));
   console.log(`Pushed branch ${branchName}`);
 
   const prBody = buildPrBody(report, changedFiles, verdict.detail);
@@ -1027,8 +1192,22 @@ async function main(): Promise<void> {
     // --post-fix-exit (see parsePostFixExit): a missing recollect output must
     // not masquerade as a clean collector exit 0 and open a PR on an unverified
     // fix. Mirrors the predicate CLI's guard.
-    const postFixExit = parsePostFixExit(args[postFixExitIdx + 1]);
-    const postFixReport = readPostFixReport(resolve(args[postFixReportIdx + 1]));
+    //
+    // These parse/read failures fail closed (no PR) — but the raw throw would
+    // reach the top-level catch with a BLANK `reason=`, so the operator alert is
+    // uninformative. Emit a NAMED reason (post-fix-parse-error) before
+    // rethrowing so the workflow's `grep '^reason='` names the cause.
+    let postFixExit: number;
+    let postFixReport: DriftReport;
+    try {
+      postFixExit = parsePostFixExit(args[postFixExitIdx + 1]);
+      postFixReport = readPostFixReport(resolve(args[postFixReportIdx + 1]));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`ERROR: could not parse/read the post-fix collector result: ${msg}`);
+      console.log(`reason=${PredicateReason.POST_FIX_PARSE_ERROR}`);
+      process.exit(REASON_EXIT_CODE[PredicateReason.POST_FIX_PARSE_ERROR]);
+    }
     const postFix: PostFixCollectorResult = { report: postFixReport, exitCode: postFixExit };
 
     createPr(report, postFix);

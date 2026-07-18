@@ -128,3 +128,125 @@ describe("fix-drift.yml — human-approval backstop: no unattended auto-merge", 
     expect(wf).not.toContain("MERGE_REASON");
   });
 });
+
+// ---------------------------------------------------------------------------
+// WS-6 — end-of-job CATCH-ALL alert for the EARLY-infra window. The four
+// specific alerts (collector-crash / autofix-step-fail / quarantine /
+// fix-failure) are all gated on step outputs that only exist AFTER the
+// collector ran. An EARLY failure (checkout / mint-app-token / pnpm install /
+// clone ag-ui / git config) leaves those outputs empty, so without a catch-all
+// the job dies red with ZERO Slack signal. These lock the catch-all's presence,
+// its UNCONDITIONAL `if: failure()` gating, the anti-double-alert guard, and the
+// infra-vs-drift-fix distinction.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — WS-6: early-infra catch-all failure alert", () => {
+  it("has an end-of-job catch-all alert step", () => {
+    expect(wf).toContain("Alert on early-infra failure (catch-all)");
+  });
+
+  it("the catch-all is gated on failure() and is UNCONDITIONAL on the earlier step OUTCOMES", () => {
+    // Isolate the catch-all step's `if:` expression.
+    const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
+    expect(idx).toBeGreaterThan(-1);
+    const stepBlock = wf.slice(idx, idx + 600);
+    const ifMatch = stepBlock.match(/if:\s*>-([\s\S]*?)\n\s{8}env:/);
+    expect(ifMatch).not.toBeNull();
+    const ifExpr = (ifMatch?.[1] ?? "").replace(/\s+/g, " ").trim();
+
+    // MUST fire on any job failure.
+    expect(ifExpr).toContain("failure()");
+    // MUST NOT gate on the autofix step OUTCOME (that would re-open the
+    // early-infra silence: autofix.outcome is empty pre-detect).
+    expect(ifExpr).not.toContain("steps.autofix.outcome");
+    // Anti-double-alert guard: only fires when NONE of the specific alerts did
+    // (collector_crashed unset, quarantine unset, and check never ran so its
+    // skip output is empty).
+    expect(ifExpr).toContain("steps.detect.outputs.collector_crashed != 'true'");
+    expect(ifExpr).toContain("steps.check.outputs.quarantine != 'true'");
+    expect(ifExpr).toContain("steps.check.outputs.skip == ''");
+  });
+
+  it("distinguishes an INFRA/SETUP failure from a drift-fix failure in its message", () => {
+    const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
+    const stepBlock = wf.slice(idx, idx + 1400);
+    expect(stepBlock).toMatch(/INFRA\/SETUP failure/);
+    // Missing-webhook must be a VISIBLE ::error:: + step failure, never silent.
+    expect(stepBlock).toContain("SLACK_WEBHOOK is not set");
+    expect(stepBlock).toMatch(/::error::/);
+  });
+
+  it("the autofix-step-failure alert requires `check` to have RUN (skip == 'false'), so it never misfires on the early-infra window", () => {
+    // The autofix-failure alert must NOT fire before the collector ran — that
+    // window belongs to the catch-all. Gating on skip == 'false' (never empty
+    // once `check` executed) ensures the two are mutually exclusive.
+    const idx = wf.indexOf("Alert on autofix step failure");
+    expect(idx).toBeGreaterThan(-1);
+    const stepBlock = wf.slice(idx, idx + 400);
+    expect(stepBlock).toContain("steps.check.outputs.skip == 'false'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS-8 — the version-bump fail-closed reason must be NAMED in the failure
+// alert, and the Create-PR step must surface the script's `reason=` on a
+// non-zero exit so a fail-closed exit is not reported blank.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — WS-8: version-bump-failed reason wiring", () => {
+  it("the fix-failure Slack alert names the version-bump-failed reason", () => {
+    expect(wf).toContain("version-bump-failed)");
+    expect(wf).toMatch(/version-bump-failed\)\s+DETAIL=.*UNVERSIONED PR/);
+  });
+
+  it("the Create-PR step captures the script exit code + reason and surfaces it as a step output on failure", () => {
+    expect(wfFlat).toContain("PR_EXIT=${PIPESTATUS[0]}");
+    expect(wfFlat).toContain("reason=${PR_REASON}");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// slot2-F3 — QUARANTINE must FAIL THE JOB (non-green), not just Slack-ping.
+// A human watching CI status (not Slack) must see quarantine as a failure, like
+// the collector-crash / autofix-failure alerts. Because quarantine sets
+// check.outputs.skip == 'true', the fix-failure alert (needs skip != 'true')
+// and the catch-all (needs skip == '') are both disjoint from it, so making the
+// quarantine step exit 1 does NOT double-alert.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — slot2-F3: quarantine fails the job (non-green)", () => {
+  it("the quarantine alert step exits non-zero on the happy (webhook-sent) path too", () => {
+    const idx = wf.indexOf("Alert on drift quarantine");
+    expect(idx).toBeGreaterThan(-1);
+    // The step body runs until the next `- name:` step.
+    const nextStep = wf.indexOf("\n      - name:", idx + 1);
+    const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
+    // The curl (happy path) must be FOLLOWED by an `exit 1` — the step is not
+    // allowed to end green after sending the Slack ping.
+    const curlIdx = stepBlock.lastIndexOf("curl -fsS");
+    expect(curlIdx).toBeGreaterThan(-1);
+    expect(stepBlock.slice(curlIdx)).toMatch(/\n\s*exit 1\b/);
+  });
+
+  it("does not overlap the fix-failure alert or the catch-all (both disjoint from quarantine's skip=='true')", () => {
+    // fix-failure requires skip != 'true'; catch-all requires skip == '';
+    // quarantine sets skip == 'true' — so neither fires alongside it.
+    expect(wf).toContain("steps.check.outputs.skip != 'true'"); // fix-failure guard
+    const catchAllIdx = wf.indexOf("Alert on early-infra failure (catch-all)");
+    expect(wf.slice(catchAllIdx, catchAllIdx + 600)).toContain("steps.check.outputs.skip == ''");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// slot2-F7/F12 — the fail-closed parse/git paths must be NAMED in the failure
+// alert (post-fix-parse-error / git-push-failed), not blank. The code emits the
+// reason; the workflow's case block must translate it to a human DETAIL.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — slot2-F7/F12: fail-closed reasons are named in the alert", () => {
+  it("the fix-failure alert names the post-fix-parse-error reason", () => {
+    expect(wf).toContain("post-fix-parse-error)");
+    expect(wfFlat).toMatch(/post-fix-parse-error\) DETAIL=.*Failed closed/);
+  });
+
+  it("the fix-failure alert names the git-push-failed reason", () => {
+    expect(wf).toContain("git-push-failed)");
+    expect(wfFlat).toMatch(/git-push-failed\) DETAIL=.*no PR opened/);
+  });
+});
