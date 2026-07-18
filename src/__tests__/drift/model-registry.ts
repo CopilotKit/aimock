@@ -130,6 +130,8 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "claude-sonnet-4-6",
     // Claude 5 families (text chat)
     "claude-sonnet-5",
+    // claude-fable-5 is included ahead of a recorded fixture (intended — mirrors
+    // the forward-looking rationale for the exclude-by-rule patterns above).
     "claude-fable-5",
   ]),
   gemini: familySet("gemini", [
@@ -233,10 +235,11 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "imagen-4.0-ultra-generate",
     // Audio / native-audio (realtime canary domain)
     "gemini-2.5-flash-native-audio-latest",
-    // Open-weight Gemma line — aimock does NOT mock Gemma (no code/fixtures);
-    // it only rides the shared Gemini /models listing. Exclude, not include.
-    "gemma-4-26b-a4b-it",
-    "gemma-4-31b-it",
+    // NOTE: the open-weight Gemma line (`gemma-4-26b-a4b-it`, `gemma-4-31b-it`,
+    // and any future variant) is auto-excluded by the GEMMA_FAMILY rule (see
+    // isClassifiedFamily below) — no enumeration. Gemma is open-weight, not
+    // mocked on the Gemini surface, so it is out of scope; reversible by future
+    // explicit handling if a Gemma fixture is ever added.
     // Moving aliases (not families aimock commits to as stable text surfaces)
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
@@ -282,12 +285,23 @@ export const NON_MODEL_TOKENS: Set<string> = new Set(["gemini-interactions"]);
  *
  * The pattern intentionally matches ONLY a trailing `-preview` token, optionally
  * followed by a short numeric build tag the normalizer does not strip
- * (`-preview-04`, `-preview-05`, `-preview-10`, `-preview-12` — 2-digit, below
- * `BUILD_TAG_SUFFIX`'s 3-4 digit floor). It deliberately does NOT match interior
+ * (`-preview-04`, `-preview-05`, `-preview-10`, `-preview-12`). The `-\d+` tail
+ * is unbounded on purpose — a 1-2 digit build tag survives the normalizer
+ * (`BUILD_TAG_SUFFIX` only strips 3-4 digit tails), and a longer numeric tail on
+ * a `-preview` token is still unambiguously a preview surface, so there is no
+ * upper bound to enforce. It deliberately does NOT match interior
  * `-preview-<word>` suffixes like `-preview-tts` / `-preview-customtools`; those
  * are non-text specialty surfaces enumerated explicitly in `excludeFamilies` so
  * their category (tts / custom-tools) stays documented rather than swept under a
  * blanket rule.
+ *
+ * TRADEOFF — previews are BLANKET-excluded until GA, per policy. This
+ * intentionally SILENCES the canary on new text previews (e.g. `o1-preview`,
+ * `gpt-4.5-preview`, a `gemini-3` chat preview) until they drop the `-preview`
+ * suffix and go GA. There is no include-side escape hatch: aimock does not mock
+ * preview surfaces, so re-alerting on each new preview tier is precisely the
+ * whack-a-mole this rule removes. If aimock ever needs to mock a specific
+ * preview surface, add explicit handling then.
  *
  * IMPORTANT — this lives at the CLASSIFICATION layer, NOT the normalizer. The
  * normalizer is left untouched so preview family keys stay DISTINCT: a genuinely
@@ -298,17 +312,32 @@ export const NON_MODEL_TOKENS: Set<string> = new Set(["gemini-interactions"]);
 export const PREVIEW_FAMILY = /-preview(-\d+)?$/;
 
 /**
+ * Durable EXCLUDE-BY-RULE predicate for the open-weight Gemma line.
+ *
+ * Gemma is open-weight and NOT mocked on aimock's Gemini surface (no code /
+ * fixtures); it only rides the shared Gemini `/models` listing. Every current
+ * AND future Gemma variant (`gemma-4-26b-a4b-it`, `gemma-4-31b-it`, …) is
+ * out of scope, so a pattern rule auto-excludes them with zero registry churn —
+ * mirroring the PREVIEW_FAMILY rationale. Reversible by future explicit handling
+ * if a Gemma fixture is ever added.
+ */
+export const GEMMA_FAMILY = /^gemma(-|$)/;
+
+/**
  * A NORMALIZED family key is already classified if it is in `include ∪ exclude`,
- * OR it matches the preview-exclude rule — with INCLUDE WINS: a family explicitly
- * listed in `includeFamilies` is included even if it ends in `-preview`, so aimock
- * can opt a preview surface back in (e.g. if it ever mocks a gemini-3 chat
- * preview) without fighting the rule. Both the live drift check
- * (`unclassifiedFamilies`) and the builder/fixture cross-check use this single
- * predicate so their classification surfaces cannot drift apart.
+ * OR it matches an exclude-by-rule pattern (preview, gemma). Both the live drift
+ * check (`unclassifiedFamilies`) and the builder/fixture cross-check use this
+ * single predicate so their classification surfaces cannot drift apart.
+ *
+ * There is deliberately NO include-side escape hatch: previews and Gemma are
+ * blanket-excluded (aimock does not mock either surface), so an include entry
+ * could never legitimately collide with an exclude rule. The intersection
+ * `include ∩ (preview ∪ gemma)` is empty by construction.
  */
 export function isClassifiedFamily(family: string, provider: Provider): boolean {
-  if (includeFamilies[provider].has(family)) return true; // include wins
+  if (includeFamilies[provider].has(family)) return true;
   if (excludeFamilies[provider].has(family)) return true;
   if (PREVIEW_FAMILY.test(family)) return true; // exclude-by-rule
+  if (GEMMA_FAMILY.test(family)) return true; // exclude-by-rule
   return false;
 }

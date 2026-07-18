@@ -32,6 +32,7 @@ import {
   NON_MODEL_TOKENS,
   isClassifiedFamily,
   PREVIEW_FAMILY,
+  GEMMA_FAMILY,
 } from "./model-registry.js";
 
 // ─── Part 1: registry shape invariants ───────────────────────────────────────
@@ -87,15 +88,16 @@ describe("isClassifiedFamily / PREVIEW_FAMILY", () => {
     expect(isClassifiedFamily("deep-research-pro-preview-12", "gemini")).toBe(true);
   });
 
-  it("INCLUDE WINS: an included family ending in -preview is classified as included", () => {
-    const included = normalizeModelFamily("gemini-x-chat-preview", "gemini");
-    includeFamilies.gemini.add(included);
-    try {
-      expect(isClassifiedFamily(included, "gemini")).toBe(true);
-      expect(includeFamilies.gemini.has(included)).toBe(true);
-    } finally {
-      includeFamilies.gemini.delete(included);
-    }
+  it("classifies a future Gemma variant by rule (no literal registry entry)", () => {
+    // A synthetic future Gemma id normalizes to itself (no numeric-only build
+    // tag to strip) and is on NEITHER include nor exclude — it is classified
+    // purely by the GEMMA_FAMILY rule. Red against the old literal-names-only
+    // exclude set; green with the pattern.
+    const family = normalizeModelFamily("gemma-9-foo", "gemini");
+    expect(includeFamilies.gemini.has(family)).toBe(false);
+    expect(excludeFamilies.gemini.has(family)).toBe(false);
+    expect(GEMMA_FAMILY.test(family)).toBe(true);
+    expect(isClassifiedFamily(family, "gemini")).toBe(true);
   });
 
   it("does NOT match interior -preview-<word> suffixes (stay enumerated)", () => {
@@ -199,11 +201,11 @@ describe("§6.1c builder/fixture cross-check (no live keys)", () => {
     for (const { id, provider } of BUILDER_FIXTURE_MODEL_IDS) {
       const family = normalizeModelFamily(id, provider);
       // Use the SAME classification predicate the live drift check uses
-      // (include ∪ exclude ∪ the PREVIEW_FAMILY rule, include-wins) so the two
-      // classification surfaces cannot drift apart.
+      // (include ∪ exclude ∪ the PREVIEW_FAMILY / GEMMA_FAMILY exclude-by-rule
+      // patterns) so the two classification surfaces cannot drift apart.
       if (!isClassifiedFamily(family, provider)) {
         failures.push(
-          `${id} (${provider}): normalized to "${family}" which is classified by NEITHER includeFamilies, excludeFamilies, NOR the preview rule`,
+          `${id} (${provider}): normalized to "${family}" which is classified by NEITHER includeFamilies, excludeFamilies, NOR the preview/gemma rules`,
         );
       }
     }

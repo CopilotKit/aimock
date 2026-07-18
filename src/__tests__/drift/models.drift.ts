@@ -29,7 +29,7 @@
 import { describe, it, expect } from "vitest";
 import { listOpenAIModels, listAnthropicModels, listGeminiModels } from "./providers.js";
 import { normalizeModelFamily } from "./model-family.js";
-import { includeFamilies, NON_MODEL_TOKENS, isClassifiedFamily } from "./model-registry.js";
+import { NON_MODEL_TOKENS, isClassifiedFamily } from "./model-registry.js";
 import { formatDriftReport } from "./schema.js";
 
 type Provider = "openai" | "anthropic" | "gemini";
@@ -37,9 +37,9 @@ type Provider = "openai" | "anthropic" | "gemini";
 /**
  * Reduce a live `/models` list to the UNCLASSIFIED families: normalize each id,
  * then drop everything already classified (`include ∪ exclude`, the
- * preview-exclude rule — see `isClassifiedFamily` in model-registry.ts) or on
- * the non-model allowlist. The returned list (sorted, de-duplicated) is the
- * drift signal.
+ * preview/gemma exclude-by-rule patterns — see `isClassifiedFamily` in
+ * model-registry.ts) or on the non-model allowlist. The returned list (sorted,
+ * de-duplicated) is the drift signal.
  *
  * Exported so the co-located regression suite can exercise the EXACT
  * enumerate→normalize→subtract pipeline the live check relies on, with an
@@ -162,22 +162,6 @@ describe("preview families are excluded by rule", () => {
     expect(unclassifiedFamilies(["deep-research-pro-preview-12"], "gemini")).toEqual([]);
   });
 
-  it("INCLUDE WINS: a family explicitly on includeFamilies is included even if it ends in -preview", () => {
-    // Guard the opt-in escape hatch. `includeFamilies` membership short-circuits
-    // the preview rule, so this appears as classified (not drift) precisely
-    // because it is included — proving include-wins, not rule-exclude.
-    const provider = "gemini" as const;
-    const included = "gemini-x-chat-preview";
-    // Temporarily assert the semantics against a synthetic included family.
-    includeFamilies[provider].add(normalizeModelFamily(included, provider));
-    try {
-      expect(unclassifiedFamilies([included], provider)).toEqual([]);
-      expect(includeFamilies[provider].has(normalizeModelFamily(included, provider))).toBe(true);
-    } finally {
-      includeFamilies[provider].delete(normalizeModelFamily(included, provider));
-    }
-  });
-
   it("does NOT match interior -preview-<word> suffixes (they stay enumerated)", () => {
     // `-preview-tts` / `-preview-customtools` are non-text specialty surfaces
     // enumerated explicitly; a hypothetical UNLISTED interior-suffix family must
@@ -189,9 +173,25 @@ describe("preview families are excluded by rule", () => {
 });
 
 // ---------------------------------------------------------------------------
+// GEMMA_FAMILY exclude-by-rule predicate (open-weight, out of scope).
+// ---------------------------------------------------------------------------
+
+describe("gemma families are excluded by rule", () => {
+  it("a future Gemma variant auto-excludes with zero registry edits", () => {
+    // `gemma-9-foo` has no numeric-only build tag to strip, so it normalizes to
+    // itself and is on NEITHER include nor exclude — classified purely by the
+    // gemma rule. Red against the old literal-names-only exclude set; green with
+    // the pattern.
+    expect(unclassifiedFamilies(["gemma-9-foo"], "gemini")).toEqual([]);
+    // The two originally-enumerated literals still classify (now via the rule).
+    expect(unclassifiedFamilies(["gemma-4-26b-a4b-it", "gemma-4-31b-it"], "gemini")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Regression: the FULL live /models family wave (run 29478043559, 2026-07-16).
-// These are the exact families the drift job flagged as UNCLASSIFIED (OpenAI 49
-// / Anthropic 10 / Gemini 44). This suite injects representative raw ids for
+// These are the exact families the drift job flagged as UNCLASSIFIED (OpenAI 48
+// / Anthropic 10 / Gemini 45). This suite injects representative raw ids for
 // every one of them into the REAL enumerate→normalize→subtract pipeline and
 // asserts the registry now classifies all of them — zero drift. It exercises
 // the same `unclassifiedFamilies` surface the live canary uses, so it is a true
@@ -346,7 +346,7 @@ describe("full live /models wave is fully classified (2026-07-16 drift)", () => 
       "veo-3.1-fast-generate-preview", // pattern
       "veo-3.1-generate-preview", // pattern
       "veo-3.1-lite-generate-preview", // pattern
-      // Gemma open-weight — aimock does NOT mock; explicit exclude
+      // Gemma open-weight — aimock does NOT mock; auto-excluded by GEMMA_FAMILY rule
       "gemma-4-26b-a4b-it",
       "gemma-4-31b-it",
       // Moving aliases
