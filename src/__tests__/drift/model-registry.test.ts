@@ -26,7 +26,13 @@
  */
 import { describe, it, expect } from "vitest";
 import { normalizeModelFamily } from "./model-family.js";
-import { includeFamilies, excludeFamilies, NON_MODEL_TOKENS } from "./model-registry.js";
+import {
+  includeFamilies,
+  excludeFamilies,
+  NON_MODEL_TOKENS,
+  isClassifiedFamily,
+  PREVIEW_FAMILY,
+} from "./model-registry.js";
 
 // ─── Part 1: registry shape invariants ───────────────────────────────────────
 
@@ -62,6 +68,44 @@ describe("model-registry", () => {
         expect(normalizeModelFamily(family, provider)).toBe(family);
       }
     }
+  });
+});
+
+// ─── PREVIEW_FAMILY exclude-by-rule predicate ────────────────────────────────
+
+describe("isClassifiedFamily / PREVIEW_FAMILY", () => {
+  it("classifies a brand-new -preview family by rule (no registry entry)", () => {
+    const family = normalizeModelFamily("gemini-9-pro-preview", "gemini");
+    expect(includeFamilies.gemini.has(family)).toBe(false);
+    expect(excludeFamilies.gemini.has(family)).toBe(false);
+    expect(PREVIEW_FAMILY.test(family)).toBe(true);
+    expect(isClassifiedFamily(family, "gemini")).toBe(true);
+  });
+
+  it("matches a trailing short numeric preview build tag (-preview-NN)", () => {
+    expect(PREVIEW_FAMILY.test("antigravity-preview-05")).toBe(true);
+    expect(isClassifiedFamily("deep-research-pro-preview-12", "gemini")).toBe(true);
+  });
+
+  it("INCLUDE WINS: an included family ending in -preview is classified as included", () => {
+    const included = normalizeModelFamily("gemini-x-chat-preview", "gemini");
+    includeFamilies.gemini.add(included);
+    try {
+      expect(isClassifiedFamily(included, "gemini")).toBe(true);
+      expect(includeFamilies.gemini.has(included)).toBe(true);
+    } finally {
+      includeFamilies.gemini.delete(included);
+    }
+  });
+
+  it("does NOT match interior -preview-<word> suffixes (stay enumerated)", () => {
+    expect(PREVIEW_FAMILY.test("gemini-2.5-flash-preview-tts")).toBe(false);
+    expect(PREVIEW_FAMILY.test("gemini-3.1-pro-preview-customtools")).toBe(false);
+    // Those two ARE classified — but via explicit excludeFamilies enumeration.
+    expect(isClassifiedFamily("gemini-2.5-flash-preview-tts", "gemini")).toBe(true);
+    expect(isClassifiedFamily("gemini-3.1-pro-preview-customtools", "gemini")).toBe(true);
+    // A NON-enumerated interior-suffix family stays unclassified (still drift).
+    expect(isClassifiedFamily("gemini-x-flash-preview-widgets", "gemini")).toBe(false);
   });
 });
 
@@ -154,12 +198,12 @@ describe("§6.1c builder/fixture cross-check (no live keys)", () => {
 
     for (const { id, provider } of BUILDER_FIXTURE_MODEL_IDS) {
       const family = normalizeModelFamily(id, provider);
-      const inInclude = includeFamilies[provider].has(family);
-      const inExclude = excludeFamilies[provider].has(family);
-
-      if (!inInclude && !inExclude) {
+      // Use the SAME classification predicate the live drift check uses
+      // (include ∪ exclude ∪ the PREVIEW_FAMILY rule, include-wins) so the two
+      // classification surfaces cannot drift apart.
+      if (!isClassifiedFamily(family, provider)) {
         failures.push(
-          `${id} (${provider}): normalized to "${family}" which is in NEITHER includeFamilies NOR excludeFamilies`,
+          `${id} (${provider}): normalized to "${family}" which is classified by NEITHER includeFamilies, excludeFamilies, NOR the preview rule`,
         );
       }
     }

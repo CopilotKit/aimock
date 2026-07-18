@@ -71,6 +71,41 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "gpt-4.1-nano",
     "gpt-5",
     "gpt-5-mini",
+    // gpt-5 tier: additional sizes + chat surfaces
+    "gpt-5-nano",
+    "gpt-5-pro",
+    "gpt-5-chat-latest",
+    // gpt-5.x point releases (text chat)
+    "gpt-5.1",
+    "gpt-5.1-chat-latest",
+    "gpt-5.2",
+    "gpt-5.2-pro",
+    "gpt-5.2-chat-latest",
+    "gpt-5.3-chat-latest",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    // gpt-5.6 named variants (text chat)
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    // Codex line (coding chat; text output)
+    "gpt-5-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    // o-series reasoning (text)
+    "o1",
+    "o1-pro",
+    "o3",
+    "o3-mini",
+    "o3-pro",
+    "o4-mini",
   ]),
   anthropic: familySet("anthropic", [
     // Claude 3 / 3.5 / 3.7 families
@@ -84,6 +119,18 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "claude-opus-4",
     "claude-sonnet-4",
     "claude-haiku-4",
+    // Claude 4.x point releases (text chat)
+    "claude-haiku-4-5",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    // Claude 5 families (text chat)
+    "claude-sonnet-5",
+    "claude-fable-5",
   ]),
   gemini: familySet("gemini", [
     // Gemini 1.5 / 2.0 / 2.5 text families
@@ -92,6 +139,11 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "gemini-2.0-flash",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+    // Additional stable flash/pro tiers (text)
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
   ]),
 };
 
@@ -103,9 +155,13 @@ export const includeFamilies: Record<Provider, Set<string>> = {
  */
 export const excludeFamilies: Record<Provider, Set<string>> = {
   openai: familySet("openai", [
-    // Retired / legacy chat
+    // Retired / legacy chat + base-completion
     "gpt-3",
     "gpt-3.5",
+    "gpt-3.5-turbo-16k",
+    "gpt-3.5-turbo-instruct",
+    "babbage",
+    "davinci",
     // Embeddings (non-text-generation)
     "text-embedding-3-small",
     "text-embedding-3-large",
@@ -114,6 +170,21 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "dall-e-2",
     "dall-e-3",
     "gpt-image-1",
+    "gpt-image-1-mini",
+    "gpt-image-1.5",
+    "gpt-image-2",
+    "chatgpt-image-latest",
+    // Video generation (non-text)
+    "sora-2",
+    "sora-2-pro",
+    // Moderation classifier (non-text-generation)
+    "omni-moderation",
+    "omni-moderation-latest",
+    // Deep-research / search specialty surfaces (text output, not plain chat).
+    // Enumerated because they carry no trailing `-preview` (see PREVIEW_FAMILY).
+    "o3-deep-research",
+    "o4-mini-deep-research",
+    "gpt-5-search-api",
     // Voice / audio / tts / transcribe — owned by the realtime canary
     "tts-1",
     "tts-1-hd",
@@ -133,9 +204,10 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "gpt-realtime-1.5",
     "gpt-realtime-translate",
     "gpt-realtime-whisper",
-    // Preview-only realtime
-    "gpt-4o-realtime-preview",
-    "gpt-4o-mini-realtime-preview",
+    // NOTE: `-preview` families (gpt-4o-realtime-preview,
+    // gpt-4o-mini-realtime-preview, gpt-4o-search-preview,
+    // gpt-4o-mini-search-preview, computer-use-preview, …) are auto-excluded by
+    // the PREVIEW_FAMILY rule (see isClassifiedFamily below) — no enumeration.
   ]),
   anthropic: familySet("anthropic", [
     // Retired / legacy Claude ids
@@ -144,15 +216,46 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "claude-instant-1",
   ]),
   gemini: familySet("gemini", [
-    // Retired / legacy
+    // Retired / legacy specialty
     "gemini-pro",
+    "aqa",
     // Embeddings (non-text-generation)
     "text-embedding-004",
-    // Experimental / preview / thinking-preview
+    "gemini-embedding",
+    "gemini-embedding-2",
+    // Image models (non-text)
+    "gemini-2.5-flash-image",
+    "gemini-3-pro-image",
+    "gemini-3.1-flash-image",
+    "gemini-3.1-flash-lite-image",
+    "imagen-4.0-fast-generate",
+    "imagen-4.0-generate",
+    "imagen-4.0-ultra-generate",
+    // Audio / native-audio (realtime canary domain)
+    "gemini-2.5-flash-native-audio-latest",
+    // Open-weight Gemma line — aimock does NOT mock Gemma (no code/fixtures);
+    // it only rides the shared Gemini /models listing. Exclude, not include.
+    "gemma-4-26b-a4b-it",
+    "gemma-4-31b-it",
+    // Moving aliases (not families aimock commits to as stable text surfaces)
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-pro-latest",
+    // Interior `-preview-<word>` specialty suffixes the PREVIEW_FAMILY rule does
+    // NOT match (it only matches trailing `-preview` / `-preview-<digits>`).
+    // Enumerated so their category (tts / custom-tools) stays documented.
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
+    "gemini-3.1-pro-preview-customtools",
+    // Experimental / thinking (kept explicit — historic `-exp`, not `-preview`)
     "gemini-2.0-flash-exp",
     "gemini-2.0-flash-thinking-exp",
     // Live/full-duplex voice — owned by the realtime canary, not this text check
     "gemini-live",
+    // NOTE: every `-preview` family (gemini-3.x preview tiers, deep-research
+    // previews, antigravity-preview-05, computer-use-preview-10, image/tts/robotics
+    // previews, lyria/veo/nano-banana previews, gemini-embedding-2-preview, …) is
+    // auto-excluded by the PREVIEW_FAMILY rule (see isClassifiedFamily below).
   ]),
 };
 
@@ -163,3 +266,49 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
  * cross-check exclude the exact same tokens (never false-positive drift).
  */
 export const NON_MODEL_TOKENS: Set<string> = new Set(["gemini-interactions"]);
+
+/**
+ * Durable EXCLUDE-BY-RULE predicate for preview/experimental families.
+ *
+ * Preview tiers (`gemini-3-pro-preview`, `gpt-4o-search-preview`,
+ * `antigravity-preview-05`, …) are unstable and short-lived: providers ship a
+ * new one on nearly every release wave, and each one that lands would otherwise
+ * re-fire the daily drift canary as a brand-new UNCLASSIFIED family, forcing a
+ * registry edit per preview forever (that is exactly how the Gemini-3.x wave
+ * surfaced — the exclude set was a hand-maintained list with no preview rule).
+ * A pattern rule auto-excludes every current AND future `-preview` family with
+ * zero registry churn, and re-alerting on each new preview tier is precisely the
+ * whack-a-mole this hardening removes.
+ *
+ * The pattern intentionally matches ONLY a trailing `-preview` token, optionally
+ * followed by a short numeric build tag the normalizer does not strip
+ * (`-preview-04`, `-preview-05`, `-preview-10`, `-preview-12` — 2-digit, below
+ * `BUILD_TAG_SUFFIX`'s 3-4 digit floor). It deliberately does NOT match interior
+ * `-preview-<word>` suffixes like `-preview-tts` / `-preview-customtools`; those
+ * are non-text specialty surfaces enumerated explicitly in `excludeFamilies` so
+ * their category (tts / custom-tools) stays documented rather than swept under a
+ * blanket rule.
+ *
+ * IMPORTANT — this lives at the CLASSIFICATION layer, NOT the normalizer. The
+ * normalizer is left untouched so preview family keys stay DISTINCT: a genuinely
+ * new preview family is still visible as its own key (never collapsed onto its GA
+ * sibling), which preserves the canary's ability to surface new families while
+ * making previews self-excluding.
+ */
+export const PREVIEW_FAMILY = /-preview(-\d+)?$/;
+
+/**
+ * A NORMALIZED family key is already classified if it is in `include ∪ exclude`,
+ * OR it matches the preview-exclude rule — with INCLUDE WINS: a family explicitly
+ * listed in `includeFamilies` is included even if it ends in `-preview`, so aimock
+ * can opt a preview surface back in (e.g. if it ever mocks a gemini-3 chat
+ * preview) without fighting the rule. Both the live drift check
+ * (`unclassifiedFamilies`) and the builder/fixture cross-check use this single
+ * predicate so their classification surfaces cannot drift apart.
+ */
+export function isClassifiedFamily(family: string, provider: Provider): boolean {
+  if (includeFamilies[provider].has(family)) return true; // include wins
+  if (excludeFamilies[provider].has(family)) return true;
+  if (PREVIEW_FAMILY.test(family)) return true; // exclude-by-rule
+  return false;
+}

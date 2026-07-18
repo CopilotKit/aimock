@@ -29,26 +29,27 @@
 import { describe, it, expect } from "vitest";
 import { listOpenAIModels, listAnthropicModels, listGeminiModels } from "./providers.js";
 import { normalizeModelFamily } from "./model-family.js";
-import { includeFamilies, excludeFamilies, NON_MODEL_TOKENS } from "./model-registry.js";
+import { includeFamilies, NON_MODEL_TOKENS, isClassifiedFamily } from "./model-registry.js";
 import { formatDriftReport } from "./schema.js";
 
 type Provider = "openai" | "anthropic" | "gemini";
 
 /**
  * Reduce a live `/models` list to the UNCLASSIFIED families: normalize each id,
- * then drop everything already in `include ∪ exclude` or on the non-model
- * allowlist. The returned list (sorted, de-duplicated) is the drift signal.
+ * then drop everything already classified (`include ∪ exclude`, the
+ * preview-exclude rule — see `isClassifiedFamily` in model-registry.ts) or on
+ * the non-model allowlist. The returned list (sorted, de-duplicated) is the
+ * drift signal.
  *
  * Exported so the co-located regression suite can exercise the EXACT
  * enumerate→normalize→subtract pipeline the live check relies on, with an
  * injected payload — no reimplementation.
  */
 export function unclassifiedFamilies(modelIds: string[], provider: Provider): string[] {
-  const known = new Set<string>([...includeFamilies[provider], ...excludeFamilies[provider]]);
   const unclassified = new Set<string>();
   for (const id of modelIds) {
     const family = normalizeModelFamily(id, provider);
-    if (known.has(family)) continue;
+    if (isClassifiedFamily(family, provider)) continue;
     if (NON_MODEL_TOKENS.has(family) || NON_MODEL_TOKENS.has(id)) continue;
     unclassified.add(family);
   }
@@ -141,6 +142,219 @@ describe("model-family pipeline (injected /models)", () => {
     expect(unclassifiedFamilies(["gpt-live"], "openai")).toEqual(["gpt-live"]);
     // Single-digit trailing suffix is NOT a build tag, so it stays unknown.
     expect(unclassifiedFamilies(["gpt-live-1"], "openai")).toEqual(["gpt-live-1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PREVIEW_FAMILY exclude-by-rule predicate (the durable hardening).
+// ---------------------------------------------------------------------------
+
+describe("preview families are excluded by rule", () => {
+  it("a brand-new -preview family auto-excludes with zero registry edits", () => {
+    // Not in include or exclude — classified purely by the trailing-preview rule.
+    expect(unclassifiedFamilies(["gemini-9-pro-preview"], "gemini")).toEqual([]);
+    expect(unclassifiedFamilies(["gpt-9-search-preview"], "openai")).toEqual([]);
+  });
+
+  it("matches a trailing short numeric preview build tag (-preview-NN)", () => {
+    // The normalizer leaves 2-digit tails intact, so the rule must cover them.
+    expect(unclassifiedFamilies(["antigravity-preview-05"], "gemini")).toEqual([]);
+    expect(unclassifiedFamilies(["deep-research-pro-preview-12"], "gemini")).toEqual([]);
+  });
+
+  it("INCLUDE WINS: a family explicitly on includeFamilies is included even if it ends in -preview", () => {
+    // Guard the opt-in escape hatch. `includeFamilies` membership short-circuits
+    // the preview rule, so this appears as classified (not drift) precisely
+    // because it is included — proving include-wins, not rule-exclude.
+    const provider = "gemini" as const;
+    const included = "gemini-x-chat-preview";
+    // Temporarily assert the semantics against a synthetic included family.
+    includeFamilies[provider].add(normalizeModelFamily(included, provider));
+    try {
+      expect(unclassifiedFamilies([included], provider)).toEqual([]);
+      expect(includeFamilies[provider].has(normalizeModelFamily(included, provider))).toBe(true);
+    } finally {
+      includeFamilies[provider].delete(normalizeModelFamily(included, provider));
+    }
+  });
+
+  it("does NOT match interior -preview-<word> suffixes (they stay enumerated)", () => {
+    // `-preview-tts` / `-preview-customtools` are non-text specialty surfaces
+    // enumerated explicitly; a hypothetical UNLISTED interior-suffix family must
+    // still fire as drift so its category is not silently swallowed.
+    expect(unclassifiedFamilies(["gemini-x-flash-preview-widgets"], "gemini")).toEqual([
+      "gemini-x-flash-preview-widgets",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: the FULL live /models family wave (run 29478043559, 2026-07-16).
+// These are the exact families the drift job flagged as UNCLASSIFIED (OpenAI 49
+// / Anthropic 10 / Gemini 44). This suite injects representative raw ids for
+// every one of them into the REAL enumerate→normalize→subtract pipeline and
+// asserts the registry now classifies all of them — zero drift. It exercises
+// the same `unclassifiedFamilies` surface the live canary uses, so it is a true
+// regression against the classification (not a fake against a private copy).
+// ---------------------------------------------------------------------------
+
+describe("full live /models wave is fully classified (2026-07-16 drift)", () => {
+  it("OpenAI: every live family is classified (zero unclassified)", () => {
+    const openaiLive = [
+      // Existing include families (dated snapshots collapse onto them)
+      "gpt-3.5-turbo",
+      "gpt-4",
+      "gpt-4-turbo",
+      "gpt-4o-2024-08-06",
+      "gpt-4o-mini",
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-5",
+      "gpt-5-mini",
+      // Newly-classified INCLUDE: gpt-5.x tiers + chat surfaces
+      "gpt-5-chat-latest",
+      "gpt-5.1-chat-latest",
+      "gpt-5.2-chat-latest",
+      "gpt-5.3-chat-latest",
+      "gpt-5-nano",
+      "gpt-5-pro",
+      "gpt-5.1",
+      "gpt-5.2",
+      "gpt-5.2-pro",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-nano",
+      "gpt-5.4-pro",
+      "gpt-5.5",
+      "gpt-5.5-pro",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      // o-series reasoning
+      "o1",
+      "o1-pro",
+      "o3",
+      "o3-mini",
+      "o3-pro",
+      "o4-mini",
+      // Codex line
+      "gpt-5-codex",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5.2-codex",
+      "gpt-5.3-codex",
+      // Newly-classified EXCLUDE: retired base
+      "babbage-002",
+      "davinci-002",
+      "gpt-3.5-turbo-16k",
+      "gpt-3.5-turbo-instruct",
+      // deep-research / search / computer-use surfaces
+      "o3-deep-research",
+      "o4-mini-deep-research",
+      "gpt-5-search-api",
+      "gpt-4o-search-preview", // preview pattern
+      "gpt-4o-mini-search-preview", // preview pattern
+      "computer-use-preview", // preview pattern
+      // image / video / moderation
+      "chatgpt-image-latest",
+      "gpt-image-1-mini",
+      "gpt-image-1.5",
+      "gpt-image-2",
+      "sora-2",
+      "sora-2-pro",
+      "omni-moderation",
+      "omni-moderation-latest",
+    ];
+    expect(unclassifiedFamilies(openaiLive, "openai")).toEqual([]);
+  });
+
+  it("Anthropic: every live family is classified (zero unclassified)", () => {
+    const anthropicLive = [
+      // Existing include (dated snapshots collapse)
+      "claude-3-opus-20240229",
+      "claude-3-5-sonnet-20241022",
+      "claude-3-7-sonnet-20250219",
+      "claude-opus-4-20250514",
+      "claude-sonnet-4",
+      "claude-haiku-4",
+      // Newly-classified INCLUDE: 4.x/5 point releases + fable
+      "claude-haiku-4-5",
+      "claude-opus-4-1",
+      "claude-opus-4-5",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-sonnet-4-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "claude-fable-5",
+    ];
+    expect(unclassifiedFamilies(anthropicLive, "anthropic")).toEqual([]);
+  });
+
+  it("Gemini: every live family is classified (zero unclassified)", () => {
+    const geminiLive = [
+      // Existing include
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
+      "gemini-2.0-flash",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      // Newly-classified INCLUDE: stable flash/pro tiers
+      "gemini-2.0-flash-lite",
+      "gemini-2.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash",
+      // Preview text tiers — auto-excluded by the -preview pattern rule
+      "gemini-3-flash-preview",
+      "gemini-3-pro-preview",
+      "gemini-3.1-pro-preview",
+      "gemini-3.1-flash-lite-preview",
+      // Preview specialty surfaces (pattern OR explicit)
+      "gemini-3.1-pro-preview-customtools", // explicit exclude (not -preview$)
+      "antigravity-preview-05", // pattern
+      "aqa", // explicit exclude (retired specialty)
+      "deep-research-max-preview-04", // pattern
+      "deep-research-preview-04", // pattern
+      "deep-research-pro-preview-12", // pattern
+      "gemini-2.5-computer-use-preview-10", // pattern
+      "gemini-omni-flash-preview", // pattern
+      // image / audio / tts / video / music / robotics / embeddings
+      "gemini-2.5-flash-image",
+      "gemini-2.5-flash-native-audio-latest",
+      "gemini-2.5-flash-preview-tts", // explicit exclude (-preview-tts)
+      "gemini-2.5-pro-preview-tts", // explicit exclude (-preview-tts)
+      "gemini-3-pro-image",
+      "gemini-3-pro-image-preview", // pattern
+      "gemini-3.1-flash-image",
+      "gemini-3.1-flash-image-preview", // pattern
+      "gemini-3.1-flash-lite-image",
+      "gemini-3.1-flash-tts-preview", // pattern
+      "gemini-embedding",
+      "gemini-embedding-2",
+      "gemini-embedding-2-preview", // pattern
+      "gemini-robotics-er-1.5-preview", // pattern
+      "gemini-robotics-er-1.6-preview", // pattern
+      "imagen-4.0-fast-generate",
+      "imagen-4.0-generate",
+      "imagen-4.0-ultra-generate",
+      "lyria-3-clip-preview", // pattern
+      "lyria-3-pro-preview", // pattern
+      "nano-banana-pro-preview", // pattern
+      "veo-3.1-fast-generate-preview", // pattern
+      "veo-3.1-generate-preview", // pattern
+      "veo-3.1-lite-generate-preview", // pattern
+      // Gemma open-weight — aimock does NOT mock; explicit exclude
+      "gemma-4-26b-a4b-it",
+      "gemma-4-31b-it",
+      // Moving aliases
+      "gemini-flash-latest",
+      "gemini-flash-lite-latest",
+      "gemini-pro-latest",
+    ];
+    expect(unclassifiedFamilies(geminiLive, "gemini")).toEqual([]);
   });
 });
 
