@@ -14,7 +14,7 @@ import type {
   RecordProviderKey,
   ToolCall,
 } from "./types.js";
-import { getLastMessageByRole, getTextContent } from "./router.js";
+import { getLastMessageByRole, getTextContent, currentTurnHasToolResult } from "./router.js";
 import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
 import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
@@ -2134,13 +2134,22 @@ export function buildFixtureMatch(
   // in-memory cache shadow follow-up turns that share it (initial tool call
   // vs. text reply after the tool result). turnIndex + hasToolResult give
   // each call a distinct, matcher-aware key. Skip for non-chat (no messages).
+  //
+  // hasToolResult MUST be stamped with the SAME current-turn predicate the
+  // matcher uses ({@link currentTurnHasToolResult}) — NOT a whole-conversation
+  // `messages.some(role === "tool")`. A whole-conversation stamp on a genuine
+  // turn-2 leg-1 request (a fresh user question whose history still carries an
+  // earlier turn's tool result) writes `true`, but the matcher computes the
+  // turn-scoped `false` for that same request, so the fixture could never match
+  // its own recorded request. Sharing the one helper is what keeps record and
+  // replay symmetric.
   const messages = request.messages ?? [];
   if (
     messages.length > 0 &&
     (request._endpointType === "chat" || request._endpointType === undefined)
   ) {
     match.turnIndex = messages.filter((m) => m.role === "assistant").length;
-    match.hasToolResult = messages.some((m) => m.role === "tool");
+    match.hasToolResult = currentTurnHasToolResult(messages);
   }
 
   if (request._context) {

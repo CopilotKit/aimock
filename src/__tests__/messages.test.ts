@@ -854,12 +854,16 @@ describe("claudeToCompletionRequest (fallback branches)", () => {
         },
       ],
     });
-    // Should produce tool message + user message
+    // Should produce user message (accompanying text) THEN tool message. The
+    // text is emitted FIRST so the tool message trails the last user message and
+    // the current-turn hasToolResult predicate classifies this leg-2 turn as
+    // carrying a tool result (`true`). Emitting the tool first would make this
+    // byte-identical to a genuine leg-1 turn and misclassify it `false`.
     expect(result.messages).toHaveLength(2);
-    expect(result.messages[0].role).toBe("tool");
-    expect(result.messages[0].content).toBe("result data");
-    expect(result.messages[1].role).toBe("user");
-    expect(result.messages[1].content).toBe("follow up question");
+    expect(result.messages[0].role).toBe("user");
+    expect(result.messages[0].content).toBe("follow up question");
+    expect(result.messages[1].role).toBe("tool");
+    expect(result.messages[1].content).toBe("result data");
   });
 
   it("handles text content blocks with missing text (text ?? '')", () => {
@@ -1086,8 +1090,12 @@ describe("claudeToCompletionRequest (fallback branches)", () => {
         },
       ],
     });
-    expect(result.messages[1].role).toBe("user");
-    expect(result.messages[1].content).toBe("");
+    // Accompanying text is emitted BEFORE the tool message (see the ordering
+    // rationale in claudeToCompletionRequest); a missing text field → "".
+    expect(result.messages[0].role).toBe("user");
+    expect(result.messages[0].content).toBe("");
+    expect(result.messages[1].role).toBe("tool");
+    expect(result.messages[1].content).toBe("result");
   });
 
   it("handles system content blocks with text ?? '' in filter/map", () => {

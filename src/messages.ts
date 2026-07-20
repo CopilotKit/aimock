@@ -168,6 +168,26 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
         const textBlocks = blocks.filter((b) => b.type === "text");
 
         if (toolResults.length > 0) {
+          // Anthropic bundles a leg-2 tool_result and any accompanying user text
+          // into ONE user-role message. We emit the accompanying text FIRST, then
+          // the tool message(s), so the normalized shape is
+          // `[..., user(text), tool]` — the tool message trails the last user
+          // message and the current-turn `hasToolResult` predicate
+          // ({@link currentTurnHasToolResult}) correctly classifies it `true`
+          // (this IS a leg-2 turn that carries a tool result). Emitting the tool
+          // FIRST would produce `[..., tool, user(text)]`, which is byte-identical
+          // to a genuine turn-N leg-1 (a fresh user question after a completed
+          // tool turn) and would be misclassified `false`. The source-message
+          // grouping — that this text and this tool_result came from the SAME
+          // Anthropic message — is only available here, so this ordering is the
+          // only place the two cases can be told apart. The common
+          // tool_result-only follow-up (no text blocks) is unaffected.
+          if (textBlocks.length > 0) {
+            messages.push({
+              role: "user",
+              content: textBlocks.map((b) => b.text ?? "").join(""),
+            });
+          }
           // Each tool_result → tool message
           for (const tr of toolResults) {
             const resultContent =
@@ -183,13 +203,6 @@ export function claudeToCompletionRequest(req: ClaudeRequest): ChatCompletionReq
               role: "tool",
               content: resultContent,
               tool_call_id: tr.tool_use_id,
-            });
-          }
-          // Any accompanying text blocks → user message
-          if (textBlocks.length > 0) {
-            messages.push({
-              role: "user",
-              content: textBlocks.map((b) => b.text ?? "").join(""),
             });
           }
           continue;

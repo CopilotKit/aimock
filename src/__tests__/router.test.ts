@@ -5,6 +5,7 @@ import {
   getSystemText,
   getTextContent,
   getLastUserText,
+  currentTurnHasToolResult,
 } from "../router.js";
 import type { ChatCompletionRequest, ChatMessage, ContentPart, Fixture } from "../types.js";
 
@@ -1292,6 +1293,88 @@ describe("matchFixture — hasToolResult", () => {
     expect(matchFixture([fixture], req)).toBe(fixture);
   });
 
+  it("matches hasToolResult: false on a system-message-led new turn (scoping survives a leading system prompt)", () => {
+    // A leading system message must not shift the turn boundary: the CURRENT
+    // turn is still "after the last user message". Here that turn has no tool,
+    // so leg-1 (false) matches even though an earlier turn carried a tool result.
+    const fixture = makeFixture({ userMessage: "hello", hasToolResult: false });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "you are helpful" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "prior-turn tool output" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("falls back to whole-conversation scan when there is no user message (system-led leg-2)", () => {
+    // No user message at all → lastUserIdx stays -1 and the scan covers the whole
+    // conversation (the safe, record/replay-symmetric fallback). A tool present
+    // anywhere therefore reads as hasToolResult: true.
+    const fixture = makeFixture({ hasToolResult: true }, { content: "ok" });
+    const req = makeReq({
+      messages: [
+        { role: "system", content: "you are helpful" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "tool output" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("composes current-turn hasToolResult scoping with an explicit turnIndex disambiguator", () => {
+    // Both fixtures agree on the turn-scoped shape (leg-1, false) for a turn-2
+    // request; turnIndex then disambiguates AMONG the shape matches. Verifies the
+    // shape predicate is evaluated correctly ALONGSIDE the position gate.
+    const turn0 = makeFixture(
+      { userMessage: "hello", hasToolResult: false, turnIndex: 0 },
+      { content: "turn-0" },
+    );
+    const turn1 = makeFixture(
+      { userMessage: "hello", hasToolResult: false, turnIndex: 1 },
+      { content: "turn-1" },
+    );
+    // Turn-2 leg-1: one assistant bubble → turnIndex 1; current turn has no tool.
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "prior-turn tool output" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    expect(matchFixture([turn0, turn1], req)).toBe(turn1);
+  });
+
+  it("composes current-turn hasToolResult scoping with a sequenceIndex gate", () => {
+    // A leg-2 request (current turn has a tool result). The sequenceIndex gate
+    // consumes the first sibling, so the second (sequenceIndex 1) is served — the
+    // hasToolResult shape predicate must pass for BOTH before the gate decides.
+    const seq0 = makeFixture(
+      { userMessage: "hello", hasToolResult: true, sequenceIndex: 0 },
+      { content: "first" },
+    );
+    const seq1 = makeFixture(
+      { userMessage: "hello", hasToolResult: true, sequenceIndex: 1 },
+      { content: "second" },
+    );
+    const counts = new Map<Fixture, number>([
+      [seq0, 1],
+      [seq1, 1],
+    ]);
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "result" },
+      ],
+    });
+    expect(matchFixture([seq0, seq1], req, counts)).toBe(seq1);
+  });
+
   it("discriminates 2-step HITL flow with hasToolResult across turns", () => {
     const beforeTool = makeFixture(
       { userMessage: "hello", hasToolResult: false },
@@ -1330,6 +1413,61 @@ describe("matchFixture — hasToolResult", () => {
       ],
     });
     expect(matchFixture([beforeTool, afterTool], reqNextTurn)).toBe(beforeTool);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// currentTurnHasToolResult — the shared record/replay predicate
+// ---------------------------------------------------------------------------
+
+describe("currentTurnHasToolResult", () => {
+  // This is the SINGLE predicate the recorder stamps and the matcher checks, so
+  // its behavior is what keeps record→replay symmetric. Each case pins a branch
+  // a plausible wrong implementation (whole-conversation scan, or a length-based
+  // default for the no-user case) would get wrong.
+
+  it("is true when a tool result trails the last user message (leg-2)", () => {
+    expect(
+      currentTurnHasToolResult([
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "output" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("is false on a new turn whose history carries an earlier turn's tool result (turn-scoped, not whole-conversation)", () => {
+    expect(
+      currentTurnHasToolResult([
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "prior-turn output" },
+        { role: "user", content: "next question" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("ignores a leading system message when locating the current turn", () => {
+    expect(
+      currentTurnHasToolResult([
+        { role: "system", content: "you are helpful" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "output" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("falls back to a whole-conversation scan when there is no user message", () => {
+    // lastUserIdx === -1 → slice(0) covers everything. A length-based default
+    // would slice past the end and wrongly return false.
+    expect(
+      currentTurnHasToolResult([
+        { role: "system", content: "you are helpful" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "output" },
+      ]),
+    ).toBe(true);
   });
 });
 

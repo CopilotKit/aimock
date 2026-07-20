@@ -22,6 +22,43 @@ export function getLastMessageByRole(messages: ChatMessage[], role: string): Cha
 }
 
 /**
+ * `hasToolResult` request-SHAPE predicate — does the CURRENT turn contain a
+ * tool result message? "Current turn" = the messages AFTER the last `user`
+ * message, so this is scoped to the turn being matched rather than the whole
+ * conversation. This is what keeps leg-1 (tool call, `hasToolResult` false) vs
+ * leg-2 (narration, `hasToolResult` true) fixtures working across MULTI-TURN
+ * sessions: on the 2nd+ user turn the request still carries earlier turns' tool
+ * results, and a whole-conversation check would force `hasToolResult=true`
+ * forever, so the turn's leg-1 fixture (false) could never match again ("No
+ * fixture matched" on every pill after the first).
+ *
+ * This is the SINGLE source of truth shared by the RECORD side
+ * ({@link buildFixtureMatch} in recorder.ts, which STAMPS the value onto a new
+ * fixture) and the MATCH side ({@link matchFixtureDiagnostic} below, which
+ * CHECKS a fixture's stored value against the incoming request). The two MUST
+ * agree byte-for-byte: if the recorder stamps a value the matcher would never
+ * compute for the same request, a genuinely-recorded fixture can never match
+ * its own request. Keeping the predicate in one function is what guarantees
+ * they cannot drift.
+ *
+ * When there is no `user` message at all, `lastUserIdx` stays -1 and the scan
+ * covers the whole conversation — the safe/consistent fallback for a user-less
+ * request (both sides degrade identically). For a single-turn request whose
+ * only tool message trails a lone user message this is identical to the old
+ * whole-conversation check.
+ */
+export function currentTurnHasToolResult(messages: ChatMessage[]): boolean {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  return messages.slice(lastUserIdx + 1).some((m) => m.role === "tool");
+}
+
+/**
  * Concatenate the text content of every `system` role message in order.
  * Hosts that build a system context from multiple sources (persona, agent
  * context entries, tool guidance) often emit several system messages in one
@@ -461,29 +498,15 @@ export function matchFixtureDiagnostic(
       }
     }
 
-    // hasToolResult — request-SHAPE predicate: does the CURRENT turn contain a
-    // tool result message? "Current turn" = messages after the last user
-    // message, so this is scoped to the turn being matched rather than the
-    // whole conversation. This is what makes leg-1 (tool call, hasToolResult
-    // false) vs leg-2 (narration, hasToolResult true) fixtures keep working
-    // across MULTI-TURN sessions: on the 2nd+ user turn the request still
-    // carries earlier turns' tool results, and a whole-conversation check would
-    // force hasToolResult=true forever, so the turn's leg-1 fixture (false)
-    // could never match again ("No fixture matched" on every pill after the
-    // first). For a single-turn request this is identical to the old
-    // whole-conversation check. Must be evaluated with the other shape
-    // predicates ABOVE the sequence/turn state gates so that a fixture whose
-    // shape never matched is not miscounted as "skipped by sequence/turn state".
+    // hasToolResult — request-SHAPE predicate scoped to the CURRENT turn. Shares
+    // the exact predicate with the recorder via {@link currentTurnHasToolResult}
+    // so the value the matcher CHECKS can never drift from the value the recorder
+    // STAMPED for the same request (see that helper's doc). Must be evaluated
+    // with the other shape predicates ABOVE the sequence/turn state gates so that
+    // a fixture whose shape never matched is not miscounted as "skipped by
+    // sequence/turn state".
     if (match.hasToolResult !== undefined) {
-      let lastUserIdx = -1;
-      for (let i = effective.messages.length - 1; i >= 0; i--) {
-        if (effective.messages[i].role === "user") {
-          lastUserIdx = i;
-          break;
-        }
-      }
-      const hasTool = effective.messages.slice(lastUserIdx + 1).some((m) => m.role === "tool");
-      if (hasTool !== match.hasToolResult) continue;
+      if (currentTurnHasToolResult(effective.messages) !== match.hasToolResult) continue;
     }
 
     // At this point every SHAPE / CONTENT predicate above has passed, so this
