@@ -104,9 +104,9 @@
             <code>hasToolResult</code> checks whether the <strong>current turn</strong> &mdash; the
             messages after the last <code>role: "user"</code> message &mdash; contains a
             <code>role: "tool"</code> result. <code>true</code> means &ldquo;a tool has executed in
-            this turn&rdquo;; <code>false</code> means &ldquo;no tool result yet this turn.&rdquo; It
-            is scoped to the current turn, not the whole conversation &mdash; that is what keeps the
-            leg-1 tool-call fixture (<code>false</code>) and the leg-2 narration fixture
+            this turn&rdquo;; <code>false</code> means &ldquo;no tool result yet this turn.&rdquo;
+            It is scoped to the current turn, not the whole conversation &mdash; that is what keeps
+            the leg-1 tool-call fixture (<code>false</code>) and the leg-2 narration fixture
             (<code>true</code>) working on <em>every</em> turn of a multi-turn session, because
             earlier turns&rsquo; tool results no longer force <code>true</code> forever. (If the
             request carries no <code>user</code> message at all, it falls back to scanning the whole

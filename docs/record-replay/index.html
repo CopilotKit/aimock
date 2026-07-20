@@ -637,9 +637,8 @@
           requests the recorder also writes the multi-turn disambiguators
           <code>turnIndex</code> (the number of assistant messages already in the conversation) and
           <code>hasToolResult</code> (whether the current turn &mdash; the messages after the last
-          user message &mdash; contains a tool result). If no match
-          criteria can be derived (e.g., empty messages), the fixture is saved to disk with a
-          warning but not registered in memory.
+          user message &mdash; contains a tool result). If no match criteria can be derived (e.g.,
+          empty messages), the fixture is saved to disk with a warning but not registered in memory.
         </p>
 
         <h2 id="model-aware-recording">Model-Aware Recording</h2>
@@ -1042,11 +1041,10 @@ await mock.start();</code></pre>
           <code>model</code>, and two shape disambiguators read off the request itself:
           <code>turnIndex</code> (how many assistant messages the conversation already contains) and
           <code>hasToolResult</code> (whether the current turn &mdash; the messages after the last
-          user message &mdash; contains a tool result). Embedding requests
-          key on the input text instead. There is no history-based fingerprinting of the full
-          request body &mdash; but because a growing conversation carries a growing
-          <code>turnIndex</code>, successive turns that happen to end with the same user message
-          still record as <em>distinct</em> fixtures.
+          user message &mdash; contains a tool result). Embedding requests key on the input text
+          instead. There is no history-based fingerprinting of the full request body &mdash; but
+          because a growing conversation carries a growing <code>turnIndex</code>, successive turns
+          that happen to end with the same user message still record as <em>distinct</em> fixtures.
         </p>
 
         <div class="code-block">
