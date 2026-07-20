@@ -461,12 +461,28 @@ export function matchFixtureDiagnostic(
       }
     }
 
-    // hasToolResult — request-SHAPE predicate: does the conversation contain a
-    // tool result message? Must be evaluated with the other shape predicates
-    // ABOVE the sequence/turn state gates so that a fixture whose shape never
-    // matched is not miscounted as "skipped by sequence/turn state".
+    // hasToolResult — request-SHAPE predicate: does the CURRENT turn contain a
+    // tool result message? "Current turn" = messages after the last user
+    // message, so this is scoped to the turn being matched rather than the
+    // whole conversation. This is what makes leg-1 (tool call, hasToolResult
+    // false) vs leg-2 (narration, hasToolResult true) fixtures keep working
+    // across MULTI-TURN sessions: on the 2nd+ user turn the request still
+    // carries earlier turns' tool results, and a whole-conversation check would
+    // force hasToolResult=true forever, so the turn's leg-1 fixture (false)
+    // could never match again ("No fixture matched" on every pill after the
+    // first). For a single-turn request this is identical to the old
+    // whole-conversation check. Must be evaluated with the other shape
+    // predicates ABOVE the sequence/turn state gates so that a fixture whose
+    // shape never matched is not miscounted as "skipped by sequence/turn state".
     if (match.hasToolResult !== undefined) {
-      const hasTool = effective.messages.some((m) => m.role === "tool");
+      let lastUserIdx = -1;
+      for (let i = effective.messages.length - 1; i >= 0; i--) {
+        if (effective.messages[i].role === "user") {
+          lastUserIdx = i;
+          break;
+        }
+      }
+      const hasTool = effective.messages.slice(lastUserIdx + 1).some((m) => m.role === "tool");
       if (hasTool !== match.hasToolResult) continue;
     }
 

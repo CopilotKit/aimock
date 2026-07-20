@@ -1222,14 +1222,22 @@ describe("matchFixture — turnIndex", () => {
 // ---------------------------------------------------------------------------
 
 describe("matchFixture — hasToolResult", () => {
-  it("matches hasToolResult: true when tool messages present", () => {
+  // hasToolResult is TURN-SCOPED: it asks whether the CURRENT turn (messages
+  // after the last user message) contains a tool result — not whether the whole
+  // conversation ever did. This is what lets the leg-1 (tool call) / leg-2
+  // (post-tool narration) fixture pair keep discriminating across MULTI-TURN
+  // sessions: on the 2nd+ user turn the request still carries earlier turns'
+  // tool results, and a whole-conversation check would pin hasToolResult=true
+  // forever so the turn's leg-1 fixture (false) could never match again.
+
+  it("matches hasToolResult: true when the current turn has a tool result", () => {
     const fixture = makeFixture({ userMessage: "hello", hasToolResult: true });
+    // Real leg-2 shape: the tool result is the LAST message (no new user turn).
     const req = makeReq({
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: "calling tool" },
         { role: "tool", content: "tool output" },
-        { role: "user", content: "hello" },
       ],
     });
     expect(matchFixture([fixture], req)).toBe(fixture);
@@ -1255,20 +1263,36 @@ describe("matchFixture — hasToolResult", () => {
     expect(matchFixture([fixture], req)).toBe(fixture);
   });
 
-  it("skips hasToolResult: false when tool messages present", () => {
+  it("skips hasToolResult: false when the current turn has a tool result", () => {
     const fixture = makeFixture({ userMessage: "hello", hasToolResult: false });
+    // Real leg-2 shape: tool result is the last message in the current turn.
     const req = makeReq({
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: "calling tool" },
         { role: "tool", content: "tool output" },
-        { role: "user", content: "hello" },
       ],
     });
     expect(matchFixture([fixture], req)).toBeNull();
   });
 
-  it("discriminates 2-step HITL flow with hasToolResult", () => {
+  it("matches hasToolResult: false on a new turn even when an EARLIER turn had a tool result (multi-turn)", () => {
+    // The regression this scoping fixes: a 2nd pill click in the same chat
+    // thread. The request carries turn-1's tool result, but the CURRENT turn
+    // (after the last user message) has none, so leg-1 (false) must still match.
+    const fixture = makeFixture({ userMessage: "hello", hasToolResult: false });
+    const req = makeReq({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "prior-turn tool output" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    expect(matchFixture([fixture], req)).toBe(fixture);
+  });
+
+  it("discriminates 2-step HITL flow with hasToolResult across turns", () => {
     const beforeTool = makeFixture(
       { userMessage: "hello", hasToolResult: false },
       { content: "before-tool" },
@@ -1278,20 +1302,34 @@ describe("matchFixture — hasToolResult", () => {
       { content: "after-tool" },
     );
 
+    // Turn 1, leg 1: fresh user message, no tool yet.
     const reqBefore = makeReq({
       messages: [{ role: "user", content: "hello" }],
     });
     expect(matchFixture([beforeTool, afterTool], reqBefore)).toBe(beforeTool);
 
+    // Turn 1, leg 2: the tool result is the last message in the current turn.
     const reqAfter = makeReq({
       messages: [
         { role: "user", content: "hello" },
         { role: "assistant", content: "calling tool" },
         { role: "tool", content: "result" },
-        { role: "user", content: "hello" },
       ],
     });
     expect(matchFixture([beforeTool, afterTool], reqAfter)).toBe(afterTool);
+
+    // Turn 2, leg 1: a new user message after turn-1's completed tool flow —
+    // must fall back to the leg-1 fixture, not re-serve leg-2's narration.
+    const reqNextTurn = makeReq({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "calling tool" },
+        { role: "tool", content: "result" },
+        { role: "assistant", content: "before-tool" },
+        { role: "user", content: "hello" },
+      ],
+    });
+    expect(matchFixture([beforeTool, afterTool], reqNextTurn)).toBe(beforeTool);
   });
 });
 
