@@ -41,6 +41,11 @@ export function getLastMessageByRole(messages: ChatMessage[], role: string): Cha
  * its own request. Keeping the predicate in one function is what guarantees
  * they cannot drift.
  *
+ * INVARIANT: callers MUST pass the POST-`requestTransform` (normalized)
+ * messages — the same array `buildFixtureMatch` and `matchFixtureDiagnostic`
+ * both feed here. Passing raw/untransformed messages on one side would let the
+ * set-side and check-side diverge again and silently reopen the multi-turn bug.
+ *
  * When there is no `user` message at all, `lastUserIdx` stays -1 and the scan
  * covers the whole conversation — the safe/consistent fallback for a user-less
  * request (both sides degrade identically). For a single-turn request whose
