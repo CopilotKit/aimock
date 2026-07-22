@@ -132,7 +132,9 @@ function parseDataOnlySSE(text: string): { data: unknown }[] {
       try {
         return { data: JSON.parse(json) };
       } catch (err) {
-        throw new Error(`Malformed SSE JSON in frame: ${json.slice(0, 100)}`, { cause: err });
+        throw new Error(
+          `Malformed SSE JSON in frame: ${json.slice(0, 100)} — ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
 }
@@ -162,7 +164,9 @@ function parseTypedSSE(text: string): { type: string; data: unknown }[] {
           data: JSON.parse(json),
         };
       } catch (err) {
-        throw new Error(`Malformed SSE JSON in frame: ${json.slice(0, 100)}`, { cause: err });
+        throw new Error(
+          `Malformed SSE JSON in frame: ${json.slice(0, 100)} — ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
 }
