@@ -102,6 +102,7 @@ jobs:
           # Un-gates the Ollama live drift leg against the daemon provisioned above.
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          FAL_KEY: ${{ secrets.FAL_KEY }}
           PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
         run: |
           set +e
@@ -202,6 +203,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
           PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
         run: npx tsx scripts/fix-drift.ts --report "${PINNED_REPORT}"
 
@@ -238,6 +240,7 @@ jobs:
           # (the daemon provisioned earlier in this job is still running).
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          FAL_KEY: ${{ secrets.FAL_KEY }}
         run: pnpm test:drift
 
       # Step 4c: Re-collect drift AUTHORITATIVELY against the LIVE SDK, writing
@@ -266,6 +269,7 @@ jobs:
           # exercises it (the daemon provisioned earlier in this job is running).
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          FAL_KEY: ${{ secrets.FAL_KEY }}
           POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
         run: |
           set +e

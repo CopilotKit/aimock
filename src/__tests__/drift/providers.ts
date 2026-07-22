@@ -727,3 +727,111 @@ export async function listOpenRouterVideoModels(apiKey: string): Promise<string[
     return json.data.map((m) => m.id);
   });
 }
+
+// ---------------------------------------------------------------------------
+// fal.ai queue lifecycle
+// ---------------------------------------------------------------------------
+
+/** One lifecycle step's HTTP status + parsed JSON envelope. */
+interface FalQueueStep {
+  status: number;
+  body: Record<string, unknown> | null;
+}
+
+/** The three cost-safe queue envelopes the canary observes. */
+export interface FalQueueCanaryResult {
+  submit: FalQueueStep;
+  statusPoll: FalQueueStep;
+  cancel: FalQueueStep;
+}
+
+/**
+ * Cost-safe live queue-lifecycle canary for the fal.ai queue surface
+ * (`src/fal.ts` handleFal / walkFalQueue). Drives the REAL fal queue API and
+ * returns the SUBMIT, STATUS, and CANCEL envelope bodies for drift comparison.
+ *
+ * COST SAFETY: fal bills COMPUTE only when a queued job actually RUNS. This
+ * canary submits a job (free) and cancels it IMMEDIATELY — while it is still
+ * `IN_QUEUE` no compute is charged, so the expected cost is $0. The cancel is
+ * issued even if the status poll throws (see the finally-style flow below) so a
+ * job is never left to run. The `response_url` (completed result) endpoint is
+ * NEVER fetched — that is the only paid retrieval, and its envelope stays
+ * STATIC-only. Residual: if the (cheapest) model races to completion before the
+ * cancel lands, at most one sub-cent generation is billed.
+ */
+export async function falQueueLifecycleCanary(
+  apiKey: string,
+  modelId: string,
+  input: object,
+): Promise<FalQueueCanaryResult> {
+  return withInfraErrorTag("fal Queue Lifecycle", async () => {
+    const authHeaders = { Authorization: `Key ${apiKey}` };
+
+    // 1. Submit — enqueues the job. Free; compute is billed only when it RUNS.
+    const submitUrl = `https://queue.fal.run/${modelId}`;
+    const submitRes = await fetchWithRetry(submitUrl, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const submitRaw = await submitRes.text();
+    const submitBody = parseJsonResponse(
+      submitRaw,
+      submitRes.status,
+      "fal queue submit",
+      submitUrl,
+    ) as Record<string, unknown>;
+
+    // fal returns absolute lifecycle URLs; fall back to the documented layout.
+    const requestId = String(submitBody.request_id ?? "");
+    const statusUrl =
+      typeof submitBody.status_url === "string"
+        ? submitBody.status_url
+        : `${submitUrl}/requests/${requestId}/status`;
+    const cancelUrl =
+      typeof submitBody.cancel_url === "string"
+        ? submitBody.cancel_url
+        : `${submitUrl}/requests/${requestId}/cancel`;
+
+    // 2. Status — metadata only (never the result payload). Capture any error so
+    // the cancel below still fires: leaving a job to RUN is the only cost risk.
+    let statusPoll: FalQueueStep | null = null;
+    let statusError: unknown = null;
+    try {
+      const statusRes = await fetchWithRetry(statusUrl, { method: "GET", headers: authHeaders });
+      const statusRaw = await statusRes.text();
+      statusPoll = {
+        status: statusRes.status,
+        body: parseJsonResponse(
+          statusRaw,
+          statusRes.status,
+          "fal queue status",
+          statusUrl,
+        ) as Record<string, unknown>,
+      };
+    } catch (err) {
+      statusError = err;
+    }
+
+    // 3. Cancel IMMEDIATELY — while IN_QUEUE, no compute is charged. Real fal
+    // returns 200 `{status:"CANCELLATION_REQUESTED"}` (or 400
+    // `{status:"ALREADY_COMPLETED"}` on a race); both are valid envelopes.
+    const cancelRes = await fetchWithRetry(cancelUrl, { method: "PUT", headers: authHeaders });
+    const cancelRaw = await cancelRes.text();
+    let cancelBody: Record<string, unknown> | null = null;
+    try {
+      cancelBody = cancelRaw ? (JSON.parse(cancelRaw) as Record<string, unknown>) : null;
+    } catch {
+      cancelBody = null;
+    }
+
+    // Surface a status-poll failure only after cancellation is guaranteed.
+    if (statusError) throw statusError;
+
+    return {
+      submit: { status: submitRes.status, body: submitBody },
+      statusPoll: statusPoll!,
+      cancel: { status: cancelRes.status, body: cancelBody },
+    };
+  });
+}
