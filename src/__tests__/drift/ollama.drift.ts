@@ -16,7 +16,20 @@ import { httpPost, startDriftServer, stopDriftServer } from "./helpers.js";
 // Environment-based opt-in (consistent with other drift files)
 // ---------------------------------------------------------------------------
 
-const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+// Accept both a full base URL ("http://127.0.0.1:11434") and Ollama's native
+// host:port form ("127.0.0.1:11434" — the value the daemon itself uses). The
+// test issues real HTTP requests, so a scheme is required; prefix http:// when
+// one is absent.
+const RAW_OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+const OLLAMA_HOST = /^https?:\/\//.test(RAW_OLLAMA_HOST)
+  ? RAW_OLLAMA_HOST
+  : `http://${RAW_OLLAMA_HOST}`;
+
+// The model to exercise against the live daemon. Defaults to "llama3.2" for a
+// local developer run, but CI provisions a much smaller model (to keep the
+// daemon pull cheap) and points the leg at it via OLLAMA_MODEL. Both /api/chat
+// and /api/generate use the same model.
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.2";
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -112,7 +125,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
     const sdkShape = ollamaChatResponseShape();
 
     const body = {
-      model: "llama3.2",
+      model: OLLAMA_MODEL,
       messages: [{ role: "user", content: "Say hello" }],
       stream: false,
     };
@@ -143,7 +156,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
     const sdkChunkShape = ollamaChatStreamChunkShape();
 
     const body = {
-      model: "llama3.2",
+      model: OLLAMA_MODEL,
       messages: [{ role: "user", content: "Say hello" }],
       stream: true,
     };
@@ -181,7 +194,7 @@ describe.skipIf(!process.env.OLLAMA_HOST)("Ollama drift", () => {
     const sdkShape = ollamaGenerateResponseShape();
 
     const body = {
-      model: "llama3.2",
+      model: OLLAMA_MODEL,
       prompt: "Say hello",
       stream: false,
     };
