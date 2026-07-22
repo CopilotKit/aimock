@@ -255,6 +255,17 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
     ],
     typesFile: null,
   },
+  "openrouter-video": {
+    provider: "OpenRouter Video",
+    builderFile: "src/openrouter-video.ts",
+    builderFunctions: [
+      "handleOpenRouterVideoCreate",
+      "handleOpenRouterVideoStatus",
+      "handleOpenRouterVideoModels",
+      "handleOpenRouterVideoContent",
+    ],
+    typesFile: null,
+  },
 };
 
 /**

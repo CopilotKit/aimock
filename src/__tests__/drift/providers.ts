@@ -132,7 +132,9 @@ function parseDataOnlySSE(text: string): { data: unknown }[] {
       try {
         return { data: JSON.parse(json) };
       } catch (err) {
-        throw new Error(`Malformed SSE JSON in frame: ${json.slice(0, 100)}`, { cause: err });
+        throw new Error(
+          `Malformed SSE JSON in frame: ${json.slice(0, 100)} — ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
 }
@@ -162,7 +164,9 @@ function parseTypedSSE(text: string): { type: string; data: unknown }[] {
           data: JSON.parse(json),
         };
       } catch (err) {
-        throw new Error(`Malformed SSE JSON in frame: ${json.slice(0, 100)}`, { cause: err });
+        throw new Error(
+          `Malformed SSE JSON in frame: ${json.slice(0, 100)} — ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
 }
@@ -695,5 +699,31 @@ export async function listGeminiModels(apiKey: string): Promise<string[]> {
     };
     // Gemini returns "models/gemini-2.5-flash" — strip prefix
     return json.models.map((m) => m.name.replace(/^models\//, ""));
+  });
+}
+
+/**
+ * List OpenRouter's video-capable models via the dedicated (FREE, no
+ * generation) listing endpoint `GET /api/v1/videos/models`. Video models do
+ * NOT appear in the plain `/api/v1/models` listing, hence the dedicated route
+ * (see src/openrouter-video.ts handleOpenRouterVideoModels). Returns the raw
+ * provider-prefixed slugs (e.g. "openai/sora-2", "bytedance/seedance-2.0",
+ * "google/veo-3.1"). This is the cost-safe daily live-reality canary for the
+ * OpenRouter video proxy surface — it authenticates and reads metadata only,
+ * never submitting a paid generation job.
+ */
+export async function listOpenRouterVideoModels(apiKey: string): Promise<string[]> {
+  return withInfraErrorTag("OpenRouter Video Models", async () => {
+    const url = "https://openrouter.ai/api/v1/videos/models";
+    const res = await fetchWithRetry(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    const raw = await res.text();
+    const json = parseJsonResponse(raw, res.status, "OpenRouter video model list", url) as {
+      data: { id: string }[];
+    };
+    return json.data.map((m) => m.id);
   });
 }
