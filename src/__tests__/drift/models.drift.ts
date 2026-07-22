@@ -310,6 +310,8 @@ describe("full live /models wave is fully classified (2026-07-16 drift)", () => 
       "gemini-2.5-flash-lite",
       "gemini-3.1-flash-lite",
       "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.6-flash",
       // Preview text tiers — auto-excluded by the -preview pattern rule
       "gemini-3-flash-preview",
       "gemini-3-pro-preview",

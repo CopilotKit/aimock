@@ -146,6 +146,8 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "gemini-2.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
   ]),
 };
 
