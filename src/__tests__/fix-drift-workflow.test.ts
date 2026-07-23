@@ -68,6 +68,44 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
   });
 });
 
+// ---------------------------------------------------------------------------
+// FF2 (dead-permission trim): the `sync` job's `permissions:` block (and the
+// app-token mint step) granted `checks: read` / `statuses: read`
+// (`permission-checks` / `permission-statuses`) with a comment claiming they
+// let "the merge gate assert the PR is truly green before merging". No step
+// in this workflow ever queries check-runs or commit statuses (there is no
+// `gh api .../check-runs`, no `gh pr checks`, no status lookup anywhere —
+// the workflow explicitly does NO auto-merge; see the NO-AUTO-MERGE block
+// above), so both the permissions and the stale comment are dead and must be
+// removed.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", () => {
+  it("the sync job's permissions block does not grant checks: read", () => {
+    const idx = wf.indexOf("permissions:");
+    expect(idx).toBeGreaterThan(-1);
+    const block = wf.slice(idx, wf.indexOf("steps:", idx));
+    expect(block).not.toMatch(/^\s*checks:\s*read\s*$/m);
+  });
+
+  it("the sync job's permissions block does not grant statuses: read", () => {
+    const idx = wf.indexOf("permissions:");
+    expect(idx).toBeGreaterThan(-1);
+    const block = wf.slice(idx, wf.indexOf("steps:", idx));
+    expect(block).not.toMatch(/^\s*statuses:\s*read\s*$/m);
+  });
+
+  it("the app-token mint step does not request permission-checks or permission-statuses", () => {
+    expect(wf).not.toContain("permission-checks");
+    expect(wf).not.toContain("permission-statuses");
+  });
+
+  it("no step actually consumes check-runs or commit statuses (confirms the perms were dead, not just unlabeled)", () => {
+    expect(wf).not.toMatch(/check-runs/);
+    expect(wf).not.toMatch(/gh pr checks/);
+    expect(wf).not.toMatch(/\bstatuses\b/);
+  });
+});
+
 describe("fix-drift.yml — triggers on workflow_dispatch, a SCHEDULED cron, and drift-test failure", () => {
   it("triggers on workflow_dispatch", () => {
     expect(wf).toMatch(/on:\s*\n\s*workflow_dispatch:/);

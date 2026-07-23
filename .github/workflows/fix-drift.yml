@@ -44,8 +44,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      checks: read
-      statuses: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,10 +56,6 @@ jobs:
           private-key: ${{ secrets.DEVOPS_BOT_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-          # Read check runs + commit statuses so the merge gate can assert
-          # the PR is truly green before merging.
-          permission-checks: read
-          permission-statuses: read
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
