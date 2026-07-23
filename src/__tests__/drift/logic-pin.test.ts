@@ -35,6 +35,8 @@ import {
   GEMMA_FAMILY,
   NON_MODEL_TOKENS,
   isClassifiedFamily,
+  includeFamilies,
+  excludeFamilies,
 } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
 
@@ -168,4 +170,65 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
     // interior -preview-<word> is NOT swept by the rule (stays explicit-only)
     expect(PREVIEW_FAMILY.test("gemini-2.5-flash-preview-tts")).toBe(false);
   });
+});
+
+/**
+ * DATA freeze for the classification SEED sets themselves.
+ *
+ * The FROZEN block above pins the classification RULES (normalizer,
+ * exclude-by-rule patterns, NON_MODEL_TOKENS, familySet, isClassifiedFamily)
+ * but never inspected the `includeFamilies` / `excludeFamilies` literal
+ * arrays in model-registry.ts — so, in principle, a family could be silenced
+ * by adding it straight to `excludeFamilies` (or quietly dropped from
+ * `includeFamilies`) without tripping any pin above, since neither literal's
+ * source span is one of the extracted FROZEN surfaces.
+ *
+ * This hashes the normalized, SORTED MEMBERSHIP of each provider's set (not
+ * the raw source text — these arrays legitimately grow over time as new
+ * model families ship) so ANY membership change — add, remove, or a whole
+ * provider added/removed — fails loudly here and must be a deliberate,
+ * reviewed re-pin, exactly like the FROZEN surfaces above.
+ *
+ * DO NOT "fix" a red pin by blindly pasting the new hash. A red pin means the
+ * classified-family DATA moved — confirm the move is intended and reviewed
+ * BEFORE updating the pin.
+ */
+const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
+  "includeFamilies.openai": {
+    members: [...includeFamilies.openai].sort(),
+    pin: "802989cfefe27838cf7303ac905dbb5fb6641e9fb859924834422b86cce8fb9c",
+  },
+  "includeFamilies.anthropic": {
+    members: [...includeFamilies.anthropic].sort(),
+    pin: "dbd8b4ef9afd50057143480d89db373886e7c19abe36ef9b4421456305ca2509",
+  },
+  "includeFamilies.gemini": {
+    members: [...includeFamilies.gemini].sort(),
+    pin: "4a9428b64ffcff0fbb79878d88ed993ffac53e43d64e26bcf5d86509626f593d",
+  },
+  "excludeFamilies.openai": {
+    members: [...excludeFamilies.openai].sort(),
+    pin: "aa2fc084639c7b4de847e3db2a8d93b8c4a060e66acfa527b7462e5682377ecc",
+  },
+  "excludeFamilies.anthropic": {
+    members: [...excludeFamilies.anthropic].sort(),
+    pin: "03ccd17333fe45b1fc01d2dc79c4337930204e178205b896aef7000d4378d79f",
+  },
+  "excludeFamilies.gemini": {
+    members: [...excludeFamilies.gemini].sort(),
+    pin: "e3545138234ad782937f66760bef942fca7d4bd0934a87da30bf6e5816ba69b1",
+  },
+};
+
+describe("classification-data membership freeze (includeFamilies/excludeFamilies)", () => {
+  for (const [name, { members, pin }] of Object.entries(DATA_FROZEN)) {
+    it(`freezes ${name} membership`, () => {
+      expect(
+        sha256(JSON.stringify(members)),
+        `Frozen data set "${name}" membership changed (now: ${JSON.stringify(members)}). If ` +
+          `this is a deliberate, reviewed addition/removal of a classified family, update its ` +
+          `pin here; if not, it is a silent canary-silencing edit and must be reverted.`,
+      ).toBe(pin);
+    });
+  }
 });
