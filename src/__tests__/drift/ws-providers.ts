@@ -353,15 +353,17 @@ export async function openaiRealtimeWS(
   config: ProviderConfig,
   text: string,
   tools?: object[],
-  beta = true,
 ): Promise<WSResult> {
-  // Realtime API requires a realtime-specific model (gpt-4o-mini doesn't work)
+  // GA-only probe. The Realtime Beta API is retired — a live Beta handshake
+  // ("OpenAI-Beta: realtime=v1") is now rejected with
+  // {"code":"beta_api_shape_disabled","message":"The Realtime Beta API is no
+  // longer supported. Please use /v1/realtime for the GA API."}. So this probe
+  // exercises ONLY the GA surface, which is the surface aimock mocks.
+  //
+  // Realtime API requires a realtime-specific model (gpt-4o-mini doesn't work).
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.apiKey}`,
   };
-  if (beta) {
-    headers["OpenAI-Beta"] = "realtime=v1";
-  }
   const ws = await connectTLSWebSocket(
     "api.openai.com",
     "/v1/realtime?model=gpt-realtime-mini",
@@ -372,13 +374,14 @@ export async function openaiRealtimeWS(
   const sessionCreated = await ws.waitUntil((msg: any) => msg?.type === "session.created");
 
   // Step 2: Send session.update.
-  // GA (no Beta header) requires session.type:"realtime" and renames the legacy
-  // `modalities` field to `output_modalities`. Beta keeps the legacy field name
-  // and has no session.type. Confirmed live: a GA session.update without
+  // GA requires session.type:"realtime" and renames the legacy `modalities`
+  // field to `output_modalities`. Confirmed live: a GA session.update without
   // session.type is rejected with "Missing required parameter: 'session.type'".
-  const session: Record<string, unknown> = beta
-    ? { model: "gpt-realtime-mini", modalities: ["text"] }
-    : { type: "realtime", model: "gpt-realtime-mini", output_modalities: ["text"] };
+  const session: Record<string, unknown> = {
+    type: "realtime",
+    model: "gpt-realtime-mini",
+    output_modalities: ["text"],
+  };
   if (tools) session.tools = tools;
   ws.send(JSON.stringify({ type: "session.update", session }));
 
@@ -397,11 +400,8 @@ export async function openaiRealtimeWS(
     }),
   );
 
-  // Step 5: Wait for conversation.item.created (Beta) or conversation.item.added (GA)
-  const itemCreated = await ws.waitUntil(
-    (msg: any) =>
-      msg?.type === "conversation.item.created" || msg?.type === "conversation.item.added",
-  );
+  // Step 5: Wait for conversation.item.added (GA)
+  const itemCreated = await ws.waitUntil((msg: any) => msg?.type === "conversation.item.added");
 
   // Step 6: Send response.create
   ws.send(JSON.stringify({ type: "response.create" }));

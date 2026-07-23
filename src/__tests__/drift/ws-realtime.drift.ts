@@ -16,22 +16,6 @@ import { startDriftServer, stopDriftServer, collectMockWSMessages } from "./help
 import { connectWebSocket } from "../ws-test-client.js";
 
 // ---------------------------------------------------------------------------
-// GA <-> Beta event name mapping (local copy for normalization in tests)
-// ---------------------------------------------------------------------------
-
-const GA_TO_BETA_EVENT: Record<string, string> = {
-  "response.output_text.delta": "response.text.delta",
-  "response.output_text.done": "response.text.done",
-  "response.output_audio.delta": "response.audio.delta",
-  "response.output_audio.done": "response.audio.done",
-  "response.output_audio_transcript.delta": "response.audio_transcript.delta",
-  "response.output_audio_transcript.done": "response.audio_transcript.done",
-  "conversation.item.added": "conversation.item.created",
-};
-
-const BETA_SUPPRESSED_EVENTS = new Set(["conversation.item.done"]);
-
-// ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
 
@@ -135,7 +119,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
       const sdkEvents = openaiRealtimeTextEventShapes();
 
       // Real API — GA mode (no Beta header)
-      const realResult = await openaiRealtimeWS(config, "Say hello", undefined, false);
+      const realResult = await openaiRealtimeWS(config, "Say hello", undefined);
 
       // Mock — replicate the Realtime protocol sequence (GA mode)
       const mockWs = await connectWebSocket(instance.url, "/v1/realtime");
@@ -234,7 +218,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
     ];
 
     // Real API — GA mode
-    const realResult = await openaiRealtimeWS(config, "Weather in Paris", tools, false);
+    const realResult = await openaiRealtimeWS(config, "Weather in Paris", tools);
 
     // Mock — replicate the Realtime protocol sequence
     const mockWs = await connectWebSocket(instance.url, "/v1/realtime");
@@ -305,30 +289,10 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
     ).toEqual([]);
   });
 
-  it.skipIf(!OPENAI_REALTIME_CREDENTIAL)(
-    "GA and Beta event sequences are consistent after normalization",
-    async () => {
-      // GA connection (no Beta header)
-      const gaResult = await openaiRealtimeWS(config, "Say hello in one word.", undefined, false);
-
-      // Beta connection
-      const betaResult = await openaiRealtimeWS(config, "Say hello in one word.", undefined, true);
-
-      // Normalize GA events to Beta names for comparison
-      const gaToComparable = (type: string) => GA_TO_BETA_EVENT[type] ?? type;
-
-      const gaTypes = gaResult.events
-        .map((e) => e.type)
-        .filter((t) => !BETA_SUPPRESSED_EVENTS.has(t))
-        .map(gaToComparable);
-      const betaTypes = betaResult.events.map((e) => e.type);
-
-      // Deduplicate consecutive repeated types so that differences in delta
-      // count (non-deterministic LLM output length) don't cause false failures.
-      function dedupeConsecutive(types: string[]): string[] {
-        return types.filter((t, i) => i === 0 || t !== types[i - 1]);
-      }
-      expect(dedupeConsecutive(gaTypes)).toEqual(dedupeConsecutive(betaTypes));
-    },
-  );
+  // NOTE: A GA<->Beta event-sequence consistency probe used to live here. It was
+  // removed because OpenAI RETIRED the Realtime Beta API — a live Beta handshake
+  // now returns {"code":"beta_api_shape_disabled","message":"The Realtime Beta
+  // API is no longer supported. Please use /v1/realtime for the GA API."}, which
+  // quarantined the whole leg (exit 5). GA is the only live surface and the only
+  // surface aimock mocks, so the drift suite probes GA exclusively.
 });
