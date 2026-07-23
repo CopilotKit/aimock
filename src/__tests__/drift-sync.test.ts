@@ -15,7 +15,6 @@
  */
 import { describe, it, expect } from "vitest";
 
-import type { DriftReport } from "../../scripts/drift-types.js";
 import * as sync from "../../scripts/drift-sync.js";
 
 // ---------------------------------------------------------------------------
@@ -27,64 +26,9 @@ describe("drift-sync pure plumbing behaves the same at the new boundary", () => 
     expect(sync.todayStamp()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  it("truncateBody passes through under the limit and marks over-limit bodies", () => {
-    expect(sync.truncateBody("hello", 60000)).toBe("hello");
-    const out = sync.truncateBody("a".repeat(70000));
-    expect(out.length).toBeLessThanOrEqual(sync.GH_BODY_SAFE_MAX);
-    expect(out).toContain("Body truncated");
-  });
-
   it("parsePorcelainLine handles quoted + rename notation", () => {
     expect(sync.parsePorcelainLine(" M src/foo.ts")).toBe("src/foo.ts");
     expect(sync.parsePorcelainLine("R  old.ts -> new.ts")).toBe("new.ts");
     expect(sync.parsePorcelainLine(' M "src/special chars.ts"')).toBe("src/special chars.ts");
-  });
-
-  it("affectedSkillSections maps + dedupes + sorts builder files", () => {
-    expect(sync.affectedSkillSections(["src/bedrock.ts", "src/bedrock-converse.ts"])).toEqual([
-      "Bedrock",
-    ]);
-    expect(sync.affectedSkillSections(["package.json"])).toEqual([]);
-  });
-
-  it("gatedCommitFiles partitions production / report-named / straggler", () => {
-    const sanctioned = new Set(["src/helpers.ts", "src/__tests__/drift/model-registry.ts"]);
-    const g = sync.gatedCommitFiles(
-      ["src/helpers.ts", "src/__tests__/drift/model-registry.ts", "weird-root-file.txt"],
-      sanctioned,
-    );
-    expect(g.builderFiles).toEqual(["src/helpers.ts"]);
-    expect(g.testFiles).toEqual(["src/__tests__/drift/model-registry.ts"]);
-    expect(g.stragglers).toEqual(["weird-root-file.txt"]);
-  });
-
-  it("buildPrBody renders the summary + providers + diffs from a report", () => {
-    const report: DriftReport = {
-      timestamp: "2026-07-22T00:00:00.000Z",
-      entries: [
-        {
-          provider: "openai",
-          scenario: "streaming",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildChatCompletion"],
-          typesFile: null,
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [
-            {
-              path: "response.id",
-              severity: "warning",
-              issue: "field missing",
-              expected: "string",
-              real: '"x"',
-              mock: "undefined",
-            },
-          ],
-        },
-      ],
-    };
-    const body = sync.buildPrBody(report);
-    expect(body).toContain("## Summary");
-    expect(body).toContain("- openai: streaming");
-    expect(body).toContain("- `response.id`: field missing");
   });
 });

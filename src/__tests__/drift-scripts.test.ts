@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 // ---------------------------------------------------------------------------
 import {
   readDriftReport,
-  buildPrBody,
   patchBumpVersion,
   addChangelogEntry,
   parsePorcelainLine,
@@ -113,29 +112,6 @@ describe("readDriftReport", () => {
     const result = readDriftReport(path);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].provider).toBe("OpenAI Chat");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildPrBody
-// ---------------------------------------------------------------------------
-
-describe("buildPrBody", () => {
-  it("includes provider info", () => {
-    const body = buildPrBody(makeReport());
-    expect(body).toContain("OpenAI Chat: non-streaming text");
-  });
-
-  it("includes diff paths", () => {
-    const body = buildPrBody(makeReport());
-    expect(body).toContain("`choices[0].message.refusal`");
-  });
-
-  it("embeds the full drift report JSON", () => {
-    const report = makeReport();
-    const body = buildPrBody(report);
-    expect(body).toContain('"OpenAI Chat"');
-    expect(body).toContain("```json");
   });
 });
 

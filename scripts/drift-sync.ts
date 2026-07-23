@@ -5,19 +5,23 @@
  * deterministic (zero-LLM) model-family sync core.
  *
  * This module holds the provider-agnostic, LLM-agnostic building blocks the
- * drift-remediation pipeline uses to read a report, shape a fix into a PR, and
- * (below) mechanically sync model-family churn: shell/exec helpers, drift-report
- * reading/validation, changed-file parsing, version-bump + CHANGELOG authoring,
- * PR-body construction, and the gated commit-file partition.
+ * drift-remediation pipeline uses to read a report, shape a fix, and (below)
+ * mechanically sync model-family churn: shell/exec helpers, drift-report
+ * reading/validation, changed-file parsing, and version-bump + CHANGELOG
+ * authoring. The workflow (`fix-drift.yml`) builds its own PR body inline
+ * and commits exclusively via this module's `commitSyncChanges`, so there is
+ * no separate PR-body-construction or gated-commit-file-partition surface
+ * here (the C3 re-arch's own inline PR body / commit plumbing superseded the
+ * fix-drift.ts-derived versions of both — see git history for the removal).
  *
  * C3 (delete-freewriter-predicate-rewire): these functions were originally
  * extracted VERBATIM from `scripts/fix-drift.ts` by C1 (behavior-preserving
  * move). `fix-drift.ts` and `scripts/drift-success-predicate.ts` — the LLM
  * freewriter invocation and its 916-line anti-cheat predicate — have since been
  * DELETED entirely (there is no arbitrary/free-form code generation left in the
- * drift-remediation pipeline to police), so `readDriftReport` and
- * `isProductionFile` (previously re-exported/imported from those two modules
- * respectively) now live here permanently as this module's own exports.
+ * drift-remediation pipeline to police), so `readDriftReport` (previously
+ * re-exported from `fix-drift.ts`) now lives here permanently as this module's
+ * own export.
  */
 
 import { execSync, execFileSync } from "node:child_process";
@@ -37,7 +41,10 @@ import {
   isClassifiedFamily,
   NON_MODEL_TOKENS,
 } from "../src/__tests__/drift/model-registry.js";
-import { isFamilyStillReferenced } from "../src/__tests__/drift/deprecation-detector.js";
+import {
+  isFamilyStillReferenced,
+  isForwardLookingFamily,
+} from "../src/__tests__/drift/deprecation-detector.js";
 import {
   InfraError,
   isInfraSkip,
@@ -151,29 +158,6 @@ export function todayStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** GitHub hard limit on PR/issue body length. */
-export const GH_BODY_MAX = 65536;
-/** Safety margin below the hard limit. */
-export const GH_BODY_SAFE_MAX = 60000;
-
-/**
- * Truncate `body` to at most `max` characters. When truncation occurs, the
- * HEAD of the body (summary/diffs) is preserved and the tail is replaced with a
- * marker. The full detail is always available as a workflow artifact.
- */
-export function truncateBody(body: string, max: number = GH_BODY_SAFE_MAX): string {
-  // Never exceed the hard GitHub limit, even if a caller passes a larger max.
-  const effectiveMax = Math.min(max, GH_BODY_MAX);
-  if (body.length <= effectiveMax) return body;
-  const marker =
-    "\n\n---\n" +
-    "_Body truncated to fit GitHub's 65536-character limit. " +
-    "Full drift report is attached as the `drift-report` workflow artifact._\n";
-  // When the budget can't even fit the marker, hard-cut instead of overflowing.
-  if (effectiveMax <= marker.length) return body.slice(0, effectiveMax);
-  return body.slice(0, effectiveMax - marker.length) + marker;
-}
-
 /**
  * Format an exec error into a human-readable Error object.
  * Includes exit status, signal, and stderr when available.
@@ -218,43 +202,6 @@ export function execFileSafe(file: string, args: string[]): void {
   } catch (err: unknown) {
     throw formatExecError(`${file} ${args.join(" ")}`, err);
   }
-}
-
-/**
- * Map builder source files to the corresponding section names in the
- * write-fixtures skill documentation.  Used to flag which skill sections
- * may need updating when a drift fix changes a builder's output format.
- */
-export const BUILDER_TO_SKILL_SECTION: Record<string, string> = {
-  "src/responses.ts": "Responses API",
-  "src/messages.ts": "Claude Messages",
-  "src/gemini.ts": "Gemini",
-  "src/bedrock.ts": "Bedrock",
-  "src/bedrock-converse.ts": "Bedrock",
-  "src/embeddings.ts": "Embeddings",
-  "src/ollama.ts": "Ollama",
-  "src/cohere.ts": "Cohere",
-  "src/ws-realtime.ts": "OpenAI Realtime WebSocket",
-  "src/ws-responses.ts": "OpenAI Responses WebSocket",
-  "src/ws-gemini-live.ts": "Gemini Live WebSocket",
-  "src/helpers.ts": "OpenAI Chat Completions",
-  "src/gemini-interactions.ts": "Gemini Interactions",
-  "src/agui-types.ts": "AG-UI Events",
-  "src/agui-handler.ts": "AG-UI Events",
-};
-
-/**
- * Given a list of changed file paths, return the unique skill section names
- * that correspond to modified builder files.  Returns an empty array when
- * no builder files map to a known skill section.
- */
-export function affectedSkillSections(changedFiles: string[]): string[] {
-  const sections = new Set<string>();
-  for (const file of changedFiles) {
-    const section = BUILDER_TO_SKILL_SECTION[file];
-    if (section) sections.add(section);
-  }
-  return [...sections].sort();
 }
 
 export function readFileIfExists(path: string): string | null {
@@ -380,121 +327,6 @@ export function addChangelogEntry(report: DriftReport, version: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PR body construction
-// ---------------------------------------------------------------------------
-
-export function buildPrBody(
-  report: DriftReport,
-  changedFiles?: string[],
-  verdictDetail?: string,
-): string {
-  const providers: string[] = [];
-  const diffs: string[] = [];
-
-  for (const entry of report.entries) {
-    providers.push(`- ${entry.provider}: ${entry.scenario}`);
-    for (const diff of entry.diffs) {
-      diffs.push(`- \`${diff.path}\`: ${diff.issue}`);
-    }
-  }
-
-  const reportJson = JSON.stringify(report, null, 2);
-
-  const sections: string[] = [
-    "## Summary",
-    "",
-    "Auto-generated drift remediation.",
-    "",
-    // Human-approval backstop (WS-2): this PR was auto-FILTERED by the
-    // drift-success predicate but is NOT auto-merged. A human must review CI +
-    // this diff + the verdict below and merge. The predicate is a strong filter,
-    // not a provable merge gate (the re-collect is not independent of the fix —
-    // WS-2b), so the merge decision stays with a human.
-    "> **Needs human review + merge.** This drift-fix PR was opened by the",
-    "> automated pipeline after the drift-success predicate passed. It is NOT",
-    "> auto-merged — review CI, the diff, and the verdict below, then merge.",
-    "",
-    "### Drift-success predicate verdict",
-    "",
-    verdictDetail ? `RESOLVED — ${verdictDetail}` : "RESOLVED.",
-    "",
-    "### Providers affected",
-    ...providers,
-    "",
-    "### Diffs fixed",
-    ...diffs,
-    "",
-  ];
-
-  // Flag skill sections that may need review based on which builders changed
-  const skillSections = changedFiles ? affectedSkillSections(changedFiles) : [];
-  if (skillSections.length > 0) {
-    sections.push(
-      "### Skill documentation",
-      "",
-      `The following write-fixtures skill sections may need review after these builder changes:`,
-      ...skillSections.map((s) => `- ${s}`),
-      "",
-    );
-  }
-
-  sections.push(
-    "## Drift Report",
-    "",
-    "<details>",
-    "<summary>Full drift report JSON</summary>",
-    "",
-    "```json",
-    reportJson,
-    "```",
-    "",
-    "</details>",
-  );
-
-  return truncateBody(sections.join("\n"));
-}
-
-// ---------------------------------------------------------------------------
-// Gated commit-file partition
-// ---------------------------------------------------------------------------
-
-/**
- * True when `file` is a PRODUCTION mock-builder source file: under `src/` but
- * NOT under `src/__tests__/`. Moved here from the deleted
- * `drift-success-predicate.ts` — `gatedCommitFiles` below is its only consumer.
- */
-export function isProductionFile(file: string): boolean {
-  return file.startsWith("src/") && !file.startsWith("src/__tests__/");
-}
-
-/**
- * The GATED commit groups for a resolved fix. Given the canonicalized
- * changed-file set and a sanctioned-target set (e.g. `union(entry.builderFile,
- * entry.typesFile≠null)` from a drift report), partition into the ONLY groups
- * a caller is permitted to stage:
- *   - `builderFiles`  — production mock-builder source (always allowlisted).
- *   - `testFiles`     — ONLY report-named fixture targets under src/__tests__/
- *                       (any other test file is unclassified and must never be
- *                       staged).
- * `stragglers` is every canonicalized changed file that is NOT in one of those
- * gated groups — a caller must never `git add` it.
- */
-export function gatedCommitFiles(
-  changedFiles: string[],
-  sanctioned: ReadonlySet<string>,
-): {
-  builderFiles: string[];
-  testFiles: string[];
-  stragglers: string[];
-} {
-  const builderFiles = changedFiles.filter(isProductionFile);
-  const testFiles = changedFiles.filter((f) => f.startsWith("src/__tests__/") && sanctioned.has(f));
-  const gated = new Set([...builderFiles, ...testFiles]);
-  const stragglers = changedFiles.filter((f) => !gated.has(f));
-  return { builderFiles, testFiles, stragglers };
-}
-
 // =============================================================================
 // C2: deterministic sync core — the DATA-only, ZERO-LLM replacement for the
 // freewriter's DECISION role on the model-churn (add/deprecate) leg.
@@ -581,7 +413,16 @@ export function detectDeprecatedFamiliesForSync(
   }
 
   const liveFamilies = new Set(liveModelIds.map((id) => normalizeModelFamily(id, provider)));
-  const missing = [...classified].filter((family) => !liveFamilies.has(family)).sort();
+  // Exclude known forward-looking (not-yet-launched) families entirely — never
+  // propose removing one merely because it hasn't gone live yet (see
+  // `isForwardLookingFamily`'s module doc in deprecation-detector.ts). This is
+  // checked BEFORE `isReferenced`: a forward-looking family legitimately has no
+  // source reference either (aimock hasn't built its fixture yet), so relying
+  // on "still referenced" alone can't distinguish it from a genuine retirement.
+  const missing = [...classified]
+    .filter((family) => !liveFamilies.has(family))
+    .filter((family) => !isForwardLookingFamily(family, provider))
+    .sort();
   const isReferenced = opts.isReferenced ?? isFamilyStillReferenced;
 
   return {
