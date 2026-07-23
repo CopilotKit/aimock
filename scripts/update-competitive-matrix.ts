@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ interface FeatureRule {
   keywords: string[];
 }
 
-interface DetectedChange {
+export interface DetectedChange {
   competitor: string;
   capability: string;
   from: string;
@@ -48,7 +49,7 @@ const COMPETITORS: Competitor[] = [
   { name: "mokksy/ai-mocks", repo: "mokksy/ai-mocks" },
 ];
 
-const FEATURE_RULES: FeatureRule[] = [
+export const FEATURE_RULES: FeatureRule[] = [
   {
     rowLabel: "Chat Completions SSE",
     keywords: ["chat/completions", "streaming", "SSE", "server-sent", "stream.*true"],
@@ -259,11 +260,12 @@ const FEATURE_RULES: FeatureRule[] = [
 ];
 
 /** Maps competitor display names to their migration page paths (relative to docs/) */
-const COMPETITOR_MIGRATION_PAGES: Record<string, string> = {
-  VidaiMock: "docs/migrate-from-vidaimock.html",
-  "mock-llm": "docs/migrate-from-mock-llm.html",
-  "piyook/llm-mock": "docs/migrate-from-piyook.html",
-  // MSW, Mokksy, Python don't have GitHub repos in COMPETITORS[] yet
+export const COMPETITOR_MIGRATION_PAGES: Record<string, string> = {
+  VidaiMock: "docs/migrate-from-vidaimock/index.html",
+  "mock-llm": "docs/migrate-from-mock-llm/index.html",
+  "piyook/llm-mock": "docs/migrate-from-piyook/index.html",
+  "mokksy/ai-mocks": "docs/migrate-from-mokksy/index.html",
+  // MSW and Python don't have GitHub repos in COMPETITORS[] yet
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -305,14 +307,24 @@ async function fetchPackageJson(repo: string): Promise<string> {
   return "";
 }
 
-function extractFeatures(text: string): Record<string, boolean> {
+/**
+ * Builds a case-insensitive regex for a keyword that will only match when the
+ * pattern is bounded by non-alphanumeric characters (or string edges). This
+ * prevents short tokens from matching as substrings of larger words — e.g.
+ * "cli" must not match "client"/"click", "sse" must not match "assess". The
+ * boundary lookarounds constrain the surrounding text only, so keywords that
+ * are themselves regexes (`stream.*true`, `output_text\.delta`) or that begin
+ * or end with non-word characters (`/v1/models`, `ws://`) keep working.
+ */
+function keywordRegex(kw: string): RegExp {
+  return new RegExp(`(?<![a-z0-9])(?:${kw.toLowerCase()})(?![a-z0-9])`, "i");
+}
+
+export function extractFeatures(text: string): Record<string, boolean> {
   const lower = text.toLowerCase();
   const result: Record<string, boolean> = {};
   for (const rule of FEATURE_RULES) {
-    const found = rule.keywords.some((kw) => {
-      const pattern = new RegExp(kw.toLowerCase(), "i");
-      return pattern.test(lower);
-    });
+    const found = rule.keywords.some((kw) => keywordRegex(kw).test(lower));
     result[rule.rowLabel] = found;
   }
   return result;
@@ -323,15 +335,16 @@ function extractFeatures(text: string): Record<string, boolean> {
  * README text. De-duplicates overlapping patterns (e.g. "anthropic" and "claude"
  * both map to the same provider).
  */
-function countProviders(text: string): number {
+export function countProviders(text: string): number {
   const lower = text.toLowerCase();
 
-  // Group patterns that refer to the same provider
+  // Group patterns that refer to the same provider. Each provider appears in
+  // exactly ONE group so it is counted at most once (e.g. "gemini interactions"
+  // is still just Gemini, not a separate provider).
   const providerGroups: string[][] = [
     ["openai"],
     ["claude", "anthropic"],
     ["gemini", "google.*ai"],
-    ["gemini.*interactions"],
     ["bedrock", "aws"],
     ["azure"],
     ["vertex"],
@@ -344,9 +357,11 @@ function countProviders(text: string): number {
     ["elevenlabs"],
   ];
 
+  // Word-boundary matching so "cohere" does not match "coherent", "aws" does
+  // not match "flaws", etc.
   let count = 0;
   for (const group of providerGroups) {
-    const found = group.some((kw) => new RegExp(kw, "i").test(lower));
+    const found = group.some((kw) => keywordRegex(kw).test(lower));
     if (found) count++;
   }
   return count;
@@ -365,7 +380,36 @@ function countProviders(text: string): number {
  * The function also updates numeric provider claims in both table cells and
  * prose text (e.g., "5 providers" -> "8 providers").
  */
-function updateMigrationPage(
+/**
+ * Finds the 0-based <td> index of a competitor's column in a migration-page
+ * table by matching the <th> header text to the competitor name. The <th> list
+ * includes the leading "Capability" header at index 0, which aligns with the
+ * leading label <td> in each body row, so the returned index can be used
+ * directly against a row's <td> list. Matching is case-insensitive and
+ * bidirectional-substring so header text ("Mokksy") resolves against the
+ * competitor key ("mokksy/ai-mocks", whose leading token "mokksy" matches the
+ * "Mokksy" header). Returns -1 when no column matches.
+ *
+ * Matching is intentionally token-aware rather than loose-substring: a plain
+ * bidirectional `includes` would wrongly match the "aimock" header against the
+ * "VidaiMock" competitor (the string "vidaimock" contains "aimock").
+ */
+function findMigrationCompetitorColumn(tableHtml: string, competitorName: string): number {
+  const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/g;
+  const thTexts: string[] = [];
+  let thM: RegExpExecArray | null;
+  while ((thM = thRegex.exec(tableHtml)) !== null) {
+    thTexts.push(thM[1].trim());
+  }
+  const comp = competitorName.toLowerCase();
+  const compToken = comp.split("/")[0]; // "mokksy/ai-mocks" -> "mokksy"
+  return thTexts.findIndex((t) => {
+    const h = t.toLowerCase();
+    return h.length > 0 && (h === comp || h === compToken || h.includes(comp));
+  });
+}
+
+export function updateMigrationPage(
   html: string,
   competitorName: string,
   features: Record<string, boolean>,
@@ -382,22 +426,47 @@ function updateMigrationPage(
     return { html: result, changes };
   }
 
-  // Update feature cells: find rows where the competitor column shows &#10007;
-  // and the feature was detected
-  for (const rule of FEATURE_RULES) {
-    if (!features[rule.rowLabel]) continue;
+  // Locate the competitor's column by header name (NOT by assuming it is the
+  // first data column) so the correct cell flips even when an intervening
+  // column (e.g. aimock) precedes it.
+  const compColIdx = findMigrationCompetitorColumn(tableMatch[0], competitorName);
 
-    // Migration tables have different row labels than the index matrix.
-    // We look for rows that conceptually match the feature rule.
-    // The competitor column is always the first data column (index 1) after the label.
-    const rowPatterns = buildMigrationRowPatterns(rule.rowLabel);
-    for (const rowPat of rowPatterns) {
-      const rowRegex = new RegExp(
-        `(<tr>\\s*<td>${escapeRegex(rowPat)}</td>\\s*)<td style="color: var\\(--error\\)">&#10007;</td>`,
-      );
-      if (rowRegex.test(result)) {
-        result = result.replace(rowRegex, `$1<td style="color: var(--accent)">&#10003;</td>`);
-        changes.push(`${competitorName}: ${rowPat} ✗ -> ✓`);
+  // Update feature cells: find rows where the competitor column shows &#10007;
+  // and the feature was detected.
+  if (compColIdx >= 0) {
+    for (const rule of FEATURE_RULES) {
+      if (!features[rule.rowLabel]) continue;
+
+      // Migration tables have different row labels than the index matrix.
+      // We look for rows that conceptually match the feature rule.
+      const rowPatterns = buildMigrationRowPatterns(rule.rowLabel);
+      for (const rowPat of rowPatterns) {
+        const rowRegex = new RegExp(`<tr>\\s*<td>${escapeRegex(rowPat)}</td>[\\s\\S]*?</tr>`);
+        const rowMatch = result.match(rowRegex);
+        if (!rowMatch) continue;
+
+        const fullRow = rowMatch[0];
+        let tdIdx = 0;
+        let flipped = false;
+        const newRow = fullRow.replace(/<td[^>]*>[\s\S]*?<\/td>/g, (tdMatch) => {
+          const currentIdx = tdIdx++;
+          if (
+            currentIdx === compColIdx &&
+            /var\(--error\)/.test(tdMatch) &&
+            tdMatch.includes("&#10007;")
+          ) {
+            flipped = true;
+            return `<td style="color: var(--accent)">&#10003;</td>`;
+          }
+          return tdMatch;
+        });
+
+        if (flipped) {
+          // Function-form replacement keeps newRow literal (a $ / $& / $1 in the
+          // surrounding HTML must not be interpreted by String.replace).
+          result = result.replace(fullRow, () => newRow);
+          changes.push(`${competitorName}: ${rowPat} ✗ -> ✓`);
+        }
       }
     }
   }
@@ -415,7 +484,7 @@ function updateMigrationPage(
  * Builds possible row label strings that a migration page might use for a given
  * feature rule. Migration pages use more descriptive labels than the index matrix.
  */
-function buildMigrationRowPatterns(rowLabel: string): string[] {
+export function buildMigrationRowPatterns(rowLabel: string): string[] {
   const patterns = [rowLabel];
 
   // Add common migration-page variants
@@ -437,7 +506,11 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
     "AG-UI event mocking": ["AG-UI event mocking", "AG-UI mocking", "AG-UI"],
     "Realtime GA protocol": ["Realtime GA protocol", "GA Realtime"],
     "Realtime Beta compatibility": ["Realtime Beta compatibility", "Beta Realtime"],
-    "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
+    "Realtime transcription/translation": [
+      "Realtime transcription/translation",
+      "Realtime translate/whisper",
+      "Translate/Whisper",
+    ],
     "Realtime image input": ["Realtime image input"],
     "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
     "Image editing": ["Image editing", "Image edit"],
@@ -462,7 +535,7 @@ function buildMigrationRowPatterns(rowLabel: string): string[] {
  * competitor by name, or within the competitor's column in a table row whose
  * label matches "provider" (case-insensitive).
  */
-function updateProviderCounts(
+export function updateProviderCounts(
   html: string,
   competitorName: string,
   detectedCount: number,
@@ -480,14 +553,9 @@ function updateProviderCounts(
   if (tableMatch) {
     const fullTable = tableMatch[0];
 
-    // Find the competitor's column index from headers
-    const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/g;
-    const thTexts: string[] = [];
-    let thM: RegExpExecArray | null;
-    while ((thM = thRegex.exec(fullTable)) !== null) {
-      thTexts.push(thM[1].trim());
-    }
-    const compColIdx = thTexts.findIndex((t) => t.includes(competitorName) || t === competitorName);
+    // Find the competitor's column index by header name (shared with the
+    // feature-cell updater so both locate the same column).
+    const compColIdx = findMigrationCompetitorColumn(fullTable, competitorName);
 
     if (compColIdx >= 0) {
       // Find provider-related rows and update only the competitor's cell
@@ -510,14 +578,17 @@ function updateProviderCounts(
               changes.push(
                 `${competitorName}: provider count ${oldCount} -> ${detectedCount} (table)`,
               );
-              return tdMatch.replace(tdContent, updated);
+              // Function-form replacement keeps `updated` literal.
+              return tdMatch.replace(tdContent, () => updated);
             }
             return tdMatch;
           });
         },
       );
 
-      result = result.replace(fullTable, updatedTable);
+      // Function-form replacement keeps `updatedTable` literal so any $-sequence
+      // in the HTML is not interpreted by String.replace.
+      result = result.replace(fullTable, () => updatedTable);
     }
   }
 
@@ -556,7 +627,7 @@ function replaceProviderCount(text: string, detectedCount: number): string {
  * Parses the comparison table from docs/index.html.
  * Returns a map: competitorName -> { rowLabel -> cellText }
  */
-function parseCurrentMatrix(html: string): {
+export function parseCurrentMatrix(html: string): {
   headers: string[];
   rows: Map<string, Map<string, string>>;
 } {
@@ -610,7 +681,7 @@ function parseCurrentMatrix(html: string): {
  *
  * Only upgrades "No" -> "Yes", never downgrades.
  */
-function computeChanges(
+export function computeChanges(
   html: string,
   matrix: { headers: string[]; rows: Map<string, Map<string, string>> },
   competitorFeatures: Map<string, Record<string, boolean>>,
@@ -652,7 +723,7 @@ function computeChanges(
  * Applies detected changes to the HTML string by finding the exact table cells
  * and replacing them.
  */
-function applyChanges(html: string, changes: DetectedChange[]): string {
+export function applyChanges(html: string, changes: DetectedChange[]): string {
   if (changes.length === 0) return html;
 
   // We need to find each specific cell. The approach: locate each <tr> by its
@@ -716,7 +787,9 @@ function applyChanges(html: string, changes: DetectedChange[]): string {
       return fullMatch;
     });
 
-    result = result.replace(rowPattern, prefix + tdReplace + suffix);
+    // Function-form replacement keeps the HTML-derived text literal so any
+    // $ / $& / $1 in the row is not interpreted by String.replace.
+    result = result.replace(rowPattern, () => prefix + tdReplace + suffix);
   }
 
   return result;
@@ -909,7 +982,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+// Only run when executed directly as a script (not when imported by tests).
+const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

@@ -1,481 +1,25 @@
 import { describe, it, expect } from "vitest";
+import { existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// ── Reimplement pure functions from scripts/update-competitive-matrix.ts ─────
-// These mirror the logic so we can unit-test without requiring network access
-// or dealing with import.meta.dirname in the test runner.
+// These tests exercise the REAL functions from the drift-automation script
+// (not a reimplemented mirror), so behavioral bugs surface here directly.
+import {
+  countProviders,
+  extractFeatures,
+  buildMigrationRowPatterns,
+  updateProviderCounts,
+  updateMigrationPage,
+  parseCurrentMatrix,
+  computeChanges,
+  applyChanges,
+  COMPETITOR_MIGRATION_PAGES,
+  type DetectedChange,
+} from "../../scripts/update-competitive-matrix.ts";
 
-// ── Provider count detection ────────────────────────────────────────────────
-
-const PROVIDER_GROUPS: string[][] = [
-  ["openai"],
-  ["claude", "anthropic"],
-  ["gemini", "google.*ai"],
-  ["gemini.*interactions"],
-  ["bedrock", "aws"],
-  ["azure"],
-  ["vertex"],
-  ["ollama"],
-  ["cohere"],
-  ["mistral"],
-  ["groq"],
-  ["together"],
-  ["llama"],
-  ["elevenlabs"],
-];
-
-function countProviders(text: string): number {
-  const lower = text.toLowerCase();
-  let count = 0;
-  for (const group of PROVIDER_GROUPS) {
-    const found = group.some((kw) => new RegExp(kw, "i").test(lower));
-    if (found) count++;
-  }
-  return count;
-}
-
-// ── Feature rules (subset needed for tests) ────────────────────────────────
-
-interface FeatureRule {
-  rowLabel: string;
-  keywords: string[];
-}
-
-const FEATURE_RULES: FeatureRule[] = [
-  {
-    rowLabel: "Chat Completions SSE",
-    keywords: ["chat/completions", "streaming", "SSE", "server-sent", "stream.*true"],
-  },
-  {
-    rowLabel: "WebSocket APIs",
-    keywords: ["websocket", "realtime", "ws://", "wss://"],
-  },
-  {
-    rowLabel: "Embeddings API",
-    keywords: ["/v1/embeddings", "embeddings api", "embedding endpoint", "embedding model"],
-  },
-  {
-    rowLabel: "Image generation",
-    keywords: ["dall-e", "dalle", "/v1/images", "image generation", "imagen", "generate.*image"],
-  },
-  {
-    rowLabel: "Image editing",
-    keywords: ["/v1/images/edits", "image edit", "image editing", "inpainting", "edit.*image"],
-  },
-  {
-    rowLabel: "Non-speech audio",
-    keywords: [
-      "sound-generation",
-      "sound effect",
-      "music generation",
-      "elevenlabs",
-      "fal.ai",
-      "audio generation",
-      "non-speech audio",
-    ],
-  },
-  {
-    rowLabel: "Video generation",
-    keywords: ["sora", "/v1/videos", "video generation", "generate.*video"],
-  },
-  {
-    rowLabel: "Docker image",
-    keywords: ["dockerfile", "docker image", "docker-compose", "docker compose", "docker run"],
-  },
-  {
-    rowLabel: "Structured output / JSON mode",
-    keywords: ["json_object", "json_schema", "structured output", "response_format"],
-  },
-  {
-    rowLabel: "Realtime GA protocol",
-    keywords: [
-      "gpt-realtime-2",
-      "realtime.*ga",
-      "ga.*protocol",
-      "output_text\\.delta",
-      "conversation\\.item\\.added",
-    ],
-  },
-  {
-    rowLabel: "Realtime Beta compatibility",
-    keywords: [
-      "openai-beta.*realtime",
-      "realtime=v1",
-      "beta.*shim",
-      "beta.*compat",
-      "response\\.text\\.delta",
-    ],
-  },
-  {
-    rowLabel: "Realtime transcription/translation",
-    keywords: [
-      "gpt-4o-transcribe",
-      "gpt-4o-mini-transcribe",
-      "whisper-1",
-      "realtime.*transcription",
-      "realtime.*translation",
-    ],
-  },
-  {
-    rowLabel: "Realtime image input",
-    keywords: ["input_image.*realtime", "realtime.*image", "realtime.*vision"],
-  },
-  {
-    rowLabel: "Realtime commentary phase",
-    keywords: ["commentary.*phase", "phase.*commentary", "final_answer.*commentary"],
-  },
-  {
-    rowLabel: "Audio translation",
-    keywords: [
-      "/v1/audio/translations",
-      "audio translation",
-      "translate.*audio",
-      "audio.*translate",
-    ],
-  },
-  {
-    rowLabel: "Streaming usage chunks",
-    keywords: [
-      "stream_options",
-      "include_usage",
-      "streaming.*usage",
-      "usage.*chunk",
-      "usage.*stream",
-    ],
-  },
-  {
-    rowLabel: "Rate limiting headers",
-    keywords: ["x-ratelimit", "rate.limit.*header", "retry-after", "429.*retry", "rate.limiting"],
-  },
-];
-
-function extractFeatures(text: string): Record<string, boolean> {
-  const lower = text.toLowerCase();
-  const result: Record<string, boolean> = {};
-  for (const rule of FEATURE_RULES) {
-    const found = rule.keywords.some((kw) => {
-      const pattern = new RegExp(kw.toLowerCase(), "i");
-      return pattern.test(lower);
-    });
-    result[rule.rowLabel] = found;
-  }
-  return result;
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-}
-
-// ── Migration page row pattern builder ──────────────────────────────────────
-
-function buildMigrationRowPatterns(rowLabel: string): string[] {
-  const patterns = [rowLabel];
-  const variants: Record<string, string[]> = {
-    "Chat Completions SSE": ["OpenAI Chat Completions", "Streaming SSE"],
-    "Responses API SSE": ["OpenAI Responses API"],
-    "Claude Messages API": ["Anthropic Claude"],
-    "Gemini streaming": ["Google Gemini"],
-    "WebSocket APIs": ["WebSocket protocols"],
-    "Structured output / JSON mode": ["Structured output / JSON mode", "Structured output"],
-    "Sequential / stateful responses": ["Sequential responses"],
-    "Docker image": ["Docker"],
-    "Fixture files (JSON)": ["Fixture files"],
-    "CLI server": ["CLI"],
-    "Error injection (one-shot)": ["Error injection"],
-    "Request journal": ["Request journal"],
-    "Drift detection": ["Drift detection"],
-    "Realtime GA protocol": ["Realtime GA protocol", "GA Realtime"],
-    "Realtime Beta compatibility": ["Realtime Beta compatibility", "Beta Realtime"],
-    "Realtime translate/whisper": ["Realtime translate/whisper", "Translate/Whisper"],
-    "Realtime image input": ["Realtime image input"],
-    "Realtime commentary phase": ["Realtime commentary phase", "Commentary phase"],
-    "Image editing": ["Image editing", "Image edit"],
-    "Audio translation": ["Audio translation", "Audio translations"],
-    "Streaming usage chunks": ["Streaming usage chunks", "Streaming usage"],
-    "Rate limiting headers": ["Rate limiting headers", "Rate limiting"],
-  };
-  if (variants[rowLabel]) {
-    patterns.push(...variants[rowLabel]);
-  }
-  return patterns;
-}
-
-// ── Provider count update logic (scoped version) ───────────────────────────
-
-/** Replaces "N providers" or "N+ providers" in a string if detected > current */
-function replaceProviderCount(text: string, detectedCount: number): string {
-  return text.replace(/(\d+)\+?\s*(?:LLM\s*)?providers?/gi, (match, numStr) => {
-    const currentCount = parseInt(numStr, 10);
-    if (detectedCount > currentCount) {
-      return `${detectedCount} providers`;
-    }
-    return match;
-  });
-}
-
-function updateProviderCounts(
-  html: string,
-  competitorName: string,
-  detectedCount: number,
-  changes: string[],
-): string {
-  let result = html;
-  const escapedName = escapeRegex(competitorName);
-
-  // Strategy 1: Replace provider counts in table rows about providers,
-  // scoped to the competitor's column.
-  const tableMatch = result.match(
-    /<table class="(?:comparison-table|endpoint-table)">([\s\S]*?)<\/table>/,
-  );
-  if (tableMatch) {
-    const fullTable = tableMatch[0];
-
-    // Find the competitor's column index from headers
-    const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/g;
-    const thTexts: string[] = [];
-    let thM: RegExpExecArray | null;
-    while ((thM = thRegex.exec(fullTable)) !== null) {
-      thTexts.push(thM[1].trim());
-    }
-    const compColIdx = thTexts.findIndex((t) => t.includes(competitorName) || t === competitorName);
-
-    if (compColIdx >= 0) {
-      const updatedTable = fullTable.replace(
-        /<tr>([\s\S]*?)<\/tr>/g,
-        (trMatch, trContent: string) => {
-          const firstTd = trContent.match(/<td[^>]*>([\s\S]*?)<\/td>/);
-          if (!firstTd || !/provider/i.test(firstTd[1])) return trMatch;
-
-          let cellIdx = 0;
-          return trMatch.replace(/<td[^>]*>([\s\S]*?)<\/td>/g, (tdMatch, tdContent: string) => {
-            const currentIdx = cellIdx++;
-            if (currentIdx !== compColIdx) return tdMatch;
-
-            const updated = replaceProviderCount(tdContent, detectedCount);
-            if (updated !== tdContent) {
-              const oldCount = tdContent.match(/(\d+)/)?.[1] ?? "?";
-              changes.push(
-                `${competitorName}: provider count ${oldCount} -> ${detectedCount} (table)`,
-              );
-              return tdMatch.replace(tdContent, updated);
-            }
-            return tdMatch;
-          });
-        },
-      );
-
-      result = result.replace(fullTable, updatedTable);
-    }
-  }
-
-  // Strategy 2: Replace provider counts in prose paragraphs/sentences that
-  // explicitly mention the competitor by name.
-  const prosePattern = new RegExp(
-    `(<[^>]*>[^<]*${escapedName}[^<]*)(\\d+)\\+?\\s*(?:LLM\\s*)?providers?`,
-    "gi",
-  );
-  result = result.replace(prosePattern, (match, prefix, numStr) => {
-    const currentCount = parseInt(numStr, 10);
-    if (detectedCount > currentCount) {
-      changes.push(`${competitorName}: provider count ${currentCount} -> ${detectedCount} (prose)`);
-      return match.replace(/(\d+)\+?\s*(?:LLM\s*)?providers?/, `${detectedCount} providers`);
-    }
-    return match;
-  });
-
-  return result;
-}
-
-// ── Migration page update logic ─────────────────────────────────────────────
-
-function updateMigrationPage(
-  html: string,
-  competitorName: string,
-  features: Record<string, boolean>,
-  providerCount: number,
-): { html: string; changes: string[] } {
-  let result = html;
-  const changes: string[] = [];
-
-  const tableMatch = result.match(
-    /<table class="(?:comparison-table|endpoint-table)">([\s\S]*?)<\/table>/,
-  );
-  if (!tableMatch) {
-    return { html: result, changes };
-  }
-
-  for (const rule of FEATURE_RULES) {
-    if (!features[rule.rowLabel]) continue;
-
-    const rowPatterns = buildMigrationRowPatterns(rule.rowLabel);
-    for (const rowPat of rowPatterns) {
-      const rowRegex = new RegExp(
-        `(<tr>\\s*<td>${escapeRegex(rowPat)}</td>\\s*)<td style="color: var\\(--error\\)">&#10007;</td>`,
-      );
-      if (rowRegex.test(result)) {
-        result = result.replace(rowRegex, `$1<td style="color: var(--accent)">&#10003;</td>`);
-        changes.push(`${competitorName}: ${rowPat} ✗ -> ✓`);
-      }
-    }
-  }
-
-  if (providerCount > 0) {
-    result = updateProviderCounts(result, competitorName, providerCount, changes);
-  }
-
-  return { html: result, changes };
-}
-
-// ── parseCurrentMatrix reimplementation for testing ────────────────────────
-
-function parseCurrentMatrix(html: string): {
-  headers: string[];
-  rows: Map<string, Map<string, string>>;
-} {
-  const tableMatch = html.match(/<table class="comparison-table">([\s\S]*?)<\/table>/);
-  if (!tableMatch) {
-    throw new Error("Could not find comparison-table in HTML");
-  }
-  const tableHtml = tableMatch[1];
-
-  const thRegex = /<th[^>]*>[\s\S]*?<a[^>]*>(.*?)<\/a[\s\S]*?<\/th>/g;
-  const headers: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = thRegex.exec(tableHtml)) !== null) {
-    headers.push(m[1].trim());
-  }
-
-  const rows = new Map<string, Map<string, string>>();
-  const tbody = tableHtml.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
-  let tr: RegExpExecArray | null;
-  const trIter = new RegExp(/<tr>([\s\S]*?)<\/tr>/g);
-
-  while ((tr = trIter.exec(tbody)) !== null) {
-    const tds: string[] = [];
-    const tdRegex = /<td[^>]*>([\s\S]*?)<\/td>/g;
-    let td: RegExpExecArray | null;
-    while ((td = tdRegex.exec(tr[1])) !== null) {
-      tds.push(td[1].trim());
-    }
-    if (tds.length < 2) continue;
-
-    const rowLabel = tds[0];
-    const rowMap = new Map<string, string>();
-    for (let i = 1; i < tds.length && i - 1 < headers.length; i++) {
-      rowMap.set(headers[i - 1], tds[i]);
-    }
-    rows.set(rowLabel, rowMap);
-  }
-
-  return { headers, rows };
-}
-
-// ── computeChanges reimplementation (mirrors fixed version) ────────────────
-
-interface DetectedChange {
-  competitor: string;
-  capability: string;
-  from: string;
-  to: string;
-}
-
-function computeChanges(
-  _html: string,
-  matrix: { headers: string[]; rows: Map<string, Map<string, string>> },
-  competitorFeatures: Map<string, Record<string, boolean>>,
-): DetectedChange[] {
-  const changes: DetectedChange[] = [];
-
-  for (const [compName, features] of competitorFeatures) {
-    for (const [rowLabel, detected] of Object.entries(features)) {
-      if (!detected) continue;
-
-      const row = matrix.rows.get(rowLabel);
-      if (!row) continue;
-
-      const currentCell = row.get(compName);
-      if (!currentCell) continue;
-
-      // Only upgrade "No" cells — cells contain inner HTML like
-      // '<span class="no">&#10007;</span>', not bare "No" text.
-      if (
-        currentCell.includes('class="no"') ||
-        currentCell.includes("\u2717") ||
-        currentCell.includes("&#10007;")
-      ) {
-        changes.push({
-          competitor: compName,
-          capability: rowLabel,
-          from: "No",
-          to: "Yes",
-        });
-      }
-    }
-  }
-
-  return changes;
-}
-
-// ── applyChanges reimplementation (mirrors fixed version) ──────────────────
-
-function applyChanges(html: string, changes: DetectedChange[]): string {
-  if (changes.length === 0) return html;
-
-  const tableMatch = html.match(/<table class="comparison-table">([\s\S]*?)<\/table>/);
-  if (!tableMatch) return html;
-
-  const theadMatch = tableMatch[1].match(/<thead>([\s\S]*?)<\/thead>/);
-  if (!theadMatch) return html;
-
-  const thRegex = /<th[^>]*>[\s\S]*?<a[^>]*>(.*?)<\/a[\s\S]*?<\/th>/g;
-  const headers: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = thRegex.exec(theadMatch[1])) !== null) {
-    headers.push(m[1].trim());
-  }
-
-  const compColumnIndex = (name: string): number => {
-    const idx = headers.indexOf(name);
-    return idx === -1 ? -1 : idx + 1;
-  };
-
-  let result = html;
-
-  for (const change of changes) {
-    const colIdx = compColumnIndex(change.competitor);
-    if (colIdx === -1) continue;
-
-    const rowPattern = new RegExp(
-      `(<tr>\\s*<td>\\s*${escapeRegex(change.capability)}\\s*</td>)([\\s\\S]*?)(</tr>)`,
-    );
-    const rowMatch = result.match(rowPattern);
-    if (!rowMatch) continue;
-
-    const prefix = rowMatch[1];
-    const cellsHtml = rowMatch[2];
-    const suffix = rowMatch[3];
-
-    const targetTdIdx = colIdx - 1;
-    let tdCount = 0;
-    const tdReplace = cellsHtml.replace(/<td[^>]*>([\s\S]*?)<\/td>/g, (fullMatch, content) => {
-      const currentIdx = tdCount++;
-      if (
-        currentIdx === targetTdIdx &&
-        (content.includes('class="no"') ||
-          content.includes("\u2717") ||
-          content.includes("&#10007;"))
-      ) {
-        return `<td><span class="yes">&#10003;</span></td>`;
-      }
-      return fullMatch;
-    });
-
-    result = result.replace(rowPattern, prefix + tdReplace + suffix);
-  }
-
-  return result;
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────────
+// Repo root: this file lives at <root>/src/__tests__/, so up two levels.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 describe("provider count extraction from README text", () => {
   it("counts distinct providers from a README mentioning several", () => {
@@ -500,12 +44,12 @@ describe("provider count extraction from README text", () => {
     expect(countProviders("This is a generic testing library.")).toBe(0);
   });
 
-  it("counts all 14 provider groups when all are mentioned", () => {
+  it("counts all 13 provider groups when all are mentioned (Gemini Interactions is not its own group)", () => {
     const readme = `
       OpenAI, Claude, Gemini, Gemini Interactions, Bedrock, Azure, Vertex AI,
       Ollama, Cohere, Mistral, Groq, Together AI, Llama, ElevenLabs
     `;
-    expect(countProviders(readme)).toBe(14);
+    expect(countProviders(readme)).toBe(13);
   });
 
   it("is case-insensitive", () => {
@@ -908,8 +452,6 @@ describe("parseCurrentMatrix header extraction", () => {
   });
 });
 
-// ── computeChanges tests with actual HTML structure ────────────────────────
-
 describe("computeChanges with actual HTML cell structure", () => {
   // This matrix uses the actual HTML structure from docs/index.html:
   // cells contain <span class="no">&#10007;</span> not bare "No"
@@ -1018,8 +560,6 @@ describe("computeChanges with actual HTML cell structure", () => {
   });
 });
 
-// ── applyChanges tests with actual HTML structure ──────────────────────────
-
 describe("applyChanges with actual HTML cell structure", () => {
   const ACTUAL_HTML_MATRIX = `
 <table class="comparison-table">
@@ -1103,8 +643,6 @@ describe("applyChanges with actual HTML cell structure", () => {
   });
 });
 
-// ── extractFeatures tests (tightened keyword patterns) ─────────────────────
-
 describe("extractFeatures keyword precision", () => {
   it("does not trigger Embeddings API on bare word 'embed'", () => {
     const text = "You can embed this widget in your page.";
@@ -1164,5 +702,205 @@ describe("extractFeatures keyword precision", () => {
     const text = "Run with: docker run -p 8080:8080 aimock";
     const features = extractFeatures(text);
     expect(features["Docker image"]).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Regression coverage for the 6 pre-existing drift-automation bugs. Each block
+// is a red→green repro: it fails against the pre-fix script and passes after.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Bug 1: migration-page paths must resolve; missing competitor mapping ─────
+describe("Bug 1: COMPETITOR_MIGRATION_PAGES", () => {
+  it("maps every mapped competitor to a file that actually exists on disk", () => {
+    for (const [competitor, relPath] of Object.entries(COMPETITOR_MIGRATION_PAGES)) {
+      const abs = resolve(REPO_ROOT, relPath);
+      expect(existsSync(abs), `${competitor} -> ${relPath} should exist`).toBe(true);
+    }
+  });
+
+  it("includes a mapping for the mokksy/ai-mocks competitor", () => {
+    expect(COMPETITOR_MIGRATION_PAGES["mokksy/ai-mocks"]).toBeDefined();
+  });
+});
+
+// ── Bug 2: unanchored keyword regexes → false substring flips ────────────────
+describe("Bug 2: extractFeatures keyword anchoring", () => {
+  it('does not flip "CLI server" from the words "client"/"click"', () => {
+    const feats = extractFeatures("This mock has a Python client library and you click buttons.");
+    expect(feats["CLI server"]).toBe(false);
+  });
+
+  it('does not flip "Chat Completions SSE" from the word "assess"', () => {
+    const feats = extractFeatures("We assess the output quality carefully.");
+    expect(feats["Chat Completions SSE"]).toBe(false);
+  });
+
+  it("still detects a genuine standalone CLI mention", () => {
+    const feats = extractFeatures("Run it via npx or the cli command.");
+    expect(feats["CLI server"]).toBe(true);
+  });
+
+  it("still detects a genuine standalone SSE / streaming mention", () => {
+    const feats = extractFeatures("Supports SSE streaming responses.");
+    expect(feats["Chat Completions SSE"]).toBe(true);
+  });
+});
+
+// ── Bug 3: countProviders substring inflation + redundant group ──────────────
+describe("Bug 3: countProviders substring safety", () => {
+  it('does not count "cohere" inside "coherent" or "aws" inside "flaws"', () => {
+    expect(countProviders("The system is coherent and has flaws.")).toBe(0);
+  });
+
+  it("counts Gemini exactly once (no redundant gemini-interactions group)", () => {
+    expect(countProviders("gemini interactions with the model")).toBe(1);
+  });
+});
+
+// ── Bug 4: String.replace $-sequence corruption ──────────────────────────────
+describe("Bug 4: literal $-sequences in HTML replacements stay literal", () => {
+  const matrixWithDollar = `
+<table class="comparison-table">
+  <thead>
+    <tr>
+      <th>Capability</th>
+      <th class="col-aimock"><a href="#">aimock</a></th>
+      <th><a href="#">VidaiMock</a></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Docker image</td>
+      <td class="col-aimock"><span class="yes">&#10003; price $&amp;</span></td>
+      <td><span class="no">&#10007;</span></td>
+    </tr>
+  </tbody>
+</table>`;
+
+  it("applyChanges does not duplicate the row when replacement text contains $&", () => {
+    const result = applyChanges(matrixWithDollar, [
+      { competitor: "VidaiMock", capability: "Docker image", from: "No", to: "Yes" },
+    ]);
+    // The competitor cell flips to "yes".
+    expect(result).toContain('<td><span class="yes">&#10003;</span></td>');
+    // The row label must appear exactly once — a $&-expanding replace duplicates it.
+    expect((result.match(/Docker image/g) || []).length).toBe(1);
+  });
+
+  it("updateProviderCounts does not corrupt the table when a cell contains $&", () => {
+    const migration = `
+<table class="comparison-table">
+  <thead>
+    <tr><th>Capability</th><th>VidaiMock</th><th>aimock</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>LLM providers supported</td>
+      <td style="color: var(--text-dim)">3 providers $&amp;</td>
+      <td style="color: var(--accent)">13 providers</td>
+    </tr>
+  </tbody>
+</table>`;
+    const changes: string[] = [];
+    const result = updateProviderCounts(migration, "VidaiMock", 8, changes);
+    expect(result).toContain("8 providers");
+    // Table label must not be duplicated by $&-expansion.
+    expect((result.match(/LLM providers supported/g) || []).length).toBe(1);
+  });
+});
+
+// ── Bug 5: migration cell column located by header name, not adjacency ───────
+describe("Bug 5: migration cell column resolution by header name", () => {
+  it("flips the competitor cell even when aimock is the first data column", () => {
+    const migration = `
+<table class="comparison-table">
+  <thead>
+    <tr><th>Capability</th><th>aimock</th><th>VidaiMock</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Docker</td>
+      <td style="color: var(--accent)">&#10003;</td>
+      <td style="color: var(--error)">&#10007;</td>
+    </tr>
+  </tbody>
+</table>`;
+    const { html } = updateMigrationPage(migration, "VidaiMock", { "Docker image": true }, 0);
+    // The only error cell (VidaiMock) must be flipped to accent; none remain,
+    // and aimock's original accent cell is untouched (2 accent cells total).
+    expect(html).not.toContain("var(--error)");
+    expect((html.match(/var\(--accent\)/g) || []).length).toBe(2);
+  });
+
+  it("resolves the column when the header text differs from the competitor key (Mokksy)", () => {
+    const migration = `
+<table class="comparison-table">
+  <thead>
+    <tr><th>Capability</th><th>Mokksy</th><th>aimock</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>LLM providers supported</td>
+      <td style="color: var(--text-dim)">3 providers</td>
+      <td style="color: var(--accent)">13 providers</td>
+    </tr>
+  </tbody>
+</table>`;
+    const { html } = updateMigrationPage(migration, "mokksy/ai-mocks", {}, 8);
+    expect(html).toContain("8 providers");
+  });
+});
+
+// ── Bug 6: orphaned variant key renamed to the real FEATURE_RULE label ───────
+describe("Bug 6: buildMigrationRowPatterns realtime variant key", () => {
+  it("returns variants for the real rule label 'Realtime transcription/translation'", () => {
+    const patterns = buildMigrationRowPatterns("Realtime transcription/translation");
+    expect(patterns.length).toBeGreaterThan(1);
+    expect(patterns).toContain("Translate/Whisper");
+  });
+
+  it("flips a migration row that uses a variant label for the realtime rule", () => {
+    const migration = `
+<table class="comparison-table">
+  <thead>
+    <tr><th>Capability</th><th>VidaiMock</th><th>aimock</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Translate/Whisper</td>
+      <td style="color: var(--error)">&#10007;</td>
+      <td style="color: var(--accent)">&#10003;</td>
+    </tr>
+  </tbody>
+</table>`;
+    const { html, changes } = updateMigrationPage(
+      migration,
+      "VidaiMock",
+      { "Realtime transcription/translation": true },
+      0,
+    );
+    expect(changes.length).toBeGreaterThan(0);
+    expect(html).not.toContain("var(--error)");
+  });
+});
+
+// ── Regression guard: PR #328 OpenRouter entry must keep working ─────────────
+describe("Regression guard: OpenRouter router / fallback simulation (PR #328)", () => {
+  const ROW = "OpenRouter router / fallback simulation";
+
+  it("detects OpenRouter fallback signals", () => {
+    const feats = extractFeatures("Supports OpenRouter with allow_fallbacks and provider routing.");
+    expect(feats[ROW]).toBe(true);
+  });
+
+  it("does not false-trigger on an unrelated 'router' mention", () => {
+    const feats = extractFeatures("This is a router for plain HTTP requests.");
+    expect(feats[ROW]).toBe(false);
+  });
+
+  it("keeps its migration row variants", () => {
+    const patterns = buildMigrationRowPatterns(ROW);
+    expect(patterns).toContain("Model fallback/failover");
   });
 });
