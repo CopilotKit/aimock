@@ -180,26 +180,33 @@ See `.github/workflows/test-drift.yml`.
 
 ## Automated Drift Remediation
 
-When the daily drift test detects critical diffs on the `main` branch, the `fix-drift.yml` workflow runs automatically:
+There is no LLM/agent in the remediation loop. General (non-model-churn) drift
+is **not** auto-fixed by anything — it is caught by the daily drift test (which
+alerts on its own; see above) and fixed by a human like any other bug. The only
+automated remediation is the deterministic, zero-LLM **model-family sync**,
+which handles exactly one class of drift: a provider adding or retiring a
+model family. The `fix-drift.yml` workflow runs it on `workflow_dispatch`, a
+daily **scheduled cron** (independent of drift-test failure — a retired model
+family does not, by itself, fail the drift tests), and on a failed `Drift
+Tests` run (an opportunistic attempt in case the failure was model churn):
 
-1. **Collect** — `scripts/drift-report-collector.ts` runs drift tests and produces a structured `drift-report.json`
-2. **Fix** — `scripts/fix-drift.ts` (default mode) constructs a prompt from the report and invokes Claude Code to fix the builders
-3. **Verify** — Independent `pnpm test` and `pnpm test:drift` steps confirm the fix works
-4. **PR** — `scripts/fix-drift.ts --create-pr` stages and commits the changes, bumps the version, and opens a pull request
-5. **Issue** (on failure) — `scripts/fix-drift.ts --create-issue` opens a GitHub issue with the drift report and Claude Code output
+1. **Sync** — `scripts/drift-sync.ts` fetches each provider's live `/models` listing directly and diffs it against the frozen classification in `src/__tests__/drift/model-registry.ts`:
+   - a classified family absent from live listings with **zero remaining aimock references** → a mechanical, comment-marked removal
+   - a still-referenced deprecated family, or a genuinely new/unclassified family → **never** auto-edited; a family-keyed dedup note file is written under `drift-proposals/` and the run is routed to a human (no PR spam on re-fire)
+2. **Gate** — `scripts/drift-sync-check.ts` re-verifies any mechanical edit before (inside `drift-sync.ts`) and after (workflow defense-in-depth) it is kept: a changed-file allowlist (only `model-registry.ts` data literals + `drift-proposals/` notes), a checksum-pin re-assert over the frozen classification logic, and a clean re-collect
+3. **PR** — the workflow always opens a pull request that a human reviews + merges (no auto-merge). There are two distinct PR classes:
+   - **`ok-applied`** — a successful mechanical registry edit. Pushed onto the `fix/drift-*` branch `drift-sync.ts` committed onto; a human reviews CI + the diff and merges.
+   - **`needs-human`** — a routed decision. `drift-sync.ts` commits the `drift-proposals/` note file(s), and the workflow pushes a **distinct `drift-needs-human/*` branch** and opens a PR so the note lands in the repo (the job also goes RED + Slack-alerts so the decision is seen). The PR is **never auto-merged**. To approve a _new-family_ note, set its `Decision: include` line and **merge the PR**; the **next** drift-sync run reads the approved note from `main` and applies the mechanical registry edit (an `ok-applied` PR). That two-run hand-off is how the loop closes.
 
-Steps 2 and 4/5 are separate invocations of `fix-drift.ts` with different modes.
+   **Re-fires never spam a second PR — idempotent in every run shape.** Because a drift-sync PR is never auto-merged, an un-merged drift is re-detected on every daily cron run. Both PR classes therefore dedup on a **stable changeset key**: `drift-sync.ts` emits a date-independent `changeset-key` (a hash of the sorted set of applied + deferred family outcomes, independent of the date-stamped comment text and the run-id branch name), and each PR body carries a `<!-- drift-changeset: <key> -->` marker. Before opening a PR, the workflow skips if an open PR already carries that marker. This covers the **mixed run** — a mechanical removal of one family committed the same run a _different_ family is deferred to a human (its note already on `main`) — whose committed diff is a registry edit with **no new note file**: a note-path-only key would be empty there and let a new PR open every day. A run that produces no new commit at all (note already on `main`, nothing applied) pushes nothing; and the older per-note `drift-proposal-note: <path>` body marker is retained as a secondary guard.
 
 ### Artifacts
 
-Both workflows upload artifacts:
-
-- `drift-report.json` — structured drift data (retained 30 days)
-- `claude-code-output.log` — Claude Code's reasoning and tool calls (fix workflow only)
+- `drift-report.json` (test-drift.yml) / `drift-sync-log`, `drift-sync-check-log` (fix-drift.yml) — structured/plaintext run output (retained 30 days)
 
 ### Manual trigger
 
-The fix workflow also supports `workflow_dispatch` for manual runs.
+The sync workflow also supports `workflow_dispatch` for manual runs.
 
 ## Cost
 

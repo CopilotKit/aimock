@@ -36,10 +36,13 @@ entire repo, not just staged files.
 
 ## Drift Remediation
 
-Automated drift remediation lives in `scripts/`:
+There is no LLM/agent in the remediation loop. Automated remediation is
+deterministic and scoped to model-family churn only; general drift is caught by
+the daily drift test and fixed by a human. Lives in `scripts/`:
 
 - `scripts/drift-report-collector.ts` — runs drift tests, produces `drift-report.json`
-- `scripts/fix-drift.ts` — reads drift report, invokes Claude Code to fix builders, creates PR or issue
+- `scripts/drift-sync.ts` — zero-LLM model-family sync (mechanical registry edit or needs-human note file) + reusable git/PR plumbing
+- `scripts/drift-sync-check.ts` — the deterministic gate (changed-file allowlist, checksum-pin re-assert, clean re-collect) replacing remediation-diff review
 
 See `DRIFT.md` for full documentation and `.github/workflows/fix-drift.yml` for the CI workflow.
 

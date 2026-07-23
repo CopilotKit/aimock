@@ -26,7 +26,7 @@ import { appendFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readDriftReport } from "./fix-drift.js";
+import { readDriftReport } from "./drift-sync.js";
 import type { DriftEntry, DriftReport, DriftSeverity } from "./drift-types.js";
 
 // ---------------------------------------------------------------------------

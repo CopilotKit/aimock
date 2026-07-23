@@ -1,20 +1,28 @@
 /**
  * Static (text-level) assertions on .github/workflows/fix-drift.yml.
  *
- * These pin the LOAD-BEARING wiring that the drift-success predicate/guard now
- * REQUIRE (CR round-3):
+ * C3 (delete-freewriter-predicate-rewire): this workflow used to invoke an
+ * autonomous coding-agent subprocess to freewrite a fix for whatever drift the
+ * collector found, then gate the resulting diff behind a 916-line anti-cheat
+ * verdict function (`scripts/drift-success-predicate.ts`) before opening a PR.
+ * Both have been DELETED entirely. This suite (retargeted from the deleted
+ * predicate-era assertions) pins the NEW, load-bearing wiring instead:
  *
- *   F1 — the workflow must (a) re-collect drift AUTHORITATIVELY after the autofix
- *        to a distinct post-fix path, capturing its exit code, and (b) pass BOTH
- *        --post-fix-report and --post-fix-exit into the `--create-pr` invocation.
- *        Without these, the mandatory-post-fix guard fails closed and NO PR is
- *        ever opened (the gate would be inert).
- *
- *   F-A — the PRE-fix report the allowlist's sanctioned-target set is derived
- *        from must be PINNED outside the LLM-writable repo checkout BEFORE the
- *        autofix runs, and both the Assert and Create-PR steps must read
- *        --report from that pinned copy — NEVER the in-repo drift-report.json
- *        the autofix LLM could overwrite.
+ *   - the workflow triggers on workflow_dispatch, a SCHEDULED cron (the
+ *     deprecation detector fires independently of drift-test failure — a
+ *     vanished model family does not, by itself, red the Drift Tests
+ *     workflow), and workflow_run(Drift Tests, failure).
+ *   - the "Auto-fix drift" step is replaced by `scripts/drift-sync.ts` (the
+ *     deterministic, zero-LLM model-family sync core).
+ *   - the "Assert drift truly resolved" step is replaced by
+ *     `scripts/drift-sync-check.ts` (the trivial allowlist + pin + re-collect
+ *     gate).
+ *   - the PR-open path is gated on `reason == 'ok-applied'`, never on a
+ *     verdict function.
+ *   - the NO-AUTO-MERGE human-approval backstop is preserved verbatim (Phase
+ *     0/1 — auto-merge is an explicit, opt-in Phase-4 exception, out of scope
+ *     here).
+ *   - there is NO remaining reference to the deleted predicate/LLM machinery.
  *
  * No YAML dependency is added; the repo ships none. These are deliberately
  * text-shape assertions on the committed workflow — an actionlint run in CI
@@ -31,112 +39,120 @@ const wf = readFileSync(WORKFLOW_PATH, "utf-8");
 /** Collapse runs of whitespace so multi-line YAML `run:` blocks match linearly. */
 const wfFlat = wf.replace(/\s+/g, " ");
 
-describe("fix-drift.yml — F1: post-fix re-collect + args wired into --create-pr", () => {
-  it("has an authoritative post-fix re-collect step writing a DISTINCT report path OUTSIDE the repo (FIX #F3)", () => {
-    expect(wf).toContain("Re-collect drift (authoritative)");
-    // FIX #F3 — the re-collect writes to $RUNNER_TEMP (via the POST_FIX_REPORT
-    // env), NOT the repo cwd, so it is never scored by the predicate's git scan.
-    expect(wf).toContain('npx tsx scripts/drift-report-collector.ts --out "$POST_FIX_REPORT"');
-    expect(wf).toContain("POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json");
+describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE", () => {
+  it("never references the deleted invokeClaudeCode / Claude Code CLI spawn", () => {
+    expect(wf).not.toMatch(/invokeClaudeCode/i);
+    expect(wf).not.toMatch(/@anthropic-ai\/claude-code/);
+    expect(wf).not.toContain("Claude Code");
   });
 
-  it("captures the post-fix collector exit code as a step output", () => {
-    expect(wfFlat).toContain('POST_FIX_EXIT=$? set -e echo "post_fix_exit=$POST_FIX_EXIT"');
+  it("never references the deleted drift-success-predicate.ts", () => {
+    expect(wf).not.toContain("drift-success-predicate");
   });
 
-  it("passes BOTH --post-fix-report and --post-fix-exit into `fix-drift.ts --create-pr`", () => {
-    expect(wfFlat).toContain("npx tsx scripts/fix-drift.ts --create-pr");
-    expect(wfFlat).toMatch(
-      /fix-drift\.ts --create-pr[^]*?--post-fix-report "\$\{POST_FIX_REPORT\}"[^]*?--post-fix-exit "\$\{POST_FIX_EXIT\}"/,
-    );
+  it("never invokes the deleted scripts/fix-drift.ts", () => {
+    expect(wf).not.toMatch(/scripts\/fix-drift\.ts/);
   });
 
-  it("the Assert step runs the predicate with post-fix args (the happy-path gate)", () => {
-    expect(wf).toContain("Assert drift truly resolved");
-    expect(wfFlat).toMatch(
-      /drift-success-predicate\.ts[^]*?--post-fix-report "\$\{POST_FIX_REPORT\}"[^]*?--post-fix-exit "\$\{POST_FIX_EXIT\}"/,
-    );
-  });
-});
-
-describe("fix-drift.yml — F-A: PRE-fix report pinned outside the LLM-writable checkout", () => {
-  it("has a pin step that copies the pre-fix report into runner.temp before autofix", () => {
-    expect(wf).toContain("Pin pre-fix drift report (integrity)");
-    // FIX #F3 — the pre-fix report is itself collected into $RUNNER_TEMP
-    // (PRE_FIX_REPORT), so the pin copies from that out-of-repo path, never the
-    // repo cwd. Both source and destination are outside the LLM-writable checkout.
-    expect(wf).toContain('cp "$PRE_FIX_REPORT" "$PINNED_REPORT"');
-    expect(wf).toContain("PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json");
+  it("has no step named 'Auto-fix drift' or 'Assert drift truly resolved' (the old predicate-era step names)", () => {
+    expect(wf).not.toContain("name: Auto-fix drift");
+    expect(wf).not.toContain("name: Assert drift truly resolved");
   });
 
-  it("the pin step runs BEFORE the Auto-fix step (so the LLM cannot pre-tamper the pin)", () => {
-    const pinIdx = wf.indexOf("Pin pre-fix drift report");
-    const autofixIdx = wf.indexOf("name: Auto-fix drift");
-    expect(pinIdx).toBeGreaterThan(-1);
-    expect(autofixIdx).toBeGreaterThan(-1);
-    expect(pinIdx).toBeLessThan(autofixIdx);
-  });
-
-  it("the Assert step reads --report from the PINNED copy, not the in-repo file", () => {
-    // The YAML line-continuation `\` survives whitespace-flattening, so match
-    // tolerantly across it.
-    expect(wfFlat).toMatch(/drift-success-predicate\.ts \\? *--report "\$\{PINNED_REPORT\}"/);
-  });
-
-  it("the Create PR step reads --report from the PINNED copy, not the in-repo file", () => {
-    expect(wfFlat).toMatch(
-      /scripts\/fix-drift\.ts --create-pr \\? *--report "\$\{PINNED_REPORT\}"/,
-    );
-  });
-
-  it("neither the Assert nor Create-PR predicate invocation reads --report drift-report.json (the LLM-writable file)", () => {
-    // The in-repo drift-report.json is still uploaded as an artifact + copied by
-    // the pin step, but must NEVER be the --report source for the gate.
-    expect(wfFlat).not.toMatch(/drift-success-predicate\.ts \\? *--report drift-report\.json/);
-    expect(wfFlat).not.toMatch(/fix-drift\.ts --create-pr \\? *--report drift-report\.json/);
+  it("carries no now-unused agent/predicate-only secrets or env beyond the legitimate provider keys", () => {
+    // ANTHROPIC_API_KEY legitimately remains — drift-sync.ts uses it to list
+    // live Anthropic models, and the collector's Anthropic drift leg uses it
+    // too. Neither is the deleted agent invocation.
+    expect(wf).toContain("ANTHROPIC_API_KEY");
+    expect(wf).not.toMatch(/claude-code-output/);
   });
 });
 
-// ---------------------------------------------------------------------------
-// report-path — the Auto-fix step must pass --report from the PINNED copy.
-//
-// FIX #F3 moved the collector's report to $RUNNER_TEMP (outside the repo
-// checkout), so the repo-root drift-report.json that fix-drift.ts defaults to no
-// longer exists. The Assert and Create-PR steps were updated to read --report
-// from the pinned copy, but the Auto-fix step still ran `fix-drift.ts` with NO
-// --report, so it fell back to the missing repo-root path and died with "Drift
-// report not found" (readDriftReport) — the recurring drift-job failure. These
-// lock that the Auto-fix step reads --report from the pinned copy, matching the
-// downstream integrity gate.
-// ---------------------------------------------------------------------------
-describe("fix-drift.yml — report-path: Auto-fix step reads --report from the pinned copy", () => {
-  it("passes --report from the PINNED copy into the Auto-fix `fix-drift.ts` invocation", () => {
-    expect(wfFlat).toMatch(/scripts\/fix-drift\.ts --report "\$\{PINNED_REPORT\}"/);
+describe("fix-drift.yml — triggers on workflow_dispatch, a SCHEDULED cron, and drift-test failure", () => {
+  it("triggers on workflow_dispatch", () => {
+    expect(wf).toMatch(/on:\s*\n\s*workflow_dispatch:/);
   });
 
-  it("does NOT run the Auto-fix step against the default (missing) repo-root drift-report.json", () => {
-    // The bare `npx tsx scripts/fix-drift.ts` (no --report) is the regression:
-    // it defaults to the repo-root drift-report.json which FIX #F3 no longer
-    // writes. Ensure the autofix invocation always carries a --report flag.
-    expect(wfFlat).not.toMatch(/npx tsx scripts\/fix-drift\.ts(?! --)/);
+  it("has a schedule/cron trigger, independent of the drift-failure gate", () => {
+    expect(wf).toMatch(/schedule:\s*\n\s*-\s*cron:/);
   });
 
-  it("exposes PINNED_REPORT as an env in the Auto-fix step", () => {
-    const idx = wf.indexOf("name: Auto-fix drift");
+  it("still triggers on workflow_run of the Drift Tests workflow completing", () => {
+    expect(wf).toContain('workflows: ["Drift Tests"]');
+    expect(wf).toContain("types: [completed]");
+  });
+
+  it("the job runs on workflow_dispatch, schedule, OR a failed Drift Tests run", () => {
+    const idx = wf.indexOf("if: >-");
+    expect(idx).toBeGreaterThan(-1);
+    const block = wf.slice(idx, wf.indexOf("runs-on:", idx));
+    expect(block).toContain("github.event_name == 'workflow_dispatch'");
+    expect(block).toContain("github.event_name == 'schedule'");
+    expect(block).toContain("github.event.workflow_run.conclusion == 'failure'");
+  });
+});
+
+describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + predicate", () => {
+  it("runs scripts/drift-sync.ts as the remediation step", () => {
+    expect(wfFlat).toContain("npx tsx scripts/drift-sync.ts");
+  });
+
+  it("captures drift-sync's reason= output as a step output", () => {
+    expect(wfFlat).toContain("id: sync");
+    expect(wfFlat).toMatch(/grep '\^reason=' "\$\{SYNC_LOG\}"/);
+    expect(wfFlat).toContain('echo "reason=${REASON}" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("runs scripts/drift-sync-check.ts as a defense-in-depth re-assertion, gated on reason == 'ok-applied'", () => {
+    expect(wf).toContain("name: Assert drift-sync-check (defense-in-depth)");
+    expect(wf).toContain("if: steps.sync.outputs.reason == 'ok-applied'");
+    expect(wfFlat).toContain("npx tsx scripts/drift-sync-check.ts");
+  });
+
+  it("the PR-open step is gated on reason == 'ok-applied', not on a verdict function", () => {
+    const idx = wf.indexOf("name: Push branch + create PR");
     expect(idx).toBeGreaterThan(-1);
     const nextStep = wf.indexOf("\n      - name:", idx + 1);
     const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
-    expect(stepBlock).toContain("PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json");
+    expect(stepBlock).toContain("if: steps.sync.outputs.reason == 'ok-applied' && success()");
+    expect(stepBlock).toContain("gh pr create");
+  });
+});
+
+describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", () => {
+  it("alerts distinctly when the sync routes to a human decision (new family / still-referenced deprecation)", () => {
+    expect(wf).toContain("name: Alert on needs-human decision");
+    expect(wf).toContain("steps.sync.outputs.reason == 'needs-human'");
+  });
+
+  it("alerts distinctly (and separately) when drift-sync-check refuses the gate — a tooling fault, not a product decision", () => {
+    expect(wf).toContain("name: Alert on drift-sync-check gate failure");
+    expect(wf).toContain("steps.sync.outputs.reason == 'gate-failed'");
+  });
+
+  it("both needs-human and gate-failure alerts fail the job (non-green), so a human sees it in CI status too", () => {
+    const needsHumanIdx = wf.indexOf("name: Alert on needs-human decision");
+    const needsHumanBlock = wf.slice(
+      needsHumanIdx,
+      wf.indexOf("\n      - name:", needsHumanIdx + 1),
+    );
+    expect(needsHumanBlock).toMatch(/\n\s*exit 1\b/);
+
+    const gateFailedIdx = wf.indexOf("name: Alert on drift-sync-check gate failure");
+    const gateFailedBlock = wf.slice(
+      gateFailedIdx,
+      wf.indexOf("\n      - name:", gateFailedIdx + 1),
+    );
+    expect(gateFailedBlock).toMatch(/\n\s*exit 1\b/);
+  });
+
+  it("re-fires never spam a duplicate PR for an already-proposed family (documented: dedup note file + open-PR marker check)", () => {
+    expect(wf).toContain("no PR spam");
   });
 });
 
 // ---------------------------------------------------------------------------
-// FIX (round-4, user-approved) — HUMAN-APPROVAL BACKSTOP. The drift path opens a
-// PR but must NEVER auto-merge: the predicate is a strong AUTO-FILTER, not a
-// provable merge gate (the re-collect is not independent of the fix — WS-2b), so
-// a human reviews CI + the diff + the verdict and merges. These lock that the
-// unattended in-workflow merge is GONE and the Slack copy no longer claims
-// "merged to main".
+// Human-approval backstop — preserved verbatim from the pre-C3 workflow.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — human-approval backstop: no unattended auto-merge", () => {
   it("has NO auto-merge step and never runs `gh pr merge`", () => {
@@ -144,142 +160,233 @@ describe("fix-drift.yml — human-approval backstop: no unattended auto-merge", 
     expect(wf).not.toMatch(/gh pr merge/);
   });
 
-  it("documents WHY the drift path is human-gated (predicate is a filter, not a merge gate)", () => {
+  it("documents WHY the drift-sync path is human-gated (drift-sync-check is a filter, not a merge gate)", () => {
     expect(wf).toContain("NO AUTO-MERGE");
-    // The rationale wraps across comment lines (a `#` marker survives flattening),
-    // so match tolerantly across the wrap.
     expect(wfFlat).toMatch(/AUTO-FILTER, NOT a provable merge (# )?gate/i);
   });
 
   it("the success Slack message says the PR needs human review + merge, NOT merged to main", () => {
-    expect(wf).not.toContain("Drift auto-fix merged to main");
-    expect(wf).toContain("Drift-fix PR opened — needs human review + merge");
-  });
-
-  it("the fix-failure Slack step no longer references the removed merge step outputs", () => {
-    expect(wf).not.toContain("steps.merge.outputs");
-    expect(wf).not.toContain("MERGE_REASON");
+    expect(wf).not.toContain("merged to main");
+    expect(wf).toContain("Drift-sync PR opened — needs human review + merge");
   });
 });
 
 // ---------------------------------------------------------------------------
-// WS-6 — end-of-job CATCH-ALL alert for the EARLY-infra window. The four
-// specific alerts (collector-crash / autofix-step-fail / quarantine /
-// fix-failure) are all gated on step outputs that only exist AFTER the
-// collector ran. An EARLY failure (checkout / mint-app-token / pnpm install /
-// clone ag-ui / git config) leaves those outputs empty, so without a catch-all
-// the job dies red with ZERO Slack signal. These lock the catch-all's presence,
-// its UNCONDITIONAL `if: failure()` gating, the anti-double-alert guard, and the
-// infra-vs-drift-fix distinction.
+// Early-infra catch-all — preserved (adapted to the new step id `sync`).
 // ---------------------------------------------------------------------------
-describe("fix-drift.yml — WS-6: early-infra catch-all failure alert", () => {
+describe("fix-drift.yml — early-infra catch-all failure alert", () => {
   it("has an end-of-job catch-all alert step", () => {
     expect(wf).toContain("Alert on early-infra failure (catch-all)");
   });
 
-  it("the catch-all is gated on failure() and is UNCONDITIONAL on the earlier step OUTCOMES", () => {
-    // Isolate the catch-all step's `if:` expression.
+  it("the catch-all is gated on failure() and is UNCONDITIONAL on the sync step's REASON output being unset", () => {
     const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
     expect(idx).toBeGreaterThan(-1);
-    const stepBlock = wf.slice(idx, idx + 600);
-    const ifMatch = stepBlock.match(/if:\s*>-([\s\S]*?)\n\s{8}env:/);
-    expect(ifMatch).not.toBeNull();
-    const ifExpr = (ifMatch?.[1] ?? "").replace(/\s+/g, " ").trim();
-
-    // MUST fire on any job failure.
-    expect(ifExpr).toContain("failure()");
-    // MUST NOT gate on the autofix step OUTCOME (that would re-open the
-    // early-infra silence: autofix.outcome is empty pre-detect).
-    expect(ifExpr).not.toContain("steps.autofix.outcome");
-    // Anti-double-alert guard: only fires when NONE of the specific alerts did
-    // (collector_crashed unset, quarantine unset, and check never ran so its
-    // skip output is empty).
-    expect(ifExpr).toContain("steps.detect.outputs.collector_crashed != 'true'");
-    expect(ifExpr).toContain("steps.check.outputs.quarantine != 'true'");
-    expect(ifExpr).toContain("steps.check.outputs.skip == ''");
+    const stepBlock = wf.slice(idx, idx + 400);
+    expect(stepBlock).toContain("if: failure() && steps.sync.outputs.reason == ''");
   });
 
-  it("distinguishes an INFRA/SETUP failure from a drift-fix failure in its message", () => {
+  it("distinguishes an INFRA/SETUP failure from a sync-gate failure in its message", () => {
     const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
     const stepBlock = wf.slice(idx, idx + 1400);
     expect(stepBlock).toMatch(/INFRA\/SETUP failure/);
-    // Missing-webhook must be a VISIBLE ::error:: + step failure, never silent.
     expect(stepBlock).toContain("SLACK_WEBHOOK is not set");
     expect(stepBlock).toMatch(/::error::/);
   });
-
-  it("the autofix-step-failure alert requires `check` to have RUN (skip == 'false'), so it never misfires on the early-infra window", () => {
-    // The autofix-failure alert must NOT fire before the collector ran — that
-    // window belongs to the catch-all. Gating on skip == 'false' (never empty
-    // once `check` executed) ensures the two are mutually exclusive.
-    const idx = wf.indexOf("Alert on autofix step failure");
-    expect(idx).toBeGreaterThan(-1);
-    const stepBlock = wf.slice(idx, idx + 400);
-    expect(stepBlock).toContain("steps.check.outputs.skip == 'false'");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// WS-8 — the version-bump fail-closed reason must be NAMED in the failure
-// alert, and the Create-PR step must surface the script's `reason=` on a
-// non-zero exit so a fail-closed exit is not reported blank.
+// F#1 (mandatory): the "Push branch + create PR" step can itself fail (branch
+// push rejected, `gh pr create` error, or the head-SHA PR-match polling loop
+// exhausting its attempts) AFTER the defense-in-depth Assert step already
+// SUCCEEDED. In that window: reason stays 'ok-applied', steps.assert.outcome
+// stays 'success', and reason is non-empty — so none of needs-human,
+// gate-failure (assert.outcome-only check), or the early-infra catch-all
+// (reason=='') fire. The job goes red with ZERO Slack signal on an unattended
+// daily cron. The gate-failure alert must widen to also catch this window.
 // ---------------------------------------------------------------------------
-describe("fix-drift.yml — WS-8: version-bump-failed reason wiring", () => {
-  it("the fix-failure Slack alert names the version-bump-failed reason", () => {
-    expect(wf).toContain("version-bump-failed)");
-    expect(wf).toMatch(/version-bump-failed\)\s+DETAIL=.*UNVERSIONED PR/);
-  });
-
-  it("the Create-PR step captures the script exit code + reason and surfaces it as a step output on failure", () => {
-    expect(wfFlat).toContain("PR_EXIT=${PIPESTATUS[0]}");
-    expect(wfFlat).toContain("reason=${PR_REASON}");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// slot2-F3 — QUARANTINE must FAIL THE JOB (non-green), not just Slack-ping.
-// A human watching CI status (not Slack) must see quarantine as a failure, like
-// the collector-crash / autofix-failure alerts. Because quarantine sets
-// check.outputs.skip == 'true', the fix-failure alert (needs skip != 'true')
-// and the catch-all (needs skip == '') are both disjoint from it, so making the
-// quarantine step exit 1 does NOT double-alert.
-// ---------------------------------------------------------------------------
-describe("fix-drift.yml — slot2-F3: quarantine fails the job (non-green)", () => {
-  it("the quarantine alert step exits non-zero on the happy (webhook-sent) path too", () => {
-    const idx = wf.indexOf("Alert on drift quarantine");
+describe("fix-drift.yml — gate-failure alert also covers a later step failing after an ok-applied sync + successful assert", () => {
+  it("the gate-failure alert fires on ok-applied + failure(), not only on steps.assert.outcome == 'failure' (so a Push/PR-create failure is caught too)", () => {
+    const idx = wf.indexOf("name: Alert on drift-sync-check gate failure");
     expect(idx).toBeGreaterThan(-1);
-    // The step body runs until the next `- name:` step.
     const nextStep = wf.indexOf("\n      - name:", idx + 1);
     const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
-    // The curl (happy path) must be FOLLOWED by an `exit 1` — the step is not
-    // allowed to end green after sending the Slack ping.
-    const curlIdx = stepBlock.lastIndexOf("curl -fsS");
-    expect(curlIdx).toBeGreaterThan(-1);
-    expect(stepBlock.slice(curlIdx)).toMatch(/\n\s*exit 1\b/);
+    // Must be gated on general failure() in the ok-applied branch, not
+    // narrowly on steps.assert.outcome == 'failure' — otherwise a failure in
+    // a step AFTER assert (Push branch + create PR) is invisible to this
+    // condition.
+    expect(stepBlock).toMatch(/steps\.sync\.outputs\.reason == 'ok-applied' && failure\(\)/);
   });
 
-  it("does not overlap the fix-failure alert or the catch-all (both disjoint from quarantine's skip=='true')", () => {
-    // fix-failure requires skip != 'true'; catch-all requires skip == '';
-    // quarantine sets skip == 'true' — so neither fires alongside it.
-    expect(wf).toContain("steps.check.outputs.skip != 'true'"); // fix-failure guard
-    const catchAllIdx = wf.indexOf("Alert on early-infra failure (catch-all)");
-    expect(wf.slice(catchAllIdx, catchAllIdx + 600)).toContain("steps.check.outputs.skip == ''");
+  it("the gate-failure alert message names which step actually failed", () => {
+    const idx = wf.indexOf("name: Alert on drift-sync-check gate failure");
+    const nextStep = wf.indexOf("\n      - name:", idx + 1);
+    const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
+    // The step must reference the outcomes of both the assert step and the PR
+    // step so its message can distinguish "assert refused" from "push/PR
+    // creation failed" rather than a single generic message.
+    expect(stepBlock).toContain("steps.assert.outcome");
+    expect(stepBlock).toContain("steps.pr.outcome");
   });
 });
 
 // ---------------------------------------------------------------------------
-// slot2-F7/F12 — the fail-closed parse/git paths must be NAMED in the failure
-// alert (post-fix-parse-error / git-push-failed), not blank. The code emits the
-// reason; the workflow's case block must translate it to a human DETAIL.
+// G#2 (mandatory): a needs-human run WRITES a `drift-proposals/` note (the
+// Bucket-B human touchpoint) into CI's working tree, but the workflow only ever
+// pushed a branch + opened a PR on reason == 'ok-applied'. On a needs-human run
+// the registry is unchanged, so NOTHING was pushed — the note was discarded
+// with the runner. The self-service human-decision path (human sets
+// `Decision: include`, the NEXT run reads the approved note and applies it) was
+// therefore unreachable: the note never landed in the repo. The workflow must
+// persist the note on needs-human by pushing a branch + opening a (distinct,
+// never auto-merged) PR.
 // ---------------------------------------------------------------------------
-describe("fix-drift.yml — slot2-F7/F12: fail-closed reasons are named in the alert", () => {
-  it("the fix-failure alert names the post-fix-parse-error reason", () => {
-    expect(wf).toContain("post-fix-parse-error)");
-    expect(wfFlat).toMatch(/post-fix-parse-error\) DETAIL=.*Failed closed/);
+/** Split the workflow into per-step blocks (text after each `- name:` header). */
+function stepBlocks(): string[] {
+  return wf.split(/\n {6}- name: /).slice(1);
+}
+
+describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not discarded", () => {
+  it("has a step gated on reason == 'needs-human' that pushes a branch AND opens a PR (so the note reaches the repo)", () => {
+    // Concept-level: SOME step must both be conditioned on the needs-human
+    // outcome and perform a git push + `gh pr create`. Pre-fix, the only
+    // `gh pr create` lives in the ok-applied "Push branch + create PR" step,
+    // so this finds nothing and FAILS (RED).
+    const persistSteps = stepBlocks().filter(
+      (b) =>
+        b.includes("steps.sync.outputs.reason == 'needs-human'") &&
+        /git push\b/.test(b) &&
+        b.includes("gh pr create"),
+    );
+    expect(persistSteps.length).toBeGreaterThan(0);
   });
 
-  it("the fix-failure alert names the git-push-failed reason", () => {
-    expect(wf).toContain("git-push-failed)");
-    expect(wfFlat).toMatch(/git-push-failed\) DETAIL=.*no PR opened/);
+  it("the needs-human persist step uses a DISTINCT branch (not colliding with the ok-applied fix/drift-* branch)", () => {
+    const persist = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(persist).toBeDefined();
+    // A dedicated needs-human branch prefix keeps the two PR classes separate.
+    expect(persist!).toMatch(/drift-needs-human/);
+  });
+
+  it("the needs-human persist step de-dups: it skips opening a second PR when one is already open for the same note", () => {
+    const persist = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(persist).toBeDefined();
+    // Must consult already-open PRs before creating a new one.
+    expect(persist!).toContain("gh pr list");
+  });
+
+  it("the needs-human persist step's PR body tells a human to set Decision: include and merge (closing the two-run loop), never auto-merged", () => {
+    const persist = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(persist).toBeDefined();
+    expect(persist!).toContain("Decision: include");
+    // No `gh pr merge` anywhere (asserted globally too) — human merges.
+    expect(persist!).not.toMatch(/gh pr merge/);
+  });
+
+  it("the needs-human persist step's OWN failure is alerted (gate-failure alert references its outcome)", () => {
+    const gateAlert = stepBlocks().find((b) =>
+      b.startsWith("Alert on drift-sync-check gate failure"),
+    );
+    expect(gateAlert).toBeDefined();
+    expect(gateAlert!).toContain("steps.needs_human_pr.outcome");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F#2 / G#2 (should-fix): DRIFT.md (and the workflow's own PR-body fallback
+// text) claim a `drift-sync-check-log` artifact exists, but historically the
+// workflow only uploaded `drift-sync-log`. Assert the claim matches reality.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// G#3 (mandatory): the needs-human persist step's de-dup was keyed SOLELY on
+// the committed `drift-proposals/*` note paths. In the D-M1 "mixed run" (a
+// mechanical registry edit committed the SAME run a *different* family is
+// deferred to a human, whose note already sits on main), the committed diff is
+// ONLY the registry edit and NO new note file — so the note-path list is
+// EMPTY, the per-note dedup for-loop runs zero times, and the step falls
+// straight through to an unconditional `git push` + `gh pr create`. Because the
+// edit is never auto-merged and the unrelated deprecation is re-detected every
+// daily cron run, this opens a brand-new near-identical PR every single day
+// (unbounded PR-spam). Both PR-open paths must instead de-dup on a STABLE,
+// date-independent changeset key that exists for EVERY committed changeset.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key (idempotent in EVERY run shape, incl. the mixed run with NO new note file)", () => {
+  it("the sync step emits a stable changeset_key step output (grepped from drift-sync.ts's changeset-key= line)", () => {
+    // RED (pre-fix): drift-sync.ts printed no changeset-key line and the sync
+    // step captured no such output — nothing existed to dedup a note-less
+    // mixed run on.
+    expect(wfFlat).toMatch(/grep '\^changeset-key=' "\$\{SYNC_LOG\}"/);
+    expect(wf).toContain('echo "changeset_key=${CHANGESET_KEY}"');
+    // Written to the step's outputs (block-redirected to $GITHUB_OUTPUT).
+    expect(wfFlat).toContain('echo "changeset_key=${CHANGESET_KEY}" } >> "$GITHUB_OUTPUT"');
+  });
+
+  it("the needs-human persist step's PRIMARY de-dup is keyed on the changeset key and runs BEFORE the note-file scan (so it fires even when the committed diff carries NO drift-proposals/* note)", () => {
+    const persist = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(persist).toBeDefined();
+    // Keyed on the changeset key wired from the sync step.
+    expect(persist!).toContain("CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}");
+    expect(persist!).toContain("drift-changeset: ${CHANGESET_KEY}");
+    // CRITICAL: the changeset-key dedup guard must appear BEFORE the
+    // `mapfile ... NOTES` scan. Pre-fix, the ONLY dedup lived inside the
+    // per-note for-loop, reachable only when a note file was in the diff —
+    // exactly what the empty-NOTES mixed run bypasses.
+    const guardIdx = persist!.indexOf("drift-changeset: ${CHANGESET_KEY}");
+    const mapfileIdx = persist!.indexOf("mapfile -t COMMITTED");
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(mapfileIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(mapfileIdx);
+  });
+
+  it("the ok-applied Push+PR step ALSO de-dups on the changeset key (a never-auto-merged applied edit deserves exactly ONE open PR, re-findable across daily re-fires)", () => {
+    const okApplied = stepBlocks().find(
+      (b) =>
+        b.includes("steps.sync.outputs.reason == 'ok-applied' && success()") &&
+        b.includes("gh pr create"),
+    );
+    expect(okApplied).toBeDefined();
+    expect(okApplied!).toContain("CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}");
+    expect(okApplied!).toContain("drift-changeset: ${CHANGESET_KEY}");
+    expect(okApplied!).toContain("gh pr list");
+    // The dedup skip must precede the push (skip a duplicate BEFORE pushing).
+    const guardIdx = okApplied!.indexOf("not opening a duplicate");
+    const pushIdx = okApplied!.indexOf("git push -u origin");
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(pushIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(pushIdx);
+  });
+
+  it("the needs-human persist step RETAINS the per-note body marker as a secondary guard (note-path de-dup not regressed)", () => {
+    const persist = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(persist).toBeDefined();
+    expect(persist!).toContain("drift-proposal-note: ${note}");
+  });
+
+  it("BOTH PR bodies embed the stable drift-changeset marker the dedup guards match on", () => {
+    const markerCount = (wf.match(/<!-- drift-changeset: \$\{CHANGESET_KEY\} -->/g) || []).length;
+    expect(markerCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's claim", () => {
+  it("DRIFT.md claims a drift-sync-check-log artifact exists", () => {
+    const driftMd = readFileSync(resolve(__dirname, "../../DRIFT.md"), "utf-8");
+    expect(driftMd).toContain("drift-sync-check-log");
+  });
+
+  it("the workflow actually uploads a drift-sync-check-log artifact (matching the drift-sync-log sibling's retention)", () => {
+    expect(wf).toContain("name: drift-sync-check-log");
+    expect(wfFlat).toContain("path: ${{ runner.temp }}/drift-sync-check.log");
+    expect(wfFlat).toContain("retention-days: 30");
   });
 });

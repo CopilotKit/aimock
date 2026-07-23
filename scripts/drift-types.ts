@@ -1,7 +1,7 @@
 /**
  * Shared types for the drift remediation pipeline.
  *
- * Used by both drift-report-collector.ts and fix-drift.ts.
+ * Used by both drift-report-collector.ts and drift-sync.ts.
  */
 
 /**

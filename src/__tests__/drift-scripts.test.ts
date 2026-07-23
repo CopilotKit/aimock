@@ -4,18 +4,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // ---------------------------------------------------------------------------
-// fix-drift.ts exports under test
+// drift-sync.ts exports under test (C3: retargeted from the deleted
+// scripts/fix-drift.ts — the LLM freewriter path, including buildPrompt and
+// the predicate-gated CLI's parseMode, has been removed entirely).
 // ---------------------------------------------------------------------------
 import {
   readDriftReport,
-  buildPrompt,
   buildPrBody,
   patchBumpVersion,
   addChangelogEntry,
   parsePorcelainLine,
-  parseMode,
   todayStamp,
-} from "../../scripts/fix-drift.js";
+} from "../../scripts/drift-sync.js";
 
 import { summarizeDriftReport } from "../../scripts/drift-slack-summary.js";
 
@@ -113,72 +113,6 @@ describe("readDriftReport", () => {
     const result = readDriftReport(path);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].provider).toBe("OpenAI Chat");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// parseMode
-// ---------------------------------------------------------------------------
-
-describe("parseMode", () => {
-  it("returns 'pr' for --create-pr", () => {
-    expect(parseMode(["--create-pr"])).toBe("pr");
-  });
-
-  it("returns 'issue' for --create-issue", () => {
-    expect(parseMode(["--create-issue"])).toBe("issue");
-  });
-
-  it("returns 'default' when no flag", () => {
-    expect(parseMode([])).toBe("default");
-    expect(parseMode(["--report", "foo.json"])).toBe("default");
-  });
-
-  it("prefers --create-pr over --create-issue when both present", () => {
-    expect(parseMode(["--create-pr", "--create-issue"])).toBe("pr");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildPrompt
-// ---------------------------------------------------------------------------
-
-describe("buildPrompt", () => {
-  it("includes all drift entry details", () => {
-    const report = makeReport();
-    const prompt = buildPrompt(report);
-    expect(prompt).toContain("DRIFT 1: OpenAI Chat — non-streaming text");
-    expect(prompt).toContain("File: src/helpers.ts");
-    expect(prompt).toContain("Functions: buildTextCompletion");
-    expect(prompt).toContain("[critical] LLMOCK DRIFT");
-    expect(prompt).toContain("Path: choices[0].message.refusal");
-  });
-
-  it("includes workflow instructions", () => {
-    const prompt = buildPrompt(makeReport());
-    expect(prompt).toContain("RED:");
-    expect(prompt).toContain("GREEN:");
-    expect(prompt).toContain("pnpm test");
-    expect(prompt).toContain("pnpm test:drift");
-  });
-
-  it("numbers multiple drift entries", () => {
-    const report = makeReport({
-      entries: [
-        { ...makeReport().entries[0], provider: "OpenAI Chat", scenario: "streaming" },
-        {
-          ...makeReport().entries[0],
-          provider: "Anthropic",
-          scenario: "non-streaming text",
-          builderFile: "src/messages.ts",
-          builderFunctions: ["buildClaudeTextResponse"],
-          typesFile: null,
-        },
-      ],
-    });
-    const prompt = buildPrompt(report);
-    expect(prompt).toContain("DRIFT 1:");
-    expect(prompt).toContain("DRIFT 2:");
   });
 });
 

@@ -1,6 +1,13 @@
 name: Fix Drift
 on:
   workflow_dispatch:
+  # C3: the deprecation detector fires on its OWN schedule, independent of the
+  # drift-failure gate below — a model family vanishing from a live `/models`
+  # listing does not, by itself, red the Drift Tests workflow (a vanished
+  # family simply stops appearing in `live`), so it would never auto-fire under
+  # the workflow_run gate alone.
+  schedule:
+    - cron: "10 6 * * *" # Daily 6:10am UTC (offset from test-drift.yml's 6:00am)
   workflow_run:
     workflows: ["Drift Tests"]
     types: [completed]
@@ -14,9 +21,23 @@ permissions:
   contents: read
 
 jobs:
-  fix:
+  # C3: this job used to run an autonomous coding-agent subprocess to rewrite
+  # WHATEVER drift the collector found however it saw fit, then gate the
+  # resulting diff behind a large anti-cheat verdict function before opening a
+  # PR. Both the agent invocation and the verdict-gating module have been
+  # DELETED entirely — see `self-healing-drift-plan.md` /
+  # `drift-auto-adjust-architecture-spec.md`: general (non-model-churn) drift
+  # is no longer auto-fixed by anything. It is caught by the daily
+  # `Drift Tests` workflow (which alerts on its own) and left for a human to
+  # fix normally; the automation boundary that remains is exactly the
+  # DETERMINISTIC, zero-agent model-family sync below (`drift-sync.ts` /
+  # `drift-sync-check.ts`), which only ever performs a mechanical, data-only
+  # edit to `model-registry.ts` or drops a needs-human dedup note file — never
+  # arbitrary code generation — so there is no adversarial diff left to police.
+  sync:
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -25,7 +46,6 @@ jobs:
       pull-requests: write
       checks: read
       statuses: read
-      # issues: write  # removed — no longer creating issues on drift failure
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,29 +69,37 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Step 0a: Clone ag-ui repo for AG-UI schema drift detection
+      # Clone ag-ui: drift-sync-check.ts's "clean re-collect" gate (gate 3, see
+      # drift-sync-check.ts) shells out the FULL drift-report-collector, which
+      # includes the AG-UI schema drift leg — that leg reads this checkout.
       - name: Clone ag-ui repo
         run: git clone --depth 1 https://github.com/ag-ui-protocol/ag-ui.git ../ag-ui
 
-      # Step 0b: Configure git identity and create fix branch
+      # Configure git identity and create a fix branch. drift-sync.ts commits
+      # its own mechanical edit (or needs-human note file) directly onto this
+      # branch; this step only prepares the branch to commit onto.
       - name: Configure git
+        id: gitcfg
         env:
           RUN_ID: ${{ github.run_id }}
         run: |
           git config user.name "aimock-drift-bot"
           git config user.email "drift-bot@copilotkit.ai"
+          # Record the pre-sync HEAD (the commit the workflow ran on) BEFORE the
+          # fix branch is created. drift-sync.ts commits its own edit/note onto
+          # this branch; the needs-human persist step below compares HEAD against
+          # this base to tell a real new note (a commit to push) from a re-fire
+          # of an already-persisted note (nothing to push).
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git checkout -B "fix/drift-$(date +%Y-%m-%d)-${RUN_ID}"
 
-      # Provision a local Ollama daemon so the OLLAMA_HOST-gated live drift leg
-      # (src/__tests__/drift/ollama.drift.ts) is detected here too. Ollama needs
-      # NO API key — the "credential" is just a running daemon. Pull the smallest
-      # chat+generate-capable model (qwen2:0.5b, ~350MB); OLLAMA_MODEL points the
-      # leg at it. COST: install + model pull adds ~2-4 min to the fix run.
-      - name: Provision Ollama daemon (live drift leg)
+      # Provision a local Ollama daemon so drift-sync-check's clean-re-collect
+      # gate (which shells out the FULL collector, exercising every live leg)
+      # behaves identically to test-drift.yml's own daily run rather than
+      # spuriously quarantining/erroring on the Ollama leg for a missing daemon.
+      - name: Provision Ollama daemon (drift-sync-check re-collect gate)
         run: |
           set -euo pipefail
-          # Download the installer to disk first, then execute it — avoids piping
-          # a remote, mutable script straight into a shell (no `curl | sh`).
           curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
           sh "${RUNNER_TEMP}/ollama-install.sh"
           ollama serve > /tmp/ollama-serve.log 2>&1 &
@@ -83,316 +111,190 @@ jobs:
           done
           ollama pull qwen2:0.5b
 
-      # Step 1: Detect drift and produce report.
+      # Step 1: run the deterministic (zero-LLM) model-family sync.
       #
-      # FIX #F3 (round-4) — write the report OUTSIDE the repo checkout, to
-      # $RUNNER_TEMP. A collector output left in the repo cwd shows up as an
-      # untracked file in `git status --porcelain`, which the drift-success
-      # predicate scores as an UNSANCTIONED_CHANGE (fail-closed) and would break
-      # the happy path. $RUNNER_TEMP is outside the checkout, so neither the
-      # predicate's changed-file scan nor createPr's staging ever sees it. (The
-      # .gitignore also covers `drift-report*.json` as belt-and-suspenders.)
-      - name: Collect drift report
-        id: detect
+      # drift-sync.ts fetches each provider's live `/models` listing directly
+      # (no drift-report.json input needed), diffs it against the frozen
+      # `model-registry.ts` classification, and:
+      #   - a zero-reference deprecated family -> mechanical, comment-marked
+      #     removal, gated behind drift-sync-check.ts (allowlist + checksum-pin
+      #     re-assert + clean re-collect) BEFORE the edit is kept, then commits.
+      #   - a still-referenced deprecation, or a genuinely new/unclassified
+      #     family -> NEVER auto-edited; drops a family-keyed dedup note file
+      #     under drift-proposals/ and reports needs-human (job fails RED below
+      #     so a human sees it — no PR spam on re-fire, since the note already
+      #     exists on subsequent runs).
+      # No autonomous coding agent, no subprocess spawn, no free-form code
+      # generation anywhere in this path (see drift-sync.ts module doc).
+      - name: Run deterministic drift sync
+        id: sync
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # Un-gates the Ollama live drift leg against the daemon provisioned above.
+          # The drift-sync-check re-collect gate exercises every live leg
+          # (including Ollama), so it needs the same env as the daily run.
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
           FAL_KEY: ${{ secrets.FAL_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
+          SYNC_LOG: ${{ runner.temp }}/drift-sync.log
         run: |
           set +e
-          npx tsx scripts/drift-report-collector.ts --out "$PRE_FIX_REPORT"
-          EXIT_CODE=$?
+          npx tsx scripts/drift-sync.ts 2>&1 | tee "${SYNC_LOG}"
+          SYNC_EXIT=${PIPESTATUS[0]}
           set -e
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          if [ "$EXIT_CODE" -eq 2 ]; then
-            : # critical drift found, continue
-          elif [ "$EXIT_CODE" -eq 5 ]; then
-            : # quarantine: collector encountered unparseable output, continue without aborting
-          elif [ "$EXIT_CODE" -ne 0 ]; then
-            # A Step-1 collector crash is a DISTINCT failure cause from an
-            # auto-fix step failure. Record it as an output BEFORE aborting so
-            # the dedicated collector-crash alert (not the "auto-fix STEP
-            # failed" alert) fires and names the real cause.
-            echo "collector_crashed=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Drift collector (Step 1) crashed with exit code $EXIT_CODE — this is a collector failure, NOT an auto-fix step failure"
-            exit $EXIT_CODE
-          fi
+          REASON="$(grep '^reason=' "${SYNC_LOG}" | tail -n1)"
+          REASON="${REASON#reason=}"
+          # Stable, date-independent identity of this run's changeset (the sorted
+          # set of applied + deferred family outcomes, hashed — see
+          # computeChangesetKey in drift-sync.ts). BOTH PR-open paths dedup on
+          # this so a daily re-fire of the same drift never opens a second PR,
+          # in EVERY run shape — including the mixed run that commits a registry
+          # edit but NO new note file (where a note-path-only key is empty).
+          CHANGESET_KEY="$(grep '^changeset-key=' "${SYNC_LOG}" | tail -n1)"
+          CHANGESET_KEY="${CHANGESET_KEY#changeset-key=}"
+          {
+            echo "exit_code=${SYNC_EXIT}"
+            echo "reason=${REASON}"
+            echo "changeset_key=${CHANGESET_KEY}"
+          } >> "$GITHUB_OUTPUT"
+          echo "drift-sync exited ${SYNC_EXIT} (reason=${REASON}, changeset_key=${CHANGESET_KEY})"
 
-      # Always upload the report as an artifact (from $RUNNER_TEMP — see Step 1).
-      - name: Upload drift report
+      - name: Upload drift-sync log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: drift-report
-          path: ${{ runner.temp }}/drift-report.json
+          name: drift-sync-log
+          path: ${{ runner.temp }}/drift-sync.log
           if-no-files-found: warn
           retention-days: 30
 
-      # Step 2: Exit if no critical drift
-      - name: Check for critical diffs
-        id: check
-        env:
-          DETECT_EXIT_CODE: ${{ steps.detect.outputs.exit_code }}
-        run: |
-          set -euo pipefail
-          if [ "$DETECT_EXIT_CODE" = "2" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "quarantine=false" >> "$GITHUB_OUTPUT"
-            echo "Critical drift detected"
-          elif [ "$DETECT_EXIT_CODE" = "5" ]; then
-            # Unparseable / quarantine: NOT a silent skip — a human must look.
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "quarantine=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Drift collector returned quarantine (exit 5) — unparseable output, routing to human alert"
-          else
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "quarantine=false" >> "$GITHUB_OUTPUT"
-            echo "No critical drift detected (exit code: $DETECT_EXIT_CODE) — skipping fix"
-          fi
-
-      # Step 2b: PIN the PRE-fix report OUTSIDE the repo before the autofix LLM
-      # runs (INTEGRITY GUARANTEE — CR round-3 F-A).
-      #
-      # The drift-success predicate derives its ALLOWLIST's sanctioned-target set
-      # (union of every entry's builderFile/typesFile) from the PRE-fix report. The
-      # autofix step below grants the Claude Code subprocess unrestricted Write/Edit
-      # scoped to the repo checkout (its cwd), so a repo-committed `drift-report.json`
-      # is LLM-writable: a malicious/confused fix could overwrite it to name an
-      # arbitrary fixture as a builderFile and thereby expand the allowlist.
-      #
-      # Pinning the report to $RUNNER_TEMP — which is OUTSIDE the repo checkout and
-      # therefore outside the autofix tool's writable scope — makes the sanctioned
-      # set immutable across the autofix. Both the "Assert" and "Create PR" steps
-      # read `--report` from this pinned copy, NEVER the in-repo file the LLM can
-      # touch. The POST-fix report is separately re-generated after autofix (Step
-      # 4c) and so needs no pin. Runs AFTER "Check for critical diffs" (so it is
-      # gated by the same skip guard) and BEFORE "Auto-fix drift" (so the pin is
-      # captured before the LLM can touch the on-disk report).
-      - name: Pin pre-fix drift report (integrity)
-        if: steps.check.outputs.skip != 'true'
-        env:
-          PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
-          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
-        run: |
-          set -euo pipefail
-          cp "$PRE_FIX_REPORT" "$PINNED_REPORT"
-          echo "Pinned pre-fix drift report to $PINNED_REPORT (outside the LLM-writable repo checkout)"
-
-      # Step 3: Invoke Claude Code to fix
-      #
-      # --report reads the PINNED pre-fix report (Step 2b), NOT the default
-      # in-repo `drift-report.json`. The collector writes its report to
-      # $RUNNER_TEMP (Step 1, FIX #F3), which is OUTSIDE the repo checkout, so
-      # the repo-root `drift-report.json` that fix-drift.ts defaults to does not
-      # exist — without this flag readDriftReport throws "Drift report not
-      # found" and the fixer never runs. Reading the pinned copy (same source
-      # the Assert and Create PR steps read) also keeps the fixer's view of the
-      # drift consistent with the downstream integrity gate.
-      - name: Auto-fix drift
-        id: autofix
-        if: steps.check.outputs.skip != 'true'
-        continue-on-error: true
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          FAL_KEY: ${{ secrets.FAL_KEY }}
-          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
-        run: npx tsx scripts/fix-drift.ts --report "${PINNED_REPORT}"
-
-      # Upload Claude Code output for debugging
-      - name: Upload Claude Code logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: claude-code-output
-          path: claude-code-output.log
-          if-no-files-found: warn
-          retention-days: 30
-
-      # Step 4: Verify fix independently — only when autofix actually succeeded.
-      # `autofix` has `continue-on-error: true`, so without these explicit guards
-      # `success()` would remain true on autofix failure and we'd verify+ship a
-      # broken state.
-      - name: Verify conformance
-        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
-        run: pnpm test
-
-      # `pnpm test:drift` is a FAST fail here, but it is NO LONGER the
-      # authoritative signal — it is the same suite the fixer was told to make
-      # pass, so a fixture-relaxation cheat sails through it. The authoritative
-      # signal is the fresh re-collect + drift-success predicate below.
-      - name: Verify drift resolved
-        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # Keep the Ollama live leg un-gated so post-fix verification exercises it
-          # (the daemon provisioned earlier in this job is still running).
-          OLLAMA_HOST: 127.0.0.1:11434
-          OLLAMA_MODEL: qwen2:0.5b
-          FAL_KEY: ${{ secrets.FAL_KEY }}
-          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-        run: pnpm test:drift
-
-      # Step 4c: Re-collect drift AUTHORITATIVELY against the LIVE SDK, writing
-      # to a DISTINCT path so the pre-fix report is preserved for classification.
-      # This is a fresh collector invocation (same capture pattern as Step 1) —
-      # its exit code is the authoritative "is the drift gone?" signal that the
-      # predicate scores. A cheat that relaxed the SDK-shape fixture still
-      # reports clean HERE (its own SDK leg reads the relaxed fixture), which is
-      # exactly why the predicate ALSO requires a real production change.
-      #
-      # FIX #F3 (round-4) — write the post-fix report to $RUNNER_TEMP, OUTSIDE
-      # the repo checkout, for the same reason as Step 1: a post-fix report left
-      # in the repo cwd is an untracked file that the predicate's changed-file
-      # scan would score as UNSANCTIONED_CHANGE, breaking the happy path. Writing
-      # it outside the checkout (and out of the autofix LLM's writable scope)
-      # keeps it out of `git status --porcelain` entirely.
-      - name: Re-collect drift (authoritative)
-        id: recollect
-        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # Keep the Ollama live leg un-gated so the authoritative re-collect
-          # exercises it (the daemon provisioned earlier in this job is running).
-          OLLAMA_HOST: 127.0.0.1:11434
-          OLLAMA_MODEL: qwen2:0.5b
-          FAL_KEY: ${{ secrets.FAL_KEY }}
-          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
-        run: |
-          set +e
-          npx tsx scripts/drift-report-collector.ts --out "$POST_FIX_REPORT"
-          POST_FIX_EXIT=$?
-          set -e
-          echo "post_fix_exit=$POST_FIX_EXIT" >> "$GITHUB_OUTPUT"
-          echo "Post-fix collector exited with code $POST_FIX_EXIT"
-
-      - name: Upload post-fix drift report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: drift-report-post-fix
-          path: ${{ runner.temp }}/drift-report.post-fix.json
-          if-no-files-found: warn
-          retention-days: 30
-
-      # Step 4d: Assert the drift was TRULY resolved (not a fixture relaxation).
-      # The predicate scores three independent signals — post-fix collector
-      # clean, a real production mock-builder change, and no comparison-leg
-      # relaxation — and exits non-zero (with a distinct reason) on a cheat.
-      # A non-zero exit blocks the pipeline: no PR is opened, so nothing merges.
-      - name: Assert drift truly resolved
+      # Step 2: defense-in-depth re-assertion of drift-sync-check.ts against the
+      # now-committed state, ONLY when the sync actually applied a mechanical
+      # edit (reason=ok-applied). drift-sync.ts already gates its OWN edit
+      # behind this exact check before committing (reverting on failure), so
+      # this step re-verifies the committed result the same way the old
+      # workflow re-asserted its (then-agent-authored) diff via a verdict
+      # function before opening a PR — mirrored here with the trivial,
+      # deterministic replacement instead.
+      - name: Assert drift-sync-check (defense-in-depth)
         id: assert
-        if: steps.autofix.outcome == 'success' && steps.check.outputs.skip != 'true'
+        if: steps.sync.outputs.reason == 'ok-applied'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_MODEL: qwen2:0.5b
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ASSERT_LOG: ${{ runner.temp }}/drift-sync-check.log
         run: |
-          # Run the predicate to a log file so we capture its REAL exit code
-          # directly (a `VAR="$(pipeline)"` assignment would report the
-          # assignment's own status via PIPESTATUS, never the predicate's).
-          #
-          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
-          # drift-report.json the autofix LLM could have overwritten — the
-          # allowlist's sanctioned-target set is derived from it, so it must be
-          # the untamperable copy (CR round-3 F-A).
-          # Write the predicate log OUTSIDE the repo checkout ($RUNNER_TEMP):
-          # the predicate scans `git status --porcelain` in this same working
-          # directory, so a predicate.log written into cwd would appear as an
-          # untracked file and be scored as UNSANCTIONED_CHANGE, breaking the
-          # happy path (FIX #F3).
           set +e
-          npx tsx scripts/drift-success-predicate.ts \
-            --report "${PINNED_REPORT}" \
-            --post-fix-report "${POST_FIX_REPORT}" \
-            --post-fix-exit "${POST_FIX_EXIT}" 2>&1 | tee "${PREDICATE_LOG}"
-          PRED_EXIT=${PIPESTATUS[0]}
+          npx tsx scripts/drift-sync-check.ts 2>&1 | tee "${ASSERT_LOG}"
+          ASSERT_EXIT=${PIPESTATUS[0]}
           set -e
-          REASON="$(grep '^reason=' "${PREDICATE_LOG}" | tail -n1)"
+          REASON="$(grep '^reason=' "${ASSERT_LOG}" | tail -n1)"
           REASON="${REASON#reason=}"
           echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
-          if [ "$PRED_EXIT" -ne 0 ]; then
-            echo "::error::Drift-success predicate refused (exit ${PRED_EXIT}, reason=${REASON}) — not a real drift fix, blocking PR"
-            exit "$PRED_EXIT"
+          if [ "$ASSERT_EXIT" -ne 0 ]; then
+            echo "::error::drift-sync-check refused (exit ${ASSERT_EXIT}, reason=${REASON}) — not opening a PR"
+            exit "$ASSERT_EXIT"
           fi
-          echo "Drift-success predicate: drift truly resolved"
-        env:
-          POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
-          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
-          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
-          PREDICATE_LOG: ${{ runner.temp }}/predicate.log
+          echo "drift-sync-check: sync verified data-only, pins intact, clean re-collect"
 
-      # Inject git credentials only when needed for push (persist-credentials: false above)
+      - name: Upload drift-sync-check log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: drift-sync-check-log
+          path: ${{ runner.temp }}/drift-sync-check.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Inject git credentials only when needed for push (persist-credentials:
+      # false above). BOTH push paths need it: the ok-applied mechanical-edit PR
+      # AND the needs-human note-persist PR below.
       - name: Configure git for push
-        if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
+        if: >-
+          success() &&
+          (steps.sync.outputs.reason == 'ok-applied' ||
+           steps.sync.outputs.reason == 'needs-human')
         run: git config --local url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
         env:
           TOKEN: ${{ steps.app-token.outputs.token }}
 
-      # Step 5: Create PR on success
-      #
-      # Select the PR by HEAD-SHA match (not `gh pr list ... .[0]`) so a stale
-      # or unrelated open PR on the same head branch cannot be mistaken for the
-      # one we just pushed.
-      - name: Create PR
+      # Step 3: push the branch drift-sync committed onto and open a data-only
+      # PR. Select the PR by HEAD-SHA match so a stale/unrelated open PR on the
+      # same head branch is never mistaken for the one just pushed.
+      - name: Push branch + create PR
         id: pr
-        if: steps.autofix.outcome == 'success' && success() && steps.check.outputs.skip != 'true'
+        if: steps.sync.outputs.reason == 'ok-applied' && success()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          POST_FIX_EXIT: ${{ steps.recollect.outputs.post_fix_exit }}
-          POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
-          PINNED_REPORT: ${{ runner.temp }}/drift-report.pinned.json
-          CREATE_PR_LOG: ${{ runner.temp }}/create-pr.log
+          CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
         run: |
           set -euo pipefail
-          # Defense-in-depth: the workflow already asserted the predicate in the
-          # "Assert drift truly resolved" step, but fix-drift.ts runs it AGAIN
-          # (via --post-fix-report/--post-fix-exit) as an in-script gate BEFORE
-          # any git add/commit, so a cheat opens no PR even if the step guard is
-          # ever bypassed. This opens the PR and STOPS — a human reviews and
-          # merges (see the "NO AUTO-MERGE" comment below); fix-drift.ts records
-          # the predicate verdict in the PR body for that reviewer.
-          #
-          # --report reads the PINNED pre-fix report (Step 1b), NOT the in-repo
-          # drift-report.json — same integrity guarantee as the Assert step: the
-          # in-script predicate's sanctioned-target set must come from the copy
-          # the autofix LLM could not overwrite (CR round-3 F-A).
-          # Capture the script's own exit code + emitted `reason=` line so a
-          # fail-closed exit (e.g. version-bump-failed) is NAMED in the failure
-          # alert rather than reported blank. Write the log OUTSIDE the repo
-          # checkout ($RUNNER_TEMP) so it is never scored by any git scan.
-          set +e
-          npx tsx scripts/fix-drift.ts --create-pr \
-            --report "${PINNED_REPORT}" \
-            --post-fix-report "${POST_FIX_REPORT}" \
-            --post-fix-exit "${POST_FIX_EXIT}" 2>&1 | tee "${CREATE_PR_LOG}"
-          PR_EXIT=${PIPESTATUS[0]}
-          set -e
-          if [ "$PR_EXIT" -ne 0 ]; then
-            PR_REASON="$(grep '^reason=' "${CREATE_PR_LOG}" | tail -n1)"
-            PR_REASON="${PR_REASON#reason=}"
-            echo "::error::Create-PR step failed (exit ${PR_EXIT}, reason=${PR_REASON:-unknown})"
-            echo "reason=${PR_REASON}" >> "$GITHUB_OUTPUT"
-            exit "$PR_EXIT"
+          # De-dup (idempotent across daily re-fires): the mechanical edit is
+          # never auto-merged, so an un-merged drift is re-detected every cron
+          # run and would otherwise open a brand-new PR each day. Skip when an
+          # open PR already carries this run's stable changeset marker (keyed on
+          # the date-independent changeset key, NOT the date-stamped branch name
+          # or diff bytes). An applied edit deserves exactly ONE open PR,
+          # re-findable across runs.
+          if [ -n "${CHANGESET_KEY:-}" ]; then
+            OPEN_PRS="$(gh pr list --state open --json number,body 2>/dev/null || echo '[]')"
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
+              'map(select(.body | contains($m))) | .[0].number // empty')"
+            if [ -n "$DUP" ]; then
+              echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
+              exit 0
+            fi
           fi
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          git push -u origin "$BRANCH"
           HEAD_SHA="$(git rev-parse HEAD)"
-          echo "Pushed head SHA: $HEAD_SHA"
-          # Find the open PR whose headRefOid matches the exact SHA we pushed.
+          echo "Pushed branch ${BRANCH} at ${HEAD_SHA}"
+
+          PR_BODY_FILE="${RUNNER_TEMP}/drift-sync-pr-body.md"
+          {
+            echo "## Summary"
+            echo ""
+            echo "Auto-generated, DATA-ONLY model-family sync (zero-LLM)."
+            echo ""
+            # Stable changeset marker — the dedup guard above matches open PRs on
+            # this so a daily re-fire of the same drift never opens a second PR.
+            echo "<!-- drift-changeset: ${CHANGESET_KEY} -->"
+            echo ""
+            echo "> **Needs human review + merge.** This PR was opened by the"
+            echo "> deterministic drift-sync pipeline after \`drift-sync-check\`"
+            echo "> passed (changed-file allowlist, checksum-pin re-assert, clean"
+            echo "> re-collect). It is NOT auto-merged — review CI, the diff, and"
+            echo "> merge."
+            echo ""
+            echo "### drift-sync-check verdict"
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/drift-sync-check.log" 2>/dev/null || echo "(see drift-sync-log / drift-sync-check-log artifacts)"
+            echo '```'
+            echo ""
+            echo "### drift-sync outcome"
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/drift-sync.log" 2>/dev/null || echo "(see drift-sync-log artifact)"
+            echo '```'
+          } > "$PR_BODY_FILE"
+
+          gh pr create \
+            --title "fix(drift-sync): mechanical model-family sync ($(date +%Y-%m-%d))" \
+            --assignee jpr5 \
+            --body-file "$PR_BODY_FILE"
+
           PR_URL=""
           PR_NUMBER=""
           for attempt in $(seq 1 6); do
@@ -408,7 +310,6 @@ jobs:
           done
           if [ -z "$PR_URL" ]; then
             echo "::error::No open PR found whose head matches pushed SHA $HEAD_SHA"
-            echo "reason=no-pr-match" >> "$GITHUB_OUTPUT"
             exit 1
           fi
           echo "Matched PR #$PR_NUMBER: $PR_URL"
@@ -418,125 +319,265 @@ jobs:
             echo "head_sha=$HEAD_SHA"
           } >> "$GITHUB_OUTPUT"
 
-      # NO AUTO-MERGE FOR THE DRIFT PATH (WS-2, round-4 — user-approved design).
+      # G#2: PERSIST the needs-human note (the Bucket-B human touchpoint).
+      # drift-sync.ts has ALREADY committed the note file(s) (and, in a mixed
+      # run, its already-gated mechanical registry edit) onto the fix branch via
+      # commitSyncChanges — but that commit lives only in the runner's working
+      # tree. The ok-applied "Push branch + create PR" step above fires ONLY on
+      # reason == 'ok-applied', so on a needs-human run nothing was pushed and
+      # the note was DISCARDED with the runner: the human had no note to review,
+      # and the two-run "Decision: include -> next run applies" protocol could
+      # never trigger (the next run finds no persisted note). This step closes
+      # that gap: it pushes a DISTINCT branch and opens a needs-human PR so the
+      # note lands in the repo. NO AUTO-MERGE — a human sets `Decision: include`
+      # (or closes to reject) and merges; the next drift-sync run reads the
+      # approved note from main and applies the mechanical edit.
       #
-      # The drift-success predicate is a strong AUTO-FILTER, NOT a provable merge
-      # gate. Its authoritative "is the drift gone?" signal comes from the in-
-      # workflow RE-COLLECT (Step 4c), which is NOT independent of the fix: the
-      # collector's SDK/expected leg reads the very fixtures the autofix touched,
-      # so a run that relaxed an input leg reports clean here too. The allowlist +
-      # always-block-on-leg-edit rules make that clean signal trustworthy enough
-      # to FILTER OUT cheats and never-fixed drift, but they cannot PROVE the mock
-      # was genuinely fixed (that requires an independent SDK leg — WS-2b, out of
-      # scope). Given that fundamental residual, the drift path opens a PR and
-      # STOPS: a HUMAN reviews CI + the committed diff + the predicate verdict
-      # (recorded in the PR body) and merges. The merge gate is the human plus the
-      # branch ruleset's one-approval requirement — NOT an unattended in-workflow
-      # merge command. The predicate having already filtered the PR down to
-      # genuine-looking fixes means the human review is a confirmation step, not a
-      # from-scratch triage.
-      #
-      # Accepted residuals under this backstop (documented, not fixed):
-      #   • F6 — working-tree-vs-committed TOCTOU: the predicate scores the working
-      #     tree; the committed diff is a gated subset. Mitigated by human review
-      #     of the COMMITTED diff and CI running on the pushed SHA.
-      #   • WS-2b — no independent SDK leg: the re-collect is not independent of the
-      #     fix. Mitigated by the human confirming the diff is a real mock change.
-
-      # Alert: the Step-1 drift collector crashed (exit code other than
-      # 0/2/5). This is a DISTINCT cause from an auto-fix step failure — the
-      # fixer never ran because we could not even produce a drift report — so it
-      # gets its own message instead of the misleading "auto-fix STEP failed".
-      - name: Alert on collector crash
-        if: always() && steps.detect.outputs.collector_crashed == 'true'
+      # Re-fire discipline (no PR spam): three layers, idempotent in EVERY run
+      # shape. (1) If this run produced NO new commit (drift-sync.ts's
+      # ensureProposalNote already deduped the note against main), there is
+      # nothing to push. (2) PRIMARY: if an open PR already carries this run's
+      # stable, date-independent CHANGESET KEY marker, skip — this covers the
+      # MIXED run whose committed diff is a registry edit with NO new note file
+      # (where the per-note check below is empty and would otherwise fall
+      # through to an unconditional push + PR every daily cron run). (3)
+      # SECONDARY: if an open PR already proposes one of this run's note files
+      # (matched by the per-note body marker), skip. The Slack alert below still
+      # fires either way.
+      - name: Persist needs-human note + open PR
+        id: needs_human_pr
+        if: steps.sync.outputs.reason == 'needs-human' && success()
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE_SHA: ${{ steps.gitcfg.outputs.base_sha }}
           RUN_ID: ${{ github.run_id }}
-          COLLECTOR_EXIT: ${{ steps.detect.outputs.exit_code }}
+          CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
         run: |
           set -euo pipefail
-          echo "::error::Drift collector (Step 1) crashed (exit ${COLLECTOR_EXIT}) — no drift report produced, auto-fix never ran"
-          if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::SLACK_WEBHOOK not set — cannot send collector-crash alert"
-          else
-            MSG="💥❌ *Drift collector crashed* (Step 1, exit ${COLLECTOR_EXIT}) — no drift report was produced and no auto-fix was attempted. This is a collector failure, not an auto-fix failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-            PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-            curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          # Re-fire of an already-persisted note: no new commit -> already reachable.
+          if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
+            echo "needs-human: no new commit (note already persisted in the repo) — nothing to push"
+            exit 0
           fi
-          exit 1
 
-      # Alert: the autofix step itself failed. Because that step is
-      # `continue-on-error: true`, on failure the job would otherwise sail on
-      # green with no signal. Detect outcome != 'success' (and not the skip
-      # case), alert distinctly, then fail the job.
-      # NOTE: also require the `check` step to have RUN (skip output is one of
-      # 'true'/'false', never empty). Without that guard this step would ALSO
-      # fire on an EARLY-infra failure (checkout/token/pnpm/clone/git-config —
-      # all before `detect`/`check`), mislabelling it "auto-fix STEP failed"
-      # when the fixer never ran. The end-of-job catch-all owns that window.
-      - name: Alert on autofix step failure
-        if: >-
-          always() && steps.check.outputs.skip == 'false' &&
-          steps.autofix.outcome != 'success' &&
-          steps.detect.outputs.collector_crashed != 'true'
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          AUTOFIX_OUTCOME: ${{ steps.autofix.outcome }}
-        run: |
-          set -euo pipefail
-          echo "::error::Auto-fix step outcome was '${AUTOFIX_OUTCOME}' (not success) — failing the job"
-          if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::SLACK_WEBHOOK not set — cannot send autofix-failure alert"
-          else
-            MSG="🛠️❌ *Drift auto-fix STEP failed* (outcome: ${AUTOFIX_OUTCOME}) — the fixer errored before producing a PR. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-            PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-            curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD"
+          OPEN_PRS="$(gh pr list --state open --json number,body 2>/dev/null || echo '[]')"
+
+          # PRIMARY de-dup (idempotent across daily re-fires in EVERY shape,
+          # INCLUDING the mixed run whose committed diff is a registry edit with
+          # NO new drift-proposals/* note). Keyed on the stable, date-independent
+          # changeset key — which is non-empty here even when no note file is in
+          # the diff, so this guard fires where the per-note loop below cannot.
+          # Without it, a mixed run re-detects the same un-merged registry edit
+          # every daily cron run and opens a brand-new near-identical PR each
+          # time (unbounded PR-spam). Matched by the "drift-changeset: <key>"
+          # body marker this step writes below.
+          if [ -n "${CHANGESET_KEY:-}" ]; then
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
+              'map(select(.body | contains($m))) | .[0].number // empty')"
+            if [ -n "$DUP" ]; then
+              echo "needs-human: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
+              exit 0
+            fi
           fi
-          exit 1
 
-      # Alert: drift collector returned quarantine (exit 5) — unparseable
-      # output that a human must triage. Routed here instead of the silent
-      # no-drift skip path.
-      - name: Alert on drift quarantine
-        if: always() && steps.check.outputs.quarantine == 'true'
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # A missing webhook must NOT swallow a quarantine — it is a real
-          # needs-human event. Emit a VISIBLE ::error:: and FAIL the step (same
-          # discipline as the autofix-failure alert), never a silent exit 0.
-          if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::Drift quarantine (exit 5) — a human must inspect the drift report — AND SLACK_WEBHOOK is not set, so no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          # The note file(s) drift-sync.ts committed this run.
+          mapfile -t COMMITTED < <(git diff --name-only "$BASE_SHA" HEAD)
+          NOTES=()
+          for f in "${COMMITTED[@]}"; do
+            case "$f" in drift-proposals/*) NOTES+=("$f") ;; esac
+          done
+
+          # SECONDARY de-dup (retained): never open a SECOND PR for a note a
+          # still-open PR already proposes (matched by the per-note
+          # "drift-proposal-note: <path>" body marker this step writes below).
+          for note in "${NOTES[@]:-}"; do
+            [ -n "$note" ] || continue
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-proposal-note: ${note}" \
+              'map(select(.body | contains($m))) | .[0].number // empty')"
+            if [ -n "$DUP" ]; then
+              echo "needs-human: note ${note} already proposed in open PR #${DUP} — not opening a duplicate"
+              exit 0
+            fi
+          done
+
+          # Distinct branch (never collides with the ok-applied fix/drift-* branch).
+          BRANCH="drift-needs-human/$(date +%Y-%m-%d)-${RUN_ID}"
+          git checkout -B "$BRANCH"
+          git push -u origin "$BRANCH"
+          echo "Pushed needs-human branch ${BRANCH} at ${HEAD_SHA}"
+
+          PR_BODY_FILE="${RUNNER_TEMP}/drift-needs-human-pr-body.md"
+          {
+            echo "## Needs a human decision (drift-sync)"
+            echo ""
+            echo "The deterministic, zero-LLM drift-sync found a model-family change it must"
+            echo "NOT auto-apply (a genuinely new/unclassified family, a still-referenced"
+            echo "deprecation, or a registry structural mismatch). It wrote the note file(s)"
+            echo "below and opened this PR so the decision is REACHABLE in the repo."
+            echo ""
+            echo "> **Not auto-merged — a human decides.** For a *new-family* note: set the"
+            echo "> note's decision line to \`Decision: include\` (to classify it) or delete the"
+            echo "> note / close this PR (to reject), then **merge this PR**. The NEXT drift-sync"
+            echo "> run reads the approved note from \`main\` and mechanically applies the registry"
+            echo "> edit (still zero-LLM — a human-authored marker, not generated code), opening a"
+            echo "> separate data-only PR. That two-run hand-off is how the loop closes."
+            echo ""
+            echo "### Note file(s) in this PR"
+            echo ""
+            # PRIMARY dedup marker — the changeset-key guard above matches open
+            # PRs on this, so a daily re-fire of the same drift (in ANY shape,
+            # including a mixed run that carries no NEW note file) never opens a
+            # second PR.
+            echo "<!-- drift-changeset: ${CHANGESET_KEY} -->"
+            for note in "${NOTES[@]:-}"; do
+              [ -n "$note" ] || continue
+              echo "- \`${note}\`"
+              echo "<!-- drift-proposal-note: ${note} -->"
+            done
+            echo ""
+            echo "### drift-sync outcome"
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/drift-sync.log" 2>/dev/null || echo "(see drift-sync-log artifact)"
+            echo '```'
+          } > "$PR_BODY_FILE"
+
+          gh pr create \
+            --title "chore(drift-sync): needs-human model-family decision ($(date +%Y-%m-%d))" \
+            --assignee jpr5 \
+            --body-file "$PR_BODY_FILE"
+
+          PR_URL=""
+          for attempt in $(seq 1 6); do
+            MATCH="$(gh pr list --state open --json url,headRefOid \
+              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | .url" 2>/dev/null || true)"
+            if [ -n "$MATCH" ]; then
+              PR_URL="$(printf '%s' "$MATCH" | head -n1)"
+              break
+            fi
+            echo "needs-human PR for head SHA not indexed yet (attempt $attempt/6), waiting 10s..."
+            sleep 10
+          done
+          if [ -z "$PR_URL" ]; then
+            echo "::error::No open needs-human PR found whose head matches pushed SHA $HEAD_SHA"
             exit 1
           fi
-          MSG="⚠️ *Drift quarantine — needs human* — the drift collector produced unparseable output (exit 5). No auto-fix attempted; a human must inspect the drift report artifact.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          echo "Opened needs-human PR: $PR_URL"
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      # NO AUTO-MERGE FOR THE DRIFT-SYNC PATH (Phase 0/1 — see
+      # drift-auto-adjust-architecture-spec.md §6.1). Through Phase 1 the sync
+      # opens a PR and STOPS: a HUMAN reviews CI + the committed diff and
+      # merges. Auto-merge is an explicit, invariant-gated exception introduced
+      # only later (Phase 4, opt-in) for the single Tier-A2 class (zero-reference
+      # deprecation) — out of scope for this change. drift-sync-check is an
+      # AUTO-FILTER, NOT a provable merge gate (its clean re-collect is not
+      # independent of the edit), so human review remains the merge gate here,
+      # unchanged in spirit from the pre-C3 verdict-gated path.
+
+      # Alert: the sync found a genuinely-new family or a still-referenced
+      # deprecation — the two irreducible human decisions (see
+      # self-healing-drift-plan.md "Bucket B"). The needs-human note was
+      # persisted by the step above (a distinct PR was opened, or the note was
+      # already in the repo / already proposed in an open PR — no PR spam). This
+      # alert fires the job RED so a human sees it. It is SKIPPED when the
+      # persist step itself FAILED (steps.needs_human_pr.outcome == 'failure') —
+      # that window is a tooling fault handled by the distinct gate-failure alert
+      # below, so the two never double-fire.
+      - name: Alert on needs-human decision
+        if: >-
+          always() &&
+          steps.sync.outputs.reason == 'needs-human' &&
+          steps.needs_human_pr.outcome != 'failure'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          PR_URL: ${{ steps.needs_human_pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          echo "::error::drift-sync found a genuinely-new model family or a still-referenced deprecation — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send needs-human alert"
+            exit 1
+          fi
+          if [ -n "${PR_URL:-}" ]; then
+            WHERE="Review the note in the PR, set \`Decision: include\` (or close to reject), and merge: ${PR_URL}"
+          else
+            WHERE="The note is already in the repo (already persisted / already proposed in an open PR). See the drift-sync-log artifact and \`drift-proposals/\`."
+          fi
+          MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
-          # Quarantine is a needs-human outcome — FAIL the job so a human
-          # watching CI status (not just Slack) sees it (matching the
-          # collector-crash / autofix-failure alerts which also exit 1). The
-          # other alert steps are mutually exclusive with quarantine (fix-failure
-          # requires skip != 'true'; catch-all requires skip == ''; both false on
-          # quarantine where skip == 'true'), so this does not double-alert.
           exit 1
 
-      # Slack notification on success. The drift path NEVER auto-merges (see the
-      # "NO AUTO-MERGE" comment above): a passing predicate opens a PR that a
-      # human must review and merge. The message says exactly that — it never
-      # claims "merged to main".
-      - name: Notify Slack on fix success
+      # Alert: covers every failure window once the sync itself has committed
+      # a mechanical edit (reason == 'ok-applied'), OR drift-sync's own
+      # internal gate reverted the edit before commit (reason ==
+      # 'gate-failed'). This is deliberately WIDE — `failure()` in the
+      # ok-applied branch, not narrowly `steps.assert.outcome == 'failure'` —
+      # because the defense-in-depth Assert step can SUCCEED and a LATER step
+      # (Push branch + create PR: rejected push, `gh pr create` error, or the
+      # head-SHA PR-match polling loop exhausting its attempts) can still fail
+      # the job. With the narrower check, that window left reason ==
+      # 'ok-applied' (non-empty, so the early-infra catch-all below stays
+      # silent) and steps.assert.outcome == 'success' (so this alert itself
+      # stayed silent too) — a silent failure on an unattended daily cron.
+      # Either way (gate-failed, assert failure, or a later step failure) this
+      # is a genuine tooling fault, NOT a needs-human product decision, so it
+      # gets its own distinct alert whose message names the step that failed.
+      #
+      # G#2: this ALSO covers the needs-human persist step's OWN failure
+      # (steps.needs_human_pr.outcome == 'failure' — a rejected push, a
+      # `gh pr create` error, or its head-SHA PR-match polling loop exhausting
+      # its attempts). That is a tooling fault, not a product decision, so it
+      # belongs here rather than in the needs-human alert (which is skipped on a
+      # persist failure, so the two never double-fire).
+      - name: Alert on drift-sync-check gate failure
+        if: >-
+          always() &&
+          (steps.sync.outputs.reason == 'gate-failed' ||
+           (steps.sync.outputs.reason == 'ok-applied' && failure()) ||
+           (steps.sync.outputs.reason == 'needs-human' && steps.needs_human_pr.outcome == 'failure'))
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SYNC_REASON: ${{ steps.sync.outputs.reason }}
+          ASSERT_OUTCOME: ${{ steps.assert.outcome }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
+          NEEDS_HUMAN_PR_OUTCOME: ${{ steps.needs_human_pr.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "${SYNC_REASON}" = "gate-failed" ]; then
+            FAILING_STEP="Run deterministic drift sync (drift-sync.ts's own internal drift-sync-check gate reverted the mechanical edit before commit)"
+          elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
+            FAILING_STEP="Persist needs-human note + open PR (push rejected, gh pr create error, or PR-match polling exhausted — the needs-human note may not have been persisted)"
+          elif [ "${ASSERT_OUTCOME}" = "failure" ]; then
+            FAILING_STEP="Assert drift-sync-check (defense-in-depth)"
+          elif [ "${PR_OUTCOME}" = "failure" ]; then
+            FAILING_STEP="Push branch + create PR"
+          else
+            FAILING_STEP="an unidentified step after the ok-applied sync"
+          fi
+          echo "::error::drift-sync-check gate failure window — failing step: ${FAILING_STEP} — this is a tooling fault, not a product decision"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send gate-failure alert"
+            exit 1
+          fi
+          MSG="🔒❌ *Drift sync — gate refused* — failing step: ${FAILING_STEP}. This needs engineering triage, not a product decision.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+          exit 1
+
+      # Slack notification on success. Never claims the change auto-merged —
+      # see the NO AUTO-MERGE comment above.
+      - name: Notify Slack on sync success
         if: success() && steps.pr.outputs.url != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -546,59 +587,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::SLACK_WEBHOOK not set — cannot send fix-success alert"
+            echo "::error::SLACK_WEBHOOK not set — cannot send sync-success alert"
             exit 0
           fi
-          MSG="✅ *Drift-fix PR opened — needs human review + merge*\nThe drift-success predicate passed (verdict in the PR body); a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
-          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
-
-      # Slack notification on failure. A missing SLACK_WEBHOOK is a VISIBLE
-      # ::error:: annotation (not a silent exit 0). The drift path has no merge
-      # step, so the failure reasons are the PR-step reason and the drift-success
-      # predicate's reason (the "Assert drift truly resolved" step).
-      - name: Notify Slack on fix failure
-        if: failure() && steps.check.outputs.skip != 'true' && steps.autofix.outcome == 'success'
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          PR_REASON: ${{ steps.pr.outputs.reason }}
-          ASSERT_REASON: ${{ steps.assert.outputs.reason }}
-        run: |
-          set -euo pipefail
-          # The PR-step reason takes precedence, then the drift-success
-          # predicate's reason (the "Assert drift truly resolved" step) so a
-          # blocked cheat is named rather than reported blank. The predicate
-          # reasons below (WS-6 needs-human tie-in) name the attempted-cheat /
-          # not-actually-fixed cause explicitly.
-          REASON="${PR_REASON:-${ASSERT_REASON:-}}"
-          case "$REASON" in
-            no-pr-match)        DETAIL=" (no open PR matched the pushed head SHA)";;
-            # Drift-success predicate reasons — NEEDS HUMAN. The LOUD cheat
-            # reasons (comparison-leg-only / suppression-suspected) mean the
-            # auto-fix tried to game the drift detector rather than fix the mock.
-            comparison-leg-only)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed ONLY comparison-leg fixtures — a fixture-relaxation cheat, NOT a real mock fix. See run logs for the offending files)";;
-            suppression-suspected) DETAIL=" (🚨 NEEDS HUMAN: auto-fix edited the drift allowlist or a *.drift.ts assertion — silencing the detector, never a valid fix. See run logs)";;
-            unsanctioned-change)  DETAIL=" (🚨 NEEDS HUMAN: auto-fix changed a file NOT on the sanctioned allowlist — deps/config/manifests, unrelated tests, or an unnamed fixture that could game the collector. See run logs for the offending files)";;
-            no-production-change) DETAIL=" (NEEDS HUMAN: auto-fix changed zero production mock-builder files — nothing shippable)";;
-            still-dirty)          DETAIL=" (NEEDS HUMAN: post-fix collector still reports critical drift — the fix did not resolve it)";;
-            quarantine-after-fix) DETAIL=" (NEEDS HUMAN: post-fix collector returned quarantine — unparseable/untrusted output after the fix)";;
-            collector-infra)      DETAIL=" (NEEDS HUMAN: post-fix collector infra failure — cannot trust a clean signal)";;
-            production-change-off-target) DETAIL=" (NEEDS HUMAN: production change did not touch any file the drift report named as a fix target — may be a legit shared-helper fix)";;
-            version-bump-failed)  DETAIL=" (NEEDS HUMAN: the version bump / CHANGELOG step failed — refused to open an UNVERSIONED PR that would merge a fix which never publishes a release. See run logs)";;
-            post-fix-parse-error) DETAIL=" (NEEDS HUMAN: the post-fix collector result could not be parsed/read — empty/non-integer --post-fix-exit (e.g. a skipped recollect) or an unreadable post-fix report. Failed closed: no PR opened. See run logs)";;
-            git-push-failed)      DETAIL=" (NEEDS HUMAN: a git checkout/add/commit/push failed while opening the PR — failed closed, no PR opened. See run logs)";;
-            config-error)         DETAIL=" (drift-success predicate CONFIG error — missing/unreadable report or bad args; the gate itself needs attention)";;
-            *)                  DETAIL="";;
-          esac
-          if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::Drift auto-fix failed${DETAIL} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
-            exit 0
-          fi
-          MSG="❌ *Drift auto-fix failed*${DETAIL} — manual intervention needed\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="✅ *Drift-sync PR opened — needs human review + merge*\nA data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
@@ -606,41 +598,26 @@ jobs:
 
       # End-of-job CATCH-ALL for ANY job failure the specific alerts above did
       # NOT cover — chiefly the EARLY-infra window (checkout / mint-app-token /
-      # pnpm install / clone ag-ui / git config) that runs BEFORE `detect`/
-      # `check` set their outputs. Those early steps leave collector_crashed,
-      # quarantine, and check.outputs.skip all EMPTY, so none of the four
-      # specific alerts fire and the job would otherwise die red with ZERO Slack
-      # signal. This step is UNCONDITIONAL on the earlier step outputs (only
-      # `failure()` + the anti-double-alert guard below), so it fires whenever
-      # nothing else did.
-      #
-      # Anti-double-alert: the four specific alerts fire iff collector_crashed
-      # or quarantine is set, OR the fixer actually ran (check.outputs.skip is
-      # 'true'/'false' — never empty — once `check` executed). So this catch-all
-      # only fires when NONE of those hold: collector_crashed != 'true' AND
-      # quarantine != 'true' AND check.outputs.skip is empty (check never ran).
-      # That is exactly the early-infra window, and it never overlaps with the
-      # specific alerts.
+      # pnpm install / clone ag-ui / git config / ollama provisioning) that runs
+      # BEFORE the `sync` step sets its outputs. That window leaves
+      # `steps.sync.outputs.reason` empty, so none of the three specific alerts
+      # fire and the job would otherwise die red with ZERO Slack signal. This
+      # step is UNCONDITIONAL on the earlier step outputs (only `failure()` +
+      # the anti-double-alert guard below), so it fires whenever nothing else
+      # did.
       - name: Alert on early-infra failure (catch-all)
-        if: >-
-          failure() && steps.detect.outputs.collector_crashed != 'true' &&
-          steps.check.outputs.quarantine != 'true' &&
-          steps.check.outputs.skip == ''
+        if: failure() && steps.sync.outputs.reason == ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          # This is an INFRA/SETUP failure — the fixer never ran (checkout /
-          # token mint / pnpm install / ag-ui clone / git config failed), so it
-          # is distinct from a drift-fix failure. A missing webhook must NOT
-          # swallow it: emit a VISIBLE ::error:: and fail the step.
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::Drift-fix job failed during INFRA/SETUP (before the collector ran) AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            echo "::error::Drift-sync job failed during INFRA/SETUP (before drift-sync ran) AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
             exit 1
           fi
-          MSG="🧱❌ *Drift-fix job — INFRA/SETUP failure* — the job failed during setup (checkout / token mint / pnpm install / ag-ui clone / git config) BEFORE the drift collector ran; this is not a drift-fix failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧱❌ *Drift-sync job — INFRA/SETUP failure* — the job failed during setup (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran; this is not a sync-gate failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
