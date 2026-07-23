@@ -62,6 +62,27 @@ jobs:
           git config user.email "drift-bot@copilotkit.ai"
           git checkout -B "fix/drift-$(date +%Y-%m-%d)-${RUN_ID}"
 
+      # Provision a local Ollama daemon so the OLLAMA_HOST-gated live drift leg
+      # (src/__tests__/drift/ollama.drift.ts) is detected here too. Ollama needs
+      # NO API key — the "credential" is just a running daemon. Pull the smallest
+      # chat+generate-capable model (qwen2:0.5b, ~350MB); OLLAMA_MODEL points the
+      # leg at it. COST: install + model pull adds ~2-4 min to the fix run.
+      - name: Provision Ollama daemon (live drift leg)
+        run: |
+          set -euo pipefail
+          # Download the installer to disk first, then execute it — avoids piping
+          # a remote, mutable script straight into a shell (no `curl | sh`).
+          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
+          sh "${RUNNER_TEMP}/ollama-install.sh"
+          ollama serve > /tmp/ollama-serve.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+              echo "ollama daemon ready"; break
+            fi
+            sleep 1
+          done
+          ollama pull qwen2:0.5b
+
       # Step 1: Detect drift and produce report.
       #
       # FIX #F3 (round-4) — write the report OUTSIDE the repo checkout, to
@@ -78,6 +99,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Un-gates the Ollama live drift leg against the daemon provisioned above.
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_MODEL: qwen2:0.5b
           PRE_FIX_REPORT: ${{ runner.temp }}/drift-report.json
         run: |
           set +e
@@ -210,6 +234,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Keep the Ollama live leg un-gated so post-fix verification exercises it
+          # (the daemon provisioned earlier in this job is still running).
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_MODEL: qwen2:0.5b
         run: pnpm test:drift
 
       # Step 4c: Re-collect drift AUTHORITATIVELY against the LIVE SDK, writing
@@ -234,6 +262,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Keep the Ollama live leg un-gated so the authoritative re-collect
+          # exercises it (the daemon provisioned earlier in this job is running).
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_MODEL: qwen2:0.5b
           POST_FIX_REPORT: ${{ runner.temp }}/drift-report.post-fix.json
         run: |
           set +e

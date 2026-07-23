@@ -148,6 +148,28 @@ jobs:
           PREFLIGHT
           npx tsx "$PREFLIGHT_FILE"
 
+      # Provision a local Ollama daemon so the OLLAMA_HOST-gated live drift leg
+      # (src/__tests__/drift/ollama.drift.ts) actually runs. Ollama needs NO API
+      # key — the "credential" is just a running daemon. We pull the smallest
+      # chat+generate-capable model (qwen2:0.5b, ~350MB) and point the leg at it
+      # via OLLAMA_MODEL to keep the added cost minimal. COST: the install + model
+      # pull adds ~2-4 min to every drift run.
+      - name: Provision Ollama daemon (live drift leg)
+        run: |
+          set -euo pipefail
+          # Download the installer to disk first, then execute it — avoids piping
+          # a remote, mutable script straight into a shell (no `curl | sh`).
+          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
+          sh "${RUNNER_TEMP}/ollama-install.sh"
+          ollama serve > /tmp/ollama-serve.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+              echo "ollama daemon ready"; break
+            fi
+            sleep 1
+          done
+          ollama pull qwen2:0.5b
+
       # Run the collector behind a "retry before alert" wrapper. A single
       # critical run can be a transient real-API hiccup (a streaming call
       # failing mid-flight), NOT a format change — so the wrapper re-runs the
@@ -163,6 +185,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Un-gates the Ollama live drift leg against the daemon provisioned above.
+          OLLAMA_HOST: 127.0.0.1:11434
+          OLLAMA_MODEL: qwen2:0.5b
         run: |
           set +e
           npx tsx scripts/drift-retry.ts
