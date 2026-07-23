@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenRouter Chat & Router — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub
+            </a>
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>OpenRouter Chat &amp; Router</h1>
+        <p class="lead">
+          aimock simulates OpenRouter's <em>routing layer</em> &mdash; provider selection, cost
+          accounting, and <code>models[]</code> failover &mdash; offline and deterministically, not
+          just "another chat provider". Point any OpenAI SDK at aimock with a
+          <code>baseURL</code> ending in <code>/api/v1</code> and every chat response is shaped like
+          real OpenRouter: a <code>gen-</code> id, a top-level <code>provider</code>,
+          <code>native_finish_reason</code>, and a rich <code>usage</code> with a scriptable
+          <code>cost</code>. Callers on the plain OpenAI base (<code>/v1/&hellip;</code>) are left
+          byte-for-byte unchanged.
+        </p>
+
+        <div class="info-box">
+          <p>
+            <strong>Detection is by request path.</strong> A request whose original path starts with
+            <code>/api/v1/</code> (OpenRouter's canonical base) is shaped as OpenRouter; a request
+            on <code>/v1/</code> stays plain OpenAI. This mirrors how a real client is wired (<code
+              >baseURL: "https://openrouter.ai/api/v1"</code
+            >) &mdash; no model-slug sniffing.
+          </p>
+        </div>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>POST</td>
+              <td><code>/api/v1/chat/completions</code></td>
+              <td>
+                OpenRouter-shaped chat completion (SSE when <code>stream: true</code>, else JSON)
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/models</code></td>
+              <td>
+                <code>{ data: [&hellip;] }</code> model catalog (ids from loaded chat fixtures)
+              </td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/key</code></td>
+              <td><code>{ data: { label, limit, usage, &hellip; } }</code> key metadata</td>
+            </tr>
+            <tr>
+              <td>GET</td>
+              <td><code>/api/v1/credits</code></td>
+              <td><code>{ data: { total_credits, total_usage } }</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Point the OpenAI SDK at aimock</h2>
+        <p>
+          The dominant real-world integration path is the OpenAI SDK with its
+          <code>baseURL</code> repointed &mdash; no OpenRouter-specific client needed.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">openrouter.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">import</span> { <span class="type">LLMock</span> } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+<span class="kw">import</span> <span class="type">OpenAI</span> <span class="kw">from</span> <span class="str">"openai"</span>;
+
+<span class="kw">const</span> <span class="op">mock</span> = <span class="kw">new</span> <span class="type">LLMock</span>();
+<span class="op">mock</span>.<span class="fn">on</span>({ <span class="prop">userMessage</span>: <span class="str">"hi"</span> }, { <span class="prop">content</span>: <span class="str">"Hello there, friend!"</span> });
+<span class="kw">await</span> <span class="op">mock</span>.<span class="fn">start</span>();
+
+<span class="kw">const</span> <span class="op">client</span> = <span class="kw">new</span> <span class="type">OpenAI</span>({
+  <span class="prop">apiKey</span>: <span class="str">"sk-test"</span>,
+  <span class="cm">// the /api/v1 suffix is the OpenRouter signal</span>
+  <span class="prop">baseURL</span>: <span class="str">`${mock.url}/api/v1`</span>,
+});
+
+<span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="op">client</span>.<span class="prop">chat</span>.<span class="prop">completions</span>.<span class="fn">create</span>({
+  <span class="prop">model</span>: <span class="str">"openai/gpt-4o-mini"</span>,
+  <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"hi"</span> }],
+});
+
+<span class="fn">expect</span>(<span class="op">res</span>.<span class="prop">id</span>).<span class="fn">toMatch</span>(<span class="str">/^gen-/</span>); <span class="cm">// not chatcmpl-</span>
+<span class="fn">expect</span>((<span class="op">res</span> <span class="kw">as</span> { <span class="prop">provider</span>?: <span class="type">string</span> }).<span class="prop">provider</span>).<span class="fn">toBeDefined</span>();</code></pre>
+        </div>
+
+        <h2>Response Shape</h2>
+        <p>
+          A non-streaming OpenRouter completion as aimock emits it &mdash; the shape reproduces a
+          real OpenRouter response field-for-field. To show every OpenRouter field at once this is a
+          <strong>fully-scripted</strong> fixture: it overrides <code>provider</code> and
+          <code>system_fingerprint</code>, pins the token counts, and scripts
+          <code>usage.cost</code> (with its <code>cost_details</code> breakdown) and
+          <code>usage.is_byok</code>. A <em>minimal</em> fixture (<code>{ content: "…" }</code>)
+          omits all of those &mdash; it defaults <code>provider</code> to the slug author (<code
+            >"openai"</code
+          >
+          for <code>openai/gpt-4o-mini</code>, taken verbatim before the first <code>/</code>),
+          leaves <code>system_fingerprint</code>/<code>service_tier</code> <code>null</code>,
+          estimates the token counts, and emits no <code>cost</code>/<code>cost_details</code>/<code
+            >is_byok</code
+          >
+          at all (see the field notes below):
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            response-shape.test.ts <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">userMessage</span>: <span class="str">"hi"</span> },
+  {
+    <span class="prop">content</span>: <span class="str">"Hello there, friend!"</span>,
+    <span class="prop">provider</span>: <span class="str">"Azure"</span>,                  <span class="cm">// top-level provider override</span>
+    <span class="prop">systemFingerprint</span>: <span class="str">"fp_27599ce29d"</span>,
+    <span class="prop">usage</span>: {
+      <span class="prop">prompt_tokens</span>: <span class="num">13</span>,
+      <span class="prop">completion_tokens</span>: <span class="num">6</span>,
+      <span class="prop">cost</span>: <span class="num">0.00000555</span>,
+      <span class="prop">cost_details</span>: {
+        <span class="prop">upstream_inference_cost</span>: <span class="num">0.00000555</span>,
+        <span class="prop">upstream_inference_prompt_cost</span>: <span class="num">0.00000195</span>,
+        <span class="prop">upstream_inference_completions_cost</span>: <span class="num">0.0000036</span>,
+      },
+      <span class="prop">is_byok</span>: <span class="kw">false</span>,
+    },
+  }
+);</code></pre>
+        </div>
+        <div class="code-block">
+          <div class="code-block-header">
+            POST /api/v1/chat/completions <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="key">"id"</span>: <span class="str">"gen-1784755927-jQCaqCF0bQXeUfk77eAH"</span>,
+  <span class="key">"object"</span>: <span class="str">"chat.completion"</span>,
+  <span class="key">"created"</span>: <span class="num">1784755927</span>,
+  <span class="key">"model"</span>: <span class="str">"openai/gpt-4o-mini"</span>,
+  <span class="key">"provider"</span>: <span class="str">"Azure"</span>,
+  <span class="key">"system_fingerprint"</span>: <span class="str">"fp_27599ce29d"</span>,
+  <span class="key">"service_tier"</span>: <span class="kw">null</span>,
+  <span class="key">"choices"</span>: [{
+    <span class="key">"index"</span>: <span class="num">0</span>,
+    <span class="key">"logprobs"</span>: <span class="kw">null</span>,
+    <span class="key">"finish_reason"</span>: <span class="str">"stop"</span>,
+    <span class="key">"native_finish_reason"</span>: <span class="str">"stop"</span>,
+    <span class="key">"message"</span>: {
+      <span class="key">"role"</span>: <span class="str">"assistant"</span>,
+      <span class="key">"content"</span>: <span class="str">"Hello there, friend!"</span>,
+      <span class="key">"refusal"</span>: <span class="kw">null</span>,
+      <span class="key">"reasoning"</span>: <span class="kw">null</span>
+    }
+  }],
+  <span class="key">"usage"</span>: {
+    <span class="key">"prompt_tokens"</span>: <span class="num">13</span>,
+    <span class="key">"completion_tokens"</span>: <span class="num">6</span>,
+    <span class="key">"total_tokens"</span>: <span class="num">19</span>,
+    <span class="key">"cost"</span>: <span class="num">0.00000555</span>,
+    <span class="key">"cost_details"</span>: {
+      <span class="key">"upstream_inference_cost"</span>: <span class="num">0.00000555</span>,
+      <span class="key">"upstream_inference_prompt_cost"</span>: <span class="num">0.00000195</span>,
+      <span class="key">"upstream_inference_completions_cost"</span>: <span class="num">0.0000036</span>
+    },
+    <span class="key">"is_byok"</span>: <span class="kw">false</span>
+  }
+}</code></pre>
+        </div>
+        <p>The OpenRouter-only fields aimock layers onto the OpenAI shape:</p>
+        <ul>
+          <li>
+            <code>id</code> &mdash; <code>gen-&hellip;</code> prefix instead of
+            <code>chatcmpl-</code> (a fixture <code>id</code> override still wins verbatim).
+          </li>
+          <li>
+            <code>provider</code> (top level) &mdash; identifies the upstream that served the
+            request. In real OpenRouter this is a capitalized <em>display</em> name (e.g.
+            <code>"Azure"</code>, <code>"OpenAI"</code>) that can differ from the model-slug author
+            (real capture: slug <code>openai/gpt-4o-mini</code> served by <code>"Azure"</code>).
+            aimock's fixture-derived default is the slug's author segment taken verbatim &mdash; the
+            text before the first <code>/</code>, <em>not</em> lowercased:
+            <code>"anthropic"</code> for <code>anthropic/claude-3.5-sonnet</code>,
+            <code>"openai"</code> for <code>openai/gpt-4o-mini</code>. A slug with no
+            <code>/</code> yields the whole slug, and a mixed-case author like
+            <code>Foo/bar</code> yields <code>"Foo"</code> unchanged. Override it per-fixture to
+            assert a specific capitalized display name.
+          </li>
+          <li>
+            <code>choices[].native_finish_reason</code> &mdash; the raw upstream finish reason
+            alongside the normalized <code>finish_reason</code> (mirrors it unless overridden).
+          </li>
+          <li>
+            <code>choices[].message.reasoning</code> &mdash; always present on the assistant
+            message: the shaping layer mirrors whatever reasoning survived upstream resolution
+            (<code>reasoning_content</code>), else <code>null</code>. A fixture's
+            <code>reasoning</code> is gated by the <em>requested</em> model's capability before it
+            reaches this field &mdash; a reasoning-capable model keeps it; a non-reasoning model
+            still emits it by default (with a warning), but strict mode
+            (<code>X-AIMock-Strict</code>) suppresses it, leaving this <code>null</code>.
+          </li>
+          <li>
+            <code>system_fingerprint</code> and <code>service_tier</code> &mdash; always present on
+            the non-streaming response, each <code>null</code> when the fixture leaves it unset.
+          </li>
+          <li>
+            <code>usage.cost</code> with its <code>usage.cost_details</code> breakdown &mdash; the
+            single biggest OpenRouter-vs-OpenAI tell. <strong>Fixture-scriptable</strong>;
+            <code>cost_details</code> is the breakdown of <code>cost</code> and rides with it, so
+            both are emitted only when a fixture supplies a <code>cost</code>.
+          </li>
+        </ul>
+
+        <h2>Fixture-Scriptable Fields</h2>
+        <p>
+          Cost, provider, and finish reasons are set on the fixture response so a test can assert
+          routing/billing behavior deterministically &mdash; e.g. prove a budget guard trips at $5
+          without spending a cent.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">cost-guard.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">userMessage</span>: <span class="str">"summarize"</span> },
+  {
+    <span class="prop">content</span>: <span class="str">"…"</span>,
+    <span class="prop">provider</span>: <span class="str">"Azure"</span>,            <span class="cm">// who served it (top-level provider)</span>
+    <span class="prop">nativeFinishReason</span>: <span class="str">"stop"</span>,     <span class="cm">// raw upstream finish reason</span>
+    <span class="prop">usage</span>: {
+      <span class="prop">cost</span>: <span class="num">5.5</span>,                 <span class="cm">// scripted usage.cost</span>
+      <span class="prop">is_byok</span>: <span class="kw">false</span>,
+      <span class="prop">cost_details</span>: { <span class="prop">upstream_inference_cost</span>: <span class="num">5.5</span> },
+    },
+  }
+);</code></pre>
+        </div>
+        <ul>
+          <li><code>provider</code> &mdash; overrides the top-level provider display name.</li>
+          <li>
+            <code>nativeFinishReason</code> &mdash; overrides
+            <code>native_finish_reason</code> (otherwise it mirrors <code>finish_reason</code>).
+          </li>
+          <li>
+            <code>usage.cost</code> &mdash; the per-request cost; when set,
+            <code>cost_details</code> is emitted too (its three
+            <code>upstream_inference_*</code> fields default to 0). Omit <code>cost</code> entirely
+            and neither is emitted (aimock never fabricates a cost).
+          </li>
+          <li>
+            <code>usage.is_byok</code>, <code>usage.prompt_tokens_details</code>,
+            <code>usage.completion_tokens_details</code> &mdash; each emitted only when overridden,
+            independently of <code>cost</code>.
+          </li>
+        </ul>
+
+        <h2 id="fallback">models[] Fallback Simulation</h2>
+        <p>
+          The headline capability. Send OpenRouter's fallback array and aimock walks the candidate
+          list <code>[model, ...models]</code> in order, serving the first fixture that returns a
+          NON-error response. An error fixture (a <code>429</code>/<code>503</code> runtime provider
+          failure) falls through to the next candidate &mdash; exactly as real OpenRouter fails
+          over. The winning slug is echoed back as the top-level <code>model</code>, which is the
+          only fallback signal a real client sees, so a test asserts failover by reading
+          <code>response.model</code>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">fallback.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="cm">// primary is "down" (a runtime 429), fallback answers</span>
+<span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">model</span>: <span class="str">"openai/gpt-4o"</span>, <span class="prop">userMessage</span>: <span class="str">"route"</span> },
+  { <span class="prop">error</span>: { <span class="prop">message</span>: <span class="str">"rate limited"</span> }, <span class="prop">status</span>: <span class="num">429</span> }
+);
+<span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">model</span>: <span class="str">"anthropic/claude-3.5-sonnet"</span>, <span class="prop">userMessage</span>: <span class="str">"route"</span> },
+  { <span class="prop">content</span>: <span class="str">"served by the fallback"</span> }
+);
+
+<span class="kw">const</span> <span class="op">res</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/api/v1/chat/completions`</span>, {
+  <span class="prop">method</span>: <span class="str">"POST"</span>,
+  <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+    <span class="prop">model</span>: <span class="str">"openai/gpt-4o"</span>,
+    <span class="prop">models</span>: [<span class="str">"openai/gpt-4o"</span>, <span class="str">"anthropic/claude-3.5-sonnet"</span>],
+    <span class="prop">messages</span>: [{ <span class="prop">role</span>: <span class="str">"user"</span>, <span class="prop">content</span>: <span class="str">"route"</span> }],
+  }),
+});
+
+<span class="kw">const</span> <span class="op">body</span> = <span class="kw">await</span> <span class="op">res</span>.<span class="fn">json</span>();
+<span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">model</span>).<span class="fn">toBe</span>(<span class="str">"anthropic/claude-3.5-sonnet"</span>); <span class="cm">// the winner</span>
+<span class="fn">expect</span>(<span class="op">body</span>.<span class="prop">provider</span>).<span class="fn">toBe</span>(<span class="str">"anthropic"</span>);</code></pre>
+        </div>
+        <p>
+          When every candidate fails, the last error is served (in the OpenRouter envelope). A
+          request without a <code>models</code> array behaves as an ordinary single-model match.
+          Sending <code>provider: { allow_fallbacks: false }</code> disables fall-through: only the
+          primary candidate is tried, and its error (or a miss) is terminal instead of walking the
+          rest of the list.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Deliberate non-goal.</strong> Real OpenRouter rejects an unknown/invalid model
+            in <code>models[]</code> up front with a <code>400 "not a valid model ID"</code> and
+            only fails over on <em>runtime</em> errors (429/503). aimock is fixture-driven, so an
+            unknown model is simply a fixture miss (a strict miss / 404) &mdash; we do not replicate
+            that up-front invalid-model 400. Frame a primary "failure" fixture as a 429/503 runtime
+            error.
+          </p>
+        </div>
+
+        <h2>Streaming</h2>
+        <p>
+          Streaming responses are standard OpenAI <code>data:</code> frames terminated by
+          <code>data: [DONE]</code>, with OpenRouter's additions on every chunk: the top-level
+          <code>provider</code> and <code>system_fingerprint</code>, and
+          <code>native_finish_reason</code> on every delta choice (<code>null</code> until the
+          finish chunk). The <code>finish_reason</code> chunk carries an empty delta; a separate
+          final chunk (empty <code>choices</code>) then carries the full <code>usage</code> and
+          <code>service_tier: null</code>. Neither <code>usage</code> nor
+          <code>service_tier</code> appears on any content delta, matching real OpenRouter. As with
+          the Response Shape example above, the display-name <code>provider</code> and the
+          <code>cost</code> fields shown below come from a fully-scripted fixture; a minimal fixture
+          would default <code>provider</code> to the slug author and emit no <code>cost</code>. Real
+          OpenRouter opens the stream with a single <code>: OPENROUTER PROCESSING</code> keepalive
+          comment; aimock can emit it too (opt-in &mdash; the example below shows it enabled).
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            stream (verbatim, keepalive opted in) <span class="lang-tag">text</span>
+          </div>
+          <pre><code>: OPENROUTER PROCESSING
+
+data: {"id":"gen-…","object":"chat.completion.chunk","provider":"OpenAI","system_fingerprint":"fp_…","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-…","object":"chat.completion.chunk","provider":"OpenAI","system_fingerprint":"fp_…","choices":[{"index":0,"delta":{"content":"Sure","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-…","object":"chat.completion.chunk","provider":"OpenAI","system_fingerprint":"fp_…","choices":[{"index":0,"delta":{},"finish_reason":"stop","native_finish_reason":"stop"}]}
+
+data: {"id":"gen-…","object":"chat.completion.chunk","provider":"OpenAI","system_fingerprint":"fp_…","service_tier":null,"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":28,"total_tokens":40,"cost":0.0000186,"cost_details":{"upstream_inference_cost":0.0000186,"upstream_inference_prompt_cost":0.0000018,"upstream_inference_completions_cost":0.0000168},"is_byok":false}}
+
+data: [DONE]</code></pre>
+        </div>
+        <p>
+          The <code>: OPENROUTER PROCESSING</code> keepalive is
+          <strong>opt-in and off by default</strong>
+          (so strict OpenAI SSE parsers aren't surprised). Enable it per-fixture; when on, exactly
+          one comment line is emitted first, before the first data frame. A faithful client discards
+          any
+          <code>:</code>-prefixed line before JSON-parsing the next <code>data:</code>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">keepalive.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">on</span>(
+  { <span class="prop">userMessage</span>: <span class="str">"hi"</span> },
+  { <span class="prop">content</span>: <span class="str">"…"</span> },
+  { <span class="prop">openRouterProcessing</span>: <span class="kw">true</span> } <span class="cm">// emit the keepalive comment</span>
+);</code></pre>
+        </div>
+
+        <h2>Discovery Endpoints</h2>
+        <p>
+          <code>GET /api/v1/models</code> synthesizes the catalog from loaded chat fixtures'
+          <code>match.model</code> values (falling back to a default slug set), returning OpenRouter
+          model objects (string pricing values, <code>architecture</code>,
+          <code>top_provider</code>, <code>supported_parameters</code>, &hellip;).
+          <code>GET /api/v1/key</code> returns key metadata (a <code>null</code>
+          <code>limit</code>/<code>limit_remaining</code> means unlimited) and
+          <code>GET /api/v1/credits</code> returns
+          <code>{ data: { total_credits, total_usage } }</code>. All three are read-only and require
+          no fixtures.
+        </p>
+
+        <h2>Error Envelope</h2>
+        <p>
+          Errors on an OpenRouter request use OpenRouter's envelope &mdash;
+          <code>{ error: { code, message } }</code> where <code>code</code> is the numeric HTTP
+          status (contrast OpenAI's <code>{ error: { message, type, param, code } }</code>). A
+          fixture may attach free-form <code>metadata</code>; it is omitted when absent. Errors on
+          the plain <code>/v1/&hellip;</code> base keep the OpenAI shape.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            error (fixture-driven 503 runtime error) <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{ <span class="key">"error"</span>: { <span class="key">"code"</span>: <span class="num">503</span>, <span class="key">"message"</span>: <span class="str">"upstream provider is temporarily unavailable"</span> } }</code></pre>
+        </div>
+
+        <h2>Attribution Headers</h2>
+        <p>
+          A real OpenRouter client sends the attribution headers <code>HTTP-Referer</code> and
+          <code>X-OpenRouter-Title</code> (the legacy <code>X-Title</code> is also seen), along with
+          every OpenRouter request extension on the body (<code>provider</code>,
+          <code>models</code>, <code>route</code>, <code>reasoning</code>, <code>plugins</code>,
+          <code>prediction</code>, <code>usage</code>, and any unknown key). aimock special-cases
+          none of them: no header or body field is required or rejected. It journals them
+          generically like any request header, so they are available for assertions (auth headers
+          redacted).
+        </p>
+
+        <div class="info-box">
+          <p>
+            OpenRouter's dedicated <em>video</em> job API is documented separately under
+            <a href="/openrouter-video">OpenRouter Video</a>. This page covers the chat / LLM router
+            surface. Record mode works the same as other providers &mdash; see
+            <a href="/record-replay">Record &amp; Replay</a>; configure the <code>openrouter</code>
+            provider base URL to capture real chat turns.
+          </p>
+        </div>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

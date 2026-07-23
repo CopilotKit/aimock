@@ -7,7 +7,7 @@ description: Use when writing test fixtures for @copilotkit/aimock — mock LLM 
 
 ## What aimock Is
 
-aimock is a zero-dependency mock infrastructure for AI apps. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, Gemini Interactions, AWS Bedrock, Azure OpenAI, Vertex AI, Ollama, Cohere). Multimedia endpoints (image generation, text-to-speech, audio transcription, video generation). MCP, A2A, AG-UI, and vector DB mocking. Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs. Record-and-replay for all endpoints including multimedia. Chaos testing and Prometheus metrics.
+aimock is a zero-dependency mock infrastructure for AI apps. Fixture-driven. Multi-provider (OpenAI, Anthropic, Gemini, Gemini Interactions, AWS Bedrock, Azure OpenAI, Vertex AI, Ollama, Cohere, OpenRouter). Multimedia endpoints (image generation, text-to-speech, audio transcription, video generation). MCP, A2A, AG-UI, and vector DB mocking. Runs a real HTTP server on a real port — works across processes, unlike MSW-style interceptors. WebSocket support for OpenAI Responses/Realtime and Gemini Live APIs. Record-and-replay for all endpoints including multimedia. Chaos testing and Prometheus metrics.
 
 ## Core Mental Model
 
@@ -420,6 +420,8 @@ All providers share the same fixture pool — write fixtures once, they work for
 | `POST /api/generate`                                                                     | Ollama        | HTTP      |
 | `GET /api/tags`                                                                          | Ollama        | HTTP      |
 | `POST /v2/chat`                                                                          | Cohere        | HTTP      |
+| `POST /api/v1/chat/completions`                                                          | OpenRouter    | HTTP      |
+| `GET /api/v1/models` · `/api/v1/key` · `/api/v1/credits`                                 | OpenRouter    | HTTP      |
 | `GET /metrics`                                                                           | —             | HTTP      |
 | `GET /v1/models`                                                                         | OpenAI-compat | HTTP      |
 | `WS /v1/responses`                                                                       | OpenAI        | WebSocket |
@@ -436,15 +438,19 @@ All providers share the same fixture pool — write fixtures once, they work for
 
 Fixture responses can include optional override fields to control auto-generated envelope values. These are merged into the provider-specific response format (OpenAI, Claude, Gemini, Responses API).
 
-| Field               | Type   | Default                   | Description                                                                                                                                                                                                                                                                |
-| ------------------- | ------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                | string | auto-generated            | Override response ID (e.g., `chatcmpl-custom`)                                                                                                                                                                                                                             |
-| `created`           | number | `Date.now()/1000`         | Override Unix timestamp                                                                                                                                                                                                                                                    |
-| `model`             | string | echoes request            | Override model name in response                                                                                                                                                                                                                                            |
-| `usage`             | object | zeroed                    | Override token counts: `{ prompt_tokens, completion_tokens, total_tokens }`. OpenAI Chat includes usage in response body; Responses API uses `response.usage`. When omitted, auto-computed from content length                                                             |
-| `finishReason`      | string | `"stop"` / `"tool_calls"` | Override finish reason. Mappings: `stop` -> `end_turn` (Claude), `STOP` (Gemini); `tool_calls` -> `tool_use` (Claude), `FUNCTION_CALL` (Gemini); `length` -> `max_tokens` (Claude), `MAX_TOKENS` (Gemini); `content_filter` -> `SAFETY` (Gemini), `failed` (Responses API) |
-| `role`              | string | `"assistant"`             | Override message role                                                                                                                                                                                                                                                      |
-| `systemFingerprint` | string | (omitted)                 | Add `system_fingerprint` to response                                                                                                                                                                                                                                       |
+| Field                | Type   | Default                   | Description                                                                                                                                                                                                                                                                |
+| -------------------- | ------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | string | auto-generated            | Override response ID (e.g., `chatcmpl-custom`)                                                                                                                                                                                                                             |
+| `created`            | number | `Date.now()/1000`         | Override Unix timestamp                                                                                                                                                                                                                                                    |
+| `model`              | string | echoes request            | Override model name in response                                                                                                                                                                                                                                            |
+| `usage`              | object | zeroed                    | Override token counts: `{ prompt_tokens, completion_tokens, total_tokens }`. OpenAI Chat includes usage in response body; Responses API uses `response.usage`. When omitted, auto-computed from content length                                                             |
+| `finishReason`       | string | `"stop"` / `"tool_calls"` | Override finish reason. Mappings: `stop` -> `end_turn` (Claude), `STOP` (Gemini); `tool_calls` -> `tool_use` (Claude), `FUNCTION_CALL` (Gemini); `length` -> `max_tokens` (Claude), `MAX_TOKENS` (Gemini); `content_filter` -> `SAFETY` (Gemini), `failed` (Responses API) |
+| `role`               | string | `"assistant"`             | Override message role                                                                                                                                                                                                                                                      |
+| `systemFingerprint`  | string | (omitted)                 | Add `system_fingerprint` to response                                                                                                                                                                                                                                       |
+| `provider`           | string | slug author               | OpenRouter only: top-level serving-provider display name (default = the winning model slug's author). Override to assert who served the request                                                                                                                            |
+| `nativeFinishReason` | string | mirrors `finishReason`    | OpenRouter only: the raw upstream `native_finish_reason` alongside the normalized `finish_reason`                                                                                                                                                                          |
+| `usage.cost`         | number | (omitted)                 | OpenRouter only: per-request `usage.cost` (scriptable — powers budget-guard tests). When set, `usage.cost_details` is emitted too. Never fabricated when omitted                                                                                                           |
+| `usage.is_byok`      | bool   | (omitted)                 | OpenRouter only: emit `usage.is_byok`. Also `usage.prompt_tokens_details`, `usage.completion_tokens_details` — emitted only when set                                                                                                                                       |
 
 ### Example
 
@@ -473,17 +479,44 @@ mock.onMessage("hello", {
 
 These fields map correctly across all provider formats — for example, `finishReason: "stop"` becomes `finish_reason: "stop"` in OpenAI, `stop_reason: "end_turn"` in Claude, and `finishReason: "STOP"` in Gemini.
 
+## OpenRouter (chat / router)
+
+A request whose path starts with `/api/v1/` (point the OpenAI SDK at a `baseURL` ending `/api/v1`) is shaped as OpenRouter: `gen-` id, top-level `provider`, per-choice `native_finish_reason`, always-present `system_fingerprint`/`service_tier` (null by default), an always-present `message.reasoning` (null unless a fixture supplies reasoning and the model is reasoning-capable), and a rich `usage`. Requests on the plain `/v1/...` base are untouched OpenAI. Same fixture pool — the fields above are the only additions.
+
+- **Scriptable cost / provider / finish reason**: set `provider`, `nativeFinishReason`, and `usage.cost` on the response (see the overrides table). `cost`/`cost_details` are emitted only when a fixture supplies `cost` — aimock never fabricates a cost.
+- **`models[]` fallback (router failover)**: when the request body carries `models: [m1, m2, ...]`, aimock walks `[model, ...models]` in order and serves the first fixture that returns a NON-error response. A `429`/`503` error fixture on a candidate simulates a RUNTIME provider failure and falls through to the next candidate; the winning slug is echoed back as the top-level `model` (assert failover via `response.model`). Model the primary's "failure" as a 429/503 — an unknown/invalid model is just a fixture miss (aimock does not replicate OpenRouter's up-front invalid-model 400).
+- **Keepalive**: set the fixture option `openRouterProcessing: true` to emit one `: OPENROUTER PROCESSING` SSE comment before the first data frame (opt-in, default off).
+- **Error envelope**: OpenRouter errors are `{ error: { message, code } }` (numeric `code` == HTTP status), with optional free-form `metadata`.
+
+```typescript
+// primary is a runtime 429, fallback answers
+mock.on(
+  { model: "openai/gpt-4o", userMessage: "route" },
+  { error: { message: "rate limited" }, status: 429 },
+);
+mock.on(
+  { model: "anthropic/claude-3.5-sonnet", userMessage: "route" },
+  {
+    content: "served by the fallback",
+    provider: "Anthropic",
+    usage: { cost: 0.0021 },
+  },
+);
+// POST /api/v1/chat/completions { model: "openai/gpt-4o", models: [...], ... }
+//   → response.model === "anthropic/claude-3.5-sonnet"
+```
+
 ## Provider Support Matrix
 
-| Feature              | OpenAI Chat | OpenAI Responses | Claude | Gemini | Gemini Int. | Bedrock | Azure | Ollama | Cohere |
-| -------------------- | ----------- | ---------------- | ------ | ------ | ----------- | ------- | ----- | ------ | ------ |
-| Text                 | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    |
-| Tool Calls           | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    |
-| Content + Tool Calls | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    |
-| Streaming            | SSE         | SSE              | SSE    | SSE    | SSE         | Binary  | SSE   | NDJSON | SSE    |
-| Reasoning            | Yes         | Yes              | Yes    | Yes    | --          | Yes     | Yes   | --     | --     |
-| Web Searches         | --          | Yes              | --     | --     | --          | --      | --    | --     | --     |
-| Response Overrides   | Yes         | Yes              | Yes    | Yes    | Yes         | --      | Yes   | --     | --     |
+| Feature              | OpenAI Chat | OpenAI Responses | Claude | Gemini | Gemini Int. | Bedrock | Azure | Ollama | Cohere | OpenRouter |
+| -------------------- | ----------- | ---------------- | ------ | ------ | ----------- | ------- | ----- | ------ | ------ | ---------- |
+| Text                 | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    | Yes        |
+| Tool Calls           | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    | Yes        |
+| Content + Tool Calls | Yes         | Yes              | Yes    | Yes    | Yes         | Yes     | Yes   | Yes    | Yes    | Yes        |
+| Streaming            | SSE         | SSE              | SSE    | SSE    | SSE         | Binary  | SSE   | NDJSON | SSE    | SSE        |
+| Reasoning            | Yes         | Yes              | Yes    | Yes    | --          | Yes     | Yes   | --     | --     | Yes        |
+| Web Searches         | --          | Yes              | --     | --     | --          | --      | --    | --     | --     | --         |
+| Response Overrides   | Yes         | Yes              | Yes    | Yes    | Yes         | --      | Yes   | --     | --     | Yes        |
 
 ## Critical Gotchas
 

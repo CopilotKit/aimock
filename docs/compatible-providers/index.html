@@ -103,6 +103,15 @@
               <td><code>/v1/projects/.../models/:model:*</code></td>
               <td>Uses Gemini handler; see <a href="/vertex-ai">Vertex AI page</a></td>
             </tr>
+            <tr>
+              <td>OpenRouter</td>
+              <td><code>/api/v1/chat/completions</code></td>
+              <td>
+                OpenAI-compatible via the <code>/api/v1</code> base; responses are shaped as
+                OpenRouter (<code>gen-</code> id, provider, cost) &mdash; see
+                <a href="/openrouter-chat">OpenRouter page</a> for the router/failover surface
+              </td>
+            </tr>
           </tbody>
         </table>
 

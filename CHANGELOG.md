@@ -1,5 +1,16 @@
 # @copilotkit/aimock
 
+## [Unreleased]
+
+### Added
+
+- **OpenRouter chat / LLM router simulation.** Requests whose original path starts with `/api/v1/` (point any OpenAI SDK at a `baseURL` ending `/api/v1`) are detected as OpenRouter and shaped to match real OpenRouter bytes: a `gen-` id prefix (a fixture `id` override still wins), a top-level `provider` (default = the winning model slug's author, fixture-overridable via `provider`), both `finish_reason` and `native_finish_reason` on every choice/delta, an always-present `system_fingerprint` and `service_tier` (null by default), `message.reasoning`, and a rich `usage` with a **fixture-scriptable** `cost` + `cost_details` (emitted only when a fixture supplies a cost — never fabricated), plus `is_byok` / `prompt_tokens_details` / `completion_tokens_details` when overridden. Callers on the plain OpenAI `/v1/...` base are byte-for-byte unchanged.
+- **`models[]` fallback (router failover) simulation.** When the request body carries `models: [...]`, aimock walks `[model, ...models]` in order and serves the first fixture returning a NON-error response; a `429`/`503` error fixture on a candidate simulates a runtime provider failure and falls through to the next. The winning slug is echoed back as the top-level `model`, so a test asserts failover by reading `response.model`. (Deliberate non-goal: an unknown/invalid model is a fixture miss, not OpenRouter's up-front invalid-model 400.)
+- **OpenRouter discovery endpoints** `GET /api/v1/models` (catalog synthesized from loaded chat fixtures), `GET /api/v1/key`, and `GET /api/v1/credits`, matching the real response shapes.
+- **OpenRouter error envelope** `{ error: { message, code } }` (numeric `code` == HTTP status, optional free-form `metadata`) for OpenRouter requests; the OpenAI error shape is retained for `/v1/...`.
+- **Opt-in `: OPENROUTER PROCESSING` SSE keepalive** (fixture option `openRouterProcessing`, default off): one comment line emitted before the first data frame, matching real OpenRouter streams.
+- OpenRouter request extensions (`provider`, `models`, `route`, `reasoning`, `plugins`, `prediction`, `usage`) and attribution headers (`HTTP-Referer`, `X-OpenRouter-Title`, legacy `X-Title`) are accepted and journaled, never required or rejected.
+
 ## [1.37.4] - 2026-07-20
 
 ### Fixed

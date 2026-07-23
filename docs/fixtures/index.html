@@ -697,6 +697,31 @@
               <td>string</td>
               <td>Add system_fingerprint to response</td>
             </tr>
+            <tr>
+              <td>provider</td>
+              <td>string</td>
+              <td>
+                <a href="/openrouter-chat">OpenRouter</a> only: top-level serving-provider display
+                name (default: the winning model slug's author)
+              </td>
+            </tr>
+            <tr>
+              <td>nativeFinishReason</td>
+              <td>string</td>
+              <td>
+                <a href="/openrouter-chat">OpenRouter</a> only: raw upstream
+                <code>native_finish_reason</code> (mirrors <code>finishReason</code> by default)
+              </td>
+            </tr>
+            <tr>
+              <td>usage.cost</td>
+              <td>number</td>
+              <td>
+                <a href="/openrouter-chat">OpenRouter</a> only: scriptable
+                <code>usage.cost</code> (+ <code>cost_details</code> / <code>is_byok</code> /
+                token-detail objects); emitted only when supplied, never fabricated
+              </td>
+            </tr>
           </tbody>
         </table>
 
@@ -861,11 +886,13 @@
               <th>Azure</th>
               <th>Ollama</th>
               <th>Cohere</th>
+              <th>OpenRouter</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>Text</td>
+              <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
@@ -889,9 +916,11 @@
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
+              <td>Yes</td>
             </tr>
             <tr>
               <td>Content + Tool Calls</td>
+              <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
@@ -915,6 +944,7 @@
               <td>SSE</td>
               <td>NDJSON</td>
               <td>SSE</td>
+              <td>SSE</td>
             </tr>
             <tr>
               <td>Reasoning</td>
@@ -928,11 +958,13 @@
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
+              <td>Yes</td>
             </tr>
             <tr>
               <td>Web Searches</td>
               <td>&mdash;</td>
               <td>Yes</td>
+              <td>&mdash;</td>
               <td>&mdash;</td>
               <td>&mdash;</td>
               <td>&mdash;</td>
@@ -954,6 +986,7 @@
               <td>Yes<sup>*</sup></td>
               <td>&mdash;</td>
               <td>&mdash;</td>
+              <td>Yes</td>
             </tr>
           </tbody>
         </table>

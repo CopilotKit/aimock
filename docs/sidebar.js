@@ -26,6 +26,7 @@
         { label: "Ollama", href: "/ollama" },
         { label: "Cohere", href: "/cohere" },
         { label: "Vertex AI", href: "/vertex-ai" },
+        { label: "OpenRouter", href: "/openrouter-chat" },
         { label: "Compatible Providers", href: "/compatible-providers" },
       ],
     },
