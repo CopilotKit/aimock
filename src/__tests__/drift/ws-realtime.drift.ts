@@ -2,7 +2,7 @@
  * OpenAI Realtime API WebSocket drift tests.
  *
  * Three-way comparison: SDK types x real API (WS) x aimock output (WS).
- * Updated for GA protocol — uses gpt-realtime-2 and GA event names.
+ * Updated for GA protocol — uses gpt-realtime-mini and GA event names.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -16,22 +16,6 @@ import { startDriftServer, stopDriftServer, collectMockWSMessages } from "./help
 import { connectWebSocket } from "../ws-test-client.js";
 
 // ---------------------------------------------------------------------------
-// GA <-> Beta event name mapping (local copy for normalization in tests)
-// ---------------------------------------------------------------------------
-
-const GA_TO_BETA_EVENT: Record<string, string> = {
-  "response.output_text.delta": "response.text.delta",
-  "response.output_text.done": "response.text.done",
-  "response.output_audio.delta": "response.audio.delta",
-  "response.output_audio.done": "response.audio.done",
-  "response.output_audio_transcript.delta": "response.audio_transcript.delta",
-  "response.output_audio_transcript.done": "response.audio_transcript.done",
-  "conversation.item.added": "conversation.item.created",
-};
-
-const BETA_SUPPRESSED_EVENTS = new Set(["conversation.item.done"]);
-
-// ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
 
@@ -42,12 +26,23 @@ let instance: ServerInstance;
 // CI actually provides to the drift job) and is gated ONLY on OPENAI_API_KEY,
 // guaranteeing it runs in CI and cannot silently skip.
 //
-// The real realtime WS *session* tests connect a live socket that legitimately
-// requires realtime access, so they gate on OPENAI_REALTIME_KEY and pass that
-// same credential in their session config — using the chat-only OPENAI_API_KEY
-// there could produce a spurious auth-failure "drift" if the two keys differ.
+// The real realtime WS *session* tests connect a live socket that requires
+// realtime model access. OpenAI Realtime authenticates with the STANDARD
+// project key (scope is project-level; there is no separate "realtime key"
+// type), so these probes resolve their credential as OPENAI_REALTIME_KEY (an
+// optional explicit override, kept for the rare case where realtime access
+// lives on a different project) ELSE the standard OPENAI_API_KEY that CI
+// already provides. Preferring the explicit override but falling back to the
+// standard key lets the protocol probes run LIVE in daily CI without adding a
+// new secret. (If CI ever shows these probes failing with an auth/scope error,
+// it means this project's OPENAI_API_KEY lacks Realtime access and a separate
+// OPENAI_REALTIME_KEY genuinely is required.)
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_REALTIME_KEY = process.env.OPENAI_REALTIME_KEY;
+// Resolved realtime credential: explicit override preferred, standard key as
+// fallback. Non-empty whenever the describe below runs (it gates on
+// OPENAI_API_KEY), so the protocol probes RUN in CI instead of skipping.
+const OPENAI_REALTIME_CREDENTIAL = OPENAI_REALTIME_KEY ?? OPENAI_API_KEY;
 
 beforeAll(async () => {
   instance = await startDriftServer();
@@ -62,10 +57,11 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
-  // Session config for the real WS realtime tests uses the realtime credential,
-  // NOT the chat-only OPENAI_API_KEY, so that a differing realtime key can't
-  // cause a spurious auth-failure "drift". The canary below does NOT use this.
-  const config = { apiKey: OPENAI_REALTIME_KEY! };
+  // Session config for the real WS realtime tests: explicit OPENAI_REALTIME_KEY
+  // override if set, else the standard OPENAI_API_KEY (which CI provides and
+  // which authenticates Realtime at project scope). The canary below reads
+  // OPENAI_API_KEY directly and does NOT use this.
+  const config = { apiKey: OPENAI_REALTIME_CREDENTIAL! };
 
   it("canary: GA realtime models available", async () => {
     // Fetch via GET /v1/models, which lists ALL models for ANY valid key. Use
@@ -117,13 +113,13 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
     expect(unknown, `UNKNOWN_REALTIME_MODELS=${unknown.join(",")}`).toEqual([]);
   });
 
-  it.skipIf(!process.env.OPENAI_REALTIME_KEY)(
+  it.skipIf(!OPENAI_REALTIME_CREDENTIAL)(
     "WS text event sequence and shapes match (GA)",
     async () => {
       const sdkEvents = openaiRealtimeTextEventShapes();
 
       // Real API — GA mode (no Beta header)
-      const realResult = await openaiRealtimeWS(config, "Say hello", undefined, false);
+      const realResult = await openaiRealtimeWS(config, "Say hello", undefined);
 
       // Mock — replicate the Realtime protocol sequence (GA mode)
       const mockWs = await connectWebSocket(instance.url, "/v1/realtime");
@@ -195,131 +191,108 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
     },
   );
 
-  it.skipIf(!process.env.OPENAI_REALTIME_KEY)(
-    "WS tool call event sequence matches (GA)",
-    async () => {
-      const sdkEvents = [
-        ...openaiRealtimeTextEventShapes().filter(
-          (e) =>
-            e.type === "session.created" ||
-            e.type === "session.updated" ||
-            e.type === "conversation.item.added" ||
-            e.type === "response.created" ||
-            e.type === "response.done",
-        ),
-        ...openaiRealtimeToolCallEventShapes(),
-      ];
+  it.skipIf(!OPENAI_REALTIME_CREDENTIAL)("WS tool call event sequence matches (GA)", async () => {
+    const sdkEvents = [
+      ...openaiRealtimeTextEventShapes().filter(
+        (e) =>
+          e.type === "session.created" ||
+          e.type === "session.updated" ||
+          e.type === "conversation.item.added" ||
+          e.type === "response.created" ||
+          e.type === "response.done",
+      ),
+      ...openaiRealtimeToolCallEventShapes(),
+    ];
 
-      const tools = [
-        {
-          type: "function",
-          name: "get_weather",
-          description: "Get weather",
-          parameters: {
-            type: "object",
-            properties: { city: { type: "string" } },
-            required: ["city"],
-          },
+    const tools = [
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Get weather",
+        parameters: {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
         },
-      ];
+      },
+    ];
 
-      // Real API — GA mode
-      const realResult = await openaiRealtimeWS(config, "Weather in Paris", tools, false);
+    // Real API — GA mode
+    const realResult = await openaiRealtimeWS(config, "Weather in Paris", tools);
 
-      // Mock — replicate the Realtime protocol sequence
-      const mockWs = await connectWebSocket(instance.url, "/v1/realtime");
+    // Mock — replicate the Realtime protocol sequence
+    const mockWs = await connectWebSocket(instance.url, "/v1/realtime");
 
-      // session.created
-      const sessionCreatedMsgs = await mockWs.waitForMessages(1);
-      const allMockRaw: unknown[] = [JSON.parse(sessionCreatedMsgs[0])];
+    // session.created
+    const sessionCreatedMsgs = await mockWs.waitForMessages(1);
+    const allMockRaw: unknown[] = [JSON.parse(sessionCreatedMsgs[0])];
 
-      // session.update with tools
-      mockWs.send(
-        JSON.stringify({
-          type: "session.update",
-          session: { model: "gpt-4o-mini", modalities: ["text"], tools },
-        }),
-      );
-      const sessionUpdatedMsgs = await mockWs.waitForMessages(2);
-      allMockRaw.push(JSON.parse(sessionUpdatedMsgs[1]));
+    // session.update with tools
+    mockWs.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { model: "gpt-4o-mini", modalities: ["text"], tools },
+      }),
+    );
+    const sessionUpdatedMsgs = await mockWs.waitForMessages(2);
+    allMockRaw.push(JSON.parse(sessionUpdatedMsgs[1]));
 
-      // conversation.item.create
-      mockWs.send(
-        JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "Weather in Paris" }],
-          },
-        }),
-      );
-      const itemCreatedMsgs = await mockWs.waitForMessages(3);
-      allMockRaw.push(JSON.parse(itemCreatedMsgs[2]));
+    // conversation.item.create
+    mockWs.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Weather in Paris" }],
+        },
+      }),
+    );
+    const itemCreatedMsgs = await mockWs.waitForMessages(3);
+    allMockRaw.push(JSON.parse(itemCreatedMsgs[2]));
 
-      // response.create
-      mockWs.send(JSON.stringify({ type: "response.create" }));
+    // response.create
+    mockWs.send(JSON.stringify({ type: "response.create" }));
 
-      // Collect remaining messages until response.done
-      const responseMsgs = await collectMockWSMessages(
-        mockWs,
-        (msg) => (msg as Record<string, unknown>).type === "response.done",
-        15000,
-        3,
-      );
-      allMockRaw.push(...responseMsgs.rawMessages);
-      mockWs.close();
+    // Collect remaining messages until response.done
+    const responseMsgs = await collectMockWSMessages(
+      mockWs,
+      (msg) => (msg as Record<string, unknown>).type === "response.done",
+      15000,
+      3,
+    );
+    allMockRaw.push(...responseMsgs.rawMessages);
+    mockWs.close();
 
-      // Build mock events
-      const mockEvents = allMockRaw.map((msg) => {
-        const m = msg as Record<string, unknown>;
-        return {
-          type: m.type as string,
-          dataShape: extractShape(msg),
-        };
-      });
+    // Build mock events
+    const mockEvents = allMockRaw.map((msg) => {
+      const m = msg as Record<string, unknown>;
+      return {
+        type: m.type as string,
+        dataShape: extractShape(msg),
+      };
+    });
 
-      expect(realResult.rawMessages.length, "Real API returned no WS messages").toBeGreaterThan(0);
-      expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
+    expect(realResult.rawMessages.length, "Real API returned no WS messages").toBeGreaterThan(0);
+    expect(mockEvents.length, "Mock returned no WS messages").toBeGreaterThan(0);
 
-      const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
-      const report = formatDriftReport(
-        "OpenAI Realtime WS (GA tool call events)",
-        diffs,
-        "openai-realtime",
-      );
+    const diffs = compareSSESequences(sdkEvents, realResult.events, mockEvents);
+    const report = formatDriftReport(
+      "OpenAI Realtime WS (GA tool call events)",
+      diffs,
+      "openai-realtime",
+    );
 
-      expect(
-        diffs.filter((d) => d.severity === "critical"),
-        report,
-      ).toEqual([]);
-    },
-  );
+    expect(
+      diffs.filter((d) => d.severity === "critical"),
+      report,
+    ).toEqual([]);
+  });
 
-  it.skipIf(!process.env.OPENAI_REALTIME_KEY)(
-    "GA and Beta event sequences are consistent after normalization",
-    async () => {
-      // GA connection (no Beta header)
-      const gaResult = await openaiRealtimeWS(config, "Say hello in one word.", undefined, false);
-
-      // Beta connection
-      const betaResult = await openaiRealtimeWS(config, "Say hello in one word.", undefined, true);
-
-      // Normalize GA events to Beta names for comparison
-      const gaToComparable = (type: string) => GA_TO_BETA_EVENT[type] ?? type;
-
-      const gaTypes = gaResult.events
-        .map((e) => e.type)
-        .filter((t) => !BETA_SUPPRESSED_EVENTS.has(t))
-        .map(gaToComparable);
-      const betaTypes = betaResult.events.map((e) => e.type);
-
-      // Deduplicate consecutive repeated types so that differences in delta
-      // count (non-deterministic LLM output length) don't cause false failures.
-      function dedupeConsecutive(types: string[]): string[] {
-        return types.filter((t, i) => i === 0 || t !== types[i - 1]);
-      }
-      expect(dedupeConsecutive(gaTypes)).toEqual(dedupeConsecutive(betaTypes));
-    },
-  );
+  // NOTE: A GA<->Beta event-sequence consistency probe used to live here. It was
+  // removed because OpenAI RETIRED the Realtime Beta API — a live Beta handshake
+  // now returns {"code":"beta_api_shape_disabled","message":"The Realtime Beta
+  // API is no longer supported. Please use /v1/realtime for the GA API."}, which
+  // quarantined the whole leg (exit 5). GA is the only live surface and the only
+  // surface aimock mocks, so the drift suite probes GA exclusively.
 });

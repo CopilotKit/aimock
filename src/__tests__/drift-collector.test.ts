@@ -418,6 +418,64 @@ describe("collectDriftEntries", () => {
     expect(exitCodeOf(result)).toBe(5);
   });
 
+  it("recognizes an OpenAI Realtime WS handshake failure as a critical DriftEntry (exit 2), NOT an opaque exit-5 quarantine", () => {
+    // REAL vitest failure-message shape captured from the drift-live-pr CI run
+    // that surfaced the GA session.type protocol change: the socket upgraded,
+    // the live API returned ONE `error` event, then the probe timed out waiting
+    // for session.updated. Before the WS-handshake recognizer this fell through
+    // to exit-5 quarantine (opaque red); now it is a parseable critical drift.
+    const wsHandshakeFailure =
+      "Error: waitUntil timeout after 30000ms. Collected 1 messages: [error] " +
+      'bodies=[{"type":"error","event_id":"event_E4b9BfUiVmC9qkIgQZSni",' +
+      '"error":{"type":"invalid_request_error","code":"missing_required_parameter",' +
+      '"message":"Missing required parameter: \'session.type\'.","param":"session.type"}}]\n' +
+      "    at openaiRealtimeWS (/repo/src/__tests__/drift/ws-providers.ts:214:23)\n" +
+      "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:138:26";
+    const result = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Realtime API drift"],
+        title: "WS text event sequence and shapes match (GA)",
+        failureMessages: [wsHandshakeFailure],
+      }),
+    ]);
+
+    // GREEN: one attributed critical entry, no quarantine, exit 2.
+    expect(quarantineOf(result)).toEqual([]);
+    const entries = entriesOf(result);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].provider).toBe("OpenAI Realtime");
+    expect(entries[0].builderFile).toBe("src/ws-realtime.ts");
+    expect(entries[0].diffs).toHaveLength(1);
+    expect(entries[0].diffs[0].severity).toBe("critical");
+    // The surfaced error payload (type/code/message) is carried into the entry.
+    expect(entries[0].diffs[0].real).toContain("invalid_request_error");
+    expect(entries[0].diffs[0].issue).toContain("missing_required_parameter");
+    expect(entries[0].diffs[0].issue).toContain("session.type");
+    expect(exitCodeOf(result)).toBe(2);
+  });
+
+  it("does NOT recognize a bare WS network timeout (zero messages, no error body) as handshake drift → stays quarantined (exit 5)", () => {
+    // A genuine transient network flake times out having collected ZERO
+    // messages and carries no provider `error` body. It must NOT be reclassified
+    // as protocol drift — it stays in the quarantine lane for human review.
+    const bareTimeout =
+      "Error: waitUntil timeout after 30000ms. Collected 0 messages: []\n" +
+      "    at openaiRealtimeWS (/repo/src/__tests__/drift/ws-providers.ts:372:20)\n" +
+      "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:138:26";
+    const result = makeResult([
+      makeAssertion({
+        status: "failed",
+        ancestorTitles: ["OpenAI Realtime API drift"],
+        title: "WS text event sequence and shapes match (GA)",
+        failureMessages: [bareTimeout],
+      }),
+    ]);
+    expect(entriesOf(result)).toEqual([]);
+    expect(quarantineOf(result)).toHaveLength(1);
+    expect(exitCodeOf(result)).toBe(5);
+  });
+
   it("returns valid entries and tolerates unparseable failures mixed in", () => {
     const driftText = formatDriftReport("OpenAI Chat (non-streaming text)", [SAMPLE_DIFF]);
     const result = makeResult([

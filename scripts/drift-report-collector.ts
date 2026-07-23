@@ -351,6 +351,48 @@ export function parseKnownModelsCanary(text: string): CanaryParseResult | null {
 }
 
 // ---------------------------------------------------------------------------
+// WS handshake-failure recognizer
+// ---------------------------------------------------------------------------
+
+/**
+ * A parsed OpenAI-Realtime WS handshake failure. The socket UPGRADED (101) and
+ * the live API sent back an `error` event, but the expected session-lifecycle
+ * event never arrived, so the probe's `waitUntil(...)` timed out. That shape is
+ * a genuine, actionable protocol drift (e.g. a GA session-config field the
+ * probe/mock stopped sending) — NOT a benign network flake (a flake times out
+ * having collected ZERO messages and carries no `error` body).
+ *
+ * Recognizing it here diverts it from the opaque exit-5 quarantine into a
+ * parseable, attributed critical DriftEntry (exit 2), so the failing handshake
+ * and its error payload are visible and route to a builder for remediation.
+ * Narrowly gated (realtime probe origin + a surfaced `error` event body) so it
+ * can never reclassify another provider's failure or a bare network timeout.
+ */
+export interface WSHandshakeFailure {
+  errorType: string;
+  errorCode: string;
+  errorMessage: string;
+}
+
+export function parseWSHandshakeFailure(text: string): WSHandshakeFailure | null {
+  // Gate 1: the probe timed out waiting for a lifecycle event (handshake never
+  // completed). Gate 2: it is the OpenAI Realtime WS probe (its stack frame is
+  // always present on a real failure; the surfaced `error` body comes from
+  // ws-providers' openaiRealtimeWS). Gate 3: an `error` event body was surfaced
+  // — this is the "connect succeeded but handshake didn't complete WITH a
+  // protocol error" case. A pure network flake (zero messages, no error body)
+  // fails Gate 3 and stays in the quarantine lane for human review.
+  if (!/waitUntil timeout/.test(text)) return null;
+  if (!/ws-realtime\.drift\.ts/.test(text)) return null;
+  if (!/"type"\s*:\s*"error"/.test(text)) return null;
+
+  const errorType = text.match(/"error"\s*:\s*\{[^}]*?"type"\s*:\s*"([^"]+)"/)?.[1] ?? "unknown";
+  const errorCode = text.match(/"code"\s*:\s*"([^"]+)"/)?.[1] ?? "unknown";
+  const errorMessage = text.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] ?? "unknown";
+  return { errorType, errorCode, errorMessage };
+}
+
+// ---------------------------------------------------------------------------
 // Run drift tests and collect results
 // ---------------------------------------------------------------------------
 
@@ -740,6 +782,39 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
           });
           continue;
         }
+
+        // A WS handshake that upgraded but never completed, carrying a surfaced
+        // provider `error` event, is a parseable critical drift (exit 2) — not
+        // an opaque exit-5 quarantine. Recognized narrowly so a bare network
+        // timeout (no error body) still falls through to the quarantine lane.
+        const wsFailure = parseWSHandshakeFailure(fullMessage);
+        if (wsFailure !== null) {
+          const mapping = SURFACE_REGISTRY["openai-realtime"];
+          entries.push({
+            provider: "OpenAI Realtime",
+            scenario: "WS handshake",
+            builderFile: mapping.builderFile,
+            builderFunctions: mapping.builderFunctions,
+            typesFile: mapping.typesFile ?? null,
+            sdkShapesFile: SDK_SHAPES_FILE,
+            diffs: [
+              {
+                severity: "critical" as const,
+                issue:
+                  "OpenAI Realtime WS handshake did not complete — the live API returned an " +
+                  `error event (${wsFailure.errorType}/${wsFailure.errorCode}) and the expected ` +
+                  "session lifecycle event never arrived. The realtime session config sent by the " +
+                  `probe/mock likely drifted from the live protocol. Error: ${wsFailure.errorMessage}`,
+                path: `session.${wsFailure.errorCode}`,
+                expected: "(handshake completes: session.created/updated received)",
+                real: `error ${wsFailure.errorType}: ${wsFailure.errorMessage}`,
+                mock: "<no mock leg — live handshake probe>",
+                id: `ws-handshake:${wsFailure.errorCode}`,
+              },
+            ],
+          });
+          continue;
+        }
         unparseable++;
         continue;
       }
@@ -834,9 +909,10 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
         const fullMessage = assertion.failureMessages.join("\n");
         const parsed = parseDriftBlock(fullMessage);
         if (!parsed || parsed.diffs.length === 0) {
-          // Canary shapes are handled above (they became entries) — only truly
-          // unparseable messages reach here.
+          // Canary and WS-handshake shapes are handled above (they became
+          // entries) — only truly unparseable messages reach here.
           if (parseKnownModelsCanary(fullMessage) !== null) continue;
+          if (parseWSHandshakeFailure(fullMessage) !== null) continue;
           unparseableFailures.push({
             message: fullMessage,
             testName: `${assertion.ancestorTitles.join(" ")} > ${assertion.title}`,

@@ -200,10 +200,19 @@ export function connectTLSWebSocket(
                     settled = true;
                     removeResolver();
                     const types = collected.map((m: any) => m?.type ?? "unknown").join(", ");
+                    // Surface collected message bodies (truncated) so an early
+                    // `error` event's code/message is visible in CI logs rather
+                    // than swallowed behind the bare type list.
+                    let bodies = "";
+                    try {
+                      bodies = ` bodies=${JSON.stringify(collected).slice(0, 800)}`;
+                    } catch {
+                      /* non-serializable payload; type list is enough */
+                    }
                     reject(
                       new Error(
                         `waitUntil timeout after ${timeoutMs}ms. ` +
-                          `Collected ${collected.length} messages: [${types}]`,
+                          `Collected ${collected.length} messages: [${types}]${bodies}`,
                       ),
                     );
                   }
@@ -344,28 +353,34 @@ export async function openaiRealtimeWS(
   config: ProviderConfig,
   text: string,
   tools?: object[],
-  beta = true,
 ): Promise<WSResult> {
-  // Realtime API requires a realtime-specific model (gpt-4o-mini doesn't work)
+  // GA-only probe. The Realtime Beta API is retired — a live Beta handshake
+  // ("OpenAI-Beta: realtime=v1") is now rejected with
+  // {"code":"beta_api_shape_disabled","message":"The Realtime Beta API is no
+  // longer supported. Please use /v1/realtime for the GA API."}. So this probe
+  // exercises ONLY the GA surface, which is the surface aimock mocks.
+  //
+  // Realtime API requires a realtime-specific model (gpt-4o-mini doesn't work).
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.apiKey}`,
   };
-  if (beta) {
-    headers["OpenAI-Beta"] = "realtime=v1";
-  }
   const ws = await connectTLSWebSocket(
     "api.openai.com",
-    "/v1/realtime?model=gpt-4o-mini-realtime-preview",
+    "/v1/realtime?model=gpt-realtime-mini",
     headers,
   );
 
   // Step 1: Wait for session.created
   const sessionCreated = await ws.waitUntil((msg: any) => msg?.type === "session.created");
 
-  // Step 2: Send session.update
+  // Step 2: Send session.update.
+  // GA requires session.type:"realtime" and renames the legacy `modalities`
+  // field to `output_modalities`. Confirmed live: a GA session.update without
+  // session.type is rejected with "Missing required parameter: 'session.type'".
   const session: Record<string, unknown> = {
-    model: "gpt-4o-mini-realtime-preview",
-    modalities: ["text"],
+    type: "realtime",
+    model: "gpt-realtime-mini",
+    output_modalities: ["text"],
   };
   if (tools) session.tools = tools;
   ws.send(JSON.stringify({ type: "session.update", session }));
@@ -385,11 +400,8 @@ export async function openaiRealtimeWS(
     }),
   );
 
-  // Step 5: Wait for conversation.item.created (Beta) or conversation.item.added (GA)
-  const itemCreated = await ws.waitUntil(
-    (msg: any) =>
-      msg?.type === "conversation.item.created" || msg?.type === "conversation.item.added",
-  );
+  // Step 5: Wait for conversation.item.added (GA)
+  const itemCreated = await ws.waitUntil((msg: any) => msg?.type === "conversation.item.added");
 
   // Step 6: Send response.create
   ws.send(JSON.stringify({ type: "response.create" }));
