@@ -81,6 +81,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
           # Written at the checkout root (cwd) so the relative provider import
           # below resolves against the repo. ESM relative specifiers key off the
@@ -188,6 +189,7 @@ jobs:
           # Un-gates the Ollama live drift leg against the daemon provisioned above.
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          FAL_KEY: ${{ secrets.FAL_KEY }}
         run: |
           set +e
           npx tsx scripts/drift-retry.ts
@@ -369,6 +371,7 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      FAL_KEY: ${{ secrets.FAL_KEY }}
     steps:
       # HEAD checkout: the PR ref (default checkout behavior on pull_request).
       # persist-credentials:false — this leg never pushes; keeps the token off
