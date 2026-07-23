@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { LLMock } from "../../llmock.js";
 import { extractShape, compareShapes, triangulate, formatDriftReport } from "./schema.js";
-import { falQueueLifecycleCanary } from "./providers.js";
+import { falQueueLifecycleCanary, FalCanarySkip, type FalQueueCanaryResult } from "./providers.js";
 
 const FAL_KEY = process.env.FAL_KEY;
 
@@ -251,23 +251,38 @@ describe("fal.ai queue lifecycle shapes", () => {
 const FAL_CANARY_MODEL = "fal-ai/flux/schnell";
 
 describe.skipIf(!FAL_KEY)("fal.ai queue lifecycle (live, cost-safe)", () => {
-  it("real submit + status + cancel envelopes match aimock's queue contract", async () => {
+  it("real submit + status + cancel envelopes match aimock's queue contract", async (ctx) => {
     // Drive the real fal queue (submit + immediate cancel) and the aimock
     // server in parallel, then triangulate exemplar x real x mock per step.
-    const [live, mockSubmitRes] = await Promise.all([
-      falQueueLifecycleCanary(FAL_KEY!, FAL_CANARY_MODEL, {
-        prompt: "aimock drift canary — cancelled immediately",
-        num_images: 1,
-      }),
-      fetch(`${mock.url}/fal/${FAL_CANARY_MODEL}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-fal-target-host": "queue.fal.run",
-        },
-        body: JSON.stringify({ input: { prompt: "a cat" } }),
-      }),
-    ]);
+    let live: FalQueueCanaryResult;
+    let mockSubmitRes: Response;
+    try {
+      [live, mockSubmitRes] = await Promise.all([
+        falQueueLifecycleCanary(FAL_KEY!, FAL_CANARY_MODEL, {
+          prompt: "aimock drift canary — cancelled immediately",
+          num_images: 1,
+        }),
+        fetch(`${mock.url}/fal/${FAL_CANARY_MODEL}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-fal-target-host": "queue.fal.run",
+          },
+          body: JSON.stringify({ input: { prompt: "a cat" } }),
+        }),
+      ]);
+    } catch (err) {
+      // fal itself unavailable (locked account / exhausted balance / rate /
+      // 5xx) is NOT drift — skip the live canary with a clear reason instead of
+      // failing the drift suite and poisoning the baseline. A genuine envelope
+      // drift is a 2xx-with-wrong-shape and never lands here.
+      if (err instanceof FalCanarySkip) {
+        console.warn(`[fal drift] ${err.message}`);
+        ctx.skip(err.message);
+        return;
+      }
+      throw err;
+    }
 
     // --- Submit: the queue contract's load-bearing fields, then triangulate ---
     expect(live.submit.status, JSON.stringify(live.submit.body)).toBe(200);
