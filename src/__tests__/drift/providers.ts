@@ -184,6 +184,10 @@ function toSSEEventShapes(events: { type: string; data: unknown }[]): SSEEventSh
 
 function withInfraErrorTag<T>(provider: string, fn: () => Promise<T>): Promise<T> {
   return fn().catch((err: unknown) => {
+    // A canary skip is an HONEST "provider unavailable" signal, not a drift
+    // finding — never re-tag it as an InfraError (that would poison the drift
+    // baseline via exit-5 quarantine). Let it propagate for the leg to catch.
+    if (err instanceof FalCanarySkip) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     const status = err instanceof InfraError ? err.status : 0;
     throw new InfraError(`INFRA_ERROR: ${provider} — ${msg}`, status);
@@ -778,6 +782,53 @@ export async function listOpenRouterModels(apiKey: string): Promise<OpenRouterMo
 // fal.ai queue lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Raised by the live fal canary when fal ITSELF is unavailable for an
+ * infra/auth/balance/rate reason (401 | 402 | 403 incl. "user locked" /
+ * "exhausted balance" | 429 | 5xx). This is NOT drift — the live leg catches it
+ * and SKIPS (exactly like the no-key skip), so a locked fal account never
+ * poisons the drift baseline.
+ *
+ * Deliberately NOT an `InfraError`: `withInfraErrorTag` re-throws it untouched,
+ * so the drift collector never sees an unparseable INFRA_ERROR to quarantine
+ * (exit 5). A genuine SHAPE drift (a 2xx whose envelope diverges from the mock)
+ * is never an infra status, so it still fails and reports drift as before.
+ */
+export class FalCanarySkip extends Error {
+  readonly status: number;
+
+  constructor(reason: string, status: number) {
+    super(reason);
+    this.name = "FalCanarySkip";
+    this.status = status;
+  }
+}
+
+/**
+ * True when a fal HTTP status means fal is UNAVAILABLE (auth/balance/rate/5xx),
+ * not that the response envelope drifted. Only these convert to a skip — every
+ * other status (incl. the expected 400 `ALREADY_COMPLETED` cancel race, or a
+ * 2xx with a wrong shape) flows through normally so real drift still fails.
+ */
+function isFalInfraStatus(status: number): boolean {
+  return status === 401 || status === 402 || status === 403 || status === 429 || status >= 500;
+}
+
+/**
+ * Throw a {@link FalCanarySkip} if `status` is an infra-class status. Called at
+ * each live lifecycle step (submit, status) BEFORE the hard `parseJsonResponse`
+ * → `InfraError` path, so an unavailable fal account skips instead of poisoning
+ * the baseline.
+ */
+function skipIfFalUnavailable(step: string, status: number, raw: string): void {
+  if (!isFalInfraStatus(status)) return;
+  const locked = /user is locked|exhausted balance/i.test(raw) ? " user-locked" : "";
+  throw new FalCanarySkip(
+    `fal infra/auth unavailable (${status}${locked}) at ${step} — skipping live canary`,
+    status,
+  );
+}
+
 /** One lifecycle step's HTTP status + parsed JSON envelope. */
 interface FalQueueStep {
   status: number;
@@ -796,14 +847,26 @@ export interface FalQueueCanaryResult {
  * (`src/fal.ts` handleFal / walkFalQueue). Drives the REAL fal queue API and
  * returns the SUBMIT, STATUS, and CANCEL envelope bodies for drift comparison.
  *
- * COST SAFETY: fal bills COMPUTE only when a queued job actually RUNS. This
- * canary submits a job (free) and cancels it IMMEDIATELY — while it is still
- * `IN_QUEUE` no compute is charged, so the expected cost is $0. The cancel is
+ * LIFECYCLE: a funded fal job does NOT reliably sit in `IN_QUEUE` — a fast
+ * model (e.g. `flux/schnell`) returns `status:"IN_PROGRESS"` on the submit
+ * envelope IMMEDIATELY. This canary is state-agnostic: it drives submit →
+ * status → CANCEL regardless of the reported state, and the caller's
+ * assertions accept any valid queued/running/completed status. The cancel is
  * issued even if the status poll throws (see the finally-style flow below) so a
- * job is never left to run. The `response_url` (completed result) endpoint is
- * NEVER fetched — that is the only paid retrieval, and its envelope stays
- * STATIC-only. Residual: if the (cheapest) model races to completion before the
- * cancel lands, at most one sub-cent generation is billed.
+ * job is never left to run.
+ *
+ * COST SAFETY: fal bills COMPUTE only when a queued job actually RUNS. The
+ * cheapest reliably-available model is used and the job is cancelled ASAP. The
+ * `response_url` (completed result) endpoint is NEVER fetched — that is the
+ * only paid retrieval, and its envelope stays STATIC-only. Residual: if the
+ * model races to completion before the immediate cancel lands, at most one
+ * sub-cent generation is billed.
+ *
+ * INFRA RESILIENCE: an unavailable fal account (401/402/403 locked-or-exhausted
+ * / 429 / 5xx) raises a {@link FalCanarySkip} at the submit or status step —
+ * an honest SKIP the live leg catches, NOT an InfraError that would quarantine
+ * the drift baseline. A 2xx-with-wrong-shape is never an infra status, so
+ * genuine envelope drift still reports critical.
  */
 export async function falQueueLifecycleCanary(
   apiKey: string,
@@ -821,6 +884,10 @@ export async function falQueueLifecycleCanary(
       body: JSON.stringify(input),
     });
     const submitRaw = await submitRes.text();
+    // fal unavailable (locked/exhausted-balance/rate/5xx) → honest skip, NOT a
+    // hard InfraError. Fires before the job is enqueued, so there is no cost and
+    // nothing to cancel.
+    skipIfFalUnavailable("submit", submitRes.status, submitRaw);
     const submitBody = parseJsonResponse(
       submitRaw,
       submitRes.status,
@@ -846,6 +913,9 @@ export async function falQueueLifecycleCanary(
     try {
       const statusRes = await fetchWithRetry(statusUrl, { method: "GET", headers: authHeaders });
       const statusRaw = await statusRes.text();
+      // fal unavailable mid-lifecycle → skip (rethrown after cancel fires, so a
+      // job is never left to run). A FalCanarySkip is preserved end-to-end.
+      skipIfFalUnavailable("status", statusRes.status, statusRaw);
       statusPoll = {
         status: statusRes.status,
         body: parseJsonResponse(

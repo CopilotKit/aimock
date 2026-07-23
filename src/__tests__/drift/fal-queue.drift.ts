@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { LLMock } from "../../llmock.js";
 import { extractShape, compareShapes, triangulate, formatDriftReport } from "./schema.js";
-import { falQueueLifecycleCanary } from "./providers.js";
+import { falQueueLifecycleCanary, FalCanarySkip, type FalQueueCanaryResult } from "./providers.js";
 
 const FAL_KEY = process.env.FAL_KEY;
 
@@ -247,21 +247,32 @@ describe("fal.ai queue lifecycle shapes", () => {
 // before the cancel lands.
 // ---------------------------------------------------------------------------
 
-/** Cheapest reliably-available fal image model; cancelled before it runs. */
+/** Cheapest reliably-available fal image model; cancelled ASAP after submit. */
 const FAL_CANARY_MODEL = "fal-ai/flux/schnell";
 
-// TEMPORARILY DESCOPED — live queue probe needs IN_PROGRESS lifecycle handling
-// (see fix/fal-probe-in-progress). Real fal `flux/schnell` returns
-// status:"IN_PROGRESS" immediately (not the assumed IN_QUEUE), which reds the
-// shared drift baseline on every PR. Static fal coverage above is retained.
-// Re-enable by removing the FAL_LIVE_QUEUE gate once the probe is fixed.
-describe.skipIf(!FAL_KEY || !process.env.FAL_LIVE_QUEUE)(
-  "fal.ai queue lifecycle (live, cost-safe)",
-  () => {
-    it("real submit + status + cancel envelopes match aimock's queue contract", async () => {
-      // Drive the real fal queue (submit + immediate cancel) and the aimock
-      // server in parallel, then triangulate exemplar x real x mock per step.
-      const [live, mockSubmitRes] = await Promise.all([
+/**
+ * Valid fal queue states. A funded job may report ANY of these — a fast model
+ * skips `IN_QUEUE` and returns `IN_PROGRESS` on submit immediately, and may even
+ * reach `COMPLETED`/`CANCELLED` by the time we poll. The canary is
+ * state-agnostic; the load-bearing invariant is that the reported state is one
+ * of the known lifecycle values, never that it is specifically `IN_QUEUE`.
+ */
+const VALID_QUEUE_STATUSES = new Set([
+  "IN_QUEUE",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "CANCELLED",
+  "CANCELLATION_REQUESTED",
+]);
+
+describe.skipIf(!FAL_KEY)("fal.ai queue lifecycle (live, cost-safe)", () => {
+  it("real submit + status + cancel envelopes match aimock's queue contract", async (ctx) => {
+    // Drive the real fal queue (submit + immediate cancel) and the aimock
+    // server in parallel, then triangulate exemplar x real x mock per step.
+    let live: FalQueueCanaryResult;
+    let mockSubmitRes: Response;
+    try {
+      [live, mockSubmitRes] = await Promise.all([
         falQueueLifecycleCanary(FAL_KEY!, FAL_CANARY_MODEL, {
           prompt: "aimock drift canary — cancelled immediately",
           num_images: 1,
@@ -275,58 +286,90 @@ describe.skipIf(!FAL_KEY || !process.env.FAL_LIVE_QUEUE)(
           body: JSON.stringify({ input: { prompt: "a cat" } }),
         }),
       ]);
+    } catch (err) {
+      // fal itself unavailable (locked account / exhausted balance / rate /
+      // 5xx) is NOT drift — skip the live canary with a clear reason instead of
+      // failing the drift suite and poisoning the baseline. A genuine envelope
+      // drift is a 2xx-with-wrong-shape and never lands here.
+      if (err instanceof FalCanarySkip) {
+        console.warn(`[fal drift] ${err.message}`);
+        ctx.skip(err.message);
+        return;
+      }
+      throw err;
+    }
 
-      // --- Submit: the queue contract's load-bearing fields, then triangulate ---
-      expect(live.submit.status, JSON.stringify(live.submit.body)).toBe(200);
-      expect(typeof live.submit.body?.request_id).toBe("string");
-      expect(typeof live.submit.body?.status_url).toBe("string");
-      expect(typeof live.submit.body?.response_url).toBe("string");
-      expect(typeof live.submit.body?.cancel_url).toBe("string");
-
-      const mockSubmitBody = await mockSubmitRes.json();
-      const submitDiffs = triangulate(
-        falQueueSubmitShape(),
-        extractShape(live.submit.body),
-        extractShape(mockSubmitBody),
+    // --- Submit: the queue contract's load-bearing fields, then triangulate.
+    // A funded fast model returns `IN_PROGRESS` (not `IN_QUEUE`) immediately, so
+    // we accept any 2xx and any valid queued/running status — never assert the
+    // job is specifically queued. ---
+    expect(live.submit.status, JSON.stringify(live.submit.body)).toBeGreaterThanOrEqual(200);
+    expect(live.submit.status, JSON.stringify(live.submit.body)).toBeLessThan(300);
+    expect(typeof live.submit.body?.request_id).toBe("string");
+    expect(typeof live.submit.body?.status_url).toBe("string");
+    expect(typeof live.submit.body?.response_url).toBe("string");
+    expect(typeof live.submit.body?.cancel_url).toBe("string");
+    // fal returns `status` on the submit envelope; when present it must be a
+    // recognized lifecycle state (IN_QUEUE OR IN_PROGRESS, etc.).
+    if (live.submit.body?.status !== undefined) {
+      expect(VALID_QUEUE_STATUSES, JSON.stringify(live.submit.body)).toContain(
+        live.submit.body.status,
       );
-      expect(
-        submitDiffs.filter((d) => d.severity === "critical"),
-        formatDriftReport("fal.ai queue submit (live)", submitDiffs, "fal-queue"),
-      ).toEqual([]);
+    }
 
-      // --- Status: triangulate real vs aimock vs exemplar (shape, not value) ---
-      const mockStatusRes = await fetch(
-        `${mock.url}/fal/${FAL_CANARY_MODEL}/requests/${mockSubmitBody.request_id}/status`,
-        { headers: { "x-fal-target-host": "queue.fal.run" } },
-      );
-      expect(live.statusPoll.status, JSON.stringify(live.statusPoll.body)).toBe(200);
-      expect(typeof live.statusPoll.body?.status).toBe("string");
+    const mockSubmitBody = await mockSubmitRes.json();
+    const submitDiffs = triangulate(
+      falQueueSubmitShape(),
+      extractShape(live.submit.body),
+      extractShape(mockSubmitBody),
+    );
+    expect(
+      submitDiffs.filter((d) => d.severity === "critical"),
+      formatDriftReport("fal.ai queue submit (live)", submitDiffs, "fal-queue"),
+    ).toEqual([]);
 
-      const statusDiffs = triangulate(
-        falQueueStatusShape(),
-        extractShape(live.statusPoll.body),
-        extractShape(await mockStatusRes.json()),
-      );
-      expect(
-        statusDiffs.filter((d) => d.severity === "critical"),
-        formatDriftReport("fal.ai queue status (live)", statusDiffs, "fal-queue"),
-      ).toEqual([]);
+    // --- Status: triangulate real vs aimock vs exemplar (shape, not value).
+    // Accept any valid lifecycle state; a fast model may already be COMPLETED. ---
+    const mockStatusRes = await fetch(
+      `${mock.url}/fal/${FAL_CANARY_MODEL}/requests/${mockSubmitBody.request_id}/status`,
+      { headers: { "x-fal-target-host": "queue.fal.run" } },
+    );
+    expect(live.statusPoll.status, JSON.stringify(live.statusPoll.body)).toBe(200);
+    expect(typeof live.statusPoll.body?.status).toBe("string");
+    expect(VALID_QUEUE_STATUSES, JSON.stringify(live.statusPoll.body)).toContain(
+      live.statusPoll.body?.status,
+    );
 
-      // --- Cancel: real fal returns a { status } envelope (200
-      // CANCELLATION_REQUESTED while queued, or 400 ALREADY_COMPLETED on a race).
-      // The load-bearing field is `status: string` either way. ---
-      expect([200, 400]).toContain(live.cancel.status);
-      expect(typeof live.cancel.body?.status).toBe("string");
+    const statusDiffs = triangulate(
+      falQueueStatusShape(),
+      extractShape(live.statusPoll.body),
+      extractShape(await mockStatusRes.json()),
+    );
+    expect(
+      statusDiffs.filter((d) => d.severity === "critical"),
+      formatDriftReport("fal.ai queue status (live)", statusDiffs, "fal-queue"),
+    ).toEqual([]);
 
-      const cancelDiffs = triangulate(
-        falQueueCancelShape(),
-        extractShape(live.cancel.body),
-        falQueueCancelShape(),
-      );
-      expect(
-        cancelDiffs.filter((d) => d.severity === "critical"),
-        formatDriftReport("fal.ai queue cancel (live)", cancelDiffs, "fal-queue"),
-      ).toEqual([]);
-    });
-  },
-);
+    // --- Cancel: real fal's cancel envelope varies by state — 200
+    // `{status:"CANCELLATION_REQUESTED"}` while queued/running, 400
+    // `{status:"ALREADY_COMPLETED"}` on a completion race, or a 400
+    // `{detail:"..."}` error body. The load-bearing invariant is only that a
+    // JSON envelope came back with a recognized status/http code; the precise
+    // shape is left to triangulate (which grades optional fields by severity).
+    // We deliberately do NOT require a `status` string — a completed job's
+    // `{detail}` body has none, and demanding it was the original brittle bug. ---
+    expect([200, 400]).toContain(live.cancel.status);
+    expect(live.cancel.body, JSON.stringify(live.cancel.body)).toBeTypeOf("object");
+    expect(live.cancel.body).not.toBeNull();
+
+    const cancelDiffs = triangulate(
+      falQueueCancelShape(),
+      extractShape(live.cancel.body),
+      falQueueCancelShape(),
+    );
+    expect(
+      cancelDiffs.filter((d) => d.severity === "critical"),
+      formatDriftReport("fal.ai queue cancel (live)", cancelDiffs, "fal-queue"),
+    ).toEqual([]);
+  });
+});
