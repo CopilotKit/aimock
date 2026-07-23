@@ -728,6 +728,52 @@ export async function listOpenRouterVideoModels(apiKey: string): Promise<string[
   });
 }
 
+/** One OpenRouter model-catalog entry (only `id` is relied upon; extras kept). */
+export interface OpenRouterModelObject {
+  id: string;
+  [key: string]: unknown;
+}
+
+/**
+ * List OpenRouter's chat/LLM models via the public catalog `GET
+ * /api/v1/models`. This is the cost-safe daily live-reality canary for the
+ * OpenRouter CHAT surface (`src/openrouter-chat.ts` handleOpenRouterModels /
+ * shapeOpenRouterCompletion) — it authenticates and reads model METADATA only,
+ * NEVER submitting a paid chat completion. Returns the raw catalog objects
+ * (provider-prefixed slugs like "openai/gpt-4o", "anthropic/claude-3.5-sonnet",
+ * "google/gemini-2.0-flash-001") so the leg can assert both the author families
+ * aimock mirrors AND that the per-model object schema has not drifted.
+ */
+export async function listOpenRouterModels(apiKey: string): Promise<OpenRouterModelObject[]> {
+  return withInfraErrorTag("OpenRouter Models", async () => {
+    const url = "https://openrouter.ai/api/v1/models";
+    const res = await fetchWithRetry(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    const raw = await res.text();
+    const json = parseJsonResponse(raw, res.status, "OpenRouter model list", url) as {
+      data: OpenRouterModelObject[];
+    };
+    // Guard the top-level catalog shape: a null/primitive body or a
+    // missing/non-array `data` is itself a drift the canary must surface as a
+    // NAMED error, not an opaque downstream TypeError. Check the container
+    // FIRST so `JSON.parse("null")` (which clears assertOk) can't throw before
+    // our named error fires.
+    if (
+      json === null ||
+      typeof json !== "object" ||
+      !Array.isArray((json as { data?: unknown }).data)
+    ) {
+      throw new Error(
+        `OpenRouter /models returned no data array (got ${typeof (json as { data?: unknown })?.data}) — catalog shape drift`,
+      );
+    }
+    return json.data;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // fal.ai queue lifecycle
 // ---------------------------------------------------------------------------

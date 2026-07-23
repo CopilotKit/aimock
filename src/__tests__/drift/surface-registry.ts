@@ -266,6 +266,17 @@ export const SURFACE_REGISTRY: Record<string, SurfaceMapping> = {
     ],
     typesFile: null,
   },
+  "openrouter-chat": {
+    provider: "OpenRouter Chat",
+    builderFile: "src/openrouter-chat.ts",
+    builderFunctions: [
+      "shapeOpenRouterCompletion",
+      "shapeOpenRouterChunks",
+      "serializeOpenRouterError",
+      "handleOpenRouterModels",
+    ],
+    typesFile: "src/types.ts",
+  },
 };
 
 /**
