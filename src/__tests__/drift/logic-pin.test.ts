@@ -200,7 +200,7 @@ const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
   },
   "includeFamilies.anthropic": {
     members: [...includeFamilies.anthropic].sort(),
-    pin: "dbd8b4ef9afd50057143480d89db373886e7c19abe36ef9b4421456305ca2509",
+    pin: "ab79ff332fadeff93c2678ebe3e0af7a6280ce6f0deb4694228e316944dfeb74",
   },
   "includeFamilies.gemini": {
     members: [...includeFamilies.gemini].sort(),

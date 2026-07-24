@@ -129,6 +129,7 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     // Claude 5 families (text chat)
+    "claude-opus-5",
     "claude-sonnet-5",
     // claude-fable-5 is included ahead of a recorded fixture (intended — mirrors
     // the forward-looking rationale for the exclude-by-rule patterns above).
