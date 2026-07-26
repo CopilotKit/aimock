@@ -209,6 +209,113 @@ export function applyProviderAuth(
 }
 
 /**
+ * Well-known credential provider families, identified from a credential's
+ * distinctive prefix. Used by the fail-safe proxy guard below to refuse
+ * relaying a caller's REAL credential to an upstream that belongs to a
+ * DIFFERENT provider — the failure mode where a fixture is missing, `--proxy-only`
+ * falls through to the configured upstream, and (say) a GitHub token gets
+ * forwarded to `api.openai.com`, which rejects it.
+ */
+export type CredentialProvider =
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "github"
+  | "xai"
+  | "groq"
+  | "openrouter";
+
+/**
+ * Identify the provider a credential belongs to from its distinctive prefix.
+ * Returns `undefined` for a credential with no well-known marker (custom
+ * gateways, ambiguous keys) or an absent/dummy placeholder key, so the guard
+ * that consumes this FAILS OPEN and never blocks a legitimate/self-hosted setup.
+ *
+ * Order matters: more-specific markers are tested before the broad `sk-` OpenAI
+ * prefix (e.g. `sk-ant-` Anthropic and `sk-or-` OpenRouter must win over `sk-`).
+ */
+export function detectCredentialProvider(
+  credential: string | undefined,
+): CredentialProvider | undefined {
+  if (!credential) return undefined;
+  const c = credential.trim();
+  if (c.length === 0) return undefined;
+  // A placeholder/dummy key is not a real provider credential.
+  if (c.startsWith(getDummyKeyMarker())) return undefined;
+  // GitHub (incl. GitHub Models): fine-grained PATs and classic `gh?_` tokens.
+  if (/^github_pat_/.test(c) || /^gh[posru]_/.test(c)) return "github";
+  if (c.startsWith("sk-ant-")) return "anthropic";
+  if (c.startsWith("sk-or-")) return "openrouter";
+  if (c.startsWith("xai-")) return "xai";
+  if (c.startsWith("gsk_")) return "groq";
+  if (c.startsWith("AIza")) return "google";
+  // Broad OpenAI prefix LAST (sk-…, sk-proj-…) after the sk-* specials above.
+  if (c.startsWith("sk-")) return "openai";
+  return undefined;
+}
+
+/**
+ * Classify an upstream host into a credential-provider family. Returns
+ * `undefined` for hosts with no well-known mapping (localhost, custom gateways,
+ * test doubles) so the guard FAILS OPEN. Note GitHub Models is OpenAI-wire-
+ * compatible but authenticates with a GitHub token, so its hosts map to
+ * `github`, not `openai`.
+ */
+export function classifyUpstreamHost(host: string): CredentialProvider | undefined {
+  const h = host.toLowerCase();
+  if (h === "api.openai.com") return "openai";
+  if (h === "api.anthropic.com") return "anthropic";
+  if (h.endsWith(".googleapis.com")) return "google";
+  if (h === "api.x.ai") return "xai";
+  if (h === "api.groq.com") return "groq";
+  if (h === "openrouter.ai") return "openrouter";
+  if (h === "models.inference.ai.azure.com" || h === "models.github.ai") return "github";
+  return undefined;
+}
+
+/** Result of the fail-safe credential/upstream compatibility check. */
+export interface CredentialCompatResult {
+  ok: boolean;
+  detectedProvider?: CredentialProvider;
+  upstreamProvider?: CredentialProvider;
+  upstreamHost?: string;
+}
+
+/** The `AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1` escape hatch disables the guard. */
+function isCrossProviderProxyAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.AIMOCK_ALLOW_CROSS_PROVIDER_PROXY;
+  return v === "1" || v === "true";
+}
+
+/**
+ * Fail-safe guard for the proxy-on-miss path: is the credential currently in
+ * `forwardHeaders` safe to send to `target`? Returns `ok:false` ONLY when BOTH
+ * the credential AND the upstream host are confidently classified to DIFFERENT
+ * provider families (e.g. a `github_pat_…` token bound for `api.openai.com`).
+ *
+ * Any uncertainty fails OPEN (`ok:true`): an unknown/dummy credential, a
+ * signed/OAuth provider with no static-key scheme, or an unrecognized upstream
+ * host (localhost, a custom gateway, a self-hosted mirror) is never blocked, so
+ * this cannot break a legitimate proxy setup. Honors
+ * `AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1`.
+ */
+export function checkCredentialUpstreamCompat(
+  forwardHeaders: Record<string, string>,
+  target: URL,
+  providerKey: RecordProviderKey,
+): CredentialCompatResult {
+  if (isCrossProviderProxyAllowed()) return { ok: true };
+  const scheme = PROVIDER_AUTH_SCHEMES[providerKey];
+  if (!scheme) return { ok: true }; // signed/OAuth provider — no static key to classify
+  const detectedProvider = detectCredentialProvider(readCallerCredential(forwardHeaders, scheme));
+  if (!detectedProvider) return { ok: true }; // no known-provider credential → fail open
+  const upstreamProvider = classifyUpstreamHost(target.hostname);
+  if (!upstreamProvider) return { ok: true }; // unrecognized upstream host → fail open
+  if (detectedProvider === upstreamProvider) return { ok: true };
+  return { ok: false, detectedProvider, upstreamProvider, upstreamHost: target.hostname };
+}
+
+/**
  * Read per-provider built-in keys from the environment. Returns undefined when
  * no provider key is configured so the feature stays fully inert by default.
  *

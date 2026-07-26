@@ -20,7 +20,8 @@ import type { Logger } from "./logger.js";
 import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
-import { applyProviderAuth } from "./provider-auth.js";
+import { applyProviderAuth, checkCredentialUpstreamCompat } from "./provider-auth.js";
+import type { MetricsRegistry } from "./metrics.js";
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
@@ -399,6 +400,7 @@ export async function proxyAndRecord(
     record?: RecordConfig;
     logger: Logger;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+    registry?: MetricsRegistry;
   },
   rawBody?: string,
   options?: ProxyOptions,
@@ -445,6 +447,53 @@ export async function proxyAndRecord(
   // absent or dummy-prefixed caller credential is replaced. gemini-interactions
   // reuses the Gemini key, mirroring the upstream-URL remap above.
   applyProviderAuth(forwardHeaders, target, providerKey, record.providerKeys?.[lookupKey]);
+
+  // Fail-safe: refuse to relay a caller credential to an upstream that belongs
+  // to a DIFFERENT provider (e.g. a GitHub token bound for api.openai.com when a
+  // fixture is missing and --proxy-only fell through to the wrong upstream).
+  // This prevents leaking a real credential to the wrong vendor and surfaces a
+  // clear error instead of the vendor's confusing "invalid_api_key". Fails open
+  // for unknown credentials/hosts; override with AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1.
+  const compat = checkCredentialUpstreamCompat(forwardHeaders, target, providerKey);
+  if (!compat.ok) {
+    defaults.logger.error(
+      `REFUSING PROXY — caller sent a ${compat.detectedProvider} credential but the ` +
+        `${providerKey} upstream is ${compat.upstreamHost} (a ${compat.upstreamProvider} endpoint). ` +
+        `Not forwarding the credential. This usually means no fixture matched and --proxy-only ` +
+        `fell through to the wrong upstream. Add a matching fixture, point --provider-${providerKey} ` +
+        `at the correct host, or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1 to override.`,
+    );
+    defaults.registry?.incrementCounter("aimock_proxy_refused_total", {
+      provider: providerKey,
+      reason: "credential_provider_mismatch",
+    });
+    if (!res.headersSent) {
+      writeErrorResponse(
+        res,
+        502,
+        JSON.stringify({
+          error: {
+            message:
+              `aimock refused to proxy this request: the caller credential looks like a ` +
+              `${compat.detectedProvider} key but the configured ${providerKey} upstream ` +
+              `(${compat.upstreamHost}) is a ${compat.upstreamProvider} endpoint. No fixture ` +
+              `matched and aimock will not forward the credential to a mismatched provider. ` +
+              `Add a fixture for this request, or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1.`,
+            type: "proxy_refused",
+          },
+        }),
+      );
+    }
+    return "relayed";
+  }
+
+  // Observability: a successful fall-through to a live upstream. `context_present`
+  // surfaces the showcase failure signature (requests proxying with no
+  // X-AIMock-Context, so every context-scoped fixture missed).
+  defaults.registry?.incrementCounter("aimock_proxy_forwarded_total", {
+    provider: providerKey,
+    context_present: request._context ? "true" : "false",
+  });
 
   const requestBody = rawBody ?? JSON.stringify(request);
 
