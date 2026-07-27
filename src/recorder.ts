@@ -20,7 +20,11 @@ import type { Logger } from "./logger.js";
 import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
-import { applyProviderAuth, checkCredentialUpstreamCompat } from "./provider-auth.js";
+import {
+  applyProviderAuth,
+  checkCredentialUpstreamCompat,
+  detectBearerCredentialProvider,
+} from "./provider-auth.js";
 import type { MetricsRegistry } from "./metrics.js";
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
@@ -409,13 +413,36 @@ export async function proxyAndRecord(
   if (!record) return "not_configured";
 
   const providers = record.providers;
+
+  // Credential-aware upstream selection (opt-in). GitHub Models is OpenAI-wire-
+  // compatible, so a `github_pat_…` token arrives on the OpenAI surface and is
+  // routed as providerKey "openai". When a github upstream is explicitly wired
+  // (`--provider-github`), route such a request to GitHub Models instead of the
+  // openai upstream so the PAT reaches an endpoint that accepts it — otherwise it
+  // would be forwarded to api.openai.com and rejected. Fires ONLY for a
+  // confidently-detected github credential; any other/dummy/absent credential is
+  // untouched (falls through to normal surface routing), and if no github
+  // upstream is configured the request stays "openai" and the fail-safe guard
+  // below refuses the true github→openai mismatch. See PNI-108/PNI-110.
+  let effectiveProviderKey = providerKey;
+  if (
+    providerKey === "openai" &&
+    providers.github &&
+    detectBearerCredentialProvider(req.headers.authorization) === "github"
+  ) {
+    effectiveProviderKey = "github";
+  }
+
   // Gemini Interactions uses the same upstream API as Gemini (identical base URL
   // and auth), so we remap the provider key to reuse the configured Gemini URL.
-  const lookupKey = providerKey === "gemini-interactions" ? "gemini" : providerKey;
+  const lookupKey =
+    effectiveProviderKey === "gemini-interactions" ? "gemini" : effectiveProviderKey;
   const upstreamUrl = providers[lookupKey];
 
   if (!upstreamUrl) {
-    defaults.logger.warn(`No upstream URL configured for provider "${providerKey}" — cannot proxy`);
+    defaults.logger.warn(
+      `No upstream URL configured for provider "${effectiveProviderKey}" — cannot proxy`,
+    );
     return "not_configured";
   }
 
@@ -425,7 +452,7 @@ export async function proxyAndRecord(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     defaults.logger.error(
-      `Invalid upstream URL for provider "${providerKey}": ${upstreamUrl} (${msg})`,
+      `Invalid upstream URL for provider "${effectiveProviderKey}": ${upstreamUrl} (${msg})`,
     );
     writeErrorResponse(
       res,
@@ -445,8 +472,11 @@ export async function proxyAndRecord(
   // If aimock owns a built-in upstream key for this provider, inject it now
   // (opt-in, backward-compatible). A real caller credential overrides it; an
   // absent or dummy-prefixed caller credential is replaced. gemini-interactions
-  // reuses the Gemini key, mirroring the upstream-URL remap above.
-  applyProviderAuth(forwardHeaders, target, providerKey, record.providerKeys?.[lookupKey]);
+  // reuses the Gemini key, mirroring the upstream-URL remap above. NOTE: on the
+  // credential-aware github remap, the caller by definition sent a REAL
+  // github_pat_… (that is what triggers the remap), so it is always forwarded
+  // verbatim and AIMOCK_PROVIDER_GITHUB_KEY is not injected on this path.
+  applyProviderAuth(forwardHeaders, target, effectiveProviderKey, record.providerKeys?.[lookupKey]);
 
   // Fail-safe: refuse to relay a caller credential to an upstream that belongs
   // to a DIFFERENT provider (e.g. a GitHub token bound for api.openai.com when a
@@ -454,17 +484,26 @@ export async function proxyAndRecord(
   // This prevents leaking a real credential to the wrong vendor and surfaces a
   // clear error instead of the vendor's confusing "invalid_api_key". Fails open
   // for unknown credentials/hosts; override with AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1.
-  const compat = checkCredentialUpstreamCompat(forwardHeaders, target, providerKey);
+  const compat = checkCredentialUpstreamCompat(forwardHeaders, target, effectiveProviderKey);
   if (!compat.ok) {
+    // Actionable remedy. GitHub Models is first-class (`--provider-github`), so
+    // for a github credential we point at that flag directly; for other detected
+    // providers we keep it generic rather than synthesize a `--provider-<x>` flag
+    // that may not exist (the credential-provider families are a superset of the
+    // wired --provider-* flags).
+    const remedy =
+      compat.detectedProvider === "github"
+        ? "wire --provider-github so GitHub Models (github_pat_…) credentials route to GitHub Models"
+        : `route ${compat.detectedProvider} credentials to a matching ${compat.detectedProvider} upstream`;
     defaults.logger.error(
       `REFUSING PROXY — caller sent a ${compat.detectedProvider} credential but the ` +
-        `${providerKey} upstream is ${compat.upstreamHost} (a ${compat.upstreamProvider} endpoint). ` +
+        `${effectiveProviderKey} upstream is ${compat.upstreamHost} (a ${compat.upstreamProvider} endpoint). ` +
         `Not forwarding the credential. This usually means no fixture matched and --proxy-only ` +
-        `fell through to the wrong upstream. Add a matching fixture, point --provider-${providerKey} ` +
-        `at the correct host, or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1 to override.`,
+        `fell through to the wrong upstream. Add a matching fixture, ${remedy}, ` +
+        `or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1 to override.`,
     );
     defaults.registry?.incrementCounter("aimock_proxy_refused_total", {
-      provider: providerKey,
+      provider: effectiveProviderKey,
       reason: "credential_provider_mismatch",
     });
     if (!res.headersSent) {
@@ -475,10 +514,10 @@ export async function proxyAndRecord(
           error: {
             message:
               `aimock refused to proxy this request: the caller credential looks like a ` +
-              `${compat.detectedProvider} key but the configured ${providerKey} upstream ` +
+              `${compat.detectedProvider} key but the configured ${effectiveProviderKey} upstream ` +
               `(${compat.upstreamHost}) is a ${compat.upstreamProvider} endpoint. No fixture ` +
               `matched and aimock will not forward the credential to a mismatched provider. ` +
-              `Add a fixture for this request, or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1.`,
+              `Add a fixture for this request, ${remedy}, or set AIMOCK_ALLOW_CROSS_PROVIDER_PROXY=1.`,
             type: "proxy_refused",
           },
         }),
@@ -491,7 +530,7 @@ export async function proxyAndRecord(
   // surfaces the showcase failure signature (requests proxying with no
   // X-AIMock-Context, so every context-scoped fixture missed).
   defaults.registry?.incrementCounter("aimock_proxy_forwarded_total", {
-    provider: providerKey,
+    provider: effectiveProviderKey,
     context_present: request._context ? "true" : "false",
   });
 
@@ -891,6 +930,12 @@ export async function proxyAndRecord(
   if (collapsed?.truncated) {
     persistWarnings.push("Stream response was truncated — fixture may be incomplete");
   }
+  // Record under the ORIGINAL surface `providerKey` (not `effectiveProviderKey`):
+  // GitHub Models is OpenAI-wire-compatible, so on replay an inbound github_pat_…
+  // request is re-classified by its surface as "openai". Persisting under the
+  // credential-aware "github" key would make the fixture unmatchable on replay.
+  // `effectiveProviderKey` governs only egress (upstream/auth/guard); wire-format
+  // classification and fixture identity stay with the surface key.
   const persistResult = persistFixture({
     record,
     providerKey,

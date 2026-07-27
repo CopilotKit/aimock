@@ -3,6 +3,7 @@ import http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
 import {
   detectCredentialProvider,
+  detectBearerCredentialProvider,
   classifyUpstreamHost,
   checkCredentialUpstreamCompat,
 } from "../provider-auth.js";
@@ -36,6 +37,24 @@ describe("detectCredentialProvider", () => {
     expect(detectCredentialProvider("my-custom-gateway-key")).toBeUndefined();
     expect(detectCredentialProvider("")).toBeUndefined();
     expect(detectCredentialProvider(undefined)).toBeUndefined();
+  });
+});
+
+describe("detectBearerCredentialProvider", () => {
+  it("strips a Bearer scheme prefix (case-insensitive) and classifies the token", () => {
+    expect(detectBearerCredentialProvider("Bearer github_pat_11ABCDEF")).toBe("github");
+    expect(detectBearerCredentialProvider("Bearer sk-proj-abc")).toBe("openai");
+    expect(detectBearerCredentialProvider("bearer sk-ant-api03-xyz")).toBe("anthropic");
+  });
+
+  it("treats a bare value with no scheme prefix as the credential", () => {
+    expect(detectBearerCredentialProvider("github_pat_11ABCDEF")).toBe("github");
+  });
+
+  it("returns undefined for absent / dummy / unknown credentials", () => {
+    expect(detectBearerCredentialProvider(undefined)).toBeUndefined();
+    expect(detectBearerCredentialProvider("Bearer sk-aimock-dev-ci")).toBeUndefined();
+    expect(detectBearerCredentialProvider("Bearer my-custom-gateway-key")).toBeUndefined();
   });
 });
 
@@ -239,6 +258,9 @@ describe("proxy-on-miss credential guard (integration)", () => {
     });
     expect(res.status).toBe(502);
     expect(res.body).toContain("proxy_refused");
+    // The remedy names the first-class github upstream, not a --provider-openai
+    // repoint (which is impossible on a shared instance).
+    expect(res.body).toContain("--provider-github");
 
     const metrics = await fetch(recorder.url + "/metrics").then((r) => r.text());
     expect(metrics).toContain("aimock_proxy_refused_total");
@@ -264,5 +286,73 @@ describe("proxy-on-miss credential guard (integration)", () => {
     const metrics = await fetch(recorder.url + "/metrics").then((r) => r.text());
     expect(metrics).toContain("aimock_proxy_forwarded_total");
     expect(metrics).toContain('context_present="true"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credential-aware upstream selection (PNI-110): GitHub Models is OpenAI-wire-
+// compatible, so a github_pat_… token arrives on the openai surface. When a
+// github upstream is wired, route it there instead of the openai upstream; the
+// PNI-108 guard then sees github→github and allows the forward. Opt-in: with no
+// --provider-github wired, behavior is unchanged (the guard refuses).
+// ---------------------------------------------------------------------------
+
+describe("proxy-on-miss credential-aware github routing (integration)", () => {
+  let recorder: ServerInstance | undefined;
+  let openaiUpstream: FakeUpstream | undefined;
+  let githubUpstream: FakeUpstream | undefined;
+
+  afterEach(async () => {
+    for (const u of [openaiUpstream, githubUpstream]) {
+      if (u) await new Promise<void>((r) => u.server.close(() => r()));
+    }
+    openaiUpstream = undefined;
+    githubUpstream = undefined;
+    if (recorder) {
+      await new Promise<void>((r) => recorder!.server.close(() => r()));
+      recorder = undefined;
+    }
+  });
+
+  it("routes a GitHub PAT on the openai surface to the github upstream, not openai", async () => {
+    openaiUpstream = await createFakeUpstream();
+    githubUpstream = await createFakeUpstream();
+    recorder = await createServer([], {
+      port: 0,
+      metrics: true,
+      record: {
+        providers: { openai: openaiUpstream.url, github: githubUpstream.url },
+        proxyOnly: true,
+      },
+    });
+    const res = await httpPost(recorder.url + CHAT_PATH, CHAT_BODY, {
+      Authorization: "Bearer github_pat_11ABCDEF0000",
+    });
+    expect(res.status).toBe(200);
+    expect(githubUpstream.count()).toBe(1);
+    expect(openaiUpstream.count()).toBe(0);
+
+    // Egress observability is labeled with the effective (github) provider.
+    const metrics = await fetch(recorder.url + "/metrics").then((r) => r.text());
+    expect(metrics).toContain("aimock_proxy_forwarded_total");
+    expect(metrics).toContain('provider="github"');
+  });
+
+  it("leaves a real OpenAI key on the openai upstream even when a github upstream is configured", async () => {
+    openaiUpstream = await createFakeUpstream();
+    githubUpstream = await createFakeUpstream();
+    recorder = await createServer([], {
+      port: 0,
+      record: {
+        providers: { openai: openaiUpstream.url, github: githubUpstream.url },
+        proxyOnly: true,
+      },
+    });
+    const res = await httpPost(recorder.url + CHAT_PATH, CHAT_BODY, {
+      Authorization: "Bearer sk-proj-realopenaikey",
+    });
+    expect(res.status).toBe(200);
+    expect(openaiUpstream.count()).toBe(1);
+    expect(githubUpstream.count()).toBe(0);
   });
 });

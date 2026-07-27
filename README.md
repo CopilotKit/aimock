@@ -138,6 +138,7 @@ In record or `--proxy-only` mode, aimock forwards the caller's auth header to th
 | `AIMOCK_PROVIDER_COHERE_KEY`     | Cohere                           | `Authorization: Bearer <key>` |
 | `AIMOCK_PROVIDER_GROK_KEY`       | Grok (xAI)                       | `Authorization: Bearer <key>` |
 | `AIMOCK_PROVIDER_OLLAMA_KEY`     | Ollama (Cloud / bearer-gated)    | `Authorization: Bearer <key>` |
+| `AIMOCK_PROVIDER_GITHUB_KEY`     | GitHub Models                    | `Authorization: Bearer <key>` |
 | `AIMOCK_PROVIDER_ANTHROPIC_KEY`  | Anthropic                        | `x-api-key: <key>`            |
 | `AIMOCK_PROVIDER_GEMINI_KEY`     | Gemini (and Gemini Interactions) | `x-goog-api-key: <key>`       |
 | `AIMOCK_PROVIDER_VEO_KEY`        | Veo                              | `x-goog-api-key: <key>`       |
@@ -148,6 +149,12 @@ In record or `--proxy-only` mode, aimock forwards the caller's auth header to th
 The Gemini interactions provider mode reuses `AIMOCK_PROVIDER_GEMINI_KEY` (same upstream API as Gemini). An empty-string value is treated as unset.
 
 This is opt-in and backward-compatible: with no key configured the feature is inert and the caller's header passes through as-is. Injection fires only when the caller sent no credential **or** a dummy credential prefixed with `sk-aimock-` (overridable via `AIMOCK_DUMMY_KEY_MARKER`); a real caller key never starting with that marker is always forwarded verbatim, so the caller overrides aimock. Signed and exchanged credentials — AWS Bedrock (SigV4) and Vertex AI (OAuth) — are never rewritten and always forwarded unchanged. (Azure's static `api-key` is injected; a real Microsoft Entra ID `Authorization: Bearer` token from the caller is never dummy-prefixed, so it too passes through verbatim.)
+
+### GitHub Models — credential-aware upstream routing (`--provider-github`)
+
+[GitHub Models](https://github.com/marketplace/models) is OpenAI-wire-compatible: clients point a stock OpenAI SDK at `https://models.inference.ai.azure.com` and authenticate with a GitHub PAT (`github_pat_…` / `ghp_…`) as the bearer token. Because the surface is `/v1/chat/completions`, aimock classifies such a request as the `openai` provider — so on a fixture-miss it would proxy to whatever `--provider-openai` points at (e.g. `api.openai.com`), which rejects the GitHub token.
+
+Wire `--provider-github https://models.inference.ai.azure.com` and, on a fixture-miss, aimock routes requests whose bearer token is detected as a GitHub credential to the GitHub Models upstream instead of the openai one, forwarding the PAT verbatim. This is **opt-in**: with no `--provider-github` set, a GitHub PAT that misses is refused by the cross-provider credential guard (a clear `proxy_refused` 502) rather than leaked to OpenAI. Detection is by credential shape only — a dummy or non-GitHub key is untouched and follows normal `openai` routing. (`AIMOCK_PROVIDER_GITHUB_KEY` is listed above for parity with the other providers, but on this path the caller's real PAT is always present and forwarded, so it is never injected.)
 
 ## Framework Guides
 

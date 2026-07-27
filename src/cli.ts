@@ -41,6 +41,7 @@ Options:
       --provider-ollama <url>     Upstream URL for Ollama
       --provider-cohere <url>     Upstream URL for Cohere
       --provider-openrouter <url> Upstream URL for OpenRouter (video record proxy)
+      --provider-github <url>     Upstream URL for GitHub Models (github_pat_… on the OpenAI-compatible surface)
       --upstream-timeout-ms <ms>  Idle timeout (ms) on upstream socket before response (default: 30000)
       --body-timeout-ms <ms>      Idle timeout (ms) on upstream response body between chunks (default: 30000)
       --max-proxy-buffer-bytes <n> Cap (bytes) on in-memory proxy-path buffer; full body still relayed (default: 67108864)
@@ -79,6 +80,7 @@ const { values } = parseArgs({
     "provider-ollama": { type: "string" },
     "provider-cohere": { type: "string" },
     "provider-openrouter": { type: "string" },
+    "provider-github": { type: "string" },
     "upstream-timeout-ms": { type: "string" },
     "body-timeout-ms": { type: "string" },
     "max-proxy-buffer-bytes": { type: "string" },
@@ -255,6 +257,7 @@ if (values.record || values["proxy-only"]) {
   if (values["provider-ollama"]) providers.ollama = values["provider-ollama"];
   if (values["provider-cohere"]) providers.cohere = values["provider-cohere"];
   if (values["provider-openrouter"]) providers.openrouter = values["provider-openrouter"];
+  if (values["provider-github"]) providers.github = values["provider-github"];
 
   if (Object.keys(providers).length === 0) {
     console.error(
@@ -307,6 +310,7 @@ if (values.record || values["proxy-only"]) {
       "provider-ollama",
       "provider-cohere",
       "provider-openrouter",
+      "provider-github",
     ] as const
   ).filter((flag) => values[flag] !== undefined);
   if (droppedProviderFlags.length > 0) {

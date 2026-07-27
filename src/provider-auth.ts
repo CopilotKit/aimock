@@ -28,7 +28,7 @@ export function getDummyKeyMarker(): string {
  * credential unchanged.
  *
  * Scheme kinds (all static long-lived keys):
- *   - bearer          `Authorization: Bearer <key>`  (OpenAI, OpenRouter, Cohere, Grok/xAI, Ollama)
+ *   - bearer          `Authorization: Bearer <key>`  (OpenAI, OpenRouter, Cohere, Grok/xAI, Ollama, GitHub Models)
  *   - fal-key         `Authorization: Key <key>`     (fal.ai — note the `Key ` prefix, NOT `Bearer`)
  *   - x-api-key       `x-api-key: <key>`             (Anthropic)
  *   - x-goog-api-key  `x-goog-api-key: <key>`        (Gemini, Gemini Interactions, Veo)
@@ -55,6 +55,7 @@ const PROVIDER_AUTH_SCHEMES: Partial<Record<RecordProviderKey, AuthScheme>> = {
   cohere: { kind: "bearer" },
   grok: { kind: "bearer" }, // xAI
   ollama: { kind: "bearer" }, // Ollama Cloud / bearer-gated Ollama servers
+  github: { kind: "bearer" }, // GitHub Models (github_pat_…) on the OpenAI-compatible surface
   // Anthropic.
   anthropic: { kind: "x-api-key" },
   // Google (Gemini + Veo) use the x-goog-api-key header scheme.
@@ -255,6 +256,24 @@ export function detectCredentialProvider(
 }
 
 /**
+ * Detect the credential-provider family of the caller's bearer token straight
+ * from a raw `Authorization` header value, without building the forward-header
+ * map. Strips a leading `Bearer ` scheme prefix if present. Used by the
+ * proxy-on-miss path to pick a credential-aware upstream BEFORE the upstream URL
+ * is resolved. Only the bearer scheme is inspected — that is the only scheme the
+ * credential-aware upstream remap currently applies to (the OpenAI-compatible
+ * surface, which is where GitHub Models' `github_pat_…` tokens arrive).
+ */
+export function detectBearerCredentialProvider(
+  authorization: string | undefined,
+): CredentialProvider | undefined {
+  if (!authorization) return undefined;
+  const match = /^\s*Bearer\s+(.+)$/i.exec(authorization);
+  const credential = match ? match[1].trim() : authorization.trim();
+  return detectCredentialProvider(credential);
+}
+
+/**
  * Classify an upstream host into a credential-provider family. Returns
  * `undefined` for hosts with no well-known mapping (localhost, custom gateways,
  * test doubles) so the guard FAILS OPEN. Note GitHub Models is OpenAI-wire-
@@ -336,6 +355,7 @@ export function readProviderKeysFromEnv(
   if (env.AIMOCK_PROVIDER_OPENROUTER_KEY) keys.openrouter = env.AIMOCK_PROVIDER_OPENROUTER_KEY;
   if (env.AIMOCK_PROVIDER_COHERE_KEY) keys.cohere = env.AIMOCK_PROVIDER_COHERE_KEY;
   if (env.AIMOCK_PROVIDER_GROK_KEY) keys.grok = env.AIMOCK_PROVIDER_GROK_KEY;
+  if (env.AIMOCK_PROVIDER_GITHUB_KEY) keys.github = env.AIMOCK_PROVIDER_GITHUB_KEY;
   if (env.AIMOCK_PROVIDER_OLLAMA_KEY) keys.ollama = env.AIMOCK_PROVIDER_OLLAMA_KEY;
   if (env.AIMOCK_PROVIDER_VEO_KEY) keys.veo = env.AIMOCK_PROVIDER_VEO_KEY;
   if (env.AIMOCK_PROVIDER_AZURE_KEY) keys.azure = env.AIMOCK_PROVIDER_AZURE_KEY;

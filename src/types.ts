@@ -896,7 +896,8 @@ export type RecordProviderKey =
   | "fal"
   | "openrouter"
   | "veo"
-  | "grok";
+  | "grok"
+  | "github";
 
 export interface RecordConfig {
   providers: Partial<Record<RecordProviderKey, string>>;
