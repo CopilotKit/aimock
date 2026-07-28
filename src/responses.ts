@@ -292,6 +292,7 @@ export function buildTextStreamEvents(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -299,6 +300,7 @@ export function buildTextStreamEvents(
     reasoning,
     webSearches,
     overrides,
+    emitEncryptedReasoning,
   );
 
   const { events: msgEvents, msgItem } = buildMessageOutputEvents(
@@ -331,6 +333,7 @@ export function buildToolCallStreamEvents(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -338,6 +341,7 @@ export function buildToolCallStreamEvents(
     reasoning,
     webSearches,
     overrides,
+    emitEncryptedReasoning,
   );
 
   const fcOutputItems: object[] = [];
@@ -418,10 +422,47 @@ export function buildToolCallStreamEvents(
   return events;
 }
 
+/**
+ * Whether the incoming Responses request opted into encrypted reasoning via
+ * `include: ["reasoning.encrypted_content"]`. Real OpenAI only returns the
+ * encrypted reasoning blob when the caller asks for it this way — the
+ * stateless-replay path used by `agent-framework-openai` >= 1.11.0. Gating on it
+ * keeps every other consumer's replay byte-identical.
+ */
+function requestOptsIntoEncryptedReasoning(req: ResponsesRequest): boolean {
+  const include = (req as { include?: unknown }).include;
+  return Array.isArray(include) && include.includes("reasoning.encrypted_content");
+}
+
+/**
+ * Synthetic stand-in for OpenAI's `reasoning.encrypted_content`. aimock has no
+ * real ciphertext, so it emits a deterministic placeholder keyed on the
+ * reasoning id. Consumers store it (e.g. as agent-framework `protected_data`)
+ * and replay it back verbatim on the next request; aimock matches on content and
+ * ignores the echoed blob, so any stable string is safe. Emitted only when the
+ * request opts in (see `requestOptsIntoEncryptedReasoning`). Without it,
+ * agent-framework-openai >= 1.11.0 hard-fails a reasoning + multi-tool chain on
+ * the follow-up request. See microsoft/agent-framework#7233.
+ */
+function syntheticEncryptedReasoning(reasoningId: string): string {
+  return `aimock-encrypted-reasoning:${reasoningId}`;
+}
+
+/** Spreadable `encrypted_content` field for a reasoning item, or empty when off. */
+function encryptedReasoningField(
+  reasoningId: string,
+  emitEncryptedReasoning: boolean,
+): Record<string, string> {
+  return emitEncryptedReasoning
+    ? { encrypted_content: syntheticEncryptedReasoning(reasoningId) }
+    : {};
+}
+
 function buildReasoningStreamEvents(
   reasoning: string,
   model: string,
   chunkSize: number,
+  emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
   const reasoningId = generateId("rs");
   const events: ResponsesSSEEvent[] = [];
@@ -433,6 +474,7 @@ function buildReasoningStreamEvents(
       type: "reasoning",
       id: reasoningId,
       summary: [],
+      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
     },
   });
 
@@ -478,6 +520,7 @@ function buildReasoningStreamEvents(
       type: "reasoning",
       id: reasoningId,
       summary: [{ type: "summary_text", text: reasoning }],
+      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
     },
   });
 
@@ -536,6 +579,7 @@ function buildResponsePreamble(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
 ): PreambleResult {
   const respId = overrides?.id ?? responseId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
@@ -568,7 +612,12 @@ function buildResponsePreamble(
   });
 
   if (reasoning) {
-    const reasoningEvents = buildReasoningStreamEvents(reasoning, model, chunkSize);
+    const reasoningEvents = buildReasoningStreamEvents(
+      reasoning,
+      model,
+      chunkSize,
+      emitEncryptedReasoning,
+    );
     events.push(...reasoningEvents);
     const doneEvent = reasoningEvents.find(
       (e) =>
@@ -725,14 +774,21 @@ function buildFunctionCallOutputEvents(
 
 // ─── Non-streaming response builders ────────────────────────────────────────
 
-function buildOutputPrefix(content: string, reasoning?: string, webSearches?: string[]): object[] {
+function buildOutputPrefix(
+  content: string,
+  reasoning?: string,
+  webSearches?: string[],
+  emitEncryptedReasoning = false,
+): object[] {
   const output: object[] = [];
 
   if (reasoning) {
+    const reasoningId = generateId("rs");
     output.push({
       type: "reasoning",
-      id: generateId("rs"),
+      id: reasoningId,
       summary: [{ type: "summary_text", text: reasoning }],
+      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
     });
   }
 
@@ -780,10 +836,11 @@ function buildTextResponse(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
 ): object {
   return buildResponseEnvelope(
     model,
-    buildOutputPrefix(content, reasoning, webSearches),
+    buildOutputPrefix(content, reasoning, webSearches, emitEncryptedReasoning),
     overrides,
   );
 }
@@ -794,13 +851,16 @@ function buildToolCallResponse(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
 ): object {
   const output: object[] = [];
   if (reasoning) {
+    const reasoningId = generateId("rs");
     output.push({
       type: "reasoning",
-      id: generateId("rs"),
+      id: reasoningId,
       summary: [{ type: "summary_text", text: reasoning }],
+      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
     });
   }
   if (webSearches && webSearches.length > 0) {
@@ -835,6 +895,7 @@ export function buildContentWithToolCallsStreamEvents(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
+  emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -842,6 +903,7 @@ export function buildContentWithToolCallsStreamEvents(
     reasoning,
     webSearches,
     overrides,
+    emitEncryptedReasoning,
   );
 
   // The output items assembled in emission order (after any reasoning /
@@ -944,6 +1006,7 @@ function buildContentWithToolCallsResponse(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
+  emitEncryptedReasoning = false,
 ): object {
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-streaming `output[]` array is positionally observable,
@@ -954,10 +1017,12 @@ function buildContentWithToolCallsResponse(
     const ordered = resolveFixtureBlocks(blocks);
     const output: object[] = [];
     if (reasoning) {
+      const reasoningId = generateId("rs");
       output.push({
         type: "reasoning",
-        id: generateId("rs"),
+        id: reasoningId,
         summary: [{ type: "summary_text", text: reasoning }],
+        ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
       });
     }
     if (webSearches && webSearches.length > 0) {
@@ -987,7 +1052,7 @@ function buildContentWithToolCallsResponse(
   }
 
   // LEGACY PATH: message item first, then function_call items — unchanged.
-  const output = buildOutputPrefix(content, reasoning, webSearches);
+  const output = buildOutputPrefix(content, reasoning, webSearches, emitEncryptedReasoning);
   for (const tc of toolCalls) {
     output.push(buildFunctionCallOutputItem(tc));
   }
@@ -1084,6 +1149,12 @@ export async function handleResponses(
   const completionReq = responsesToCompletionRequest(responsesReq);
   completionReq._endpointType = "chat";
   completionReq._context = getContext(req);
+
+  // Emit a synthetic `reasoning.encrypted_content` only when the request opted in
+  // via `include` (mirrors real OpenAI). This is what agent-framework-openai
+  // >= 1.11.0 sends on stateless-replay requests; without the blob it hard-fails
+  // a reasoning + multi-tool chain. See microsoft/agent-framework#7233.
+  const emitEncryptedReasoning = requestOptsIntoEncryptedReasoning(responsesReq);
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
@@ -1261,6 +1332,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         response.blocks,
+        emitEncryptedReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1274,6 +1346,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         response.blocks,
+        emitEncryptedReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {
@@ -1319,6 +1392,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        emitEncryptedReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1330,6 +1404,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        emitEncryptedReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {
@@ -1375,6 +1450,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        emitEncryptedReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1386,6 +1462,7 @@ export async function handleResponses(
         effReasoning,
         response.webSearches,
         overrides,
+        emitEncryptedReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {

@@ -1878,6 +1878,87 @@ describe("reasoning_summary_text.done includes item_id", () => {
   });
 });
 
+// ─── reasoning.encrypted_content (microsoft/agent-framework#7233) ────────────
+//
+// Real OpenAI returns an opaque `encrypted_content` blob on reasoning items only
+// when the request opts in via `include: ["reasoning.encrypted_content"]` (the
+// stateless-replay path used by agent-framework-openai >= 1.11.0). aimock now
+// synthesizes a placeholder so that client can replay the reasoning item instead
+// of hard-failing the reasoning + multi-tool follow-up request.
+
+describe("reasoning.encrypted_content emission", () => {
+  function reasoningItems(events: SSEEvent[]): { type: string; encrypted_content?: string }[] {
+    return events
+      .filter(
+        (e) =>
+          (e.type === "response.output_item.added" || e.type === "response.output_item.done") &&
+          (e.item as { type?: string })?.type === "reasoning",
+      )
+      .map((e) => e.item as { type: string; encrypted_content?: string });
+  }
+
+  it("builder omits encrypted_content by default (flag off)", () => {
+    const events = buildTextStreamEvents("result", "gpt-5-test", 100, "thinking...");
+    const items = reasoningItems(events);
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) expect(item.encrypted_content).toBeUndefined();
+  });
+
+  it("builder emits encrypted_content on the done item when flag on", () => {
+    const events = buildTextStreamEvents(
+      "result",
+      "gpt-5-test",
+      100,
+      "thinking...",
+      undefined,
+      undefined,
+      true,
+    );
+    const done = events.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as { type?: string })?.type === "reasoning",
+    );
+    expect(done).toBeDefined();
+    const item = done!.item as { id: string; encrypted_content?: string };
+    expect(typeof item.encrypted_content).toBe("string");
+    expect(item.encrypted_content!.length).toBeGreaterThan(0);
+  });
+
+  const reasoningFixture: Fixture = {
+    match: { userMessage: "compare" },
+    response: { content: "AAPL vs MSFT", reasoning: "Look up AAPL, then MSFT." },
+  };
+
+  it("streams encrypted_content when the request includes reasoning.encrypted_content", async () => {
+    instance = await createServer([reasoningFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "compare" }],
+      stream: true,
+      include: ["reasoning.encrypted_content"],
+    });
+    expect(res.status).toBe(200);
+    const items = reasoningItems(parseResponsesSSEEvents(res.body));
+    const done = items.find((i) => i.encrypted_content !== undefined);
+    expect(done).toBeDefined();
+    expect(typeof done!.encrypted_content).toBe("string");
+  });
+
+  it("omits encrypted_content when the request does not opt in", async () => {
+    instance = await createServer([reasoningFixture]);
+    const res = await post(`${instance.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "compare" }],
+      stream: true,
+    });
+    expect(res.status).toBe(200);
+    const items = reasoningItems(parseResponsesSSEEvents(res.body));
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) expect(item.encrypted_content).toBeUndefined();
+  });
+});
+
 // ─── Bug fix: multi-fco after single item_reference ─────────────────────────
 
 describe("multi-fco after single item_reference", () => {
