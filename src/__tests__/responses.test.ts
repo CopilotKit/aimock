@@ -1905,8 +1905,16 @@ describe("reasoning.encrypted_content emission", () => {
     return ev?.item as { id: string; encrypted_content?: string } | undefined;
   }
 
+  // `added` placement is NOT contractual: real OpenAI populates it, aimock omits
+  // it, and both are legal (field is anyOf:[string,null], non-required). So a
+  // present blob must be a string, but absence must NOT fail. (Contrast the
+  // flag-off case below, which pins genuine absence.)
+  const assertAddedNotPinned = (item: { encrypted_content?: string }): void => {
+    if (item.encrypted_content !== undefined) expect(typeof item.encrypted_content).toBe("string");
+  };
+
   const reasoningTextFixture: Fixture = {
-    match: { userMessage: "compare" },
+    match: { userMessage: "textreason" },
     response: { content: "AAPL vs MSFT", reasoning: "Look up AAPL, then MSFT." },
   };
   const reasoningToolFixture: Fixture = {
@@ -1921,8 +1929,22 @@ describe("reasoning.encrypted_content emission", () => {
       reasoning: "Think, then call.",
     },
   };
+  // `blocks` forces the positional NEW branch of buildContentWithToolCalls* (both
+  // streaming and non-streaming), which builds its own reasoning item.
+  const reasoningBlocksFixture: Fixture = {
+    match: { userMessage: "blocksreason" },
+    response: {
+      content: "done",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      reasoning: "Think, then call.",
+      blocks: [
+        { type: "toolCall", name: "get_stock", arguments: "{}" },
+        { type: "text", text: "done" },
+      ],
+    },
+  };
 
-  // --- Builder-level: placement (added vs done) + determinism ---
+  // --- Builder-level: placement + determinism ---
 
   it("builder omits encrypted_content everywhere when the flag is off", () => {
     const events = buildTextStreamEvents("result", "gpt-5-test", 100, "thinking...");
@@ -1930,7 +1952,7 @@ describe("reasoning.encrypted_content emission", () => {
     expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
   });
 
-  it("builder emits the blob ONLY on the done item, and it is deterministic by id", () => {
+  it("builder emits the blob on the done item, deterministic by id", () => {
     // trailing `true` = emitEncryptedReasoning
     const events = buildTextStreamEvents(
       "result",
@@ -1941,19 +1963,22 @@ describe("reasoning.encrypted_content emission", () => {
       undefined,
       true,
     );
-    const added = reasoningItem(events, "added")!;
     const done = reasoningItem(events, "done")!;
-    expect(added.encrypted_content).toBeUndefined(); // never on `added` (langchainjs#10844)
     expect(done.encrypted_content).toBe(expectedBlob(done.id)); // pins presence + determinism
+    assertAddedNotPinned(reasoningItem(events, "added")!);
   });
 
-  // --- HTTP streaming: gate triggers + completed.output ---
+  // --- HTTP streaming: every builder + gate triggers + completed.output ---
 
-  async function streamReasoning(body: Record<string, unknown>): Promise<SSEEvent[]> {
-    instance = await createServer([reasoningTextFixture]);
+  async function streamReasoning(
+    fixture: Fixture,
+    userMessage: string,
+    body: Record<string, unknown>,
+  ): Promise<SSEEvent[]> {
+    instance = await createServer([fixture]);
     const res = await post(`${instance!.url}/v1/responses`, {
       model: "gpt-5-test",
-      input: [{ role: "user", content: "compare" }],
+      input: [{ role: "user", content: userMessage }],
       stream: true,
       ...body,
     });
@@ -1961,12 +1986,39 @@ describe("reasoning.encrypted_content emission", () => {
     return parseResponsesSSEEvents(res.body);
   }
 
-  it("emits the blob when the request opts in via include", async () => {
-    const events = await streamReasoning({ include: ["reasoning.encrypted_content"] });
-    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
+  const OPT_IN = { include: ["reasoning.encrypted_content"] };
+
+  // One case per streaming builder: buildTextStreamEvents,
+  // buildToolCallStreamEvents, buildContentWithToolCallsStreamEvents (legacy +
+  // blocks branches). Each must carry the blob on the done reasoning item.
+  const streamingCases: [string, Fixture, string][] = [
+    ["text (buildTextStreamEvents)", reasoningTextFixture, "textreason"],
+    ["tool-only (buildToolCallStreamEvents)", reasoningToolFixture, "toolreason"],
+    [
+      "content+tool legacy (buildContentWithToolCallsStreamEvents)",
+      reasoningContentToolFixture,
+      "bothreason",
+    ],
+    [
+      "content+tool blocks (buildContentWithToolCallsStreamEvents)",
+      reasoningBlocksFixture,
+      "blocksreason",
+    ],
+  ];
+
+  for (const [label, fixture, msg] of streamingCases) {
+    it(`streaming ${label} carries the blob on done when opted in`, async () => {
+      const events = await streamReasoning(fixture, msg, OPT_IN);
+      const done = reasoningItem(events, "done")!;
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(done.encrypted_content).toBe(expectedBlob(done.id));
+      assertAddedNotPinned(reasoningItem(events, "added")!);
+    });
+  }
+
+  it("streaming reflects the blob in response.completed.output", async () => {
+    const events = await streamReasoning(reasoningTextFixture, "textreason", OPT_IN);
     const done = reasoningItem(events, "done")!;
-    expect(done.encrypted_content).toBe(expectedBlob(done.id));
-    // Also present on the reasoning item inside response.completed.output.
     const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
       response: { output: { type: string; encrypted_content?: string }[] };
     };
@@ -1974,19 +2026,19 @@ describe("reasoning.encrypted_content emission", () => {
     expect(outputReasoning!.encrypted_content).toBe(done.encrypted_content);
   });
 
-  it("emits the blob for a stateless request (store:false) even without include", async () => {
-    const events = await streamReasoning({ store: false });
+  it("streaming emits the blob for a stateless request (store:false) without include", async () => {
+    const events = await streamReasoning(reasoningTextFixture, "textreason", { store: false });
     const done = reasoningItem(events, "done")!;
     expect(done.encrypted_content).toBe(expectedBlob(done.id));
   });
 
-  it("omits the blob for a stored request that did not opt in", async () => {
-    const events = await streamReasoning({});
+  it("streaming omits the blob for a stored request that did not opt in", async () => {
+    const events = await streamReasoning(reasoningTextFixture, "textreason", {});
     expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
     expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
   });
 
-  // --- Non-streaming builders: all three carry the blob when opted in ---
+  // --- Non-streaming: every builder path (incl. the positional blocks branch) ---
 
   async function nonStreamReasoning(
     fixture: Fixture,
@@ -2006,23 +2058,25 @@ describe("reasoning.encrypted_content emission", () => {
     return body.output;
   }
 
-  it("non-streaming text response carries the blob (buildOutputPrefix)", async () => {
-    const output = await nonStreamReasoning(reasoningTextFixture, "compare");
-    const r = output.find((o) => o.type === "reasoning")!;
-    expect(r.encrypted_content).toBe(expectedBlob(r.id));
-  });
+  const nonStreamingCases: [string, Fixture, string][] = [
+    ["text (buildOutputPrefix)", reasoningTextFixture, "textreason"],
+    ["tool-only (buildToolCallResponse)", reasoningToolFixture, "toolreason"],
+    ["content+tool legacy (buildOutputPrefix)", reasoningContentToolFixture, "bothreason"],
+    [
+      "content+tool blocks (buildContentWithToolCallsResponse)",
+      reasoningBlocksFixture,
+      "blocksreason",
+    ],
+  ];
 
-  it("non-streaming tool-call response carries the blob (buildToolCallResponse)", async () => {
-    const output = await nonStreamReasoning(reasoningToolFixture, "toolreason");
-    const r = output.find((o) => o.type === "reasoning")!;
-    expect(r.encrypted_content).toBe(expectedBlob(r.id));
-  });
-
-  it("non-streaming content+tool response carries the blob (buildContentWithToolCallsResponse)", async () => {
-    const output = await nonStreamReasoning(reasoningContentToolFixture, "bothreason");
-    const r = output.find((o) => o.type === "reasoning")!;
-    expect(r.encrypted_content).toBe(expectedBlob(r.id));
-  });
+  for (const [label, fixture, msg] of nonStreamingCases) {
+    it(`non-streaming ${label} carries the blob when opted in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg);
+      const r = output.find((o) => o.type === "reasoning")!;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r.encrypted_content).toBe(expectedBlob(r.id));
+    });
+  }
 });
 
 // ─── Bug fix: multi-fco after single item_reference ─────────────────────────

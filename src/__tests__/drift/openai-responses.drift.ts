@@ -558,39 +558,13 @@ describe("OpenAI Responses API reasoning drift", () => {
     expect(reasoningAdded, "no output_item.added with type=reasoning").toBeDefined();
   });
 
-  it("opted-in reasoning carries encrypted_content ONLY on the terminal item", async () => {
-    // Real OpenAI populates reasoning.encrypted_content on the `done` item (and
-    // response.completed.output), never on `added`, when the caller opts in via
-    // include or a stateless (store:false) request. See microsoft/agent-framework#7233.
-    const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
-      model: "gpt-4o-mini",
-      input: [{ role: "user", content: "Think carefully" }],
-      stream: true,
-      include: ["reasoning.encrypted_content"],
-    });
-    expect(res.status).toBe(200);
-
-    const events = parseTypedSSE(res.body);
-    const reasoningItemOf = (kind: "added" | "done") =>
-      events.find(
-        (e) =>
-          e.type === `response.output_item.${kind}` &&
-          (e.data as { item?: { type?: string } }).item?.type === "reasoning",
-      )?.data as { item?: { encrypted_content?: string } } | undefined;
-
-    const added = reasoningItemOf("added");
-    const done = reasoningItemOf("done");
-    expect(added?.item, "no reasoning output_item.added").toBeDefined();
-    expect(done?.item, "no reasoning output_item.done").toBeDefined();
-    expect(
-      added!.item!.encrypted_content,
-      "encrypted_content must be absent on added",
-    ).toBeUndefined();
-    expect(typeof done!.item!.encrypted_content, "encrypted_content must be present on done").toBe(
-      "string",
-    );
-    expect(done!.item!.encrypted_content!.length).toBeGreaterThan(0);
-  });
+  // NOTE: encrypted_content emission is enforced by the unit + WS suites
+  // (responses.test.ts / ws-responses.test.ts), which run in CI and fail on a
+  // dropped blob. A local-server assertion here would not add coverage (this
+  // block posts to a local aimock, not api.openai.com, and drift `expect`
+  // failures are report-collected rather than hard-failing). The live spec
+  // anchor lives in sdk-shapes.ts (`openaiResponsesReasoningEventShapes` pins
+  // encrypted_content on the terminal item) for the triangulated legs above.
 
   it("reasoning event shapes include item_id, output_index, summary_index", async () => {
     const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {

@@ -784,3 +784,102 @@ describe("WebSocket /v1/responses reasoning capability gating", () => {
     ws.close();
   });
 });
+
+// ─── WS reasoning.encrypted_content (microsoft/agent-framework#7233) ─────────
+//
+// The gate must be honored over the WebSocket Responses transport too — the WS
+// dispatch rebuilds the request field-by-field, so `include` / `store` and the
+// emitted blob need transport-level coverage (deleting the threading otherwise
+// leaves every test green).
+
+describe("WebSocket /v1/responses encrypted reasoning", () => {
+  const expectedBlob = (id: string): string =>
+    Buffer.from(`aimock-encrypted-reasoning:${id}`).toString("base64");
+
+  function createMsg(userContent: string, extra: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: "response.create",
+      model: "gpt-4.1", // non-strict keeps reasoning for non-reasoning models (see above)
+      input: [{ role: "user", content: userContent }],
+      ...extra,
+    });
+  }
+
+  async function collectUntilCompleted(ws: {
+    waitForMessages: (n: number) => Promise<string[]>;
+  }): Promise<WSEvent[]> {
+    const maxEvents = 50;
+    let events: WSEvent[] = [];
+    for (let count = 1; count <= maxEvents; count++) {
+      events = parseEvents(await ws.waitForMessages(count));
+      if (events[events.length - 1].type === "response.completed") return events;
+    }
+    throw new Error(
+      `response.completed never arrived within ${maxEvents} events ` +
+        `(last: ${events[events.length - 1]?.type})`,
+    );
+  }
+
+  const reasoningDone = (events: WSEvent[]) =>
+    events.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as { type?: string })?.type === "reasoning",
+    )?.item as { id: string; encrypted_content?: string } | undefined;
+
+  it("emits the blob on the done item when opted in via include (content+reasoning)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    // Also reflected in the terminal completed.output.
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (
+      completed!.response as { output: { type: string; encrypted_content?: string }[] }
+    ).output;
+    const outReasoning = output.find((o) => o.type === "reasoning");
+    expect(outReasoning!.encrypted_content).toBe(done!.encrypted_content);
+
+    ws.close();
+  });
+
+  it("emits the blob for a tool-only reasoning response when opted in", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("tool-reason", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  it("emits the blob for a stateless request (store:false) without include", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { store: false }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  it("omits the blob when the request does not opt in", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", {}));
+
+    const events = await collectUntilCompleted(ws);
+    expect(reasoningDone(events)!.encrypted_content).toBeUndefined();
+
+    ws.close();
+  });
+});

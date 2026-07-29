@@ -464,6 +464,12 @@ export function openaiResponsesReasoningEventShapes(): SSEEventShape[] {
           type: "reasoning",
           id: "rs_abc123",
           summary: [{ type: "summary_text", text: "Step by step..." }],
+          // Real OpenAI carries the encrypted reasoning blob on the terminal
+          // item when the request opts in (include / store:false). aimock emits
+          // it there too. Anchored on `done` only — `added` is opportunistic in
+          // real OpenAI and aimock deliberately omits it, so pinning `added`
+          // would flag an intentional, legal shape choice as drift.
+          encrypted_content: "gAAAAAB...",
         },
       }),
     },

@@ -431,13 +431,16 @@ export function buildToolCallStreamEvents(
 /**
  * Whether the incoming Responses request should receive encrypted reasoning.
  *
- * Real OpenAI populates `reasoning.encrypted_content` when the caller opts in
- * with `include: ["reasoning.encrypted_content"]` OR whenever the response is
- * not server-side stored (`store: false` / ZDR) — the latter became the default
- * trigger in openai-python 2.46.0. `agent-framework-openai` >= 1.11.0 drives its
- * stateless-replay path with both signals set. Gating on either keeps aimock in
- * step with real OpenAI while leaving stored / opted-out replays byte-identical.
- * Exported so the WebSocket Responses transport can share one gate.
+ * Two observed triggers, gated on EITHER:
+ *  - `include: ["reasoning.encrypted_content"]` — the explicit opt-in, and what
+ *    `agent-framework-openai` >= 1.11.0 auto-appends on its stateless-replay path
+ *    (it never sends `store`), so this is the branch that fires for real clients.
+ *  - `store: false` — captured responses carry the blob when not server-side
+ *    stored (ZDR) and omit it when stored; kept as a secondary trigger for
+ *    clients that go stateless without opting in via `include`.
+ *
+ * Stored / opted-out replays stay byte-identical. Exported so the WebSocket
+ * Responses transport can share one gate.
  */
 export function requestWantsEncryptedReasoning(req: ResponsesRequest): boolean {
   const include = req.include;
@@ -463,12 +466,14 @@ function syntheticEncryptedReasoning(reasoningId: string): string {
 }
 
 /**
- * Build a Responses `reasoning` output item. Pass `summaryText` for the terminal
- * (`done` / non-streaming) item — it carries the summary and, when
- * `emitEncrypted`, the encrypted blob. Omit `summaryText` for the in-progress
- * (`added`) item: empty summary and — matching real OpenAI — never a blob (a
- * populated blob at `added` would mask clients that read reasoning before
- * `done`; see langchain-ai/langchainjs#10844).
+ * Build a Responses `reasoning` output item. `summaryText` controls the summary
+ * (present for the terminal `done` / non-streaming item, omitted for the
+ * in-progress `added` item); `emitEncrypted` controls the blob INDEPENDENTLY of
+ * the summary, so a blob with an empty summary is expressible. aimock emits the
+ * blob only on the terminal item and omits it on `added`: real OpenAI populates
+ * `added` opportunistically, but the field is `anyOf: [string, null]` and
+ * non-required, so consumers should read it at `done` and treat `added` as
+ * best-effort — omitting there is legal and harmless.
  */
 function buildReasoningOutputItem(
   reasoningId: string,
@@ -480,7 +485,7 @@ function buildReasoningOutputItem(
     summary:
       opts.summaryText === undefined ? [] : [{ type: "summary_text", text: opts.summaryText }],
   };
-  if (opts.summaryText !== undefined && opts.emitEncrypted) {
+  if (opts.emitEncrypted) {
     item.encrypted_content = syntheticEncryptedReasoning(reasoningId);
   }
   return item;
