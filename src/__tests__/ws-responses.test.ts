@@ -50,6 +50,19 @@ const toolReasoningFixture: Fixture = {
   },
 };
 
+// Combined content+toolCalls fixture that also carries reasoning. Distinct match
+// key so it drives the WS dispatch's content+toolCalls branch
+// (buildContentWithToolCallsStreamEvents) — the third streaming builder, which
+// the text-only "think" and tool-only "tool-reason" fixtures never reach.
+const contentToolReasoningFixture: Fixture = {
+  match: { userMessage: "both-reason" },
+  response: {
+    content: "Here you go.",
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+    reasoning: "Let me reason, then call the tool.",
+  },
+};
+
 // Combined content+toolCalls fixture carrying an ORDERED `blocks` array placing
 // the tool call BEFORE the text. On the WebSocket /v1/responses surface this
 // must yield the function_call output item at a LOWER output_index than the
@@ -74,6 +87,7 @@ const allFixtures: Fixture[] = [
   reasoningFixture,
   capabilityReasoningFixture,
   toolReasoningFixture,
+  contentToolReasoningFixture,
   wsBlocksToolFirstFixture,
 ];
 
@@ -855,6 +869,22 @@ describe("WebSocket /v1/responses encrypted reasoning", () => {
 
     const events = await collectUntilCompleted(ws);
     const done = reasoningDone(events);
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  // The WS dispatch threads the gate into each streaming builder separately, so
+  // the content+toolCalls branch needs its own case — the text and tool-only
+  // cases above both stay green if that one call site drops the flag.
+  it("emits the blob for a content+toolCalls reasoning response when opted in", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("both-reason", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
     expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
 
     ws.close();

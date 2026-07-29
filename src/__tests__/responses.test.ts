@@ -2043,13 +2043,14 @@ describe("reasoning.encrypted_content emission", () => {
   async function nonStreamReasoning(
     fixture: Fixture,
     userMessage: string,
+    extra: Record<string, unknown> = OPT_IN,
   ): Promise<{ type: string; encrypted_content?: string; id: string }[]> {
     instance = await createServer([fixture]);
     const res = await post(`${instance!.url}/v1/responses`, {
       model: "gpt-5-test",
       input: [{ role: "user", content: userMessage }],
       stream: false,
-      include: ["reasoning.encrypted_content"],
+      ...extra,
     });
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body) as {
@@ -2075,6 +2076,25 @@ describe("reasoning.encrypted_content emission", () => {
       const r = output.find((o) => o.type === "reasoning")!;
       expect(r, "no reasoning output item").toBeDefined();
       expect(r.encrypted_content).toBe(expectedBlob(r.id));
+    });
+  }
+
+  // --- Non-streaming LEAK direction: the same builders must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just
+  // as well if a builder emits it unconditionally. A leak is the worse failure
+  // for a mock: it silently changes response bytes for every consumer that never
+  // opted in (no `include`, no `store:false`), so the stored/opted-out replay is
+  // no longer byte-identical. One negative per builder site — buildOutputPrefix
+  // (text + content+tool legacy), buildToolCallResponse, and the `blocks` branch
+  // of buildContentWithToolCallsResponse — each pinning genuine key ABSENCE, not
+  // merely a falsy value.
+  for (const [label, fixture, msg] of nonStreamingCases) {
+    it(`non-streaming ${label} omits the blob when the request did not opt in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg, {});
+      const r = output.find((o) => o.type === "reasoning")!;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r).not.toHaveProperty("encrypted_content");
     });
   }
 });
