@@ -74,6 +74,12 @@ interface ResponsesRequest {
   temperature?: number;
   max_output_tokens?: number;
   response_format?: { type: string; [key: string]: unknown };
+  // Additional output data requested by the caller, e.g.
+  // "reasoning.encrypted_content" (gates encrypted-reasoning emission).
+  include?: string[];
+  // Server-side storage flag. `false` (ZDR / stateless replay) is one of the
+  // triggers for encrypted reasoning; see `requestWantsEncryptedReasoning`.
+  store?: boolean;
   [key: string]: unknown;
 }
 
@@ -423,44 +429,65 @@ export function buildToolCallStreamEvents(
 }
 
 /**
- * Whether the incoming Responses request opted into encrypted reasoning via
- * `include: ["reasoning.encrypted_content"]`. Real OpenAI only returns the
- * encrypted reasoning blob when the caller asks for it this way — the
- * stateless-replay path used by `agent-framework-openai` >= 1.11.0. Gating on it
- * keeps every other consumer's replay byte-identical.
+ * Whether the incoming Responses request should receive encrypted reasoning.
+ *
+ * Real OpenAI populates `reasoning.encrypted_content` when the caller opts in
+ * with `include: ["reasoning.encrypted_content"]` OR whenever the response is
+ * not server-side stored (`store: false` / ZDR) — the latter became the default
+ * trigger in openai-python 2.46.0. `agent-framework-openai` >= 1.11.0 drives its
+ * stateless-replay path with both signals set. Gating on either keeps aimock in
+ * step with real OpenAI while leaving stored / opted-out replays byte-identical.
+ * Exported so the WebSocket Responses transport can share one gate.
  */
-function requestOptsIntoEncryptedReasoning(req: ResponsesRequest): boolean {
-  const include = (req as { include?: unknown }).include;
-  return Array.isArray(include) && include.includes("reasoning.encrypted_content");
+export function requestWantsEncryptedReasoning(req: ResponsesRequest): boolean {
+  const include = req.include;
+  if (Array.isArray(include) && include.includes("reasoning.encrypted_content")) return true;
+  return req.store === false;
 }
 
 /**
- * Synthetic stand-in for OpenAI's `reasoning.encrypted_content`. aimock has no
- * real ciphertext, so it emits a deterministic placeholder keyed on the
- * reasoning id. Consumers store it (e.g. as agent-framework `protected_data`)
- * and replay it back verbatim on the next request; aimock matches on content and
- * ignores the echoed blob, so any stable string is safe. Emitted only when the
- * request opts in (see `requestOptsIntoEncryptedReasoning`). Without it,
+ * Synthetic stand-in for OpenAI's opaque `reasoning.encrypted_content`. aimock
+ * has no real ciphertext; it emits a base64 placeholder derived from the
+ * reasoning id (stable for a given item, opaque like the real field). Consumers
+ * store it (e.g. as agent-framework `protected_data`) and replay it verbatim;
+ * aimock matches on content and ignores the echoed blob. Without it,
  * agent-framework-openai >= 1.11.0 hard-fails a reasoning + multi-tool chain on
  * the follow-up request. See microsoft/agent-framework#7233.
+ *
+ * aimock skips inbound reasoning items entirely, so it cannot reproduce
+ * OpenAI's `invalid_encrypted_content` rejection of a mismatched blob/id — a
+ * known replay-only limitation.
  */
 function syntheticEncryptedReasoning(reasoningId: string): string {
-  return `aimock-encrypted-reasoning:${reasoningId}`;
+  return Buffer.from(`aimock-encrypted-reasoning:${reasoningId}`).toString("base64");
 }
 
-/** Spreadable `encrypted_content` field for a reasoning item, or empty when off. */
-function encryptedReasoningField(
+/**
+ * Build a Responses `reasoning` output item. Pass `summaryText` for the terminal
+ * (`done` / non-streaming) item — it carries the summary and, when
+ * `emitEncrypted`, the encrypted blob. Omit `summaryText` for the in-progress
+ * (`added`) item: empty summary and — matching real OpenAI — never a blob (a
+ * populated blob at `added` would mask clients that read reasoning before
+ * `done`; see langchain-ai/langchainjs#10844).
+ */
+function buildReasoningOutputItem(
   reasoningId: string,
-  emitEncryptedReasoning: boolean,
-): Record<string, string> {
-  return emitEncryptedReasoning
-    ? { encrypted_content: syntheticEncryptedReasoning(reasoningId) }
-    : {};
+  opts: { summaryText?: string; emitEncrypted?: boolean } = {},
+): Record<string, unknown> {
+  const item: Record<string, unknown> = {
+    type: "reasoning",
+    id: reasoningId,
+    summary:
+      opts.summaryText === undefined ? [] : [{ type: "summary_text", text: opts.summaryText }],
+  };
+  if (opts.summaryText !== undefined && opts.emitEncrypted) {
+    item.encrypted_content = syntheticEncryptedReasoning(reasoningId);
+  }
+  return item;
 }
 
 function buildReasoningStreamEvents(
   reasoning: string,
-  model: string,
   chunkSize: number,
   emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
@@ -470,12 +497,7 @@ function buildReasoningStreamEvents(
   events.push({
     type: "response.output_item.added",
     output_index: 0,
-    item: {
-      type: "reasoning",
-      id: reasoningId,
-      summary: [],
-      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
-    },
+    item: buildReasoningOutputItem(reasoningId),
   });
 
   events.push({
@@ -516,12 +538,10 @@ function buildReasoningStreamEvents(
   events.push({
     type: "response.output_item.done",
     output_index: 0,
-    item: {
-      type: "reasoning",
-      id: reasoningId,
-      summary: [{ type: "summary_text", text: reasoning }],
-      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
-    },
+    item: buildReasoningOutputItem(reasoningId, {
+      summaryText: reasoning,
+      emitEncrypted: emitEncryptedReasoning,
+    }),
   });
 
   return events;
@@ -614,7 +634,6 @@ function buildResponsePreamble(
   if (reasoning) {
     const reasoningEvents = buildReasoningStreamEvents(
       reasoning,
-      model,
       chunkSize,
       emitEncryptedReasoning,
     );
@@ -783,13 +802,12 @@ function buildOutputPrefix(
   const output: object[] = [];
 
   if (reasoning) {
-    const reasoningId = generateId("rs");
-    output.push({
-      type: "reasoning",
-      id: reasoningId,
-      summary: [{ type: "summary_text", text: reasoning }],
-      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
-    });
+    output.push(
+      buildReasoningOutputItem(generateId("rs"), {
+        summaryText: reasoning,
+        emitEncrypted: emitEncryptedReasoning,
+      }),
+    );
   }
 
   if (webSearches && webSearches.length > 0) {
@@ -855,13 +873,12 @@ function buildToolCallResponse(
 ): object {
   const output: object[] = [];
   if (reasoning) {
-    const reasoningId = generateId("rs");
-    output.push({
-      type: "reasoning",
-      id: reasoningId,
-      summary: [{ type: "summary_text", text: reasoning }],
-      ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
-    });
+    output.push(
+      buildReasoningOutputItem(generateId("rs"), {
+        summaryText: reasoning,
+        emitEncrypted: emitEncryptedReasoning,
+      }),
+    );
   }
   if (webSearches && webSearches.length > 0) {
     for (const query of webSearches) {
@@ -1017,13 +1034,12 @@ function buildContentWithToolCallsResponse(
     const ordered = resolveFixtureBlocks(blocks);
     const output: object[] = [];
     if (reasoning) {
-      const reasoningId = generateId("rs");
-      output.push({
-        type: "reasoning",
-        id: reasoningId,
-        summary: [{ type: "summary_text", text: reasoning }],
-        ...encryptedReasoningField(reasoningId, emitEncryptedReasoning),
-      });
+      output.push(
+        buildReasoningOutputItem(generateId("rs"), {
+          summaryText: reasoning,
+          emitEncrypted: emitEncryptedReasoning,
+        }),
+      );
     }
     if (webSearches && webSearches.length > 0) {
       for (const query of webSearches) {
@@ -1150,11 +1166,12 @@ export async function handleResponses(
   completionReq._endpointType = "chat";
   completionReq._context = getContext(req);
 
-  // Emit a synthetic `reasoning.encrypted_content` only when the request opted in
-  // via `include` (mirrors real OpenAI). This is what agent-framework-openai
-  // >= 1.11.0 sends on stateless-replay requests; without the blob it hard-fails
-  // a reasoning + multi-tool chain. See microsoft/agent-framework#7233.
-  const emitEncryptedReasoning = requestOptsIntoEncryptedReasoning(responsesReq);
+  // Emit a synthetic `reasoning.encrypted_content` only when the request wants it
+  // (opted in via `include`, or stateless `store: false` — mirrors real OpenAI).
+  // This is what agent-framework-openai >= 1.11.0 sends on stateless-replay
+  // requests; without the blob it hard-fails a reasoning + multi-tool chain.
+  // See microsoft/agent-framework#7233.
+  const emitEncryptedReasoning = requestWantsEncryptedReasoning(responsesReq);
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(

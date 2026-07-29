@@ -1880,31 +1880,58 @@ describe("reasoning_summary_text.done includes item_id", () => {
 
 // ─── reasoning.encrypted_content (microsoft/agent-framework#7233) ────────────
 //
-// Real OpenAI returns an opaque `encrypted_content` blob on reasoning items only
-// when the request opts in via `include: ["reasoning.encrypted_content"]` (the
-// stateless-replay path used by agent-framework-openai >= 1.11.0). aimock now
-// synthesizes a placeholder so that client can replay the reasoning item instead
+// Real OpenAI populates an opaque `encrypted_content` blob on the TERMINAL
+// reasoning item (never the in-progress `added` item) when the request opts in
+// via `include: ["reasoning.encrypted_content"]` OR is stateless (`store:false`)
+// — the path used by agent-framework-openai >= 1.11.0. aimock synthesizes a
+// deterministic placeholder so that client can replay the reasoning item instead
 // of hard-failing the reasoning + multi-tool follow-up request.
 
 describe("reasoning.encrypted_content emission", () => {
-  function reasoningItems(events: SSEEvent[]): { type: string; encrypted_content?: string }[] {
-    return events
-      .filter(
-        (e) =>
-          (e.type === "response.output_item.added" || e.type === "response.output_item.done") &&
-          (e.item as { type?: string })?.type === "reasoning",
-      )
-      .map((e) => e.item as { type: string; encrypted_content?: string });
+  // Mirror of `syntheticEncryptedReasoning` in responses.ts — pins the id→blob
+  // relationship so a non-deterministic (e.g. Math.random) blob is caught.
+  const expectedBlob = (id: string): string =>
+    Buffer.from(`aimock-encrypted-reasoning:${id}`).toString("base64");
+
+  function reasoningItem(
+    events: SSEEvent[],
+    kind: "added" | "done",
+  ): { id: string; encrypted_content?: string } | undefined {
+    const ev = events.find(
+      (e) =>
+        e.type === `response.output_item.${kind}` &&
+        (e.item as { type?: string })?.type === "reasoning",
+    );
+    return ev?.item as { id: string; encrypted_content?: string } | undefined;
   }
 
-  it("builder omits encrypted_content by default (flag off)", () => {
+  const reasoningTextFixture: Fixture = {
+    match: { userMessage: "compare" },
+    response: { content: "AAPL vs MSFT", reasoning: "Look up AAPL, then MSFT." },
+  };
+  const reasoningToolFixture: Fixture = {
+    match: { userMessage: "toolreason" },
+    response: { toolCalls: [{ name: "get_stock", arguments: "{}" }], reasoning: "Call the tool." },
+  };
+  const reasoningContentToolFixture: Fixture = {
+    match: { userMessage: "bothreason" },
+    response: {
+      content: "done",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      reasoning: "Think, then call.",
+    },
+  };
+
+  // --- Builder-level: placement (added vs done) + determinism ---
+
+  it("builder omits encrypted_content everywhere when the flag is off", () => {
     const events = buildTextStreamEvents("result", "gpt-5-test", 100, "thinking...");
-    const items = reasoningItems(events);
-    expect(items.length).toBeGreaterThan(0);
-    for (const item of items) expect(item.encrypted_content).toBeUndefined();
+    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
+    expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
   });
 
-  it("builder emits encrypted_content on the done item when flag on", () => {
+  it("builder emits the blob ONLY on the done item, and it is deterministic by id", () => {
+    // trailing `true` = emitEncryptedReasoning
     const events = buildTextStreamEvents(
       "result",
       "gpt-5-test",
@@ -1914,48 +1941,87 @@ describe("reasoning.encrypted_content emission", () => {
       undefined,
       true,
     );
-    const done = events.find(
-      (e) =>
-        e.type === "response.output_item.done" &&
-        (e.item as { type?: string })?.type === "reasoning",
-    );
-    expect(done).toBeDefined();
-    const item = done!.item as { id: string; encrypted_content?: string };
-    expect(typeof item.encrypted_content).toBe("string");
-    expect(item.encrypted_content!.length).toBeGreaterThan(0);
+    const added = reasoningItem(events, "added")!;
+    const done = reasoningItem(events, "done")!;
+    expect(added.encrypted_content).toBeUndefined(); // never on `added` (langchainjs#10844)
+    expect(done.encrypted_content).toBe(expectedBlob(done.id)); // pins presence + determinism
   });
 
-  const reasoningFixture: Fixture = {
-    match: { userMessage: "compare" },
-    response: { content: "AAPL vs MSFT", reasoning: "Look up AAPL, then MSFT." },
-  };
+  // --- HTTP streaming: gate triggers + completed.output ---
 
-  it("streams encrypted_content when the request includes reasoning.encrypted_content", async () => {
-    instance = await createServer([reasoningFixture]);
-    const res = await post(`${instance.url}/v1/responses`, {
+  async function streamReasoning(body: Record<string, unknown>): Promise<SSEEvent[]> {
+    instance = await createServer([reasoningTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
       model: "gpt-5-test",
       input: [{ role: "user", content: "compare" }],
       stream: true,
+      ...body,
+    });
+    expect(res.status).toBe(200);
+    return parseResponsesSSEEvents(res.body);
+  }
+
+  it("emits the blob when the request opts in via include", async () => {
+    const events = await streamReasoning({ include: ["reasoning.encrypted_content"] });
+    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
+    const done = reasoningItem(events, "done")!;
+    expect(done.encrypted_content).toBe(expectedBlob(done.id));
+    // Also present on the reasoning item inside response.completed.output.
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string; encrypted_content?: string }[] };
+    };
+    const outputReasoning = completed.response.output.find((o) => o.type === "reasoning");
+    expect(outputReasoning!.encrypted_content).toBe(done.encrypted_content);
+  });
+
+  it("emits the blob for a stateless request (store:false) even without include", async () => {
+    const events = await streamReasoning({ store: false });
+    const done = reasoningItem(events, "done")!;
+    expect(done.encrypted_content).toBe(expectedBlob(done.id));
+  });
+
+  it("omits the blob for a stored request that did not opt in", async () => {
+    const events = await streamReasoning({});
+    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
+    expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
+  });
+
+  // --- Non-streaming builders: all three carry the blob when opted in ---
+
+  async function nonStreamReasoning(
+    fixture: Fixture,
+    userMessage: string,
+  ): Promise<{ type: string; encrypted_content?: string; id: string }[]> {
+    instance = await createServer([fixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: userMessage }],
+      stream: false,
       include: ["reasoning.encrypted_content"],
     });
     expect(res.status).toBe(200);
-    const items = reasoningItems(parseResponsesSSEEvents(res.body));
-    const done = items.find((i) => i.encrypted_content !== undefined);
-    expect(done).toBeDefined();
-    expect(typeof done!.encrypted_content).toBe("string");
+    const body = JSON.parse(res.body) as {
+      output: { type: string; encrypted_content?: string; id: string }[];
+    };
+    return body.output;
+  }
+
+  it("non-streaming text response carries the blob (buildOutputPrefix)", async () => {
+    const output = await nonStreamReasoning(reasoningTextFixture, "compare");
+    const r = output.find((o) => o.type === "reasoning")!;
+    expect(r.encrypted_content).toBe(expectedBlob(r.id));
   });
 
-  it("omits encrypted_content when the request does not opt in", async () => {
-    instance = await createServer([reasoningFixture]);
-    const res = await post(`${instance.url}/v1/responses`, {
-      model: "gpt-5-test",
-      input: [{ role: "user", content: "compare" }],
-      stream: true,
-    });
-    expect(res.status).toBe(200);
-    const items = reasoningItems(parseResponsesSSEEvents(res.body));
-    expect(items.length).toBeGreaterThan(0);
-    for (const item of items) expect(item.encrypted_content).toBeUndefined();
+  it("non-streaming tool-call response carries the blob (buildToolCallResponse)", async () => {
+    const output = await nonStreamReasoning(reasoningToolFixture, "toolreason");
+    const r = output.find((o) => o.type === "reasoning")!;
+    expect(r.encrypted_content).toBe(expectedBlob(r.id));
+  });
+
+  it("non-streaming content+tool response carries the blob (buildContentWithToolCallsResponse)", async () => {
+    const output = await nonStreamReasoning(reasoningContentToolFixture, "bothreason");
+    const r = output.find((o) => o.type === "reasoning")!;
+    expect(r.encrypted_content).toBe(expectedBlob(r.id));
   });
 });
 

@@ -10,6 +10,7 @@ import type { ChatCompletionRequest, Fixture } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
   responsesToCompletionRequest,
+  requestWantsEncryptedReasoning,
   buildTextStreamEvents,
   buildToolCallStreamEvents,
   buildContentWithToolCallsStreamEvents,
@@ -172,7 +173,13 @@ async function processMessage(
     stream: parsed.stream,
     temperature: parsed.temperature,
     max_output_tokens: parsed.max_output_tokens,
+    include: (parsed as { include?: string[] }).include,
+    store: (parsed as { store?: boolean }).store,
   };
+
+  // Gate encrypted-reasoning emission identically to the HTTP transport so the
+  // agent-framework#7233 stateless-replay path works over WebSocket too.
+  const emitEncryptedReasoning = requestWantsEncryptedReasoning(responsesReq);
 
   const completionReq = responsesToCompletionRequest(responsesReq);
   completionReq._endpointType = "chat";
@@ -283,6 +290,7 @@ async function processMessage(
       response.webSearches,
       extractOverrides(response),
       response.blocks,
+      emitEncryptedReasoning,
     );
 
     const interruption = createInterruptionSignal(fixture);
@@ -326,6 +334,7 @@ async function processMessage(
       ),
       response.webSearches,
       extractOverrides(response),
+      emitEncryptedReasoning,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
@@ -370,6 +379,7 @@ async function processMessage(
       ),
       response.webSearches,
       extractOverrides(response),
+      emitEncryptedReasoning,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
