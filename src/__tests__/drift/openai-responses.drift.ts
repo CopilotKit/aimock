@@ -7,12 +7,19 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type ServerInstance } from "../../server.js";
 import type { Fixture } from "../../types.js";
-import { extractShape, triangulate, compareSSESequences, formatDriftReport } from "./schema.js";
+import {
+  extractShape,
+  triangulate,
+  compareSSESequences,
+  formatDriftReport,
+  type SSEEventShape,
+} from "./schema.js";
 import {
   openaiResponsesNonStreamingShape,
   openaiResponsesTextEventShapes,
   openaiResponsesToolCallEventShapes,
   openaiResponsesReasoningEventShapes,
+  openaiResponsesEncryptedReasoningEventShapes,
 } from "./sdk-shapes.js";
 import {
   resolveLiveModel,
@@ -558,13 +565,14 @@ describe("OpenAI Responses API reasoning drift", () => {
     expect(reasoningAdded, "no output_item.added with type=reasoning").toBeDefined();
   });
 
-  // NOTE: encrypted_content emission is enforced by the unit + WS suites
-  // (responses.test.ts / ws-responses.test.ts), which run in CI and fail on a
-  // dropped blob. A local-server assertion here would not add coverage (this
-  // block posts to a local aimock, not api.openai.com, and drift `expect`
-  // failures are report-collected rather than hard-failing). The live spec
-  // anchor lives in sdk-shapes.ts (`openaiResponsesReasoningEventShapes` pins
-  // encrypted_content on the terminal item) for the triangulated legs above.
+  // NOTE: encrypted_content emission is ALSO enforced by the unit + WS suites
+  // (responses.test.ts / ws-responses.test.ts), which hard-fail on a dropped
+  // blob. The drift-side anchor is the shape pin in sdk-shapes.ts, and it is
+  // split by opt-in: `openaiResponsesReasoningEventShapes` (no blob) grades the
+  // opted-OUT legs, `openaiResponsesEncryptedReasoningEventShapes` (blob) grades
+  // the opted-IN leg below. Pinning the blob unconditionally made every
+  // opted-out leg report `item.encrypted_content` critical forever — a finding
+  // that no code change could clear, so it gated nothing.
 
   it("reasoning event shapes include item_id, output_index, summary_index", async () => {
     const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
@@ -621,26 +629,22 @@ describe("OpenAI Responses API reasoning drift", () => {
     expect((partDoneData.part as { type: string; text: string }).text).toBe(REASONING_TEXT);
   });
 
-  it("reasoning event shapes triangulate against SDK expectations", async () => {
-    const sdkEvents = openaiResponsesReasoningEventShapes();
-
-    const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
-      model: "gpt-4o-mini",
-      input: [{ role: "user", content: "Think carefully" }],
-      stream: true,
-    });
-
-    expect(res.status).toBe(200);
-
-    const mockEvents = parseTypedSSE(res.body);
-    const mockSSEShapes = mockEvents.map((e) => ({
+  // Grade a reasoning SSE body against the SDK shape variant for the request
+  // that produced it. `scenario` keeps the opted-out and opted-in legs' drift
+  // keys distinct so the delta gate attributes a finding to the right variant.
+  //
+  // Since reasoning is not available on gpt-4o-mini via real API, the SDK shape
+  // is used as both "expected" and "real" for shape validation.
+  const triangulateReasoningEvents = (
+    sdkEvents: SSEEventShape[],
+    body: string,
+    scenario: string,
+  ) => {
+    const mockSSEShapes = parseTypedSSE(body).map((e) => ({
       type: e.type,
       dataShape: extractShape(e.data),
     }));
 
-    // Triangulate reasoning-specific events against SDK shapes.
-    // Since reasoning is not available on gpt-4o-mini via real API, we
-    // use SDK shapes as both "expected" and "real" for shape validation.
     for (const sdkEvent of sdkEvents) {
       const mockEvent = mockSSEShapes.find((m) => m.type === sdkEvent.type);
       if (!mockEvent) {
@@ -649,16 +653,51 @@ describe("OpenAI Responses API reasoning drift", () => {
       }
 
       const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
-      const report = formatDriftReport(
-        `OpenAI Responses Reasoning:${sdkEvent.type}`,
-        diffs,
-        "openai-responses",
-      );
+      const report = formatDriftReport(`${scenario}:${sdkEvent.type}`, diffs, "openai-responses");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
         report,
       ).toEqual([]);
     }
+  };
+
+  it("reasoning event shapes triangulate against SDK expectations", async () => {
+    // Opted OUT: no `include`, no `store: false` — the terminal item must carry
+    // NO encrypted_content, so this leg is graded against the no-blob variant.
+    const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
+      model: "gpt-4o-mini",
+      input: [{ role: "user", content: "Think carefully" }],
+      stream: true,
+    });
+
+    expect(res.status).toBe(200);
+
+    triangulateReasoningEvents(
+      openaiResponsesReasoningEventShapes(),
+      res.body,
+      "OpenAI Responses Reasoning",
+    );
+  });
+
+  it("opted-in reasoning event shapes carry encrypted_content", async () => {
+    // Opted IN via `include` — the exact request agent-framework-openai
+    // >= 1.11.0 sends on its stateless-replay path. This is the leg that GATES
+    // the emission: drop `encrypted_content` in responses.ts and the terminal
+    // item reports `item.encrypted_content` critical here.
+    const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
+      model: "gpt-4o-mini",
+      input: [{ role: "user", content: "Think carefully" }],
+      stream: true,
+      include: ["reasoning.encrypted_content"],
+    });
+
+    expect(res.status).toBe(200);
+
+    triangulateReasoningEvents(
+      openaiResponsesEncryptedReasoningEventShapes(),
+      res.body,
+      "OpenAI Responses Encrypted Reasoning",
+    );
   });
 });
