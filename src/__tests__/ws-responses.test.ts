@@ -912,4 +912,66 @@ describe("WebSocket /v1/responses encrypted reasoning", () => {
 
     ws.close();
   });
+
+  // A fixture with NO declared `reasoning` summary — the shape a capture from the
+  // real stateless agent-framework flow has — must still reach an opted-in WS
+  // client with a summary-less reasoning item carrying the blob. Needs a
+  // reasoning-CAPABLE model (the shared `createMsg` above deliberately uses
+  // gpt-4.1, for which no reasoning item is synthesized at all).
+  function createReasoningModelMsg(userContent: string, extra: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: "response.create",
+      model: "gpt-5",
+      input: [{ role: "user", content: userContent }],
+      ...extra,
+    });
+  }
+
+  for (const [label, msg] of [
+    ["text", "hello"],
+    ["tool-only", "weather"],
+  ] as [string, string][]) {
+    it(`${label} fixture with NO declared summary still carries an empty-summary item + blob`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, { include: ["reasoning.encrypted_content"] }));
+
+      const events = await collectUntilCompleted(ws);
+      const done = reasoningDone(events) as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(done!.summary).toEqual([]);
+      expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+      // No summary parts exist on the item, so no summary events describe them.
+      expect(events.some((e) => e.type.startsWith("response.reasoning_summary"))).toBe(false);
+
+      ws.close();
+    });
+
+    it(`${label} fixture with NO declared summary emits NO reasoning item when opted out`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, {}));
+
+      const events = await collectUntilCompleted(ws);
+      expect(reasoningDone(events)).toBeUndefined();
+
+      ws.close();
+    });
+
+    // The narrowing, over WS: `store: false` widens the BLOB gate but not the
+    // SYNTHESIS gate, so a summary-less fixture still yields no reasoning item.
+    // The WS dispatch computes both gates itself, so this needs its own case.
+    it(`${label} fixture with NO declared summary synthesizes NOTHING on store:false`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, { store: false }));
+
+      const events = await collectUntilCompleted(ws);
+      expect(reasoningDone(events)).toBeUndefined();
+
+      ws.close();
+    });
+  }
 });

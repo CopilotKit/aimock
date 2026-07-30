@@ -2097,6 +2097,199 @@ describe("reasoning.encrypted_content emission", () => {
       expect(r).not.toHaveProperty("encrypted_content");
     });
   }
+
+  // --- Summary-LESS fixtures: the blob must still reach an opted-in client ----
+  //
+  // The cases above all declare a `reasoning` summary in the fixture, which is
+  // what makes the reasoning item exist in the first place. A fixture RECORDED
+  // from the real stateless agent-framework flow typically has NO summary
+  // (OpenAI returns `summary: []` unless summaries are explicitly requested), so
+  // gating the item on a declared summary means the very flow this feature
+  // exists to serve gets no item and therefore no blob. Real OpenAI, for a
+  // reasoning-capable model, still returns a reasoning item carrying the blob.
+  //
+  // Emission stays gated on the SAME opt-in predicate, so a stored / opted-out
+  // replay of a summary-less fixture is byte-identical to before (no reasoning
+  // item at all), and on the requested model's reasoning capability, so a
+  // gpt-4o replay does not grow an item the real provider would never send.
+
+  const noSummaryTextFixture: Fixture = {
+    match: { userMessage: "nosumtext" },
+    response: { content: "AAPL is up" },
+  };
+  const noSummaryToolFixture: Fixture = {
+    match: { userMessage: "nosumtool" },
+    response: { toolCalls: [{ name: "get_stock", arguments: "{}" }] },
+  };
+  const noSummaryContentToolFixture: Fixture = {
+    match: { userMessage: "nosumboth" },
+    response: { content: "checking", toolCalls: [{ name: "get_stock", arguments: "{}" }] },
+  };
+  const noSummaryBlocksFixture: Fixture = {
+    match: { userMessage: "nosumblocks" },
+    response: {
+      content: "checking",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      blocks: [
+        { type: "toolCall", name: "get_stock", arguments: "{}" },
+        { type: "text", text: "checking" },
+      ],
+    },
+  };
+
+  const noSummaryCases: [string, Fixture, string][] = [
+    ["text", noSummaryTextFixture, "nosumtext"],
+    ["tool-only", noSummaryToolFixture, "nosumtool"],
+    ["content+tool legacy", noSummaryContentToolFixture, "nosumboth"],
+    ["content+tool blocks", noSummaryBlocksFixture, "nosumblocks"],
+  ];
+
+  for (const [label, fixture, msg] of noSummaryCases) {
+    it(`non-streaming ${label} with NO declared summary carries an empty-summary item + blob when opted in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg);
+      const r = output.find((o) => o.type === "reasoning") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r!.summary).toEqual([]);
+      expect(r!.encrypted_content).toBe(expectedBlob(r!.id));
+      // Real OpenAI leads the output array with the reasoning item.
+      expect(output[0].type).toBe("reasoning");
+    });
+
+    it(`streaming ${label} with NO declared summary carries an empty-summary item + blob when opted in`, async () => {
+      const events = await streamReasoning(fixture, msg, OPT_IN);
+      const added = reasoningItem(events, "added") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      const done = reasoningItem(events, "done") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(added, "no added reasoning item").toBeDefined();
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(added!.summary).toEqual([]);
+      expect(done!.summary).toEqual([]);
+      expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+      assertAddedNotPinned(added!);
+    });
+
+    // The whole blast-radius argument: nothing changes for a client that did not
+    // opt in. Pins the ABSENCE of any reasoning item, streaming and not.
+    it(`${label} with NO declared summary emits NO reasoning item when the request did not opt in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg, {});
+      expect(output.some((o) => o.type === "reasoning")).toBe(false);
+
+      const events = await streamReasoning(fixture, msg, {});
+      expect(reasoningItem(events, "added")).toBeUndefined();
+      expect(reasoningItem(events, "done")).toBeUndefined();
+      expect(events.some((e) => e.type.startsWith("response.reasoning_summary"))).toBe(false);
+    });
+  }
+
+  it("streaming a summary-less item emits added → done with NO summary-text events between", async () => {
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", OPT_IN);
+    // An empty summary has no parts and no deltas: emitting a
+    // reasoning_summary_part/text event for it would describe a part that does
+    // not exist in the item's `summary: []`.
+    expect(events.filter((e) => e.type.startsWith("response.reasoning_summary"))).toEqual([]);
+    const seq = events
+      .filter((e) => (e.item as { type?: string })?.type === "reasoning")
+      .map((e) => e.type);
+    expect(seq).toEqual(["response.output_item.added", "response.output_item.done"]);
+  });
+
+  it("streaming a synthesized reasoning item keeps output_index aligned with completed.output", async () => {
+    const events = await streamReasoning(noSummaryContentToolFixture, "nosumboth", OPT_IN);
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string; id: string }[] };
+    };
+    // Reasoning must LEAD the output array and every other item shifts by one.
+    expect(completed.response.output.map((o) => o.type)).toEqual([
+      "reasoning",
+      "message",
+      "function_call",
+    ]);
+    // Every output_item.done event's output_index must equal that item's slot in
+    // the final output array — an inserted leading item that failed to shift the
+    // sequencing would desync here.
+    const dones = events.filter((e) => e.type === "response.output_item.done");
+    for (const d of dones) {
+      const id = (d.item as { id: string }).id;
+      expect(d.output_index).toBe(completed.response.output.findIndex((o) => o.id === id));
+    }
+  });
+
+  it("does NOT synthesize a reasoning item for a non-reasoning model", async () => {
+    // gpt-4o never emits a reasoning channel, so an opted-in replay against it
+    // must not grow an item the real provider would never send (aimock#254).
+    instance = await createServer([noSummaryTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-4o",
+      input: [{ role: "user", content: "nosumtext" }],
+      stream: false,
+      ...OPT_IN,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { output: { type: string }[] };
+    expect(body.output.some((o) => o.type === "reasoning")).toBe(false);
+  });
+
+  // --- The 2x2 matrix: which trigger may CREATE an item vs only decorate one ---
+  //
+  // Two gates, deliberately different widths:
+  //   blob on an item being emitted anyway → `include` OR `store: false`
+  //   SYNTHESIZING an item the fixture never declared → `include` ONLY
+  //
+  // Creating an output item that did not previously exist is a bigger behavior
+  // change than adding a field to one already on the wire, so it takes the gate
+  // that is directly observable in the request rather than the inferred
+  // `store: false` one. `agent-framework-openai` >= 1.11.0 sends `include` and
+  // never `store`, so the motivating client is unaffected by the narrowing.
+
+  it("row 3: store:false + a DECLARED summary still carries the blob (non-streaming, unchanged)", async () => {
+    const output = await nonStreamReasoning(reasoningTextFixture, "textreason", { store: false });
+    const r = output.find((o) => o.type === "reasoning")!;
+    expect(r, "no reasoning output item").toBeDefined();
+    expect(r.encrypted_content).toBe(expectedBlob(r.id));
+  });
+
+  // ROW 4 — the whole point of the narrowing, and the row that must never
+  // silently regress: `store: false` must NOT conjure a reasoning item for a
+  // fixture that declares no summary. Asserted on both transports' HTTP paths and
+  // for a reasoning-CAPABLE model, so the model gate cannot be what makes it pass.
+  it("row 4: store:false + NO declared summary synthesizes NOTHING (non-streaming)", async () => {
+    const output = await nonStreamReasoning(noSummaryTextFixture, "nosumtext", { store: false });
+    expect(output.some((o) => o.type === "reasoning")).toBe(false);
+    // Guard against the model gate being the reason this passes: the SAME
+    // fixture and model DO produce the item under the explicit `include` opt-in.
+    const optedIn = await nonStreamReasoning(noSummaryTextFixture, "nosumtext");
+    expect(optedIn.some((o) => o.type === "reasoning")).toBe(true);
+  });
+
+  it("row 4: store:false + NO declared summary synthesizes NOTHING (streaming)", async () => {
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", { store: false });
+    expect(reasoningItem(events, "added")).toBeUndefined();
+    expect(reasoningItem(events, "done")).toBeUndefined();
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string }[] };
+    };
+    expect(completed.response.output.some((o) => o.type === "reasoning")).toBe(false);
+  });
+
+  it("row 4 holds for every builder path (tool-only, content+tool legacy, blocks)", async () => {
+    for (const [, fixture, msg] of noSummaryCases) {
+      const output = await nonStreamReasoning(fixture, msg, { store: false });
+      expect(
+        output.some((o) => o.type === "reasoning"),
+        `${msg} synthesized on store:false`,
+      ).toBe(false);
+      const events = await streamReasoning(fixture, msg, { store: false });
+      expect(
+        reasoningItem(events, "done"),
+        `${msg} synthesized on store:false (stream)`,
+      ).toBeUndefined();
+    }
+  });
 });
 
 // ─── Bug fix: multi-fco after single item_reference ─────────────────────────

@@ -10,6 +10,7 @@ import type { ChatCompletionRequest, Fixture } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
   responsesToCompletionRequest,
+  requestIncludesEncryptedReasoning,
   requestWantsEncryptedReasoning,
   buildTextStreamEvents,
   buildToolCallStreamEvents,
@@ -180,6 +181,10 @@ async function processMessage(
   // Gate encrypted-reasoning emission identically to the HTTP transport so the
   // agent-framework#7233 stateless-replay path works over WebSocket too.
   const emitEncryptedReasoning = requestWantsEncryptedReasoning(responsesReq);
+  // Synthesizing a reasoning item the fixture never declared takes the NARROWER
+  // explicit-`include` gate, transport-identically to HTTP — a `store: false`
+  // request with a summary-less fixture still gets no reasoning item.
+  const synthesizeSummarylessReasoning = requestIncludesEncryptedReasoning(responsesReq);
 
   const completionReq = responsesToCompletionRequest(responsesReq);
   completionReq._endpointType = "chat";
@@ -291,6 +296,7 @@ async function processMessage(
       extractOverrides(response),
       response.blocks,
       emitEncryptedReasoning,
+      synthesizeSummarylessReasoning,
     );
 
     const interruption = createInterruptionSignal(fixture);
@@ -335,6 +341,7 @@ async function processMessage(
       response.webSearches,
       extractOverrides(response),
       emitEncryptedReasoning,
+      synthesizeSummarylessReasoning,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(
@@ -380,6 +387,7 @@ async function processMessage(
       response.webSearches,
       extractOverrides(response),
       emitEncryptedReasoning,
+      synthesizeSummarylessReasoning,
     );
     const interruption = createInterruptionSignal(fixture);
     const completed = await sendEvents(

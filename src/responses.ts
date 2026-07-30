@@ -38,6 +38,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { isReasoningModel } from "./model-utils.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -299,6 +300,7 @@ export function buildTextStreamEvents(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -307,6 +309,7 @@ export function buildTextStreamEvents(
     webSearches,
     overrides,
     emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
   );
 
   const { events: msgEvents, msgItem } = buildMessageOutputEvents(
@@ -340,6 +343,7 @@ export function buildToolCallStreamEvents(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -348,6 +352,7 @@ export function buildToolCallStreamEvents(
     webSearches,
     overrides,
     emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
   );
 
   const fcOutputItems: object[] = [];
@@ -443,9 +448,30 @@ export function buildToolCallStreamEvents(
  * Responses transport can share one gate.
  */
 export function requestWantsEncryptedReasoning(req: ResponsesRequest): boolean {
-  const include = req.include;
-  if (Array.isArray(include) && include.includes("reasoning.encrypted_content")) return true;
+  if (requestIncludesEncryptedReasoning(req)) return true;
   return req.store === false;
+}
+
+/**
+ * Whether the request carries the EXPLICIT `include` opt-in — a strictly
+ * narrower gate than `requestWantsEncryptedReasoning`, which also fires on
+ * `store: false`.
+ *
+ * This is the gate for SYNTHESIZING a reasoning item that the fixture does not
+ * declare (see `shouldSynthesizeBlobOnlyReasoning`), and it is deliberately the
+ * narrow one. Attaching a field to an item aimock was already emitting is a much
+ * smaller step than conjuring a whole output item that did not previously exist,
+ * so the larger behavior change gets the gate that is directly observable in the
+ * request rather than the inferred `store: false` one. `agent-framework-openai`
+ * >= 1.11.0 auto-appends `include` on its stateless-replay path and never sends
+ * `store` at all, so the motivating client is fully served by this branch — the
+ * narrowing costs the feature nothing.
+ *
+ * Exported so the WebSocket Responses transport shares one gate.
+ */
+export function requestIncludesEncryptedReasoning(req: ResponsesRequest): boolean {
+  const include = req.include;
+  return Array.isArray(include) && include.includes("reasoning.encrypted_content");
 }
 
 /**
@@ -491,8 +517,60 @@ function buildReasoningOutputItem(
   return item;
 }
 
+/**
+ * Whether to synthesize a summary-LESS reasoning item that exists purely to
+ * carry the encrypted blob.
+ *
+ * Every reasoning item aimock emits otherwise originates in a fixture's declared
+ * `reasoning` summary text. But a fixture RECORDED from the real stateless
+ * agent-framework flow typically has NO summary — OpenAI returns `summary: []`
+ * unless summaries are explicitly requested — so keying the item on a declared
+ * summary starves the exact flow this feature exists to serve: fully opted in,
+ * yet no reasoning item and therefore no blob. Real OpenAI, for a
+ * reasoning-capable model, still returns a reasoning item (`summary: []`) with
+ * the blob populated. So synthesize one, gated on:
+ *
+ *  - the EXPLICIT `include` opt-in ONLY (`requestIncludesEncryptedReasoning`),
+ *    which is NARROWER than the `requestWantsEncryptedReasoning` gate that
+ *    controls the blob itself. A `store: false` request whose fixture declares no
+ *    summary therefore gets NO reasoning item, exactly as before this change.
+ *    Two reasons: (1) creating an output item that did not previously exist is a
+ *    bigger behavior change than adding a field to an item already being
+ *    emitted, so it earns the gate that is directly observable in the request
+ *    rather than the inferred one; (2) the `store: false` trigger's supporting
+ *    capture evidence is not verifiable from this repo, and a larger change must
+ *    not be stacked on an unverifiable premise. `agent-framework-openai` >=
+ *    1.11.0 sends `include` and never `store`, so nothing is lost.
+ *  - the REQUESTED model's reasoning capability (aimock#254) — emitting a
+ *    reasoning item for gpt-4o would be LESS faithful, not more, since that
+ *    model has no reasoning channel at all. Unlike `resolveReasoningForModel`,
+ *    which fails open for a declared summary (a recorded summary is evidence the
+ *    model did reason), there is nothing to preserve here: a synthesized item on
+ *    a non-reasoning model would be pure fabrication, so this gate is hard.
+ *
+ * Note this is INDEPENDENT of `emitEncryptedReasoning`: when a fixture DOES
+ * declare a summary, the blob still rides on it under either trigger (including
+ * `store: false`), unchanged.
+ */
+function shouldSynthesizeBlobOnlyReasoning(
+  reasoning: string | undefined,
+  model: string | undefined,
+  synthesizeSummarylessReasoning: boolean,
+): boolean {
+  if (reasoning) return false; // a declared summary already produces the item
+  if (!synthesizeSummarylessReasoning) return false; // no explicit `include` opt-in
+  return isReasoningModel(model);
+}
+
+/**
+ * `reasoning` is `undefined` for a synthesized blob-only item (see
+ * `shouldSynthesizeBlobOnlyReasoning`). In that case the item's `summary` is
+ * `[]`, so the summary-part / summary-text events are SKIPPED entirely — they
+ * would describe a part that does not exist on the item — leaving a coherent
+ * `output_item.added` → `output_item.done` pair with nothing between.
+ */
 function buildReasoningStreamEvents(
-  reasoning: string,
+  reasoning: string | undefined,
   chunkSize: number,
   emitEncryptedReasoning = false,
 ): ResponsesSSEEvent[] {
@@ -505,40 +583,42 @@ function buildReasoningStreamEvents(
     item: buildReasoningOutputItem(reasoningId),
   });
 
-  events.push({
-    type: "response.reasoning_summary_part.added",
-    item_id: reasoningId,
-    output_index: 0,
-    summary_index: 0,
-    part: { type: "summary_text", text: "" },
-  });
-
-  for (let i = 0; i < reasoning.length; i += chunkSize) {
-    const slice = reasoning.slice(i, i + chunkSize);
+  if (reasoning !== undefined) {
     events.push({
-      type: "response.reasoning_summary_text.delta",
+      type: "response.reasoning_summary_part.added",
       item_id: reasoningId,
       output_index: 0,
       summary_index: 0,
-      delta: slice,
+      part: { type: "summary_text", text: "" },
+    });
+
+    for (let i = 0; i < reasoning.length; i += chunkSize) {
+      const slice = reasoning.slice(i, i + chunkSize);
+      events.push({
+        type: "response.reasoning_summary_text.delta",
+        item_id: reasoningId,
+        output_index: 0,
+        summary_index: 0,
+        delta: slice,
+      });
+    }
+
+    events.push({
+      type: "response.reasoning_summary_text.done",
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      text: reasoning,
+    });
+
+    events.push({
+      type: "response.reasoning_summary_part.done",
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      part: { type: "summary_text", text: reasoning },
     });
   }
-
-  events.push({
-    type: "response.reasoning_summary_text.done",
-    item_id: reasoningId,
-    output_index: 0,
-    summary_index: 0,
-    text: reasoning,
-  });
-
-  events.push({
-    type: "response.reasoning_summary_part.done",
-    item_id: reasoningId,
-    output_index: 0,
-    summary_index: 0,
-    part: { type: "summary_text", text: reasoning },
-  });
 
   events.push({
     type: "response.output_item.done",
@@ -605,6 +685,7 @@ function buildResponsePreamble(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): PreambleResult {
   const respId = overrides?.id ?? responseId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
@@ -636,7 +717,10 @@ function buildResponsePreamble(
     },
   });
 
-  if (reasoning) {
+  if (
+    reasoning ||
+    shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
+  ) {
     const reasoningEvents = buildReasoningStreamEvents(
       reasoning,
       chunkSize,
@@ -800,13 +884,18 @@ function buildFunctionCallOutputEvents(
 
 function buildOutputPrefix(
   content: string,
+  model: string,
   reasoning?: string,
   webSearches?: string[],
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): object[] {
   const output: object[] = [];
 
-  if (reasoning) {
+  if (
+    reasoning ||
+    shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
+  ) {
     output.push(
       buildReasoningOutputItem(generateId("rs"), {
         summaryText: reasoning,
@@ -860,10 +949,18 @@ function buildTextResponse(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): object {
   return buildResponseEnvelope(
     model,
-    buildOutputPrefix(content, reasoning, webSearches, emitEncryptedReasoning),
+    buildOutputPrefix(
+      content,
+      model,
+      reasoning,
+      webSearches,
+      emitEncryptedReasoning,
+      synthesizeSummarylessReasoning,
+    ),
     overrides,
   );
 }
@@ -875,9 +972,13 @@ function buildToolCallResponse(
   webSearches?: string[],
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): object {
   const output: object[] = [];
-  if (reasoning) {
+  if (
+    reasoning ||
+    shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
+  ) {
     output.push(
       buildReasoningOutputItem(generateId("rs"), {
         summaryText: reasoning,
@@ -918,6 +1019,7 @@ export function buildContentWithToolCallsStreamEvents(
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
     model,
@@ -926,6 +1028,7 @@ export function buildContentWithToolCallsStreamEvents(
     webSearches,
     overrides,
     emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
   );
 
   // The output items assembled in emission order (after any reasoning /
@@ -1029,6 +1132,7 @@ function buildContentWithToolCallsResponse(
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
   emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
 ): object {
   if (blocks && blocks.length > 0) {
     // NEW PATH: the non-streaming `output[]` array is positionally observable,
@@ -1038,7 +1142,10 @@ function buildContentWithToolCallsResponse(
     // path's ordering for the same `blocks` fixture.
     const ordered = resolveFixtureBlocks(blocks);
     const output: object[] = [];
-    if (reasoning) {
+    if (
+      reasoning ||
+      shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
+    ) {
       output.push(
         buildReasoningOutputItem(generateId("rs"), {
           summaryText: reasoning,
@@ -1073,7 +1180,14 @@ function buildContentWithToolCallsResponse(
   }
 
   // LEGACY PATH: message item first, then function_call items — unchanged.
-  const output = buildOutputPrefix(content, reasoning, webSearches, emitEncryptedReasoning);
+  const output = buildOutputPrefix(
+    content,
+    model,
+    reasoning,
+    webSearches,
+    emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
+  );
   for (const tc of toolCalls) {
     output.push(buildFunctionCallOutputItem(tc));
   }
@@ -1177,6 +1291,12 @@ export async function handleResponses(
   // requests; without the blob it hard-fails a reasoning + multi-tool chain.
   // See microsoft/agent-framework#7233.
   const emitEncryptedReasoning = requestWantsEncryptedReasoning(responsesReq);
+  // Synthesizing a reasoning item the fixture never declared is a bigger step
+  // than adding a field to one already being emitted, so it takes the NARROWER
+  // explicit-`include` gate: a `store: false` request with a summary-less fixture
+  // keeps emitting no reasoning item at all. See
+  // `shouldSynthesizeBlobOnlyReasoning`.
+  const synthesizeSummarylessReasoning = requestIncludesEncryptedReasoning(responsesReq);
 
   const testId = getTestId(req);
   const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
@@ -1355,6 +1475,7 @@ export async function handleResponses(
         overrides,
         response.blocks,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1369,6 +1490,7 @@ export async function handleResponses(
         overrides,
         response.blocks,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {
@@ -1415,6 +1537,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1427,6 +1550,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {
@@ -1473,6 +1597,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
@@ -1485,6 +1610,7 @@ export async function handleResponses(
         response.webSearches,
         overrides,
         emitEncryptedReasoning,
+        synthesizeSummarylessReasoning,
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeResponsesSSEStream(res, events, {
