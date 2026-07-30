@@ -3166,10 +3166,14 @@ export async function createServer(
         upgradeHeaders: req.headers,
       });
     } else if (pathname === REALTIME_PATH) {
-      const model = parsedUrl.searchParams.get("model") ?? "gpt-realtime-2";
+      const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
+      const model = transcriptionIntent
+        ? "gpt-transcribe"
+        : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
       handleWebSocketRealtime(ws, fixtures, journal, {
         ...defaults,
         model,
+        transcriptionIntent,
         testId: wsTestId,
         upgradeHeaders: req.headers,
       });

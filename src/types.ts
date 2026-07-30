@@ -410,7 +410,9 @@ export interface TranscriptionResponse {
   transcription: {
     text: string;
     language?: string;
+    languages?: Array<{ code: string }>;
     duration?: number;
+    usage?: Record<string, unknown>;
     words?: Array<{ word: string; start: number; end: number }>;
     segments?: Array<{ id: number; text: string; start: number; end: number }>;
   };

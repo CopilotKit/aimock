@@ -630,7 +630,9 @@ export async function proxyAndRecord(
     // A single Gemini turn can interleave audio with a functionCall and/or
     // text/thought parts; preserve those companion modalities so the tool call
     // / content / reasoning are not silently dropped when audio is present.
-    if (collapsed.audioB64) {
+    if (collapsed.transcription) {
+      fixtureResponse = { transcription: collapsed.transcription };
+    } else if (collapsed.audioB64) {
       const audioToolCallsSpread =
         collapsed.toolCalls && collapsed.toolCalls.length > 0
           ? {
@@ -792,7 +794,12 @@ export async function proxyAndRecord(
       // NOTE: base64 embeddings are decoded unconditionally inside
       // buildFixtureResponse regardless of the request's `encoding_format`, so
       // there is no need to re-parse it here — it was a dead param.
-      fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, defaults.logger);
+      fixtureResponse = buildFixtureResponse(
+        parsedResponse,
+        upstreamStatus,
+        defaults.logger,
+        request,
+      );
     }
   }
 
@@ -1450,7 +1457,12 @@ function toToolCallArguments(raw: unknown): string {
  * Detect the response format from the parsed upstream JSON and convert
  * it into an aimock FixtureResponse.
  */
-function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger): FixtureResponse {
+function buildFixtureResponse(
+  parsed: unknown,
+  status: number,
+  logger?: Logger,
+  request?: ChatCompletionRequest,
+): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
     return {
@@ -1551,16 +1563,17 @@ function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger):
     return { images };
   }
 
-  // OpenAI transcription: { text: "...", ... }
-  // Tightened: a bare `text` string alongside a single incidental `language` or
-  // `duration` field is too weak — many non-transcription payloads carry a
-  // `text` plus a `duration`-like number. Require an explicit
-  // `task: "transcribe"`, OR BOTH `language` and `duration` (the verbose
-  // transcription shape). Also reject anything carrying clear non-transcription
-  // markers (chat completions, events, etc.) so they route to their own branch.
+  // OpenAI transcription: { text: "...", ... }. Modern gpt-transcribe
+  // responses may be the minimal { text, languages?, usage? } shape, so trust
+  // that shape only on an audio transcription/translation request. Other
+  // endpoints still need the legacy markers to avoid misclassifying text APIs.
+  const isTranscriptionRequest =
+    request?._endpointType === "transcription" || request?._endpointType === "translation";
   const looksLikeTranscription =
     typeof obj.text === "string" &&
-    (obj.task === "transcribe" || (obj.language !== undefined && obj.duration !== undefined)) &&
+    (isTranscriptionRequest ||
+      obj.task === "transcribe" ||
+      (obj.language !== undefined && obj.duration !== undefined)) &&
     !("choices" in obj) &&
     !("candidates" in obj) &&
     !("object" in obj) &&
@@ -1571,7 +1584,22 @@ function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger):
       transcription: {
         text: obj.text as string,
         ...(obj.language ? { language: String(obj.language) } : {}),
+        ...(Array.isArray(obj.languages)
+          ? {
+              languages: obj.languages
+                .filter(
+                  (language): language is Record<string, unknown> =>
+                    typeof language === "object" &&
+                    language !== null &&
+                    typeof language.code === "string",
+                )
+                .map((language) => ({ code: language.code as string })),
+            }
+          : {}),
         ...(obj.duration !== undefined ? { duration: Number(obj.duration) } : {}),
+        ...(obj.usage && typeof obj.usage === "object"
+          ? { usage: obj.usage as Record<string, unknown> }
+          : {}),
         ...(Array.isArray(obj.words) ? { words: obj.words } : {}),
         ...(Array.isArray(obj.segments) ? { segments: obj.segments } : {}),
       },

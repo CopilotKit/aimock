@@ -14,10 +14,11 @@ import {
   strictNoMatchLogLine,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
-import { writeErrorResponse } from "./sse-writer.js";
+import { calculateDelay, delay, writeErrorResponse } from "./sse-writer.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { createInterruptionSignal } from "./interruption.js";
 
 /**
  * Extract the multipart boundary string from a Content-Type header.
@@ -100,6 +101,7 @@ export async function handleTranscription(
 
   const model = extractFormField(raw, "model", boundary) ?? "whisper-1";
   const responseFormat = extractFormField(raw, "response_format", boundary) ?? "json";
+  const stream = extractFormField(raw, "stream", boundary) === "true";
 
   const syntheticReq: ChatCompletionRequest = {
     model,
@@ -254,7 +256,7 @@ export async function handleTranscription(
     return;
   }
 
-  journal.add({
+  const journalEntry = journal.add({
     method,
     path,
     headers: flattenHeaders(req.headers),
@@ -263,6 +265,55 @@ export async function handleTranscription(
   });
 
   const t = response.transcription;
+
+  // Only the transcription endpoint streams modern models. Whisper-1 ignores
+  // `stream=true`, and translations continue to return their JSON response.
+  if (endpointType === "transcription" && stream && model !== "whisper-1") {
+    const done = {
+      type: "transcript.text.done",
+      text: t.text,
+      ...(t.languages !== undefined ? { languages: t.languages } : {}),
+      ...(t.usage !== undefined ? { usage: t.usage } : {}),
+    };
+    const latency = fixture.latency ?? defaults.latency;
+    const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+    const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    let chunkIndex = 0;
+    const interruption = createInterruptionSignal(fixture);
+    for (let index = 0; index < t.text.length; index += chunkSize) {
+      const chunkDelay = calculateDelay(
+        chunkIndex,
+        fixture.streamingProfile,
+        latency,
+        fixture.recordedTimings,
+        replaySpeed,
+      );
+      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+      if (interruption?.signal.aborted) break;
+      res.write(
+        `data: ${JSON.stringify({ type: "transcript.text.delta", delta: t.text.slice(index, index + chunkSize) })}\n\n`,
+      );
+      interruption?.tick();
+      chunkIndex++;
+    }
+    if (interruption?.signal.aborted) {
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption.reason();
+      interruption.cleanup();
+      res.destroy();
+      return;
+    }
+    res.write(`data: ${JSON.stringify(done)}\n\n`);
+    res.end();
+    interruption?.cleanup();
+    return;
+  }
+
   const useVerbose = responseFormat === "verbose_json" || t.words != null || t.segments != null;
 
   if (useVerbose) {
@@ -282,6 +333,12 @@ export async function handleTranscription(
     res.end(JSON.stringify(verboseBody));
   } else {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ text: t.text }));
+    res.end(
+      JSON.stringify({
+        text: t.text,
+        ...(t.languages !== undefined ? { languages: t.languages } : {}),
+        ...(t.usage !== undefined ? { usage: t.usage } : {}),
+      }),
+    );
   }
 }
