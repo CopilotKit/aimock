@@ -19,6 +19,16 @@ import type { Fixture } from "../types.js";
 // ---------------------------------------------------------------------------
 
 describe("collapseOpenAISSE", () => {
+  it("preserves typed transcription metadata, including an empty transcript", () => {
+    const languageResult = collapseOpenAISSE(
+      'data: {"type":"transcript.text.done","text":"hello","languages":[{"code":"en"}]}\n\n',
+    );
+    const emptyResult = collapseOpenAISSE('data: {"type":"transcript.text.done","text":""}\n\n');
+
+    expect(languageResult.transcription).toEqual({ text: "hello", languages: [{ code: "en" }] });
+    expect(emptyResult).toEqual({ transcription: { text: "" }, content: "" });
+  });
+
   it("collapses text content from SSE chunks", () => {
     const body = [
       `data: ${JSON.stringify({ id: "chatcmpl-123", choices: [{ delta: { role: "assistant" } }] })}`,

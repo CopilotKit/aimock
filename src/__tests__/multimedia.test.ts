@@ -1,6 +1,32 @@
 import { describe, test, expect } from "vitest";
 import { LLMock } from "../llmock.js";
 
+async function readSSEFrameTimes(
+  response: Response,
+): Promise<{ body: string; frameTimes: number[] }> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Expected an SSE response body");
+
+  const decoder = new TextDecoder();
+  let body = "";
+  let pending = "";
+  const frameTimes: number[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    body += chunk;
+    pending += chunk;
+    while (pending.includes("\n\n")) {
+      const boundary = pending.indexOf("\n\n");
+      pending = pending.slice(boundary + 2);
+      frameTimes.push(Date.now());
+    }
+  }
+  body += decoder.decode();
+  return { body, frameTimes };
+}
+
 describe("image generation", () => {
   test("image generation returns fixture (OpenAI format)", async () => {
     const mock = new LLMock({ port: 0 });
@@ -87,7 +113,7 @@ describe("image generation", () => {
 });
 
 describe("audio transcription", () => {
-  test("transcription returns text", async () => {
+  test("gpt-transcribe returns a nonstreaming transcription", async () => {
     const mock = new LLMock({ port: 0 });
     mock.addFixture({
       match: { endpoint: "transcription" },
@@ -97,7 +123,7 @@ describe("audio transcription", () => {
 
     const formData = new FormData();
     formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
-    formData.append("model", "whisper-1");
+    formData.append("model", "gpt-transcribe");
 
     const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
       method: "POST",
@@ -107,6 +133,187 @@ describe("audio transcription", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.text).toBe("Welcome");
+    await mock.stop();
+  });
+
+  test("gpt-transcribe streams transcript delta and completion events", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "transcription" },
+      response: { transcription: { text: "Welcome" } },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    expect(await res.text()).toBe(
+      'data: {"type":"transcript.text.delta","delta":"Welcome"}\n\ndata: {"type":"transcript.text.done","text":"Welcome"}\n\n',
+    );
+    await mock.stop();
+  });
+
+  test("gpt-transcribe stream schedules fixture chunks across separate SSE frames", async () => {
+    const mock = new LLMock({ port: 0, chunkSize: 2, latency: 40 });
+    mock.addFixture({
+      match: { endpoint: "transcription" },
+      response: { transcription: { text: "abcdef" } },
+      chunkSize: 2,
+      latency: 40,
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+
+    const { body, frameTimes } = await readSSEFrameTimes(res);
+    const deltas = [...body.matchAll(/"type":"transcript\.text\.delta","delta":"([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+    expect(deltas).toEqual(["ab", "cd", "ef"]);
+    expect(frameTimes).toHaveLength(4);
+    expect(frameTimes[1] - frameTimes[0]).toBeGreaterThanOrEqual(20);
+    expect(frameTimes[2] - frameTimes[1]).toBeGreaterThanOrEqual(20);
+    await mock.stop();
+  });
+
+  test("gpt-transcribe stream records fixture truncation before its done event", async () => {
+    const mock = new LLMock({ port: 0, chunkSize: 2, latency: 1 });
+    mock.addFixture({
+      match: { endpoint: "transcription", model: "gpt-transcribe" },
+      response: { transcription: { text: "abcdefgh" } },
+      chunkSize: 2,
+      truncateAfterChunks: 2,
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: formData,
+    });
+
+    await expect(res.text()).rejects.toThrow();
+    expect(mock.journal.getLast()).toMatchObject({
+      response: { interrupted: true, interruptReason: "truncateAfterChunks" },
+    });
+    await mock.stop();
+  });
+
+  test("whisper-1 keeps its JSON response when stream is requested", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "transcription" },
+      response: { transcription: { text: "Legacy transcript" } },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "whisper-1");
+    formData.append("stream", "true");
+
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ text: "Legacy transcript" });
+    await mock.stop();
+  });
+
+  test("gpt-transcribe stream errors remain JSON in strict mode", async () => {
+    const mock = new LLMock({ port: 0, strict: true });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toMatchObject({
+      error: { code: "no_fixture_match", type: "invalid_request_error" },
+    });
+    await mock.stop();
+  });
+
+  test("gpt-transcribe stream no-match remains a non-strict 404 JSON error", async () => {
+    const mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toMatchObject({
+      error: { code: "no_fixture_match", type: "invalid_request_error" },
+    });
+    await mock.stop();
+  });
+
+  test("gpt-transcribe stream ErrorResponse remains JSON", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "transcription", model: "gpt-transcribe" },
+      response: {
+        error: { message: "Audio quota exhausted", type: "rate_limit_error", code: "quota" },
+        status: 429,
+      },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+    const res = await fetch(`${mock.url}/v1/audio/transcriptions`, {
+      method: "POST",
+      body: formData,
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toMatchObject({
+      error: { message: "Audio quota exhausted", type: "rate_limit_error", code: "quota" },
+    });
     await mock.stop();
   });
 
@@ -165,6 +372,30 @@ describe("audio translation", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.text).toBe("Hello world");
+    await mock.stop();
+  });
+
+  test("translation keeps its JSON response when gpt-transcribe requests stream", async () => {
+    const mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { endpoint: "translation" },
+      response: { transcription: { text: "Translated" } },
+    });
+    await mock.start();
+
+    const formData = new FormData();
+    formData.append("file", new Blob(["fake audio"], { type: "audio/wav" }), "test.wav");
+    formData.append("model", "gpt-transcribe");
+    formData.append("stream", "true");
+
+    const res = await fetch(`${mock.url}/v1/audio/translations`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test" },
+      body: formData,
+    });
+
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ text: "Translated" });
     await mock.stop();
   });
 

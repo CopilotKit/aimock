@@ -615,14 +615,11 @@ describe("GA Realtime conformance", () => {
     expect(frame.type).toBe("session.created");
     const session = frame.session;
     expect(session).toHaveProperty("audio");
-    expect(session).toHaveProperty("type", "conversation");
+    expect(session).toHaveProperty("type", "realtime");
     expect(session).toHaveProperty("reasoning");
     expect(session.audio).toMatchObject({
-      voice: null,
-      input_audio_format: null,
-      output_audio_format: null,
-      input_audio_noise_reduction: null,
-      input_audio_transcription: null,
+      input: { format: null, noise_reduction: null, transcription: null },
+      output: { format: null, voice: null },
     });
   });
 
