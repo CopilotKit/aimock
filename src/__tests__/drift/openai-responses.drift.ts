@@ -13,6 +13,7 @@ import {
   compareSSESequences,
   formatDriftReport,
   type SSEEventShape,
+  type ShapeDiff,
 } from "./schema.js";
 import {
   openaiResponsesNonStreamingShape,
@@ -566,13 +567,23 @@ describe("OpenAI Responses API reasoning drift", () => {
   });
 
   // NOTE: encrypted_content emission is ALSO enforced by the unit + WS suites
-  // (responses.test.ts / ws-responses.test.ts), which hard-fail on a dropped
-  // blob. The drift-side anchor is the shape pin in sdk-shapes.ts, and it is
-  // split by opt-in: `openaiResponsesReasoningEventShapes` (no blob) grades the
-  // opted-OUT legs, `openaiResponsesEncryptedReasoningEventShapes` (blob) grades
-  // the opted-IN leg below. Pinning the blob unconditionally made every
-  // opted-out leg report `item.encrypted_content` critical forever — a finding
-  // that no code change could clear, so it gated nothing.
+  // (responses.test.ts / ws-responses.test.ts), which hard-fail on a dropped,
+  // null or empty blob and run in the ALWAYS-ON `pnpm test` lane (test-unit.yml
+  // has no `paths:` filter). That lane — not this file — is what gates a PR that
+  // touches src/responses.ts; `test-drift.yml`'s PR `paths:` filter deliberately
+  // scopes the live PR leg to drift-grading code (see the comment on that
+  // filter).
+  //
+  // The drift-side anchor is the shape pin in sdk-shapes.ts, split by opt-in:
+  // `openaiResponsesReasoningEventShapes` (no blob) grades the opted-OUT legs,
+  // `openaiResponsesEncryptedReasoningEventShapes` (blob) grades the opted-IN
+  // leg below. Pinning the blob unconditionally made every opted-out leg report
+  // `item.encrypted_content` critical forever — a finding that no code change
+  // could clear, so it gated nothing.
+  //
+  // A SHAPE pin alone is not enough in either direction, so `gradeEncryptedBlob`
+  // below adds the value-level grading. See its docstring for what shape
+  // comparison structurally cannot see.
 
   it("reasoning event shapes include item_id, output_index, summary_index", async () => {
     const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
@@ -629,6 +640,20 @@ describe("OpenAI Responses API reasoning drift", () => {
     expect((partDoneData.part as { type: string; text: string }).text).toBe(REASONING_TEXT);
   });
 
+  // DELTA-KEY ISOLATION. The collector derives each diff's delta `id` from its
+  // `path` (`parseDriftBlock`: `id: path`) and `computeDelta` keys findings by
+  // `provider::id` ONLY — `DriftEntry.scenario` rides along in the report but
+  // NEVER enters the key. So two findings that differ only by scenario collapse
+  // last-write-wins: verified against the real `computeDelta`, an opted-OUT
+  // finding at `item.encrypted_content` sitting on the base report demotes a
+  // NEW-in-head opted-IN finding at the same path from `block[]` to `advisory[]`
+  // — i.e. it stops failing the required check. Prefixing every path this file
+  // reports with its scenario + event type keeps the two legs' delta keys
+  // disjoint without touching the shared delta machinery that every other drift
+  // surface depends on.
+  const scopePaths = (diffs: ShapeDiff[], prefix: string): ShapeDiff[] =>
+    diffs.map((d) => ({ ...d, path: `${prefix}:${d.path}` }));
+
   // Grade a reasoning SSE body against the SDK shape variant for the request
   // that produced it. `scenario` keeps the opted-out and opted-in legs' drift
   // keys distinct so the delta gate attributes a finding to the right variant.
@@ -652,14 +677,112 @@ describe("OpenAI Responses API reasoning drift", () => {
         continue;
       }
 
-      const diffs = triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape);
-      const report = formatDriftReport(`${scenario}:${sdkEvent.type}`, diffs, "openai-responses");
+      const context = `${scenario}:${sdkEvent.type}`;
+      const diffs = scopePaths(
+        triangulate(sdkEvent.dataShape, sdkEvent.dataShape, mockEvent.dataShape),
+        context,
+      );
+      const report = formatDriftReport(context, diffs, "openai-responses");
 
       expect(
         diffs.filter((d) => d.severity === "critical"),
         report,
       ).toEqual([]);
     }
+  };
+
+  /**
+   * VALUE-level grading of the terminal reasoning item's `encrypted_content`.
+   *
+   * A shape pin structurally CANNOT see a degenerate value, in either direction
+   * (all four cases below were reproduced locally against this suite):
+   *
+   *   - opted IN, `encrypted_content: null` → kind "null" vs the pin's "string",
+   *     and schema.ts's real-vs-mock check deliberately exempts null-vs-other
+   *     ("Allow null vs other type (optional fields)") → no diff, leg GREEN.
+   *   - opted IN, `encrypted_content: ""`   → still kind "string" → no diff,
+   *     leg GREEN.
+   *   - opted OUT, blob present             → a field in mock but not in the pin
+   *     grades `info` ("MOCK EXTRA FIELD"), and these legs fail only on
+   *     `critical` → leg GREEN.
+   *   - opted IN, blob absent               → the ONE case the shape pin does
+   *     catch (critical).
+   *
+   * The blob is the payload agent-framework-openai >= 1.11.0 replays verbatim on
+   * its stateless path (microsoft/agent-framework#7233), so a null or empty blob
+   * is exactly as broken as an absent one, and a blob handed to a request that
+   * never opted in is drift too.
+   *
+   * Emitted through `formatDriftReport` with the `openai-responses` surface
+   * marker so a violation lands as a ROUTED drift finding (collector → exit 2 →
+   * delta gate) instead of a bare `expect` failure the collector could only
+   * quarantine (exit 5).
+   */
+  const gradeEncryptedBlob = (body: string, expectBlob: boolean, scenario: string) => {
+    const label = expectBlob ? "opted-in" : "opted-out";
+    const path = `${scenario}:response.output_item.done:item.encrypted_content(value)`;
+    const diffs: ShapeDiff[] = [];
+
+    const terminal = parseTypedSSE(body)
+      .filter(
+        (e) =>
+          e.type === "response.output_item.done" &&
+          (e.data as { item?: { type?: string } }).item?.type === "reasoning",
+      )
+      .at(-1);
+    const item = terminal
+      ? (terminal.data as { item: { encrypted_content?: unknown } }).item
+      : undefined;
+
+    if (item === undefined) {
+      // Folded into the diff list (not a bare `expect`) so a missing terminal
+      // item is a routed critical finding rather than a quarantined failure.
+      diffs.push({
+        path,
+        severity: "critical",
+        issue: "LLMOCK DRIFT — no terminal response.output_item.done with type=reasoning",
+        expected: "reasoning item",
+        real: "reasoning item",
+        mock: "<absent>",
+      });
+    } else {
+      const blob = item.encrypted_content;
+      const observed = blob === undefined ? "<absent>" : JSON.stringify(blob);
+      if (expectBlob && (typeof blob !== "string" || blob.length === 0)) {
+        diffs.push({
+          path,
+          severity: "critical",
+          issue:
+            "LLMOCK DRIFT — opted-in request must carry a NON-EMPTY encrypted_content string " +
+            "(agent-framework replays it verbatim; null/empty is as broken as absent)",
+          expected: "non-empty string",
+          real: "non-empty string",
+          mock: observed,
+        });
+      } else if (!expectBlob && blob !== undefined) {
+        diffs.push({
+          path,
+          severity: "critical",
+          issue:
+            "LLMOCK DRIFT — opted-out request must carry NO encrypted_content " +
+            "(over-emission hands the blob to a consumer that never asked for it)",
+          expected: "<absent>",
+          real: "<absent>",
+          mock: observed,
+        });
+      }
+    }
+
+    const report = formatDriftReport(
+      `${scenario} (${label} encrypted_content value)`,
+      diffs,
+      "openai-responses",
+    );
+
+    expect(
+      diffs.filter((d) => d.severity === "critical"),
+      report,
+    ).toEqual([]);
   };
 
   it("reasoning event shapes triangulate against SDK expectations", async () => {
@@ -678,13 +801,17 @@ describe("OpenAI Responses API reasoning drift", () => {
       res.body,
       "OpenAI Responses Reasoning",
     );
+    // Over-emission check: a blob here means the gate leaked it to a request
+    // that never opted in. Invisible to the shape pin (grades `info`).
+    gradeEncryptedBlob(res.body, false, "OpenAI Responses Reasoning");
   });
 
-  it("opted-in reasoning event shapes carry encrypted_content", async () => {
+  it("opted-in reasoning event shapes carry a non-empty encrypted_content", async () => {
     // Opted IN via `include` — the exact request agent-framework-openai
     // >= 1.11.0 sends on its stateless-replay path. This is the leg that GATES
     // the emission: drop `encrypted_content` in responses.ts and the terminal
-    // item reports `item.encrypted_content` critical here.
+    // item reports `item.encrypted_content` critical here. The shape pin catches
+    // ABSENCE; `gradeEncryptedBlob` catches null/empty, which the pin cannot.
     const res = await httpPost(`${reasoningInstance.url}/v1/responses`, {
       model: "gpt-4o-mini",
       input: [{ role: "user", content: "Think carefully" }],
@@ -699,5 +826,6 @@ describe("OpenAI Responses API reasoning drift", () => {
       res.body,
       "OpenAI Responses Encrypted Reasoning",
     );
+    gradeEncryptedBlob(res.body, true, "OpenAI Responses Encrypted Reasoning");
   });
 });

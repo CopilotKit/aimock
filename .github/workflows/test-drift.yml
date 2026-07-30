@@ -3,6 +3,20 @@ on:
   schedule:
     - cron: "0 6 * * *" # Daily 6am UTC
   pull_request:
+    # DELIBERATE SCOPE — this filter lists DRIFT-GRADING code, not the production
+    # files the drift legs grade. `drift-live-pr` is a ~30-minute job that burns
+    # real provider credits on every trigger, and its question is "does THIS diff
+    # introduce provider-format divergence in the drift harness", not "does the
+    # mock still emit field X". Adding a graded production file (src/responses.ts,
+    # src/ws-responses.ts, …) would, by the same logic, pull in nearly every file
+    # under src/ and run the live leg on almost every PR.
+    #
+    # Per-field emission properties are gated by the ALWAYS-ON unit lane instead:
+    # test-unit.yml has no `paths:` filter, so `pnpm test` runs on every PR and
+    # hard-fails on a dropped/null/empty value (e.g. the `encrypted_content`
+    # value pins in src/__tests__/responses.test.ts and ws-responses.test.ts).
+    # If you came here because a drift assertion "never triggers on the code it
+    # guards": check the unit lane first — that is where the value pin lives.
     paths:
       - "src/agui-types.ts"
       - "src/__tests__/drift/agui-schema.drift.ts"
