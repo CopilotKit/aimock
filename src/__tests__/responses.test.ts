@@ -1911,13 +1911,41 @@ describe("reasoning.encrypted_content emission", () => {
     return ev?.item as { id: string; encrypted_content?: string } | undefined;
   }
 
-  // Pins aimock's deliberate omission of the blob on the in-progress `added` item
-  // even when the gate is ON (see the header note — legal, but NOT a claim about
-  // what upstream does). This replaces a conditional-expect helper that could
-  // never fire: aimock builds the `added` item with no `emitEncrypted` opt at all,
-  // so the guarded branch was unreachable and every call site asserted nothing.
-  const expectAddedOmitsBlob = (item: object): void => {
-    expect(item).not.toHaveProperty("encrypted_content");
+  // For an OPTED-IN request, grades ONLY what is contractual about the blob on
+  // the in-progress `added` item: if the field is there it must be a well-formed,
+  // id-derived blob — absence and presence are BOTH legal.
+  //
+  // Real OpenAI populates `added` opportunistically (see the section header and
+  // the note on `buildReasoningOutputItem` in responses.ts) and
+  // `encrypted_content` is `anyOf: [string, null]` and non-required, so aimock
+  // omitting it there is aimock's own CHOICE, not the provider contract. The
+  // drift contract in this same tree already draws the line exactly here:
+  // `sdk-shapes.ts` anchors the blob on `done` ONLY, explicitly because "pinning
+  // `added` would flag an intentional, legal shape choice as drift", and
+  // `gradeEncryptedBlob` grades the terminal item alone. Pinning the ABSENCE here
+  // instead made 9 tests fail any future change that moved aimock TOWARD upstream
+  // parity.
+  //
+  // It deliberately does not assert presence either, so aimock's current omission
+  // keeps passing. Nothing real is lost by relaxing it: the property that matters
+  // is the blob reaching the TERMINAL item, which every call site pins directly
+  // via `expect(done.encrypted_content).toBe(expectedBlob(done.id))`, so putting
+  // the blob on `added` INSTEAD of `done` still fails.
+  //
+  // For an OPTED-OUT request, absence on `added` genuinely IS the contract (no
+  // blob may appear anywhere) and stays asserted at those call sites directly.
+  const expectAddedBlobIsContractLegal = (item: {
+    id: string;
+    encrypted_content?: string;
+  }): void => {
+    if (!("encrypted_content" in item)) return;
+    expect(typeof item.encrypted_content, "encrypted_content on `added` must be a string").toBe(
+      "string",
+    );
+    // Present means it must be the SAME id-derived blob — a degenerate or
+    // mismatched value there is as broken as a wrong one on `done`
+    // (cf. `gradeEncryptedBlob` in the drift suite).
+    expect(item.encrypted_content).toBe(expectedBlob(item.id));
   };
 
   const reasoningTextFixture: Fixture = {
@@ -1972,7 +2000,7 @@ describe("reasoning.encrypted_content emission", () => {
     );
     const done = reasoningItem(events, "done")!;
     expect(done.encrypted_content).toBe(expectedBlob(done.id)); // pins presence + determinism
-    expectAddedOmitsBlob(reasoningItem(events, "added")!);
+    expectAddedBlobIsContractLegal(reasoningItem(events, "added")!);
   });
 
   // --- HTTP streaming: every builder + gate triggers + completed.output ---
@@ -2019,7 +2047,7 @@ describe("reasoning.encrypted_content emission", () => {
       const done = reasoningItem(events, "done")!;
       expect(done, "no done reasoning item").toBeDefined();
       expect(done.encrypted_content).toBe(expectedBlob(done.id));
-      expectAddedOmitsBlob(reasoningItem(events, "added")!);
+      expectAddedBlobIsContractLegal(reasoningItem(events, "added")!);
     });
   }
 
@@ -2200,7 +2228,7 @@ describe("reasoning.encrypted_content emission", () => {
       expect(added!.summary).toEqual([]);
       expect(done!.summary).toEqual([]);
       expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
-      expectAddedOmitsBlob(added!);
+      expectAddedBlobIsContractLegal(added!);
     });
 
     // The whole blast-radius argument: nothing changes for a client that did not
