@@ -1880,12 +1880,18 @@ describe("reasoning_summary_text.done includes item_id", () => {
 
 // ─── reasoning.encrypted_content (microsoft/agent-framework#7233) ────────────
 //
-// Real OpenAI populates an opaque `encrypted_content` blob on the TERMINAL
-// reasoning item (never the in-progress `added` item) when the request opts in
-// via `include: ["reasoning.encrypted_content"]` OR is stateless (`store:false`)
-// — the path used by agent-framework-openai >= 1.11.0. aimock synthesizes a
-// deterministic placeholder so that client can replay the reasoning item instead
-// of hard-failing the reasoning + multi-tool follow-up request.
+// Real OpenAI populates an opaque `encrypted_content` blob on the reasoning item
+// when the request opts in via `include: ["reasoning.encrypted_content"]` OR is
+// stateless (`store:false`) — the path used by agent-framework-openai >= 1.11.0.
+// aimock synthesizes a deterministic placeholder so that client can replay the
+// reasoning item instead of hard-failing the reasoning + multi-tool follow-up
+// request.
+//
+// aimock carries the blob on the TERMINAL (`output_item.done`) reasoning item and
+// deliberately omits it from the in-progress `added` item. That is aimock's own
+// CHOICE, not upstream parity — real OpenAI DOES populate `added`, but the field
+// is `anyOf: [string, null]` and non-required, so `done` is where consumers must
+// read it and omitting it on `added` is legal.
 
 describe("reasoning.encrypted_content emission", () => {
   // Mirror of `syntheticEncryptedReasoning` in responses.ts — pins the id→blob
@@ -1905,12 +1911,13 @@ describe("reasoning.encrypted_content emission", () => {
     return ev?.item as { id: string; encrypted_content?: string } | undefined;
   }
 
-  // `added` placement is NOT contractual: real OpenAI populates it, aimock omits
-  // it, and both are legal (field is anyOf:[string,null], non-required). So a
-  // present blob must be a string, but absence must NOT fail. (Contrast the
-  // flag-off case below, which pins genuine absence.)
-  const assertAddedNotPinned = (item: { encrypted_content?: string }): void => {
-    if (item.encrypted_content !== undefined) expect(typeof item.encrypted_content).toBe("string");
+  // Pins aimock's deliberate omission of the blob on the in-progress `added` item
+  // even when the gate is ON (see the header note — legal, but NOT a claim about
+  // what upstream does). This replaces a conditional-expect helper that could
+  // never fire: aimock builds the `added` item with no `emitEncrypted` opt at all,
+  // so the guarded branch was unreachable and every call site asserted nothing.
+  const expectAddedOmitsBlob = (item: object): void => {
+    expect(item).not.toHaveProperty("encrypted_content");
   };
 
   const reasoningTextFixture: Fixture = {
@@ -1965,7 +1972,7 @@ describe("reasoning.encrypted_content emission", () => {
     );
     const done = reasoningItem(events, "done")!;
     expect(done.encrypted_content).toBe(expectedBlob(done.id)); // pins presence + determinism
-    assertAddedNotPinned(reasoningItem(events, "added")!);
+    expectAddedOmitsBlob(reasoningItem(events, "added")!);
   });
 
   // --- HTTP streaming: every builder + gate triggers + completed.output ---
@@ -2012,18 +2019,23 @@ describe("reasoning.encrypted_content emission", () => {
       const done = reasoningItem(events, "done")!;
       expect(done, "no done reasoning item").toBeDefined();
       expect(done.encrypted_content).toBe(expectedBlob(done.id));
-      assertAddedNotPinned(reasoningItem(events, "added")!);
+      expectAddedOmitsBlob(reasoningItem(events, "added")!);
     });
   }
 
   it("streaming reflects the blob in response.completed.output", async () => {
     const events = await streamReasoning(reasoningTextFixture, "textreason", OPT_IN);
-    const done = reasoningItem(events, "done")!;
     const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
-      response: { output: { type: string; encrypted_content?: string }[] };
+      response: { output: { type: string; id: string; encrypted_content?: string }[] };
     };
     const outputReasoning = completed.response.output.find((o) => o.type === "reasoning");
-    expect(outputReasoning!.encrypted_content).toBe(done.encrypted_content);
+    expect(outputReasoning, "no reasoning item in completed.output").toBeDefined();
+    // Pin the blob INDEPENDENTLY, against the id-derived expectation — NOT against
+    // the `output_item.done` event's item. `buildResponsePreamble` pushes that very
+    // object into `prefixOutputItems`, so the two are the SAME REFERENCE and
+    // comparing them is `undefined === undefined` the moment emission stops: the
+    // assertion passed with the feature entirely off.
+    expect(outputReasoning!.encrypted_content).toBe(expectedBlob(outputReasoning!.id));
   });
 
   it("streaming emits the blob for a stateless request (store:false) without include", async () => {
@@ -2032,11 +2044,29 @@ describe("reasoning.encrypted_content emission", () => {
     expect(done.encrypted_content).toBe(expectedBlob(done.id));
   });
 
-  it("streaming omits the blob for a stored request that did not opt in", async () => {
-    const events = await streamReasoning(reasoningTextFixture, "textreason", {});
-    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
-    expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
-  });
+  // --- HTTP streaming LEAK direction: the same builders must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just as
+  // well if a call site hardcodes the flag ON. A leak is the worse failure for a
+  // mock: it silently changes response bytes for every consumer that never opted
+  // in (no `include`, no `store:false`), so the stored / opted-out replay is no
+  // longer byte-identical.
+  //
+  // `handleResponses` threads the gate into each streaming builder from a SEPARATE
+  // call site (buildTextStreamEvents, buildToolCallStreamEvents and
+  // buildContentWithToolCallsStreamEvents), so one negative per case is required —
+  // with only the text negative present, hardcoding the flag on at either of the
+  // other two sites left the whole suite green.
+  for (const [label, fixture, msg] of streamingCases) {
+    it(`streaming ${label} omits the blob when the request did not opt in`, async () => {
+      const events = await streamReasoning(fixture, msg, {});
+      const done = reasoningItem(events, "done");
+      expect(done, "no done reasoning item").toBeDefined();
+      // Pin genuine key ABSENCE, not merely a falsy value.
+      expect(done!).not.toHaveProperty("encrypted_content");
+      expect(reasoningItem(events, "added")!).not.toHaveProperty("encrypted_content");
+    });
+  }
 
   // --- Non-streaming: every builder path (incl. the positional blocks branch) ---
 

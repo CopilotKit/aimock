@@ -902,16 +902,36 @@ describe("WebSocket /v1/responses encrypted reasoning", () => {
     ws.close();
   });
 
-  it("omits the blob when the request does not opt in", async () => {
-    instance = await createServer(allFixtures);
-    const ws = await connectWebSocket(instance.url, "/v1/responses");
-    ws.send(createMsg("think", {}));
+  // --- LEAK direction: every WS gate call site must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just as
+  // well if a call site hardcodes the flag ON, which silently changes the bytes
+  // every consumer that never opted in receives. The WS dispatch threads the gate
+  // into each streaming builder from a SEPARATE call site, so one negative per
+  // branch is required — with only the text negative present, hardcoding the flag
+  // on in either the content+toolCalls or the tool-only branch left the entire
+  // suite green.
+  const wsLeakCases: [string, string][] = [
+    ["text (buildTextStreamEvents)", "think"],
+    ["tool-only (buildToolCallStreamEvents)", "tool-reason"],
+    ["content+toolCalls (buildContentWithToolCallsStreamEvents)", "both-reason"],
+  ];
 
-    const events = await collectUntilCompleted(ws);
-    expect(reasoningDone(events)!.encrypted_content).toBeUndefined();
+  for (const [label, msg] of wsLeakCases) {
+    it(`omits the blob for ${label} when the request does not opt in`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createMsg(msg, {}));
 
-    ws.close();
-  });
+      const events = await collectUntilCompleted(ws);
+      const done = reasoningDone(events);
+      expect(done, "no done reasoning item").toBeDefined();
+      // Pin genuine key ABSENCE, not merely a falsy value.
+      expect(done!).not.toHaveProperty("encrypted_content");
+
+      ws.close();
+    });
+  }
 
   // A fixture with NO declared `reasoning` summary — the shape a capture from the
   // real stateless agent-framework flow has — must still reach an opted-in WS
