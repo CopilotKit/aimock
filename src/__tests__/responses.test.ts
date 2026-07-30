@@ -2200,7 +2200,7 @@ describe("reasoning.encrypted_content emission", () => {
       expect(added!.summary).toEqual([]);
       expect(done!.summary).toEqual([]);
       expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
-      assertAddedNotPinned(added!);
+      expectAddedOmitsBlob(added!);
     });
 
     // The whole blast-radius argument: nothing changes for a client that did not
