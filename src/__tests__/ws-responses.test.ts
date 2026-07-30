@@ -933,6 +933,29 @@ describe("WebSocket /v1/responses encrypted reasoning", () => {
     });
   }
 
+  // `include` SELECTIVITY. The leak cases above send NO `include` at all, so they
+  // pin the predicate's presence/absence but not its selectivity: broadening the
+  // gate from `include.includes("reasoning.encrypted_content")` to any non-empty
+  // `include` left the whole suite green. `file_search_call.results` is a genuine
+  // member of the SDK's `ResponseIncludable` union with nothing to do with
+  // reasoning, so a real client sending it must not receive a blob. The WS
+  // dispatch reads `include` off the parsed frame itself, so this needs its own
+  // transport-level case. No `store` — that is the gate's OTHER branch.
+  it("omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { include: ["file_search_call.results"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
+    expect(done!).not.toHaveProperty("encrypted_content");
+    // NOWHERE in the frames, which also covers completed.output.
+    expect(JSON.stringify(events)).not.toContain("encrypted_content");
+
+    ws.close();
+  });
+
   // A fixture with NO declared `reasoning` summary — the shape a capture from the
   // real stateless agent-framework flow has — must still reach an opted-in WS
   // client with a summary-less reasoning item carrying the blob. Needs a

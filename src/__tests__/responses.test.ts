@@ -2320,6 +2320,77 @@ describe("reasoning.encrypted_content emission", () => {
       ).toBeUndefined();
     }
   });
+
+  // --- `include` SELECTIVITY: an UNRELATED include value is not an opt-in -----
+  //
+  // Every leak negative above sends NO `include` at all, so together they pin the
+  // predicate's presence/absence but NOT its selectivity. Broadening
+  // `requestIncludesEncryptedReasoning` from
+  // `include.includes("reasoning.encrypted_content")` to any non-empty `include`
+  // left the ENTIRE suite green (verified by mutation), and a real client sending
+  // `include: ["file_search_call.results"]` then received a blob it never asked
+  // for — the same byte-level over-emission the per-call-site negatives close,
+  // but per include VALUE rather than per call site.
+  //
+  // `file_search_call.results` is a genuine member of the SDK's
+  // `ResponseIncludable` union (openai/resources/responses/responses.d.ts:
+  // `'file_search_call.results' | 'message.input_image.image_url' |
+  // 'computer_call_output.output.image_url' | 'reasoning.encrypted_content'`)
+  // with nothing to do with reasoning, so this exercises a request a client
+  // actually sends rather than a fabricated string.
+  //
+  // `store` is deliberately absent: `requestWantsEncryptedReasoning`'s other
+  // branch fires on `store: false`, so sending it would make the assertion pass
+  // for the wrong reason.
+  const UNRELATED_INCLUDE = { include: ["file_search_call.results"] };
+
+  it("streaming omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer([reasoningTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "textreason" }],
+      stream: true,
+      ...UNRELATED_INCLUDE,
+    });
+    expect(res.status).toBe(200);
+    // NOWHERE in the raw bytes — stronger than an item-level check, and it also
+    // covers `response.completed.output` and any future carrier of the field.
+    expect(res.body).not.toContain("encrypted_content");
+    const events = parseResponsesSSEEvents(res.body);
+    expect(reasoningItem(events, "done"), "no done reasoning item").toBeDefined();
+    expect(reasoningItem(events, "done")!).not.toHaveProperty("encrypted_content");
+    expect(reasoningItem(events, "added")!).not.toHaveProperty("encrypted_content");
+  });
+
+  it("non-streaming omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer([reasoningTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "textreason" }],
+      stream: false,
+      ...UNRELATED_INCLUDE,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("encrypted_content");
+    const body = JSON.parse(res.body) as { output: { type: string }[] };
+    expect(
+      body.output.some((o) => o.type === "reasoning"),
+      "no reasoning output item",
+    ).toBe(true);
+  });
+
+  // The SYNTHESIS gate is the same predicate, so its selectivity needs the same
+  // negative: an unrelated include value must not conjure an item either.
+  it("a non-empty include that lacks the reasoning value synthesizes NOTHING", async () => {
+    const output = await nonStreamReasoning(noSummaryTextFixture, "nosumtext", UNRELATED_INCLUDE);
+    expect(output.some((o) => o.type === "reasoning")).toBe(false);
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", UNRELATED_INCLUDE);
+    expect(reasoningItem(events, "done")).toBeUndefined();
+    // Guard against the model gate being the reason this passes: the SAME fixture
+    // and model DO produce the item under the explicit opt-in.
+    const optedIn = await nonStreamReasoning(noSummaryTextFixture, "nosumtext");
+    expect(optedIn.some((o) => o.type === "reasoning")).toBe(true);
+  });
 });
 
 // ─── Bug fix: multi-fco after single item_reference ─────────────────────────
