@@ -26,6 +26,16 @@
  * inputs, asserting identical classification results. A future edit that
  * widens/narrows one copy without mirroring the change into the other now
  * fails CI here.
+ *
+ * THE FIXTURES ARE LOAD-BEARING, not illustrative. Each of the three
+ * divergences named above is only actually caught if some fixture DISTINGUISHES
+ * the two behaviours, and originally only the fail-closed floor did: no fixture
+ * contained a `NON_MODEL_TOKENS` member, and every fixture's output happened to
+ * already be in insertion order, so dropping the mirror's token check or its
+ * `.sort()` left all of these tests green. Both are now covered by dedicated
+ * fixtures (see the comments inline). Do not "simplify" the fixture list by
+ * removing cases that look like near-duplicates of each other — verify first
+ * that the mutation each one exists to catch still reddens without it.
  */
 import { describe, it, expect } from "vitest";
 
@@ -51,6 +61,21 @@ describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence
       [],
       // A mixed listing: every known family plus two brand-new ones.
       [...includeFamilies.openai, "gpt-live", "gpt-super-new-2077"],
+      // Exercises the NON_MODEL_TOKENS suppression specifically. Every fixture
+      // above is token-free, so dropping the mirror's
+      // `NON_MODEL_TOKENS.has(...)` line left this whole guard green even though
+      // its docstring claims to protect that check. `gemini-interactions` is the
+      // sole token and is NOT otherwise classified for openai, so with the check
+      // this listing yields [] and without it yields ["gemini-interactions"].
+      ["gpt-4o", "gemini-interactions"],
+      // Exercises the `.sort()` specifically. Every fixture above happens to
+      // produce output that is ALREADY in insertion order, so dropping the
+      // mirror's `.sort()` was likewise invisible. These two unclassified
+      // families are supplied in reverse-alphabetical order, so insertion order
+      // (["gpt-omega", "gpt-alpha"]) and sorted order (["gpt-alpha",
+      // "gpt-omega"]) differ — and `toEqual` on arrays is order-sensitive, so
+      // only one copy sorting is a mismatch.
+      ["gpt-omega", "gpt-alpha"],
     ];
     for (const modelIds of fixtures) {
       expect(unclassifiedFamiliesForSync(modelIds, provider)).toEqual(
