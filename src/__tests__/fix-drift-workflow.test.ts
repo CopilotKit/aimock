@@ -1985,3 +1985,57 @@ describe("fix-drift.yml — Slack message bodies use REAL newlines, not a litera
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// M3 (exhaustiveness). `steps.sync.outputs.reason` is a string on the wire, so
+// nothing in TypeScript connects `SyncCoreReason` to the workflow's conditions.
+// Adding a fifth member to the enum, or renaming one, silently leaves the
+// workflow with a reason no step is keyed on — which is the crash window again,
+// reached from the other direction.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — SyncCoreReason is pinned and fully routed", () => {
+  it("the enum has exactly the four wire values the workflow knows about", () => {
+    expect(Object.values(SyncCoreReason).sort()).toEqual([
+      "gate-failed",
+      "needs-human",
+      "ok-applied",
+      "ok-no-churn",
+    ]);
+  });
+
+  it("every reason is ROUTED: it either drives a step or is the one silent no-op", () => {
+    const conditions = [...steps().map((s) => s.if ?? "")].join("\n");
+    for (const reason of Object.values(SyncCoreReason)) {
+      const named = conditions.includes(`'${reason}'`);
+      expect(
+        named,
+        `reason '${reason}' appears in no step condition — a run that reports it ` +
+          "falls through every gate and every alert",
+      ).toBe(reason !== SyncCoreReason.OK_NO_CHURN);
+    }
+  });
+
+  it("no step is gated on a reason the enum cannot produce", () => {
+    const known = new Set<string>([...Object.values(SyncCoreReason), ""]);
+    const quoted = new Set<string>();
+    for (const s of steps()) {
+      for (const m of (s.if ?? "").matchAll(/steps\.sync\.outputs\.reason\s*[=!]=\s*'([^']*)'/g)) {
+        quoted.add(m[1]);
+      }
+    }
+    expect(quoted.size).toBeGreaterThan(0);
+    // A workflow-synthesised reason (e.g. one standing in for "drift-sync
+    // crashed without classifying itself") is legitimate, but it must be
+    // DECLARED in the sync step's own body rather than appearing only in a
+    // condition — otherwise the condition is unreachable.
+    const syncRun = runOf(stepById("sync"));
+    for (const reason of quoted) {
+      if (known.has(reason)) continue;
+      expect(
+        syncRun,
+        `a step is gated on reason '${reason}', which SyncCoreReason cannot produce ` +
+          "and the sync step never assigns — that condition can never be satisfied",
+      ).toContain(reason);
+    }
+  });
+});
