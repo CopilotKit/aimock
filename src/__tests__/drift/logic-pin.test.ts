@@ -24,8 +24,9 @@
  *                       ANTHROPIC_DATE_SUFFIX, normalizeModelFamily
  *   model-registry.ts — PREVIEW_FAMILY, GEMMA_FAMILY, NON_MODEL_TOKENS,
  *                       familySet, isClassifiedFamily
- *   voice-models.ts   — isVoiceModelId (rule), knownVoiceModelFamilies and
- *                       gaRealtimeModels (data)
+ *   voice-models.ts   — isVoiceModelId, normalizeVoiceModelFamily,
+ *                       detectVoiceModelDrift (rules),
+ *                       knownVoiceModelFamilies and gaRealtimeModels (data)
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -41,7 +42,13 @@ import {
   excludeFamilies,
 } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
-import { isVoiceModelId, knownVoiceModelFamilies, gaRealtimeModels } from "./voice-models.js";
+import {
+  isVoiceModelId,
+  knownVoiceModelFamilies,
+  gaRealtimeModels,
+  normalizeVoiceModelFamily,
+  detectVoiceModelDrift,
+} from "./voice-models.js";
 
 const famSrc = readFileSync(fileURLToPath(new URL("./model-family.ts", import.meta.url)), "utf8");
 const regSrc = readFileSync(fileURLToPath(new URL("./model-registry.ts", import.meta.url)), "utf8");
@@ -160,6 +167,26 @@ const FROZEN: Record<string, { source: string; pin: string }> = {
     ),
     pin: "f3d7f7324fc29798200c6b87469b50514ab790f14edba851e92e656753e941b9",
   },
+  // The two FUNCTIONS that consume the voice seed sets. Pinning the sets alone
+  // left this layer open: `knownVoiceModelFamilies` is built by mapping already
+  // normalized seeds through the normalizer, so neutering the normalizer does not
+  // move the data pin, and nothing looked at the detector's body at all.
+  normalizeVoiceModelFamily: {
+    source: extractSole(
+      voiceSrc,
+      /^export function normalizeVoiceModelFamily\([\s\S]*?\n}/m,
+      "normalizeVoiceModelFamily",
+    ),
+    pin: "79c1f879d5c00746c4312ce41d06a492148e105af42e4ad57733c7eef130444a",
+  },
+  detectVoiceModelDrift: {
+    source: extractSole(
+      voiceSrc,
+      /^export function detectVoiceModelDrift\([\s\S]*?\n}/m,
+      "detectVoiceModelDrift",
+    ),
+    pin: "4a365ed2b74084ba5d664476b872ba8fc9bc4036820bb86f42c840789c6269d1",
+  },
 };
 
 describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", () => {
@@ -230,6 +257,51 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
     expect(isVoiceModelId("gpt-5.4-mini")).toBe(false);
     expect(isVoiceModelId("dall-e-3")).toBe(false);
     expect(isVoiceModelId("text-embedding-3-large")).toBe(false);
+  });
+
+  // A source checksum detects any edit but explains nothing and churns on
+  // reformatting. These anchors encode what the two consumers of the voice seed
+  // sets must MEAN, so they survive a legitimate refactor and still catch a
+  // neutered function. Each case below was verified to fail against the specific
+  // one-line silencing edit it exists to catch.
+  it("keeps normalizeVoiceModelFamily collapsing snapshots but not short tails", () => {
+    // Dated snapshots and build tags collapse onto the family. An identity
+    // normalizer (`return id`) fails here — and would NOT move the
+    // knownVoiceModelFamilies data pin, because those seeds are already
+    // normalized, so this is the only thing standing in its way.
+    expect(normalizeVoiceModelFamily("gpt-audio-2025-08-28")).toBe("gpt-audio");
+    expect(normalizeVoiceModelFamily("tts-1-1106")).toBe("tts-1");
+    // A single-digit tail is deliberately NOT stripped: `gpt-live-1` must stay an
+    // UNKNOWN family. Over-stripping here silences the exact case the canary was
+    // broadened for.
+    expect(normalizeVoiceModelFamily("gpt-live-1")).toBe("gpt-live-1");
+    expect(normalizeVoiceModelFamily("gpt-live-1-mini")).toBe("gpt-live-1-mini");
+    // Already-normalized input is a fixed point (the seed-set build relies on it).
+    expect(normalizeVoiceModelFamily("gpt-realtime")).toBe("gpt-realtime");
+  });
+
+  it("keeps detectVoiceModelDrift reporting a genuinely new voice family", () => {
+    const { candidateModels, unknown } = detectVoiceModelDrift([
+      "gpt-4o", // not voice — must not be a candidate at all
+      "gpt-realtime-2025-08-28", // known family via a dated snapshot
+      "gpt-live-1", // NEW family — the whole point of the canary
+    ]);
+    expect(candidateModels).toEqual(["gpt-realtime-2025-08-28", "gpt-live-1"]);
+    // `unknown = []` is the one-line way to silence the canary. It must fail here.
+    expect(unknown).toEqual(["gpt-live-1"]);
+  });
+
+  it("keeps detectVoiceModelDrift reporting hasGA=false when the GA family is gone", () => {
+    // THE silencing edit nothing in the repo caught: hard-wiring `hasGA = true`
+    // permanently suppresses NO_GA_REALTIME_MODELS — the alarm that fires when
+    // OpenAI renames or removes the entire GA realtime family. A voice-only list
+    // with no GA family present must report false.
+    expect(detectVoiceModelDrift(["whisper-1", "tts-1", "gpt-4o-transcribe"]).hasGA).toBe(false);
+    expect(detectVoiceModelDrift([]).hasGA).toBe(false);
+    // …and true only when a GA family really is present, including via a dated
+    // snapshot that has to be normalized to be recognized.
+    expect(detectVoiceModelDrift(["gpt-realtime-2025-08-28"]).hasGA).toBe(true);
+    expect(detectVoiceModelDrift(["gpt-realtime-mini"]).hasGA).toBe(true);
   });
 });
 
