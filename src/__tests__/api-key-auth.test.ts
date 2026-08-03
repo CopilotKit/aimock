@@ -3,6 +3,9 @@ import * as http from "node:http";
 import * as net from "node:net";
 import { createServer, type ServerInstance } from "../server.js";
 import { resolveInboundAuth } from "../api-key-auth.js";
+import type { RecordConfig } from "../types.js";
+import { LLMock } from "../llmock.js";
+import { AGUIMock } from "../agui-mock.js";
 
 let instance: ServerInstance | undefined;
 
@@ -123,6 +126,8 @@ describe("API key HTTP boundary", () => {
     for (const headers of [
       { Authorization: "Bearer primary" },
       { Authorization: "Key primary" },
+      { Authorization: "bearer primary" },
+      { Authorization: "key primary" },
       { "X-Api-Key": "primary" },
       { "X-Goog-Api-Key": "primary" },
       { "Api-Key": "primary" },
@@ -155,6 +160,16 @@ describe("API key WebSocket upgrade", () => {
     expect(rejected).toContain("Content-Type: application/json");
     expect(rejected).toContain("Connection: close");
     const accepted = await rawUpgrade(instance.url, ["Authorization: Bearer primary"]);
+    expect(accepted).toContain("HTTP/1.1 101 Switching Protocols");
+  });
+
+  it("accepts lowercase schemes and duplicate raw credential lines", async () => {
+    instance = await createServer([], { auth: { apiKeys: ["primary"] } });
+    const accepted = await rawUpgrade(instance.url, [
+      "Authorization: bearer primary",
+      "X-Api-Key: primary",
+      "Authorization: key primary",
+    ]);
     expect(accepted).toContain("HTTP/1.1 101 Switching Protocols");
   });
 });
@@ -221,5 +236,93 @@ describe("API key proxy isolation", () => {
     expect(result.status).toBe(502);
     expect(connections).toBe(0);
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  it("does not leak auth egress policy between servers that share a record config", async () => {
+    let upstreamAuthorization: string | undefined;
+    const upstream = http.createServer((req, res) => {
+      upstreamAuthorization = req.headers.authorization;
+      req.resume();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: "gpt-4",
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address() as net.AddressInfo;
+    const record: RecordConfig = {
+      providers: { openai: `http://127.0.0.1:${address.port}` },
+      proxyOnly: true,
+    };
+    const authenticated = await createServer([], { auth: { apiKeys: ["primary"] }, record });
+    const unauthenticated = await createServer([], { record });
+    try {
+      const result = await request(`${unauthenticated.url}/v1/chat/completions`, {
+        Authorization: "Bearer external-client-key",
+      });
+      expect(result.status).toBe(200);
+      expect(upstreamAuthorization).toBe("Bearer external-client-key");
+    } finally {
+      await new Promise<void>((resolve) => authenticated.server.close(() => resolve()));
+      await new Promise<void>((resolve) => unauthenticated.server.close(() => resolve()));
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  it("blocks authenticated AG-UI and fal direct egress without a provider key", async () => {
+    let upstreamRequests = 0;
+    const upstream = http.createServer((req, res) => {
+      upstreamRequests += 1;
+      req.resume();
+      res.end();
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address() as net.AddressInfo;
+    const upstreamUrl = `http://127.0.0.1:${address.port}`;
+    const agui = new AGUIMock({ port: 0 });
+    agui.enableRecording({ upstream: upstreamUrl, proxyOnly: true });
+    const mock = new LLMock({
+      port: 0,
+      auth: { apiKeys: ["test-key"] },
+      record: { providers: { fal: upstreamUrl }, proxyOnly: true },
+    });
+    mock.mount("/agui", agui);
+    await mock.start();
+    try {
+      const aguiResponse = await fetch(`${mock.url}/agui`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-key" },
+        body: JSON.stringify({
+          threadId: "thread",
+          runId: "run",
+          messages: [{ id: "message", role: "user", content: "hello" }],
+        }),
+      });
+      expect(aguiResponse.status).toBe(502);
+
+      const falResponse = await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer test-key",
+          "x-fal-target-host": "queue.fal.run",
+        },
+        body: JSON.stringify({ input: { prompt: "hello" } }),
+      });
+      expect(falResponse.status).toBe(502);
+      expect(upstreamRequests).toBe(0);
+    } finally {
+      await mock.stop();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 });

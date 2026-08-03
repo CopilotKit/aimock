@@ -110,7 +110,7 @@ function rawCandidates(req: http.IncomingMessage): {
     if (!isRecognizedApiKeyHeader(lower)) continue;
     if (hasControl(value)) return { reason: "invalid" };
     if (lower === "authorization") {
-      const match = /^(?:Bearer|Key)[ \t]+(.+)$/.exec(value.replace(OWS_EDGES, ""));
+      const match = /^(?:Bearer|Key)[ \t]+(.+)$/i.exec(value.replace(OWS_EDGES, ""));
       if (!match) return { reason: "invalid" };
       const candidate = match[1].replace(OWS_EDGES, "");
       if (candidate.length === 0 || hasControl(candidate)) return { reason: "invalid" };

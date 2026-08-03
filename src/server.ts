@@ -109,7 +109,7 @@ import {
   GROK_VIDEO_SUBMIT_PATH,
   GROK_VIDEO_STATUS_RE,
 } from "./metrics.js";
-import { markRecordAuthEnabled, proxyAndRecord } from "./recorder.js";
+import { proxyAndRecord } from "./recorder.js";
 import {
   resolveInboundAuth,
   markAuthenticatedRequest,
@@ -1383,8 +1383,6 @@ export async function createServerWithResolvedAuth(
       return serverOptions.grokVideo;
     },
   };
-
-  if (resolvedAuth.policy.enabled) markRecordAuthEnabled(options?.record);
 
   // Validate chaos config rates
   if (options?.chaos) {

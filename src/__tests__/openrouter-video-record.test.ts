@@ -709,10 +709,11 @@ describe("OpenRouter video record — poll proxy and eager capture", () => {
   async function submitRecordJob(
     m: LLMock,
     prompt: string,
+    authorization = "Bearer sk-test",
   ): Promise<{ id: string; polling_url: string }> {
     const res = await fetch(`${m.url}/api/v1/videos`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer sk-test" },
+      headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
     expect(res.status).toBe(200);
@@ -908,7 +909,7 @@ describe("OpenRouter video record — poll proxy and eager capture", () => {
     expect(upstream.counts.status).toBe(1);
   });
 
-  test("off-origin unsigned_urls are fetched WITHOUT the client's auth, with a warn", async () => {
+  test("off-origin unsigned_urls are fetched WITHOUT a configured Authorization credential, with a warn", async () => {
     const bytes = Buffer.from("cdn-hosted video");
     contentHost = await startPlainContentHost(bytes);
     upstream = await startOpenRouterVideoUpstream({ unsignedUrlOrigin: contentHost.url });
@@ -916,14 +917,19 @@ describe("OpenRouter video record — poll proxy and eager capture", () => {
     mock = new LLMock({
       port: 0,
       logLevel: "warn",
-      record: { providers: { openrouter: upstream.url }, fixturePath: tmpDir },
+      auth: { apiKeys: ["test-key"] },
+      record: {
+        providers: { openrouter: upstream.url },
+        providerKeys: { openrouter: "provider-key" },
+        fixturePath: tmpDir,
+      },
     });
     await mock.start();
-    const envelope = await submitRecordJob(mock, "cdn capture");
+    const envelope = await submitRecordJob(mock, "cdn capture", "Bearer test-key");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const poll = await (
-      await fetch(envelope.polling_url, { headers: { Authorization: "Bearer poll-key" } })
+      await fetch(envelope.polling_url, { headers: { Authorization: "Bearer test-key" } })
     ).json();
     expect(poll.status).toBe("completed");
     await waitUntil(() => readRecordedFixtureFiles(tmpDir!).length === 1);

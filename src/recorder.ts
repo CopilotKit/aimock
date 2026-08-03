@@ -22,18 +22,6 @@ import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
 import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
-
-const authEnabledRecords = new WeakSet<RecordConfig>();
-
-/** @internal Server startup marks a record config without exposing its inbound key policy. */
-export function markRecordAuthEnabled(record: RecordConfig | undefined): void {
-  if (record) authEnabledRecords.add(record);
-}
-
-/** @internal True only for record configs attached to an authenticated server. */
-export function isRecordAuthEnabled(record: RecordConfig): boolean {
-  return authEnabledRecords.has(record);
-}
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
@@ -168,6 +156,14 @@ export function buildForwardHeaders(req: http.IncomingMessage): Record<string, s
   return out;
 }
 
+/** Remove every casing of a header from an egress map. */
+export function removeForwardHeader(headers: Record<string, string>, name: string): void {
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) delete headers[key];
+  }
+}
+
 /**
  * Construct the only safe egress map when inbound access control is enabled.
  * Test credentials are always removed; a static configured provider credential
@@ -178,10 +174,9 @@ export function prepareEgressHeaders(
   target: URL,
   providerKey: RecordProviderKey,
   configuredKey: string | undefined,
-  record: RecordConfig,
 ): Record<string, string> | undefined {
   const headers = buildForwardHeaders(req);
-  if (!authEnabledRecords.has(record)) {
+  if (!isAuthenticatedRequest(req)) {
     applyProviderAuth(headers, target, providerKey, configuredKey);
     return headers;
   }
@@ -504,7 +499,6 @@ export async function proxyAndRecord(
     target,
     providerKey,
     record.providerKeys?.[lookupKey],
-    record,
   );
   if (!forwardHeaders) {
     writeErrorResponse(

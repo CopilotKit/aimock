@@ -29,9 +29,9 @@ import {
   buildForwardHeaders,
   persistFixture,
   proxyAndRecord,
-  isRecordAuthEnabled,
   sanitizeHeaderValue,
 } from "./recorder.js";
+import { isAuthenticatedRequest } from "./api-key-auth.js";
 import { walkFalQueue } from "./fal.js";
 import type { Journal } from "./journal.js";
 import { applyChaos } from "./chaos.js";
@@ -581,7 +581,7 @@ async function tryRecordAudioQueueWalk(args: {
       // aimock's built-in fal key (Authorization: Key), injected by the walk on
       // a no/dummy caller credential; a real caller key overrides.
       builtinKey: record.providerKeys?.fal,
-      requireConfiguredKey: isRecordAuthEnabled(record),
+      requireConfiguredKey: isAuthenticatedRequest(req),
       pollIntervalMs: record.fal?.pollIntervalMs,
       timeoutMs: record.fal?.timeoutMs,
       upstreamTimeoutMs: record.upstreamTimeoutMs,

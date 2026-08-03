@@ -773,7 +773,7 @@ async function proxyGrokVideoSubmit(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
-    const headers = prepareEgressHeaders(req, submitUrl, "grok", record.providerKeys?.grok, record);
+    const headers = prepareEgressHeaders(req, submitUrl, "grok", record.providerKeys?.grok);
     if (!headers) return proxyError("No configured provider credential");
     const upstreamRes = await fetch(submitUrl, {
       method: "POST",
@@ -949,7 +949,7 @@ async function proxyGrokVideoRecordPoll(args: {
   let fetched: { status: number; contentType: string | null; text: string };
   try {
     const target = new URL(job.upstreamPollingUrl);
-    const headers = prepareEgressHeaders(req, target, "grok", record.providerKeys?.grok, record);
+    const headers = prepareEgressHeaders(req, target, "grok", record.providerKeys?.grok);
     if (!headers) {
       proxyError("No configured provider credential");
       return;

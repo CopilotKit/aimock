@@ -29,6 +29,7 @@ import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
   prepareEgressHeaders,
+  removeForwardHeader,
   clampTimeout,
   persistFixture,
   sanitizeHeaderValue,
@@ -933,14 +934,13 @@ async function proxyOpenRouterVideoRecordContent(args: {
     contentUrl,
     "openrouter",
     record.providerKeys?.openrouter,
-    record,
   );
   if (!headers) {
     proxyError("No configured provider credential");
     return;
   }
   if (contentUrl.origin !== providerOrigin) {
-    delete headers.authorization;
+    removeForwardHeader(headers, "authorization");
     logger.warn(
       `Upstream unsigned_urls[${index}] origin ${contentUrl.origin} differs from the provider origin ${providerOrigin} — fetching content WITHOUT the client's Authorization header`,
     );
@@ -1220,7 +1220,6 @@ export async function handleOpenRouterVideoModels(
         target,
         "openrouter",
         record.providerKeys?.openrouter,
-        record,
       );
       if (!headers) throw new Error("No configured provider credential");
       const upstreamRes = await fetch(target, {
@@ -1773,7 +1772,6 @@ async function proxyOpenRouterVideoSubmit(args: {
       submitUrl,
       "openrouter",
       record.providerKeys?.openrouter,
-      record,
     );
     if (!headers) return proxyError("No configured provider credential");
     const upstreamRes = await fetch(submitUrl, {
@@ -2030,7 +2028,6 @@ async function proxyOpenRouterVideoRecordPoll(args: {
       target,
       "openrouter",
       record.providerKeys?.openrouter,
-      record,
     );
     if (!headers) {
       proxyError("No configured provider credential");
@@ -2427,7 +2424,6 @@ async function captureOpenRouterVideoRecordFixture(args: {
         contentUrl,
         "openrouter",
         record.providerKeys?.openrouter,
-        record,
       );
       if (!headers) {
         logger.error(
@@ -2436,7 +2432,7 @@ async function captureOpenRouterVideoRecordFixture(args: {
         return;
       }
       if (contentUrl.origin !== providerOrigin) {
-        delete headers.authorization;
+        removeForwardHeader(headers, "authorization");
         logger.warn(
           `Upstream unsigned_urls[0] origin ${contentUrl.origin} differs from the provider origin ${providerOrigin} — fetching content WITHOUT the client's Authorization header`,
         );

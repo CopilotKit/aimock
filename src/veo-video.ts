@@ -687,7 +687,7 @@ async function proxyVeoVideoSubmit(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
-    const headers = prepareEgressHeaders(req, submitUrl, "veo", record.providerKeys?.veo, record);
+    const headers = prepareEgressHeaders(req, submitUrl, "veo", record.providerKeys?.veo);
     if (!headers) return proxyError("No configured provider credential");
     const upstreamRes = await fetch(submitUrl, {
       method: "POST",
@@ -883,7 +883,7 @@ async function proxyVeoVideoRecordPoll(args: {
   let fetched: { status: number; contentType: string | null; text: string };
   try {
     const target = new URL(job.upstreamPollingUrl);
-    const headers = prepareEgressHeaders(req, target, "veo", record.providerKeys?.veo, record);
+    const headers = prepareEgressHeaders(req, target, "veo", record.providerKeys?.veo);
     if (!headers) {
       proxyError("No configured provider credential");
       return;

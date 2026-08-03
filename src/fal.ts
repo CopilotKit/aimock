@@ -33,9 +33,9 @@ import {
   clampTimeout,
   persistFixture,
   proxyAndRecord,
-  isRecordAuthEnabled,
   sanitizeHeaderValue,
 } from "./recorder.js";
+import { isAuthenticatedRequest } from "./api-key-auth.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyProviderAuth } from "./provider-auth.js";
 import type { Journal } from "./journal.js";
@@ -1090,7 +1090,7 @@ async function proxyAndRecordFalQueueSubmit(args: {
       // aimock's built-in fal key (Authorization: Key), injected by the walk on
       // a no/dummy caller credential; a real caller key overrides.
       builtinKey: record.providerKeys?.fal,
-      requireConfiguredKey: isRecordAuthEnabled(record),
+      requireConfiguredKey: isAuthenticatedRequest(req),
       pollIntervalMs: record.fal?.pollIntervalMs,
       timeoutMs: record.fal?.timeoutMs,
       upstreamTimeoutMs: record.upstreamTimeoutMs,
