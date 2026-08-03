@@ -2,13 +2,15 @@
  * Mirror-equivalence guard for the sync core's hand-maintained classification
  * mirrors.
  *
- * `scripts/drift-sync.ts` cannot import `src/__tests__/drift/models.drift.ts`
- * directly (see its own "NOTE ON WHY THIS DOES NOT IMPORT `models.drift.ts`
- * DIRECTLY" comment): merely evaluating that module's `import { describe, it,
- * expect } from "vitest"` throws outside an active vitest worker, and
- * `drift-sync.ts` also runs as a plain `npx tsx` CI step. So it instead
- * MIRRORS `models.drift.ts`'s `detectDeprecatedFamilies` / `unclassifiedFamilies`
- * byte-for-byte as `detectDeprecatedFamiliesForSync` / `unclassifiedFamiliesForSync`,
+ * `scripts/drift-sync.ts` cannot import the canonical detectors directly (see
+ * its own "NOTE ON WHY THIS DOES NOT IMPORT `models.drift.ts` DIRECTLY"
+ * comment): merely evaluating a module that imports from `"vitest"` throws
+ * outside an active vitest worker, and `drift-sync.ts` also runs as a plain
+ * `npx tsx` CI step. That still holds for their present home,
+ * `src/__tests__/drift/text-drift.ts`, which imports vitest's `expect` for
+ * `assertNoUnclassifiedFamilies`. So `drift-sync.ts` instead MIRRORS
+ * `detectDeprecatedFamilies` / `unclassifiedFamilies` byte-for-byte as
+ * `detectDeprecatedFamiliesForSync` / `unclassifiedFamiliesForSync`,
  * composed from the SAME underlying data/logic modules (`model-registry.ts`,
  * `model-family.ts`, `deprecation-detector.ts`).
  *
@@ -31,12 +33,12 @@ import {
   detectDeprecatedFamiliesForSync,
   unclassifiedFamiliesForSync,
 } from "../../scripts/drift-sync.js";
-import { detectDeprecatedFamilies, unclassifiedFamilies } from "./drift/models.drift.js";
+import { detectDeprecatedFamilies, unclassifiedFamilies } from "./drift/text-drift.js";
 import { includeFamilies } from "./drift/model-registry.js";
 
 type Provider = "openai" | "anthropic" | "gemini";
 
-describe("drift-sync mirror ≡ models.drift.ts source (classification equivalence)", () => {
+describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence)", () => {
   const provider: Provider = "openai";
 
   it("unclassifiedFamilies: retired/new/empty/mixed live-listing fixtures classify identically", () => {
@@ -108,7 +110,7 @@ describe("drift-sync mirror ≡ models.drift.ts source (classification equivalen
     // `scripts/drift-sync.ts`'s `detectDeprecatedFamiliesForSync` applies an
     // extra `.filter((family) => !isForwardLookingFamily(family, provider))`
     // that the canonical `detectDeprecatedFamilies` (this file's import from
-    // `./drift/models.drift.js`) does NOT apply. This is DELIBERATE layering,
+    // `./drift/text-drift.js`) does NOT apply. This is DELIBERATE layering,
     // not drift to reconcile: the canonical detector's job is DETECTION —
     // report every classified family missing from the live listing. The sync
     // mirror's job additionally applies a removal POLICY on top of that

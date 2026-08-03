@@ -52,7 +52,12 @@ import {
 // TEXT lane. `unclassifiedFamilies` is the detector (behaviourally covered
 // elsewhere); `assertNoUnclassifiedFamilies` is the live ASSERTION that turns its
 // result into a drift report, and it was covered by nothing — see the anchor below.
-import { unclassifiedFamilies, assertNoUnclassifiedFamilies } from "./models.drift.js";
+// Imported from `text-drift.ts`, NOT from the `models.drift.ts` spec: importing a
+// spec executes its `describe`s, which would pull the three LIVE provider
+// canaries (and every offline drift test) into this file — and into the offline
+// `pnpm test` suite, where a developer with a key exported would hit the
+// providers' real `/models` endpoints.
+import { unclassifiedFamilies, assertNoUnclassifiedFamilies } from "./text-drift.js";
 
 const famSrc = readFileSync(fileURLToPath(new URL("./model-family.ts", import.meta.url)), "utf8");
 const regSrc = readFileSync(fileURLToPath(new URL("./model-registry.ts", import.meta.url)), "utf8");
