@@ -20,8 +20,8 @@ This model family appeared in a live /models listing but matches no classificati
      in prose and applied by hand — writing `include` would misclassify. -->
 
 Decision: EXCLUDE (applied 2026-08-03 — excludeFamilies.openai in
-src/**tests**/drift/model-registry.ts, plus knownVoiceModelFamilies in
-src/**tests**/drift/voice-models.ts).
+`src/__tests__/drift/model-registry.ts`, plus knownVoiceModelFamilies in
+`src/__tests__/drift/voice-models.ts`).
 
 Rationale: wrong modality — `gpt-live-transcribe` is realtime/WebSocket
 transcription only and never answers on /v1/chat/completions, so it is not
