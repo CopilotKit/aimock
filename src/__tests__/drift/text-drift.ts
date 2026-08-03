@@ -63,13 +63,23 @@ export function unclassifiedFamilies(modelIds: string[], provider: Provider): st
  * `formatDriftReport` block so the collector routes it to the exit-2 auto-fix
  * lane (provider names match `PROVIDER_MAP` keys in the collector).
  *
- * EXPORTED FOR THE ANTI-SILENCE ANCHOR, not for reuse. `unclassifiedFamilies`
- * (above) is behaviourally covered — neutering it to `return []` reddens three
- * tests in the default suite. THIS wrapper was covered by nothing: replacing its
- * computed `unclassified` with a literal `[]` silenced the entire live text-lane
- * canary with the whole suite still green. `logic-pin.test.ts` now anchors it
- * behaviourally (it must throw, naming the family) AND source-pins the live
- * legs that gate and invoke it. Do not un-export it without moving that anchor.
+ * COVERAGE STATUS — this wrapper is currently UNGUARDED, on purpose, pending
+ * PR #349. `unclassifiedFamilies` (above) is behaviourally covered: neutering it
+ * to `return []` reddens `text-drift.test.ts`, the drift-sync mirror-equivalence
+ * guard, and its co-located regressions under `test:drift`. THIS wrapper is not:
+ * replacing its computed `unclassified` with a literal `[]`, or its `report` with
+ * an unformatted string, silences the live text-lane canary with every suite
+ * still green.
+ *
+ * That gap is NOT closable by pinning this function's text or asserting that it
+ * throws. The canary is a chain — fetcher → gate → call site → formatter →
+ * collector — and each text-level pin only moves the silencing edit one frame
+ * out (see the TEXT-lane note in `logic-pin.test.ts` for the four surfaces that
+ * were tried). #349 replaces the approach with a fetch-stubbed end-to-end
+ * harness that drives the real chain and asserts a collector-routable
+ * `API DRIFT DETECTED:` report comes out, which catches silencing at any link.
+ *
+ * Exported because the three live legs of `models.drift.ts` call it.
  */
 export function assertNoUnclassifiedFamilies(
   modelIds: string[],

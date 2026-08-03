@@ -26,8 +26,6 @@
  *                       familySet, isClassifiedFamily
  *   voice-models.ts   — isVoiceModelId, normalizeVoiceModelFamily,
  *                       detectVoiceModelDrift
- *   models.drift.ts   — the three LIVE `/models` canary legs, WHOLE (gate +
- *                       fetch + call — see LIVE_CANARY_LEGS)
  *
  * Frozen surfaces — DATA, membership-pinned in `DATA_FROZEN`:
  *   model-registry.ts — includeFamilies and excludeFamilies, per provider
@@ -57,15 +55,6 @@ import {
   normalizeVoiceModelFamily,
   detectVoiceModelDrift,
 } from "./voice-models.js";
-// TEXT lane. `unclassifiedFamilies` is the detector (behaviourally covered
-// elsewhere); `assertNoUnclassifiedFamilies` is the live ASSERTION that turns its
-// result into a drift report, and it was covered by nothing — see the anchor below.
-// Imported from `text-drift.ts`, NOT from the `models.drift.ts` spec: importing a
-// spec executes its `describe`s, which would pull the three LIVE provider
-// canaries (and every offline drift test) into this file — and into the offline
-// `pnpm test` suite, where a developer with a key exported would hit the
-// providers' real `/models` endpoints.
-import { unclassifiedFamilies, assertNoUnclassifiedFamilies } from "./text-drift.js";
 
 /**
  * Read a sibling drift module's source, memoized. LAZY on purpose — see the
@@ -127,53 +116,6 @@ function extractSole(src: string, re: RegExp, name: string): string {
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
-
-/**
- * The three LIVE `/models` canary legs in `models.drift.ts`, pinned WHOLE.
- *
- * Pinning the CALLEE (`assertNoUnclassifiedFamilies`, anchored behaviourally
- * below) is not enough: the two surfaces that decide whether the callee ever
- * runs, and on what, are the SKIP GATE and the CALL SITE, and both are
- * one-word silencing edits that every other guard in this repo misses.
- *
- *   - GATE: `describe.skipIf(!process.env.OPENAI_API_KEY)` → `describe.skip`.
- *     The canary goes permanently silent, the behavioural anchor stays green,
- *     both suites stay green, eslint and prettier stay clean — and the reported
- *     SKIP COUNT does not even move, because the leg was already counted as
- *     skipped whenever the key was absent.
- *   - CALL SITE: `assertNoUnclassifiedFamilies(models, …)` → `[]` (caught only
- *     by eslint's unused-var rule) or `models.slice(0, 0)` (eslint-clean). The
- *     assertion still runs, on nothing.
- *
- * So the span pinned here spans the whole leg: gate, fetch, and call. Each
- * pattern is `^`-anchored and matched via `extractSole`, so it cannot be
- * satisfied by a decoy elsewhere in the file. The structural anchor in the
- * suite below re-states the two invariants in readable form, so a red pin here
- * comes with a diagnosis rather than just "the bytes moved".
- */
-const LIVE_CANARY_LEGS = [
-  {
-    name: "liveLeg.openai",
-    envVar: "OPENAI_API_KEY",
-    listFn: "listOpenAIModels",
-    re: /^describe\.skipIf\(!process\.env\.OPENAI_API_KEY\)\("OpenAI Chat[\s\S]*?\n\}\);/m,
-    pin: "589a97610eadaed45019b1e1d2529dd22cc8e8f657b756189b6fa684a9d66301",
-  },
-  {
-    name: "liveLeg.anthropic",
-    envVar: "ANTHROPIC_API_KEY",
-    listFn: "listAnthropicModels",
-    re: /^describe\.skipIf\(!process\.env\.ANTHROPIC_API_KEY\)\([\s\S]*?\n\);/m,
-    pin: "24c326fdcb07bbac2846c159bbc01ace16fa0ec5853f7a820068b105e0ece5ad",
-  },
-  {
-    name: "liveLeg.gemini",
-    envVar: "GOOGLE_API_KEY",
-    listFn: "listGeminiModels",
-    re: /^describe\.skipIf\(!process\.env\.GOOGLE_API_KEY\)\("Google Gemini[\s\S]*?\n\}\);/m,
-    pin: "6027fa801f7006809fe173ebcc10110f5c9a49ff549e349df1f34a2d751cb10d",
-  },
-];
 
 /**
  * Frozen surface → { source, pin }. The FUNCTION-BODY extraction patterns
@@ -282,13 +224,6 @@ const FROZEN: Record<string, { source: () => string; pin: string }> = {
       ),
     pin: "4a365ed2b74084ba5d664476b872ba8fc9bc4036820bb86f42c840789c6269d1",
   },
-  // The live canary legs (gate + fetch + call). See LIVE_CANARY_LEGS above.
-  ...Object.fromEntries(
-    LIVE_CANARY_LEGS.map(({ name, re, pin }) => [
-      name,
-      { source: () => extractSole(src("models.drift.ts"), re, name), pin },
-    ]),
-  ),
 };
 
 describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", () => {
@@ -407,74 +342,34 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
   });
 
   // ---------------------------------------------------------------------------
-  // TEXT lane — the mirror of the voice anchors above.
+  // TEXT lane — deliberately NOT anchored here. See PR #349 (the guard PR).
   //
-  // The DETECTOR (`unclassifiedFamilies`) is already behaviourally covered:
-  // neutering it to `return []` reddens the drift-sync mirror-equivalence guard,
-  // `text-drift.test.ts`, and its co-located regressions under `test:drift`. It
-  // is the ASSERTION WRAPPER that was open — `assertNoUnclassifiedFamilies` is
-  // the only thing that turns a detected family into a `formatDriftReport` block
-  // the collector can route to the exit-2 lane, it is called ONLY from the live
-  // legs of `models.drift.ts`, and replacing its computed `unclassified` with a
-  // literal `[]` left the whole default suite green — the anchor below is still
-  // the SOLE test that catches it. That is exactly the `hasGA = true` shape on
-  // the text side: one line, canary dead, CI happy.
+  // The live text canary's anti-silencing coverage used to live in this file as
+  // a behavioural anchor on `assertNoUnclassifiedFamilies` plus source pins on
+  // each live leg's skip GATE and CALL SITE. That mechanism does not work, and
+  // the failure is structural rather than a matter of coverage: the canary is a
+  // CHAIN — fetcher → gate → call site → formatter → collector — and pinning
+  // the text of one link only pushes the silencing edit one frame further out.
+  // Four surfaces were pinned in turn and each time a fifth remained: neutering
+  // the fetcher (`providers.ts`'s `listOpenAIModels` → `.slice(0, 0)`) silences
+  // the canary end-to-end with every pin, eslint and prettier still clean, and
+  // an example-shaped callee anchor is itself defeated by a filter that keeps
+  // the one example family and drops every other.
   //
-  // Anchored behaviourally rather than by checksum: a checksum says "something
-  // changed", this says "it no longer reports an unclassified family".
+  // Extending the pins cannot close that class, so the coverage is being
+  // rebuilt in #349 as a fetch-stubbed end-to-end harness that drives the real
+  // chain: with the fetch layer stubbed to return a listing containing an
+  // unclassified family, the canary must produce a collector-routable
+  // `API DRIFT DETECTED:` report. Silencing at ANY link — fetcher, gate, call
+  // site or formatter — fails that harness, because it observes the OUTPUT of
+  // the whole chain instead of the text of one link.
+  //
+  // What remains in this repo meanwhile: the DETECTOR (`unclassifiedFamilies`)
+  // is behaviourally covered — neutering it to `return []` reddens
+  // `text-drift.test.ts`, the drift-sync mirror-equivalence guard, and its
+  // co-located regressions under `test:drift` — and the classification RULES
+  // and DATA both copies compose are pinned above.
   // ---------------------------------------------------------------------------
-  it("keeps assertNoUnclassifiedFamilies FAILING on an unclassified family (live text canary)", () => {
-    // Sanity: the detector really does see this family as unclassified, so the
-    // assertion below is being fed a genuine drift signal.
-    expect(unclassifiedFamilies(["gpt-live"], "openai")).toEqual(["gpt-live"]);
-
-    // The canary's whole job. Short-circuiting the wrapper (`unclassified = []`,
-    // an unconditional pass, a swallowed expect) makes this NOT throw.
-    expect(() =>
-      assertNoUnclassifiedFamilies(["gpt-live"], "openai", "anchor (unclassified family)"),
-    ).toThrow(/gpt-live/);
-  });
-
-  // …and the two surfaces ONE LAYER OUT from the callee: what GATES the live
-  // canary and what it is CALLED WITH. The anchors above prove the function
-  // still reports drift; these prove it still runs, whenever a key is present,
-  // on the collection the provider actually returned. See LIVE_CANARY_LEGS.
-  it.each(LIVE_CANARY_LEGS)(
-    "keeps the $name live canary gated on a present key and called with the real listing",
-    ({ name, envVar, listFn, re }) => {
-      const leg = extractSole(src("models.drift.ts"), re, name);
-
-      // GATE: conditional on the key, never an unconditional `describe.skip`.
-      expect(
-        leg.startsWith(`describe.skipIf(!process.env.${envVar})`),
-        `The ${name} canary must be gated on \`!process.env.${envVar}\`. An ` +
-          `unconditional \`describe.skip\` silences it permanently without moving ` +
-          `the skip count or reddening anything else.`,
-      ).toBe(true);
-
-      // FETCH + CALL: the live listing is fetched and handed over WHOLE. `[]` or
-      // `models.slice(0, 0)` keeps the assertion running on nothing.
-      expect(leg).toContain(`const models = await ${listFn}(process.env.${envVar}!);`);
-      expect(
-        leg,
-        `The ${name} canary must pass the fetched \`models\` collection straight ` +
-          `into assertNoUnclassifiedFamilies — an empty or truncated argument ` +
-          `leaves the assertion running on nothing.`,
-      ).toMatch(/assertNoUnclassifiedFamilies\(\s*models,/);
-    },
-  );
-
-  it("keeps assertNoUnclassifiedFamilies PASSING on a fully-classified listing", () => {
-    // The negative control: the anchor above must not be satisfiable by a
-    // wrapper that simply always throws.
-    expect(() =>
-      assertNoUnclassifiedFamilies(
-        ["gpt-4o", "gpt-4o-2024-08-06", "tts-1", "gemini-interactions"],
-        "openai",
-        "anchor (fully classified)",
-      ),
-    ).not.toThrow();
-  });
 });
 
 /**
