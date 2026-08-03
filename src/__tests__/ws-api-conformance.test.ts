@@ -690,7 +690,12 @@ describe("GA Realtime conformance", () => {
     ws.send(
       JSON.stringify({
         type: "session.update",
-        session: { audio: { input: { format: { type: "audio/pcm", rate: 24000 } } } },
+        session: {
+          audio: {
+            input: { format: { type: "audio/pcm", rate: 24000 } },
+            output: { voice: "alloy", format: { type: "audio/pcm", rate: 24000 } },
+          },
+        },
       }),
     );
     const raw = await ws.waitForMessages(2);
@@ -698,6 +703,10 @@ describe("GA Realtime conformance", () => {
     const frame = JSON.parse(raw[1]) as any;
     expect(frame.type).toBe("session.updated");
     expect(frame.session.audio.input.format).toEqual({ type: "audio/pcm", rate: 24000 });
+    expect(frame.session.audio.output).toEqual({
+      voice: "alloy",
+      format: { type: "audio/pcm", rate: 24000 },
+    });
   });
 });
 

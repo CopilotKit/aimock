@@ -285,7 +285,7 @@ describe("multimedia record: transcription response detection", () => {
   it("persists a typed terminal stream when the client closes before upstream end", async () => {
     const fixturePath = makeTmpDir();
     const terminal =
-      'data: {"type":"transcript.text.done","text":"Typed terminal","languages":[{"code":"en"}]}\n\n';
+      'data: {"type":"transcript.text.done","text":"Typed terminal","languages":[{"code":"en"}],"usage":{"input_tokens":4,"output_tokens":5}}\n\n';
     const { server: upstream, url } = await createUpstream((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write(terminal);
@@ -307,11 +307,30 @@ describe("multimedia record: transcription response detection", () => {
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       expect(fixtures).toHaveLength(1);
+      expect(fixtures[0].response).toEqual({
+        transcription: {
+          text: "Typed terminal",
+          languages: [{ code: "en" }],
+          usage: { input_tokens: 4, output_tokens: 5 },
+        },
+      });
+      const savedFixture = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            fixturePath,
+            fs.readdirSync(fixturePath).find((file) => file.endsWith(".json"))!,
+          ),
+          "utf8",
+        ),
+      );
+      expect(savedFixture.fixtures[0].response).toEqual(fixtures[0].response);
       await closeServer(upstream);
 
       const replay = await requestStreamingTranscription(recorder.url);
       expect(replay.status).toBe(200);
-      expect(await replay.text()).toContain('"text":"Typed terminal"');
+      expect(await replay.text()).toContain(
+        '"text":"Typed terminal","languages":[{"code":"en"}],"usage":{"input_tokens":4,"output_tokens":5}',
+      );
     } finally {
       await closeServer(recorder.server);
       if (upstream.listening) await closeServer(upstream);
