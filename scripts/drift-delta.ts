@@ -26,9 +26,9 @@ import type { DriftClass, DriftReport } from "./drift-types.js";
  * A single failure identified by the delta layer.
  *
  * A failure is keyed by `provider` + per-item `id` (NOT `path`, which is a
- * generic bucket like `"knownModels"` that would collapse N distinct model
- * drifts into one key). `class` is carried through purely for annotation and
- * never participates in routing.
+ * generic bucket like `"knownVoiceModelFamilies"` that would collapse N
+ * distinct model drifts into one key). `class` is carried through purely for
+ * annotation and never participates in routing.
  */
 export interface DeltaKey {
   /** Provider the failing entry belongs to (e.g. "anthropic"). */

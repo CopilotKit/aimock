@@ -9,7 +9,8 @@
  *
  * The canary fixtures below are REAL vitest failure-message shapes captured by
  * running the canary / drift / infra assertions under
- * `vitest run … --reporter=json` (see PR #291 RED/GREEN logs under tmp/). They
+ * `vitest run … --reporter=json` (the capture artifacts were throwaway and are
+ * not in the repo; the RED/GREEN logs are on PR #291). They
  * are NOT hand-authored: the single-glyph Unicode ellipsis `…(N)`, the
  * `AssertionError:` prefix, the leading blank line before a formatted drift
  * report, and the stack-frame layout are exactly what vitest emits.
@@ -113,18 +114,19 @@ const SAMPLE_DIFF_WARNING: ShapeDiff = {
 
 // ---------------------------------------------------------------------------
 // REAL captured vitest --reporter=json failure-message fixtures.
-// Captured via throwaway `*.drift.ts` capture tests run under the drift config;
-// see tmp/canary-fixtures.json + the PR #291 RED/GREEN logs.
+// Captured via throwaway `*.drift.ts` capture tests run under the drift config.
+// The capture files were throwaway and are not in the repo; the RED/GREEN logs
+// that show these exact shapes are on PR #291.
 // ---------------------------------------------------------------------------
 
 // Canary tripped with FOUR unknown models. The printed array is truncated by
 // vitest to `…(3)` (single-glyph Unicode ellipsis), but the custom assertion
 // message `UNKNOWN_REALTIME_MODELS=…` carries the full list verbatim.
-// NOTE (A4): the ids below are HYPOTHETICAL future models that are NOT in the
-// knownModels set in ws-realtime.drift.ts — so the real canary really could
-// emit them as unknown. (gpt-realtime-2.1 / -2.1-mini ARE in knownModels and
-// therefore can never appear here — the earlier fixture that used them was
-// impossible.)
+// NOTE (A4): the ids below are HYPOTHETICAL future models that are NOT in
+// knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts — so the real
+// canary really could emit them as unknown. (gpt-realtime-2.1 / -2.1-mini ARE in
+// that set and therefore can never appear here — the earlier fixture that used
+// them was impossible.)
 const CANARY_MARKER_MULTI =
   "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-3,gpt-realtime-3-mini,gpt-realtime-3-preview,gpt-realtime-ultra: expected [ 'gpt-realtime-3', …(3) ] to deeply equal []\n" +
   "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:108:69\n" +
@@ -159,7 +161,7 @@ const INFRA_TOKEN_IN_STACKFRAME_ONLY =
 const REAL_INFRA_BODY = "fetch failed\n    at handler (file:///repo/src/x.drift.ts:5:1)";
 
 // CLASS 2 — the canary `hasGA`-false mode. Captured REAL from a throwaway
-// `*.drift.ts` capture run under the drift config (see tmp/captured-vitest-shapes.json).
+// `*.drift.ts` capture run under the drift config (capture file was throwaway).
 // When OpenAI renames/removes the GA realtime family, the canary emits the
 // NO_GA_REALTIME_MODELS= marker (symmetric to UNKNOWN_REALTIME_MODELS=) and the
 // assertion fails with "expected false to be true". The collector must map this
@@ -1382,7 +1384,8 @@ describe("classifyUnparseableAsInfra", () => {
 // The delta layer (D6.1) keys findings by `provider+id`. For N distinct unknown
 // model ids, the collector must produce N DISTINCT per-item `id` values so that
 // a downstream `provider+id` keying yields N distinct keys — not 1 collapsed
-// key under `path:"knownModels"` (pre-fix behaviour when `id` was absent/undefined).
+// key under the shared `path` bucket (pre-fix behaviour when `id` was
+// absent/undefined).
 //
 // RED (pre-fix): `id` is unset on every ParsedDiff produced by the canary path,
 //   so all 3 diffs have `id === undefined` → only 1 distinct key.
@@ -1391,8 +1394,8 @@ describe("classifyUnparseableAsInfra", () => {
 // ---------------------------------------------------------------------------
 
 describe("D6.2 — per-item id on ParsedDiff", () => {
-  // Three distinct hypothetical unknown model ids (not in the knownModels set
-  // in ws-realtime.drift.ts — A4 note: use future/hypothetical ids only).
+  // Three distinct hypothetical unknown model ids (not in knownVoiceModelFamilies
+  // in src/__tests__/drift/voice-models.ts — A4 note: hypothetical ids only).
   const THREE_UNKNOWN_IDS_CANARY =
     "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-x1,gpt-realtime-x2,gpt-realtime-x3: " +
     "expected [ 'gpt-realtime-x1', …(2) ] to deeply equal []\n" +
