@@ -949,7 +949,9 @@ function simulateJob(
   const selected: Step[] = [];
   for (const s of steps(src)) {
     const runs = s.if === undefined ? !ctx.jobFailed : evaluateIf(s.if, ctx);
-    const fails = runs && (failing.has(s.id ?? " ") || failing.has(s.name ?? " "));
+    const fails =
+      runs &&
+      ((s.id !== undefined && failing.has(s.id)) || (s.name !== undefined && failing.has(s.name)));
     if (s.id) {
       ctx.steps[s.id] = {
         outcome: runs ? (fails ? "failure" : "success") : "skipped",
