@@ -19,14 +19,22 @@
  * BEFORE updating the pin. Auto-updating the pin to chase green defeats the
  * entire purpose of this file.
  *
- * Frozen surfaces:
+ * Frozen surfaces — RULES, source-pinned in `FROZEN`:
  *   model-family.ts   — DATED_SNAPSHOT_SUFFIX, BUILD_TAG_SUFFIX,
  *                       ANTHROPIC_DATE_SUFFIX, normalizeModelFamily
  *   model-registry.ts — PREVIEW_FAMILY, GEMMA_FAMILY, NON_MODEL_TOKENS,
  *                       familySet, isClassifiedFamily
  *   voice-models.ts   — isVoiceModelId, normalizeVoiceModelFamily,
- *                       detectVoiceModelDrift (rules),
- *                       knownVoiceModelFamilies and gaRealtimeModels (data)
+ *                       detectVoiceModelDrift
+ *   models.drift.ts   — the three LIVE `/models` canary legs, WHOLE (gate +
+ *                       fetch + call — see LIVE_CANARY_LEGS)
+ *
+ * Frozen surfaces — DATA, membership-pinned in `DATA_FROZEN`:
+ *   model-registry.ts — includeFamilies and excludeFamilies, per provider
+ *   voice-models.ts   — knownVoiceModelFamilies, gaRealtimeModels
+ *
+ * Keep both lists exact. A guard whose own inventory is wrong is a false
+ * record: it invites the reader to assume a surface is covered when it is not.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -59,9 +67,20 @@ import {
 // providers' real `/models` endpoints.
 import { unclassifiedFamilies, assertNoUnclassifiedFamilies } from "./text-drift.js";
 
-const famSrc = readFileSync(fileURLToPath(new URL("./model-family.ts", import.meta.url)), "utf8");
-const regSrc = readFileSync(fileURLToPath(new URL("./model-registry.ts", import.meta.url)), "utf8");
-const voiceSrc = readFileSync(fileURLToPath(new URL("./voice-models.ts", import.meta.url)), "utf8");
+/**
+ * Read a sibling drift module's source, memoized. LAZY on purpose — see the
+ * `FROZEN` doc: nothing in this file may touch the filesystem or run an
+ * extraction at MODULE scope, or one moved surface takes the whole file down.
+ */
+const srcCache = new Map<string, string>();
+function src(file: string): string {
+  let text = srcCache.get(file);
+  if (text === undefined) {
+    text = readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
+    srcCache.set(file, text);
+  }
+  return text;
+}
 
 /** Extract the exact source span of a frozen surface, failing loudly if absent. */
 function extract(src: string, re: RegExp, name: string): string {
@@ -110,57 +129,121 @@ function sha256(s: string): string {
 }
 
 /**
- * Frozen surface → { extract, pin }. The extraction regexes anchor each
- * function body on its column-0 closing brace (`\n}`), so an interior indented
- * `}` never terminates the span early.
+ * The three LIVE `/models` canary legs in `models.drift.ts`, pinned WHOLE.
+ *
+ * Pinning the CALLEE (`assertNoUnclassifiedFamilies`, anchored behaviourally
+ * below) is not enough: the two surfaces that decide whether the callee ever
+ * runs, and on what, are the SKIP GATE and the CALL SITE, and both are
+ * one-word silencing edits that every other guard in this repo misses.
+ *
+ *   - GATE: `describe.skipIf(!process.env.OPENAI_API_KEY)` → `describe.skip`.
+ *     The canary goes permanently silent, the behavioural anchor stays green,
+ *     both suites stay green, eslint and prettier stay clean — and the reported
+ *     SKIP COUNT does not even move, because the leg was already counted as
+ *     skipped whenever the key was absent.
+ *   - CALL SITE: `assertNoUnclassifiedFamilies(models, …)` → `[]` (caught only
+ *     by eslint's unused-var rule) or `models.slice(0, 0)` (eslint-clean). The
+ *     assertion still runs, on nothing.
+ *
+ * So the span pinned here spans the whole leg: gate, fetch, and call. Each
+ * pattern is `^`-anchored and matched via `extractSole`, so it cannot be
+ * satisfied by a decoy elsewhere in the file. The structural anchor in the
+ * suite below re-states the two invariants in readable form, so a red pin here
+ * comes with a diagnosis rather than just "the bytes moved".
  */
-const FROZEN: Record<string, { source: string; pin: string }> = {
+const LIVE_CANARY_LEGS = [
+  {
+    name: "liveLeg.openai",
+    envVar: "OPENAI_API_KEY",
+    listFn: "listOpenAIModels",
+    re: /^describe\.skipIf\(!process\.env\.OPENAI_API_KEY\)\("OpenAI Chat[\s\S]*?\n\}\);/m,
+    pin: "589a97610eadaed45019b1e1d2529dd22cc8e8f657b756189b6fa684a9d66301",
+  },
+  {
+    name: "liveLeg.anthropic",
+    envVar: "ANTHROPIC_API_KEY",
+    listFn: "listAnthropicModels",
+    re: /^describe\.skipIf\(!process\.env\.ANTHROPIC_API_KEY\)\([\s\S]*?\n\);/m,
+    pin: "24c326fdcb07bbac2846c159bbc01ace16fa0ec5853f7a820068b105e0ece5ad",
+  },
+  {
+    name: "liveLeg.gemini",
+    envVar: "GOOGLE_API_KEY",
+    listFn: "listGeminiModels",
+    re: /^describe\.skipIf\(!process\.env\.GOOGLE_API_KEY\)\("Google Gemini[\s\S]*?\n\}\);/m,
+    pin: "6027fa801f7006809fe173ebcc10110f5c9a49ff549e349df1f34a2d751cb10d",
+  },
+];
+
+/**
+ * Frozen surface → { source, pin }. The FUNCTION-BODY extraction patterns
+ * anchor on the body's column-0 closing brace (`\n}`), so an interior indented
+ * `}` never terminates the span early; the single-line `const` surfaces and the
+ * `NON_MODEL_TOKENS` set literal are bounded by their own terminators instead.
+ *
+ * `source` is a THUNK, and every extraction (and the file read behind it) runs
+ * inside the `it` that checks it. At module scope a single renamed or reshaped
+ * surface threw during COLLECTION and took the entire file with it: every other
+ * pin, every behavioural anchor, and the whole `DATA_FROZEN` describe reported
+ * as zero tests. Fail-loud is the right behaviour for a moved surface, but the
+ * blast radius must be that one case — otherwise the obvious repair is to delete
+ * the offending entry, which silently unguards everything else.
+ */
+const FROZEN: Record<string, { source: () => string; pin: string }> = {
   DATED_SNAPSHOT_SUFFIX: {
-    source: extract(famSrc, /const DATED_SNAPSHOT_SUFFIX = .+;/, "DATED_SNAPSHOT_SUFFIX"),
+    source: () =>
+      extract(src("model-family.ts"), /const DATED_SNAPSHOT_SUFFIX = .+;/, "DATED_SNAPSHOT_SUFFIX"),
     pin: "99fcd34c515dfce4954b7c6a2bcf10a35b4f27e76107f96eb6235549225854b4",
   },
   BUILD_TAG_SUFFIX: {
-    source: extract(famSrc, /const BUILD_TAG_SUFFIX = .+;/, "BUILD_TAG_SUFFIX"),
+    source: () =>
+      extract(src("model-family.ts"), /const BUILD_TAG_SUFFIX = .+;/, "BUILD_TAG_SUFFIX"),
     pin: "fe75d743b89f8eae942cd98ac8af56a25f3c86c8d64772f1aec139d1dd4fbddc",
   },
   ANTHROPIC_DATE_SUFFIX: {
-    source: extract(famSrc, /const ANTHROPIC_DATE_SUFFIX = .+;/, "ANTHROPIC_DATE_SUFFIX"),
+    source: () =>
+      extract(src("model-family.ts"), /const ANTHROPIC_DATE_SUFFIX = .+;/, "ANTHROPIC_DATE_SUFFIX"),
     pin: "c79f8927776a618bb232d8b3d506296b84f9017db9f4ad56b0b20a84b9ce3a28",
   },
   normalizeModelFamily: {
-    source: extract(
-      famSrc,
-      /export function normalizeModelFamily\([\s\S]*?\n}/,
-      "normalizeModelFamily",
-    ),
+    source: () =>
+      extract(
+        src("model-family.ts"),
+        /export function normalizeModelFamily\([\s\S]*?\n}/,
+        "normalizeModelFamily",
+      ),
     pin: "7c1236d8d644e6ec52879aae910c4b1491e51346f4dde0bb211f484013a33f50",
   },
   PREVIEW_FAMILY: {
-    source: extract(regSrc, /export const PREVIEW_FAMILY = .+;/, "PREVIEW_FAMILY"),
+    source: () =>
+      extract(src("model-registry.ts"), /export const PREVIEW_FAMILY = .+;/, "PREVIEW_FAMILY"),
     pin: "da2e8a8a66ea8ac150de336429a74cc46fdaf0e3fb065614b810803a0187a3c8",
   },
   GEMMA_FAMILY: {
-    source: extract(regSrc, /export const GEMMA_FAMILY = .+;/, "GEMMA_FAMILY"),
+    source: () =>
+      extract(src("model-registry.ts"), /export const GEMMA_FAMILY = .+;/, "GEMMA_FAMILY"),
     pin: "910e395e685e385bc924ea6900118bd8a3b93b5026513f92ea387409475555e8",
   },
   NON_MODEL_TOKENS: {
-    source: extract(
-      regSrc,
-      /export const NON_MODEL_TOKENS: Set<string> = new Set\(\[[\s\S]*?\]\);/,
-      "NON_MODEL_TOKENS",
-    ),
+    source: () =>
+      extract(
+        src("model-registry.ts"),
+        /export const NON_MODEL_TOKENS: Set<string> = new Set\(\[[\s\S]*?\]\);/,
+        "NON_MODEL_TOKENS",
+      ),
     pin: "7531fa32d032016a25b7a95ce0da919bb5add8817c8f3c69c9af8fe732b0d332",
   },
   familySet: {
-    source: extract(regSrc, /function familySet\([\s\S]*?\n}/, "familySet"),
+    source: () => extract(src("model-registry.ts"), /function familySet\([\s\S]*?\n}/, "familySet"),
     pin: "d4ee5473b09e94a91f58b4acaff698aba00077fb2edf0b635cd8a41b6de2d58f",
   },
   isClassifiedFamily: {
-    source: extract(
-      regSrc,
-      /export function isClassifiedFamily\([\s\S]*?\n}/,
-      "isClassifiedFamily",
-    ),
+    source: () =>
+      extract(
+        src("model-registry.ts"),
+        /export function isClassifiedFamily\([\s\S]*?\n}/,
+        "isClassifiedFamily",
+      ),
     pin: "60d59a5c43f3c3d7788315a19bc0a576bfab0efce3a8e93b82e862cfb8a3d263",
   },
   // The voice/audio matcher decides which live ids the realtime canary even
@@ -169,11 +252,12 @@ const FROZEN: Record<string, { source: string; pin: string }> = {
   // exists for) silently stops being a candidate — the canary goes quiet with
   // no test failing. Anchored + sole-match: see `extractSole`.
   isVoiceModelId: {
-    source: extractSole(
-      voiceSrc,
-      /^export function isVoiceModelId\([\s\S]*?\n}/m,
-      "isVoiceModelId",
-    ),
+    source: () =>
+      extractSole(
+        src("voice-models.ts"),
+        /^export function isVoiceModelId\([\s\S]*?\n}/m,
+        "isVoiceModelId",
+      ),
     pin: "f3d7f7324fc29798200c6b87469b50514ab790f14edba851e92e656753e941b9",
   },
   // The two FUNCTIONS that consume the voice seed sets. Pinning the sets alone
@@ -181,28 +265,37 @@ const FROZEN: Record<string, { source: string; pin: string }> = {
   // normalized seeds through the normalizer, so neutering the normalizer does not
   // move the data pin, and nothing looked at the detector's body at all.
   normalizeVoiceModelFamily: {
-    source: extractSole(
-      voiceSrc,
-      /^export function normalizeVoiceModelFamily\([\s\S]*?\n}/m,
-      "normalizeVoiceModelFamily",
-    ),
+    source: () =>
+      extractSole(
+        src("voice-models.ts"),
+        /^export function normalizeVoiceModelFamily\([\s\S]*?\n}/m,
+        "normalizeVoiceModelFamily",
+      ),
     pin: "79c1f879d5c00746c4312ce41d06a492148e105af42e4ad57733c7eef130444a",
   },
   detectVoiceModelDrift: {
-    source: extractSole(
-      voiceSrc,
-      /^export function detectVoiceModelDrift\([\s\S]*?\n}/m,
-      "detectVoiceModelDrift",
-    ),
+    source: () =>
+      extractSole(
+        src("voice-models.ts"),
+        /^export function detectVoiceModelDrift\([\s\S]*?\n}/m,
+        "detectVoiceModelDrift",
+      ),
     pin: "4a365ed2b74084ba5d664476b872ba8fc9bc4036820bb86f42c840789c6269d1",
   },
+  // The live canary legs (gate + fetch + call). See LIVE_CANARY_LEGS above.
+  ...Object.fromEntries(
+    LIVE_CANARY_LEGS.map(({ name, re, pin }) => [
+      name,
+      { source: () => extractSole(src("models.drift.ts"), re, name), pin },
+    ]),
+  ),
 };
 
 describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", () => {
   for (const [name, { source, pin }] of Object.entries(FROZEN)) {
     it(`freezes ${name}`, () => {
       expect(
-        sha256(source),
+        sha256(source()),
         `Frozen classification surface "${name}" changed. If this edit is a ` +
           `deliberate, reviewed rule change, update its pin here; if not, it is ` +
           `a silent canary-silencing edit and must be reverted.`,
@@ -317,14 +410,15 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
   // TEXT lane — the mirror of the voice anchors above.
   //
   // The DETECTOR (`unclassifiedFamilies`) is already behaviourally covered:
-  // neutering it to `return []` reddens three tests in the default suite (its
-  // co-located regressions plus the drift-sync mirror-equivalence guard). It is
-  // the ASSERTION WRAPPER that was open — `assertNoUnclassifiedFamilies` is the
-  // only thing that turns a detected family into a `formatDriftReport` block the
-  // collector can route to the exit-2 lane, it runs ONLY under the live
-  // `test:drift` config, and replacing its computed `unclassified` with a literal
-  // `[]` left the entire 4820-test default suite green. That is exactly the
-  // `hasGA = true` shape on the text side: one line, canary dead, CI happy.
+  // neutering it to `return []` reddens the drift-sync mirror-equivalence guard,
+  // `text-drift.test.ts`, and its co-located regressions under `test:drift`. It
+  // is the ASSERTION WRAPPER that was open — `assertNoUnclassifiedFamilies` is
+  // the only thing that turns a detected family into a `formatDriftReport` block
+  // the collector can route to the exit-2 lane, it is called ONLY from the live
+  // legs of `models.drift.ts`, and replacing its computed `unclassified` with a
+  // literal `[]` left the whole default suite green — the anchor below is still
+  // the SOLE test that catches it. That is exactly the `hasGA = true` shape on
+  // the text side: one line, canary dead, CI happy.
   //
   // Anchored behaviourally rather than by checksum: a checksum says "something
   // changed", this says "it no longer reports an unclassified family".
@@ -340,6 +434,35 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
       assertNoUnclassifiedFamilies(["gpt-live"], "openai", "anchor (unclassified family)"),
     ).toThrow(/gpt-live/);
   });
+
+  // …and the two surfaces ONE LAYER OUT from the callee: what GATES the live
+  // canary and what it is CALLED WITH. The anchors above prove the function
+  // still reports drift; these prove it still runs, whenever a key is present,
+  // on the collection the provider actually returned. See LIVE_CANARY_LEGS.
+  it.each(LIVE_CANARY_LEGS)(
+    "keeps the $name live canary gated on a present key and called with the real listing",
+    ({ name, envVar, listFn, re }) => {
+      const leg = extractSole(src("models.drift.ts"), re, name);
+
+      // GATE: conditional on the key, never an unconditional `describe.skip`.
+      expect(
+        leg.startsWith(`describe.skipIf(!process.env.${envVar})`),
+        `The ${name} canary must be gated on \`!process.env.${envVar}\`. An ` +
+          `unconditional \`describe.skip\` silences it permanently without moving ` +
+          `the skip count or reddening anything else.`,
+      ).toBe(true);
+
+      // FETCH + CALL: the live listing is fetched and handed over WHOLE. `[]` or
+      // `models.slice(0, 0)` keeps the assertion running on nothing.
+      expect(leg).toContain(`const models = await ${listFn}(process.env.${envVar}!);`);
+      expect(
+        leg,
+        `The ${name} canary must pass the fetched \`models\` collection straight ` +
+          `into assertNoUnclassifiedFamilies — an empty or truncated argument ` +
+          `leaves the assertion running on nothing.`,
+      ).toMatch(/assertNoUnclassifiedFamilies\(\s*models,/);
+    },
+  );
 
   it("keeps assertNoUnclassifiedFamilies PASSING on a fully-classified listing", () => {
     // The negative control: the anchor above must not be satisfiable by a
@@ -417,7 +540,7 @@ const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
   },
 };
 
-describe("classification-data membership freeze (includeFamilies/excludeFamilies)", () => {
+describe("classification-data membership freeze (include/exclude families + voice seed sets)", () => {
   for (const [name, { members, pin }] of Object.entries(DATA_FROZEN)) {
     it(`freezes ${name} membership`, () => {
       expect(
