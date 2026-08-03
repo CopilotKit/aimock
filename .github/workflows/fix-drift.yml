@@ -250,7 +250,11 @@ jobs:
           # or diff bytes). An applied edit deserves exactly ONE open PR,
           # re-findable across runs.
           if [ -n "${CHANGESET_KEY:-}" ]; then
-            OPEN_PRS="$(gh pr list --state open --json number,body 2>/dev/null || echo '[]')"
+            # --limit 200: `gh pr list` defaults to 30, which silently truncates
+            # this guard's view of the open PRs — once 30 newer PRs exist, the
+            # older already-proposed PR falls out of the window and the guard
+            # opens a duplicate. The limit is load-bearing, not cosmetic.
+            OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body 2>/dev/null || echo '[]')"
             DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
               'map(select(.body | contains($m))) | .[0].number // empty')"
             if [ -n "$DUP" ]; then
@@ -300,7 +304,7 @@ jobs:
           PR_URL=""
           PR_NUMBER=""
           for attempt in $(seq 1 6); do
-            MATCH="$(gh pr list --state open --json url,number,headRefOid \
+            MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
               --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>/dev/null || true)"
             if [ -n "$MATCH" ]; then
               PR_URL="$(printf '%s' "$MATCH" | jq -r '.url')"
@@ -357,13 +361,56 @@ jobs:
         run: |
           set -euo pipefail
           HEAD_SHA="$(git rev-parse HEAD)"
-          # Re-fire of an already-persisted note: no new commit -> already reachable.
-          if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
-            echo "needs-human: no new commit (note already persisted in the repo) — nothing to push"
-            exit 0
+
+          # ALERT CONTENT (see the "Alert on needs-human decision" step below).
+          # That alert renders its PR link from THIS step's `url` output, which
+          # used to be written only at the very end, after `gh pr create`. All
+          # three early returns here (no new commit; changeset-key dedup hit;
+          # per-note dedup hit) exited 0 without writing it, so the alert fell
+          # through to a contentless variant naming no PR at all — the dedup
+          # path even HAD the number in $DUP and threw it away. Six consecutive
+          # days of "needs a human decision" alerts told a human nothing for
+          # exactly this reason.
+          #
+          # So the open-PR lookup is HOISTED above every early return, and each
+          # early return emits `url=`/`number=` via emit_pr before exiting.
+          #
+          # --limit 200: `gh pr list` defaults to 30, which silently truncates
+          # the dedup guards' view of the open PRs — once 30 newer PRs exist,
+          # the older already-proposed PR falls out of the window, the guard
+          # misses it and a duplicate PR gets opened. Load-bearing, not cosmetic.
+          OPEN_PRS="$(gh pr list --state open --limit 200 --json number,url,body 2>/dev/null || echo '[]')"
+
+          # Emit the PR a human must act on, so the Slack alert can name AND
+          # link it. No-op when there is no PR to name (nothing was found and
+          # nothing was opened) — the alert then says so explicitly.
+          emit_pr() {
+            [ -n "${2:-}" ] || return 0
+            {
+              echo "number=${1}"
+              echo "url=${2}"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # The open PR (if any) already carrying this run's stable changeset
+          # marker. Resolved BEFORE the guards below so every path can cite it.
+          DUP_NUMBER=""
+          DUP_URL=""
+          if [ -n "${CHANGESET_KEY:-}" ]; then
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
+              'map(select(.body | contains($m))) | .[0] // empty')"
+            if [ -n "$DUP" ]; then
+              DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
+              DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
+            fi
           fi
 
-          OPEN_PRS="$(gh pr list --state open --json number,body 2>/dev/null || echo '[]')"
+          # Re-fire of an already-persisted note: no new commit -> already reachable.
+          if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
+            emit_pr "$DUP_NUMBER" "$DUP_URL"
+            echo "needs-human: no new commit (note already persisted in the repo) — nothing to push${DUP_NUMBER:+ (decision pending in open PR #${DUP_NUMBER})}"
+            exit 0
+          fi
 
           # PRIMARY de-dup (idempotent across daily re-fires in EVERY shape,
           # INCLUDING the mixed run whose committed diff is a registry edit with
@@ -373,14 +420,12 @@ jobs:
           # Without it, a mixed run re-detects the same un-merged registry edit
           # every daily cron run and opens a brand-new near-identical PR each
           # time (unbounded PR-spam). Matched by the "drift-changeset: <key>"
-          # body marker this step writes below.
-          if [ -n "${CHANGESET_KEY:-}" ]; then
-            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
-              'map(select(.body | contains($m))) | .[0].number // empty')"
-            if [ -n "$DUP" ]; then
-              echo "needs-human: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
-              exit 0
-            fi
+          # body marker this step writes below. Resolved above (DUP_NUMBER /
+          # DUP_URL) so the no-new-commit path can cite the same PR.
+          if [ -n "$DUP_NUMBER" ]; then
+            emit_pr "$DUP_NUMBER" "$DUP_URL"
+            echo "needs-human: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP_NUMBER} — not opening a duplicate"
+            exit 0
           fi
 
           # The note file(s) drift-sync.ts committed this run.
@@ -395,10 +440,13 @@ jobs:
           # "drift-proposal-note: <path>" body marker this step writes below).
           for note in "${NOTES[@]:-}"; do
             [ -n "$note" ] || continue
-            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-proposal-note: ${note}" \
-              'map(select(.body | contains($m))) | .[0].number // empty')"
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-proposal-note: ${note}" \
+              'map(select(.body | contains($m))) | .[0] // empty')"
             if [ -n "$DUP" ]; then
-              echo "needs-human: note ${note} already proposed in open PR #${DUP} — not opening a duplicate"
+              DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
+              DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
+              emit_pr "$DUP_NUMBER" "$DUP_URL"
+              echo "needs-human: note ${note} already proposed in open PR #${DUP_NUMBER} — not opening a duplicate"
               exit 0
             fi
           done
@@ -451,11 +499,13 @@ jobs:
             --body-file "$PR_BODY_FILE"
 
           PR_URL=""
+          PR_NUMBER=""
           for attempt in $(seq 1 6); do
-            MATCH="$(gh pr list --state open --json url,headRefOid \
-              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | .url" 2>/dev/null || true)"
+            MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
+              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>/dev/null || true)"
             if [ -n "$MATCH" ]; then
-              PR_URL="$(printf '%s' "$MATCH" | head -n1)"
+              PR_URL="$(printf '%s' "$MATCH" | jq -r '.url')"
+              PR_NUMBER="$(printf '%s' "$MATCH" | jq -r '.number')"
               break
             fi
             echo "needs-human PR for head SHA not indexed yet (attempt $attempt/6), waiting 10s..."
@@ -465,8 +515,8 @@ jobs:
             echo "::error::No open needs-human PR found whose head matches pushed SHA $HEAD_SHA"
             exit 1
           fi
-          echo "Opened needs-human PR: $PR_URL"
-          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "Opened needs-human PR #$PR_NUMBER: $PR_URL"
+          emit_pr "$PR_NUMBER" "$PR_URL"
 
       # NO AUTO-MERGE FOR THE DRIFT-SYNC PATH (Phase 0/1 — see
       # drift-auto-adjust-architecture-spec.md §6.1). Through Phase 1 the sync
@@ -497,6 +547,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           PR_URL: ${{ steps.needs_human_pr.outputs.url }}
+          PR_NUMBER: ${{ steps.needs_human_pr.outputs.number }}
         run: |
           set -euo pipefail
           echo "::error::drift-sync found a genuinely-new model family or a still-referenced deprecation — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
@@ -504,10 +555,15 @@ jobs:
             echo "::error::SLACK_WEBHOOK not set — cannot send needs-human alert"
             exit 1
           fi
+          # The persist step emits url=/number= on EVERY path it takes — the PR
+          # it just opened, or the still-open PR that already proposes this
+          # decision. Reaching the fallback below therefore means NO open PR
+          # carries the decision (the persist step was skipped, or the PR was
+          # merged/closed), NOT "it is already proposed somewhere".
           if [ -n "${PR_URL:-}" ]; then
-            WHERE="Review the note in the PR, set \`Decision: include\` (or close to reject), and merge: ${PR_URL}"
+            WHERE="Review the note in PR #${PR_NUMBER:-?}, set \`Decision: include\` (or close to reject), and merge: ${PR_URL}"
           else
-            WHERE="The note is already in the repo (already persisted / already proposed in an open PR). See the drift-sync-log artifact and \`drift-proposals/\`."
+            WHERE="No open PR carries this decision (the note may not have been persisted, or its PR was merged/closed). See the drift-sync-log artifact and \`drift-proposals/\`."
           fi
           MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"

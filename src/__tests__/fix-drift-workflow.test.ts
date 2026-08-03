@@ -533,3 +533,82 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
     expect(wfFlat).toContain("retention-days: 30");
   });
 });
+
+// ---------------------------------------------------------------------------
+// ALERT CONTENT: every exit path of the needs-human persist step must carry a
+// PR reference into the Slack alert.
+//
+// `PR_URL` for the "Alert on needs-human decision" step comes from
+// `steps.needs_human_pr.outputs.url`, which used to be written ONLY at the very
+// end of the persist step, after `gh pr create`. That step has THREE early
+// `exit 0` returns (no new commit; changeset-key dedup hit; per-note dedup hit)
+// and none of them wrote `url=` — so the alert fell through to its contentless
+// variant. The dedup path even HAD the PR number in `$DUP` and discarded it.
+//
+// That is why six consecutive days of "needs a human decision" alerts named no
+// PR: run 30429968759 opened #343 and its alert carried the link, and every run
+// after it took a dedup path and went contentless.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the needs-human alert always names a PR", () => {
+  const persistStep = () => {
+    const s = stepBlocks().find(
+      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    );
+    expect(s).toBeDefined();
+    return s!;
+  };
+
+  it("EVERY early return in the persist step emits the PR immediately before exiting", () => {
+    const lines = persistStep().split("\n");
+    const exits = lines.flatMap((l, i) => (/^\s*exit 0\s*$/.test(l) ? [i] : []));
+    expect(exits.length, "expected the documented early-return paths").toBeGreaterThanOrEqual(3);
+
+    for (const i of exits) {
+      // Look back over the guard body (skipping the echo that explains the
+      // skip) for the emit_pr that hands the PR to the Slack alert.
+      const window = lines.slice(Math.max(0, i - 3), i).join("\n");
+      expect(
+        window,
+        `\`exit 0\` at line ${i + 1} of the persist step returns without emit_pr — ` +
+          "the Slack alert is then left with no PR to name",
+      ).toMatch(/emit_pr "/);
+    }
+  });
+
+  it("the PR lookup is hoisted ABOVE the no-new-commit guard, so that path can name a PR too", () => {
+    const persist = persistStep();
+    const lookupIdx = persist.indexOf("gh pr list");
+    const noNewCommitIdx = persist.indexOf('if [ "$HEAD_SHA" = "$BASE_SHA" ]');
+    expect(lookupIdx).toBeGreaterThan(-1);
+    expect(noNewCommitIdx).toBeGreaterThan(-1);
+    expect(lookupIdx).toBeLessThan(noNewCommitIdx);
+  });
+
+  it("the persist step exports a PR number alongside the url so the alert can say #N", () => {
+    expect(persistStep()).toMatch(/echo "number=/);
+  });
+
+  it("the alert step renders the PR number and url when it has them", () => {
+    const alert = stepBlocks().find((b) => b.startsWith("Alert on needs-human decision"));
+    expect(alert).toBeDefined();
+    expect(alert!).toContain("PR_NUMBER: ${{ steps.needs_human_pr.outputs.number }}");
+    expect(alert!).toMatch(/#\$\{PR_NUMBER/);
+  });
+
+  it("the alert's no-PR fallback no longer claims the note is 'already proposed in an open PR'", () => {
+    // With the lookup hoisted, an already-proposed note ALWAYS yields a url —
+    // so reaching the fallback means the opposite of what it used to claim.
+    const alert = stepBlocks().find((b) => b.startsWith("Alert on needs-human decision"));
+    expect(alert).toBeDefined();
+    expect(alert!).not.toContain("already proposed in an open PR");
+  });
+
+  it("every `gh pr list` used for de-dup or PR matching passes an explicit --limit", () => {
+    // `gh pr list` defaults to 30. Once 30 newer PRs exist, an older
+    // already-proposed PR falls out of the window, the dedup guards miss it,
+    // and the workflow opens a duplicate.
+    const calls = wfFlat.match(/gh pr list[^|]*?--json [a-zA-Z,]+/g) || [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call).toMatch(/--limit \d+/);
+  });
+});
