@@ -30,12 +30,14 @@ import {
   classifyUnparseableAsInfra,
   INFRA_INDICATOR_SOURCES,
   infraIndicatorSample,
+  NO_GA_DELTA_ID,
+  TRUNCATED_DELTA_ID,
 } from "../../scripts/drift-report-collector.js";
-import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
+import type { DriftEntry, QuarantineEntry, ParsedDiff } from "../../scripts/drift-types.js";
 import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS, isKnownSurface } from "./drift/surface-registry.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { isBaseReportReusable } from "../../scripts/drift-delta.js";
+import { isBaseReportReusable, computeDelta } from "../../scripts/drift-delta.js";
 import type { DriftReport } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
@@ -1452,6 +1454,131 @@ describe("D6.2 — per-item id on ParsedDiff", () => {
     // Each id must be derived from (or equal to) the path.
     for (const diff of parsed!.diffs) {
       expect(diff.id).toBe(diff.path);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The delta key must not be coupled to a DISPLAY string.
+//
+// drift-delta keys a failure by `provider + (diff.id ?? diff.path)`. Two canary
+// diffs shipped with NO `id` — the no-GA diff and the truncation diff — so their
+// delta key WAS their `path`, which is also the human-facing "Path:" line of the
+// alert. That coupling means renaming the prose (as 6614bb2 did, `gaModels` →
+// `gaRealtimeModels`) silently MOVES the key: a drift already recorded in the
+// cached same-UTC-day BASE report is re-classified as new-in-head and BLOCKS the
+// PR, while the base key is reported as spuriously "fixed".
+//
+// The fix is not to freeze the display string — a `path` naming a symbol that no
+// longer exists is the exact bug this file's sibling guard exists to kill. It is
+// to give those two diffs an explicit, stable, SEMANTIC id so the display string
+// is free to change and the key never moves again.
+// ---------------------------------------------------------------------------
+
+describe("canary delta keys are decoupled from the human-facing path string", () => {
+  function reportOf(diffs: ParsedDiff[], timestamp = "2026-08-03T00:00:00.000Z"): DriftReport {
+    return {
+      timestamp,
+      entries: [
+        {
+          provider: "OpenAI Realtime",
+          scenario: "known-models canary",
+          builderFile: "b.ts",
+          builderFunctions: ["f"],
+          typesFile: null,
+          sdkShapesFile: "shapes.ts",
+          diffs,
+        },
+      ],
+    };
+  }
+
+  function canaryDiffs(message: string): ParsedDiff[] {
+    const entries = entriesOf(
+      makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Realtime API drift"],
+          title: "canary: GA realtime models available",
+          failureMessages: [message],
+        }),
+      ]),
+    );
+    expect(entries).toHaveLength(1);
+    return entries[0].diffs;
+  }
+
+  // Characterization of the MECHANISM, so the coupling can never be re-created
+  // silently: with no `id`, a path-only rename moves the key. (Watched to fail by
+  // stubbing indexReport's `diff.id ?? diff.path` to a constant.)
+  it("MECHANISM: with no per-item id, renaming `path` alone moves the delta key", () => {
+    const idLess = (path: string): ParsedDiff => ({
+      path,
+      severity: "critical",
+      issue: "GA realtime family unavailable",
+      expected: "(at least one GA realtime model present)",
+      real: "no realtime models observed",
+      mock: "<no mock leg>",
+    });
+    const { block, advisory, fixed } = computeDelta(
+      reportOf([idLess("gaModels")]),
+      reportOf([idLess("gaRealtimeModels")]),
+    );
+    expect(advisory).toEqual([]);
+    expect(block.map((k) => k.id)).toEqual(["gaRealtimeModels"]);
+    expect(fixed.map((k) => k.id)).toEqual(["gaModels"]);
+  });
+
+  it("a stable per-item id makes the SAME path rename key-neutral (stays advisory)", () => {
+    const keyed = (path: string): ParsedDiff => ({
+      path,
+      id: NO_GA_DELTA_ID,
+      severity: "critical",
+      issue: "GA realtime family unavailable",
+      expected: "(at least one GA realtime model present)",
+      real: "no realtime models observed",
+      mock: "<no mock leg>",
+    });
+    const { block, advisory, fixed } = computeDelta(
+      reportOf([keyed("gaModels")]),
+      reportOf([keyed("gaRealtimeModels")]),
+    );
+    expect(block).toEqual([]);
+    expect(fixed).toEqual([]);
+    expect(advisory.map((k) => k.id)).toEqual([NO_GA_DELTA_ID]);
+  });
+
+  it("the collector sets the stable id on the no-GA diff", () => {
+    const diffs = canaryDiffs(CANARY_NO_GA_MARKER);
+    const noGA = diffs.filter((d) => d.path === "gaRealtimeModels");
+    expect(noGA).toHaveLength(1);
+    expect(noGA[0].id).toBe(NO_GA_DELTA_ID);
+  });
+
+  it("the collector sets the stable id on the truncation diff", () => {
+    const diffs = canaryDiffs(CANARY_FALLBACK_TRUNCATED);
+    const truncation = diffs.filter((d) => d.path === "knownVoiceModelFamilies[truncated]");
+    expect(truncation).toHaveLength(1);
+    expect(truncation[0].id).toBe(TRUNCATED_DELTA_ID);
+  });
+
+  // Vacuity guard: EVERY canary diff the collector can emit must now carry an
+  // `id`, so no future canary diff can silently re-acquire a path-derived key.
+  it("no canary diff is left keyed by its display path", () => {
+    for (const message of [
+      CANARY_NO_GA_MARKER,
+      CANARY_NO_GA_WITH_UNKNOWN,
+      CANARY_NO_GA_EMPTY,
+      CANARY_MARKER_MULTI,
+      CANARY_FALLBACK_TRUNCATED,
+    ]) {
+      for (const d of canaryDiffs(message)) {
+        expect(
+          d.id,
+          `canary diff path=${d.path} has no stable id — it would key on its ` +
+            `display path, so renaming the alert prose would move its delta key`,
+        ).toBeTruthy();
+      }
     }
   });
 });

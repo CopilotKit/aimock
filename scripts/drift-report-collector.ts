@@ -685,6 +685,29 @@ export interface CollectResult {
   quarantine: QuarantineEntry[];
 }
 
+/**
+ * Stable delta keys for the two realtime-canary diffs that have no per-model id.
+ *
+ * drift-delta keys a failure by `provider + (diff.id ?? diff.path)`. Both diffs
+ * below used to carry no `id`, so their delta key WAS their `path` — which is
+ * also the human-facing "Path:" line of the alert. That coupling means renaming
+ * the alert prose silently MOVES the key: drift already recorded in the cached
+ * same-UTC-day BASE report is re-classified as new-in-head (BLOCK) and the base
+ * key is reported as spuriously "fixed". It bit us once already, when these two
+ * `path` values were corrected to name the symbols that actually exist
+ * (`gaRealtimeModels` / `knownVoiceModelFamilies`) instead of the retired ones.
+ *
+ * Freezing the display string is the wrong fix — a `Path:` naming a nonexistent
+ * symbol is exactly what drift-remediation-strings.test.ts exists to prevent. So
+ * the key is instead an explicit SEMANTIC id that never appears in prose: the
+ * display text is now free to change without moving any key.
+ *
+ * These values are the wire contract of the delta layer. Renaming one shifts the
+ * key exactly as the old path rename did — don't, unless that is the intent.
+ */
+export const NO_GA_DELTA_ID = "openai-realtime:no-ga-family";
+export const TRUNCATED_DELTA_ID = "openai-realtime:unknown-models-truncated";
+
 export function collectDriftEntries(results: VitestJsonResult): CollectResult {
   const entries: DriftEntry[] = [];
   const quarantine: QuarantineEntry[] = [];
@@ -730,6 +753,11 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                       ? `observed realtime models: ${canary.ids.join(", ")}`
                       : "no realtime models observed",
                   mock: NO_MOCK_LEG,
+                  // There is no per-model id for this diff (it reports the
+                  // ABSENCE of a family), so without an explicit id the delta
+                  // layer would key it by `path` — coupling the key to the alert
+                  // prose. See NO_GA_DELTA_ID.
+                  id: NO_GA_DELTA_ID,
                 },
                 // The hasGA assertion short-circuits the later unknown-models
                 // assertion, so surface any unknown models observed in the SAME
@@ -785,6 +813,10 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                         expected: "<unavailable>",
                         real: "<unavailable>",
                         mock: NO_MOCK_LEG,
+                        // No per-model id exists here either (the ids are the
+                        // thing that was truncated away), so the key must be
+                        // explicit. See TRUNCATED_DELTA_ID.
+                        id: TRUNCATED_DELTA_ID,
                       },
                     ]
                   : []),
