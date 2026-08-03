@@ -316,18 +316,46 @@ jobs:
           # this guard's view of the open PRs — once 30 newer PRs exist, the
           # older already-proposed PR falls out of the window and the guard
           # opens a duplicate. The limit is load-bearing, not cosmetic.
-          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body 2>&1)"; then
-            echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+          # `--state all`, NOT `--state open`: dedup used to consider only OPEN
+          # PRs, so the moment a human CLOSED a proposal to reject it, the very
+          # next cron run stopped seeing it and opened a fresh one — daily,
+          # forever. `--search` narrows server-side on the changeset key so
+          # widening the state filter cannot let closed PRs crowd the older
+          # matching PR out of the --limit window.
+          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+            --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
           fi
-          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+          if ! printf '%s' "$ALL_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
-          DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
-            'map(select(.body | contains($m))) | .[0].number // empty')"
+          MARKER="drift-changeset: ${CHANGESET_KEY}"
+          # A CLOSED-but-never-MERGED PR carrying this marker is a human
+          # REJECTION of this exact changeset — respect it permanently. A
+          # genuinely different drift produces a different changeset key, so
+          # this suppresses the rejected proposal and nothing else.
+          REJECTED="$(printf '%s' "$ALL_PRS" | jq -r --arg m "$MARKER" \
+            'map(select((.body | contains($m)) and .state == "CLOSED")) | .[0].number // empty')"
+          if [ -n "$REJECTED" ]; then
+            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
+            echo "ok-applied: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
+            exit 0
+          fi
+          DUP="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select((.body | contains($m)) and .state == "OPEN")) | .[0] // empty')"
           if [ -n "$DUP" ]; then
-            echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
+            # Emit the PR so the success notify can name it. This path used to
+            # throw $DUP away and emit no outputs at all, which left the notify
+            # step (gated on `steps.pr.outputs.url != ''`) skipped — a green,
+            # silent run: the same class of bug this PR fixes on the other path.
+            {
+              echo "url=$(printf '%s' "$DUP" | jq -r '.url')"
+              echo "number=$(printf '%s' "$DUP" | jq -r '.number')"
+              echo "deduped=true"
+            } >> "$GITHUB_OUTPUT"
+            echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #$(printf '%s' "$DUP" | jq -r '.number') — not opening a duplicate"
             exit 0
           fi
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -465,14 +493,25 @@ jobs:
           # gh failure (401, secondary rate limit, 5xx) into "there are no open
           # PRs", which DISABLES both dedup guards below rather than degrading
           # them, and the step then opens the duplicate they exist to prevent.
-          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,url,body 2>&1)"; then
-            echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+          #
+          # `--state all`, NOT `--state open`: the alert this step feeds tells
+          # humans to "set `Decision: include` … or close to reject", and while
+          # dedup only looked at OPEN PRs, following that instruction guaranteed
+          # a brand-new identical PR the next morning and every morning after.
+          # `--search` narrows server-side on the changeset key so widening the
+          # state filter cannot push the older matching PR out of the window.
+          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+            --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
           fi
-          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+          if ! printf '%s' "$ALL_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
+          # Only OPEN PRs can carry a still-pending decision; the guards below
+          # keep using this narrowed view.
+          OPEN_PRS="$(printf '%s' "$ALL_PRS" | jq -c 'map(select(.state == "OPEN"))')"
 
           # Emit the PR a human must act on, so the Slack alert can name AND
           # link it. No-op when there is no PR to name (nothing was found and
@@ -496,9 +535,25 @@ jobs:
             echo "::error::changeset_key is empty on a needs-human run — the PRIMARY dedup guard cannot run, and pushing anyway is how daily duplicate PRs start. Refusing."
             exit 1
           fi
+          MARKER="drift-changeset: ${CHANGESET_KEY}"
+
+          # A CLOSED-but-never-MERGED PR carrying this marker is the human
+          # REJECTION the alert explicitly invites ("or close to reject").
+          # Respect it permanently and stay QUIET: re-proposing it — and
+          # re-alerting about it — every morning is the spam that made following
+          # the instruction a punishment. A genuinely different drift hashes to a
+          # different changeset key, so only this decision is suppressed.
+          REJECTED="$(printf '%s' "$ALL_PRS" | jq -r --arg m "$MARKER" \
+            'map(select((.body | contains($m)) and .state == "CLOSED")) | .[0].number // empty')"
+          if [ -n "$REJECTED" ]; then
+            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
+            echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it and not re-alerting"
+            exit 0
+          fi
+
           DUP_NUMBER=""
           DUP_URL=""
-          DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
+          DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "$MARKER" \
             'map(select(.body | contains($m))) | .[0] // empty')"
           if [ -n "$DUP" ]; then
             DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
@@ -654,7 +709,8 @@ jobs:
         if: >-
           always() &&
           steps.sync.outputs.reason == 'needs-human' &&
-          steps.needs_human_pr.outcome != 'failure'
+          steps.needs_human_pr.outcome != 'failure' &&
+          steps.needs_human_pr.outputs.rejected == ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
@@ -758,6 +814,7 @@ jobs:
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          DEDUPED: ${{ steps.pr.outputs.deduped }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -766,7 +823,14 @@ jobs:
             echo "::error::SLACK_WEBHOOK not set — cannot send sync-success alert"
             exit 0
           fi
-          MSG="✅ *Drift-sync PR opened — needs human review + merge*\nA data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          # The dedup path now names its PR too, so distinguish "just opened"
+          # from "still sitting there unmerged" rather than claiming a PR was
+          # opened when none was.
+          if [ "${DEDUPED:-}" = "true" ]; then
+            MSG="⏳ *Drift-sync PR still open — needs human review + merge*\nThe same data-only model-family sync was re-detected today because its PR is still unmerged. No duplicate was opened.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          else
+            MSG="✅ *Drift-sync PR opened — needs human review + merge*\nA data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          fi
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
