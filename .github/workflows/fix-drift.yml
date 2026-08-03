@@ -325,7 +325,7 @@ jobs:
             exit 1
           fi
           DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
-            'map(select(.body | contains($m))) | .[0].number // empty')"
+            'map(select((.body // "") | contains($m))) | .[0].number // empty')"
           if [ -n "$DUP" ]; then
             echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
             exit 0
@@ -499,7 +499,7 @@ jobs:
           DUP_NUMBER=""
           DUP_URL=""
           DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
-            'map(select(.body | contains($m))) | .[0] // empty')"
+            'map(select((.body // "") | contains($m))) | .[0] // empty')"
           if [ -n "$DUP" ]; then
             DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
             DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
@@ -541,7 +541,7 @@ jobs:
           for note in "${NOTES[@]:-}"; do
             [ -n "$note" ] || continue
             DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-proposal-note: ${note}" \
-              'map(select(.body | contains($m))) | .[0] // empty')"
+              'map(select((.body // "") | contains($m))) | .[0] // empty')"
             if [ -n "$DUP" ]; then
               DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
               DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
