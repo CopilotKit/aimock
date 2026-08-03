@@ -24,6 +24,8 @@
  *                       ANTHROPIC_DATE_SUFFIX, normalizeModelFamily
  *   model-registry.ts — PREVIEW_FAMILY, GEMMA_FAMILY, NON_MODEL_TOKENS,
  *                       familySet, isClassifiedFamily
+ *   voice-models.ts   — isVoiceModelId (rule), knownVoiceModelFamilies and
+ *                       gaRealtimeModels (data)
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -39,9 +41,11 @@ import {
   excludeFamilies,
 } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
+import { isVoiceModelId, knownVoiceModelFamilies, gaRealtimeModels } from "./voice-models.js";
 
 const famSrc = readFileSync(fileURLToPath(new URL("./model-family.ts", import.meta.url)), "utf8");
 const regSrc = readFileSync(fileURLToPath(new URL("./model-registry.ts", import.meta.url)), "utf8");
+const voiceSrc = readFileSync(fileURLToPath(new URL("./voice-models.ts", import.meta.url)), "utf8");
 
 /** Extract the exact source span of a frozen surface, failing loudly if absent. */
 function extract(src: string, re: RegExp, name: string): string {
@@ -54,6 +58,35 @@ function extract(src: string, re: RegExp, name: string): string {
     );
   }
   return m[0];
+}
+
+/**
+ * Like `extract`, but requires the pattern to match EXACTLY ONCE. `extract` uses
+ * `String.match`, which returns the FIRST hit — so an unanchored pattern can be
+ * satisfied by a decoy above the real surface (a commented-out copy, a doc
+ * example), pinning the decoy while the real rule moves freely underneath. Pass
+ * a `^`-anchored, `m`-flagged pattern here and a second match is a hard error
+ * rather than a silently-pinned wrong span.
+ */
+function extractSole(src: string, re: RegExp, name: string): string {
+  const all = [
+    ...src.matchAll(new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g")),
+  ];
+  if (all.length === 0) {
+    throw new Error(
+      `logic-pin: could not locate frozen surface "${name}". It was renamed, ` +
+        `moved, or reshaped — this is itself a classification-logic change that ` +
+        `must be reviewed and re-pinned deliberately.`,
+    );
+  }
+  if (all.length > 1) {
+    throw new Error(
+      `logic-pin: frozen surface "${name}" matched ${all.length} spans. The pin ` +
+        `would freeze whichever came first and leave the rest unguarded — make ` +
+        `the pattern unambiguous before re-pinning.`,
+    );
+  }
+  return all[0][0];
 }
 
 function sha256(s: string): string {
@@ -114,6 +147,19 @@ const FROZEN: Record<string, { source: string; pin: string }> = {
     ),
     pin: "60d59a5c43f3c3d7788315a19bc0a576bfab0efce3a8e93b82e862cfb8a3d263",
   },
+  // The voice/audio matcher decides which live ids the realtime canary even
+  // LOOKS at. Widen it and unrelated ids become false-positive voice drift;
+  // narrow it and a brand-new voice family (the `gpt-live` case this matcher
+  // exists for) silently stops being a candidate — the canary goes quiet with
+  // no test failing. Anchored + sole-match: see `extractSole`.
+  isVoiceModelId: {
+    source: extractSole(
+      voiceSrc,
+      /^export function isVoiceModelId\([\s\S]*?\n}/m,
+      "isVoiceModelId",
+    ),
+    pin: "f3d7f7324fc29798200c6b87469b50514ab790f14edba851e92e656753e941b9",
+  },
 };
 
 describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", () => {
@@ -170,6 +216,21 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
     // interior -preview-<word> is NOT swept by the rule (stays explicit-only)
     expect(PREVIEW_FAMILY.test("gemini-2.5-flash-preview-tts")).toBe(false);
   });
+
+  it("keeps isVoiceModelId's candidate boundary intact", () => {
+    // voice/audio candidates the realtime canary must keep inspecting, including
+    // the no-"realtime"-substring families the broadened matcher exists for
+    expect(isVoiceModelId("gpt-realtime-2.1")).toBe(true);
+    expect(isVoiceModelId("gpt-live-1")).toBe(true);
+    expect(isVoiceModelId("gpt-transcribe")).toBe(true);
+    expect(isVoiceModelId("whisper-1")).toBe(true);
+    expect(isVoiceModelId("tts-1-hd")).toBe(true);
+    expect(isVoiceModelId("gpt-audio-mini")).toBe(true);
+    // chat/text/image/embedding ids must NOT become false-positive voice drift
+    expect(isVoiceModelId("gpt-5.4-mini")).toBe(false);
+    expect(isVoiceModelId("dall-e-3")).toBe(false);
+    expect(isVoiceModelId("text-embedding-3-large")).toBe(false);
+  });
 });
 
 /**
@@ -217,6 +278,21 @@ const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
   "excludeFamilies.gemini": {
     members: [...excludeFamilies.gemini].sort(),
     pin: "c95dedab7588212bbba0bf9ab6434bfd43a449adbe7b35f81f48271ee849a9c2",
+  },
+  // The realtime canary's seed sets, previously pinned NOWHERE. An edit to
+  // either one was invisible to every guard in the repo: adding a family to
+  // knownVoiceModelFamilies makes a live unknown family stop being reported
+  // (the canary's whole job), and adding one to gaRealtimeModels makes the
+  // "GA family still exists" assertion satisfiable by a model that does not.
+  // Both are one-line silencing edits, which is exactly what this file exists
+  // to make impossible.
+  knownVoiceModelFamilies: {
+    members: [...knownVoiceModelFamilies].sort(),
+    pin: "3897b6bd6fc370ef14f080f4717dde653f2ae6029501d55c4cbda89523f9f3c6",
+  },
+  gaRealtimeModels: {
+    members: [...gaRealtimeModels].sort(),
+    pin: "deea068b1a4498d811f0b5399fd18db0f4d20561a63325f4daaddccf1e4e9410",
   },
 };
 
