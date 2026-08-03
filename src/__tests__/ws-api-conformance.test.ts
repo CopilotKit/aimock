@@ -683,6 +683,22 @@ describe("GA Realtime conformance", () => {
     expect(contentPartDone).toBeDefined();
     expect(contentPartDone.part.type).toBe("output_text");
   });
+
+  it("round-trips the documented PCM input format without dropping its rate", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2");
+    await ws.waitForMessages(1);
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { audio: { input: { format: { type: "audio/pcm", rate: 24000 } } } },
+      }),
+    );
+    const raw = await ws.waitForMessages(2);
+    ws.close();
+    const frame = JSON.parse(raw[1]) as any;
+    expect(frame.type).toBe("session.updated");
+    expect(frame.session.audio.input.format).toEqual({ type: "audio/pcm", rate: 24000 });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -704,6 +720,33 @@ describe("Beta Realtime conformance (OpenAI-Beta: realtime=v1)", () => {
     expect(session).not.toHaveProperty("audio");
     expect(session).not.toHaveProperty("type");
     expect(session).not.toHaveProperty("reasoning");
+  });
+
+  it("flattens turn_detection for default, nested GA, and legacy updates", async () => {
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime-2", {
+      "OpenAI-Beta": "realtime=v1",
+    });
+    const created = JSON.parse((await ws.waitForMessages(1))[0]) as any;
+    expect(created.session.turn_detection).toBeNull();
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { audio: { input: { turn_detection: { type: "server_vad", threshold: 0.7 } } } },
+      }),
+    );
+    const nested = JSON.parse((await ws.waitForMessages(2))[1]) as any;
+    expect(nested.session.turn_detection).toEqual({ type: "server_vad", threshold: 0.7 });
+
+    ws.send(
+      JSON.stringify({
+        type: "session.update",
+        session: { turn_detection: { type: "semantic_vad" } },
+      }),
+    );
+    const legacy = JSON.parse((await ws.waitForMessages(3))[2]) as any;
+    expect(legacy.session.turn_detection).toEqual({ type: "semantic_vad" });
+    ws.close();
   });
 
   it("emits Beta event names (response.text.delta, conversation.item.created)", async () => {

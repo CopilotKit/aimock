@@ -60,7 +60,7 @@ interface SessionConfig {
   instructions: string;
   tools: unknown[];
   voice: string | null;
-  input_audio_format: string | null;
+  input_audio_format: Record<string, unknown> | null;
   output_audio_format: string | null;
   input_audio_noise_reduction: { type: string } | null;
   input_audio_transcription: { model: string; language?: string; prompt?: string } | null;
@@ -93,6 +93,19 @@ function isLiveTranscriptionModel(model: string): boolean {
   );
 }
 
+function normalizeInputAudioFormat(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (typeof value === "string") return { type: value };
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).type === "string"
+  ) {
+    return { ...(value as Record<string, unknown>) };
+  }
+  return null;
+}
+
 function transcriptionModel(session: SessionConfig): string {
   return session.input_audio_transcription?.model ?? session.model;
 }
@@ -118,7 +131,7 @@ function serializeSession(session: SessionConfig, sessionId?: string): Record<st
     max_response_output_tokens: "inf",
     audio: {
       input: {
-        format: session.input_audio_format ? { type: session.input_audio_format } : null,
+        format: session.input_audio_format,
         noise_reduction: session.input_audio_noise_reduction,
         transcription: session.input_audio_transcription,
         turn_detection: session.turn_detection,
@@ -319,6 +332,7 @@ function translateGAToBeta(event: Record<string, unknown>): Record<string, unkno
         session.output_audio_format = (output?.format as Record<string, unknown> | undefined)?.type;
         session.input_audio_transcription = input?.transcription;
         session.input_audio_noise_reduction = input?.noise_reduction;
+        session.turn_detection = input?.turn_detection ?? null;
         delete session.audio;
       }
       delete session.type;
@@ -536,7 +550,7 @@ async function processMessage(
         const audio = (s as Record<string, unknown>).audio as Record<string, unknown>;
         if (audio.voice !== undefined) session.voice = audio.voice as string | null;
         if (audio.input_audio_format !== undefined)
-          session.input_audio_format = audio.input_audio_format as string | null;
+          session.input_audio_format = normalizeInputAudioFormat(audio.input_audio_format);
         if (audio.output_audio_format !== undefined)
           session.output_audio_format = audio.output_audio_format as string | null;
         if (audio.input_audio_noise_reduction !== undefined)
@@ -562,15 +576,14 @@ async function processMessage(
           if (input.noise_reduction !== undefined)
             session.input_audio_noise_reduction = input.noise_reduction as { type: string } | null;
           if (input.turn_detection !== undefined) session.turn_detection = input.turn_detection;
-          if (input.format && typeof input.format === "object") {
-            const format = input.format as Record<string, unknown>;
-            if (typeof format.type === "string") session.input_audio_format = format.type;
-          }
+          if (input.format !== undefined)
+            session.input_audio_format = normalizeInputAudioFormat(input.format);
         }
       }
       // Beta flat fields (backward compat)
       if (s.voice !== undefined) session.voice = s.voice;
-      if (s.input_audio_format !== undefined) session.input_audio_format = s.input_audio_format;
+      if (s.input_audio_format !== undefined)
+        session.input_audio_format = normalizeInputAudioFormat(s.input_audio_format);
       if (s.output_audio_format !== undefined) session.output_audio_format = s.output_audio_format;
       if (s.input_audio_noise_reduction !== undefined)
         session.input_audio_noise_reduction = s.input_audio_noise_reduction;

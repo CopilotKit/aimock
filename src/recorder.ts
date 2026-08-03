@@ -24,6 +24,24 @@ import { applyProviderAuth } from "./provider-auth.js";
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
+/** True when an SSE frame completes an OpenAI stream. */
+function isTerminalSSEFrame(frame: string): boolean {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n")
+    .trim();
+
+  if (data === "[DONE]") return true;
+
+  try {
+    return (JSON.parse(data) as { type?: unknown }).type === "transcript.text.done";
+  } catch {
+    return false;
+  }
+}
+
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
 /**
  * Default ceiling (bytes) for the in-memory proxy-path buffer. Chosen well
@@ -804,9 +822,9 @@ export async function proxyAndRecord(
   }
 
   // Client may have closed its socket before upstream fired `end`.
-  // Distinguish two cases based on whether the SSE `[DONE]` marker was seen:
-  //   - sawDone=true: client closed after consuming `data: [DONE]` (e.g. the
-  //     OpenAI Python SDK closes the socket the moment it reads `[DONE]`).
+  // Distinguish two cases based on whether an SSE terminal frame was seen:
+  //   - sawDone=true: client closed after consuming `data: [DONE]` or a typed
+  //     `transcript.text.done` event.
   //     Upstream ran to completion; the buffered body is intact. Log and
   //     proceed to persist the full fixture.
   //   - sawDone=false: genuine mid-stream abort. The buffered body is partial;
@@ -1036,12 +1054,13 @@ function makeUpstreamRequest(
    */
   hardCeilingExceeded: boolean;
   /**
-   * True when the SSE terminal marker `data: [DONE]` was observed in the
-   * upstream stream before the client disconnected. When `clientDisconnected`
-   * is true AND `sawDone` is true, the client closed after consuming `[DONE]`
-   * (e.g. the OpenAI Python SDK) — the stream was logically complete, so the
-   * fixture SHOULD be persisted. When `sawDone` is false the disconnect was a
-   * genuine mid-stream abort and the fixture MUST NOT be persisted.
+   * True when a terminal SSE frame was observed in the upstream stream before
+   * the client disconnected. The terminal may be legacy `data: [DONE]` or the
+   * typed OpenAI transcription event `transcript.text.done`. When
+   * `clientDisconnected` is true AND `sawDone` is true, the stream was
+   * logically complete, so the fixture SHOULD be persisted. When `sawDone` is
+   * false the disconnect was a genuine mid-stream abort and the fixture MUST
+   * NOT be persisted.
    */
   sawDone: boolean;
 }> {
@@ -1097,15 +1116,8 @@ function makeUpstreamRequest(
 
         let streamedToClient = false;
         let clientDisconnected = false;
-        // True once the SSE terminal marker `data: [DONE]` has been seen in the
-        // upstream stream. Used to distinguish two client-close scenarios:
-        //   1. Close AT/AFTER `[DONE]`: the stream is logically complete (e.g.
-        //      the OpenAI Python SDK closes the socket the moment it reads
-        //      `[DONE]`, before upstream fires `res.end`). The upstream should
-        //      NOT be torn down — let it finish and persist the full fixture.
-        //   2. Close BEFORE `[DONE]`: genuine mid-stream abort. Restore the
-        //      original teardown so upstream is destroyed and no partial fixture
-        //      is persisted.
+        // A terminal can be legacy `[DONE]` or typed `transcript.text.done`.
+        // Either means a client close before upstream `res.end` is complete.
         let sawDone = false;
         if (isProgressiveStream && clientRes && !clientRes.headersSent) {
           const relayHeaders: Record<string, string> = {
@@ -1139,9 +1151,9 @@ function makeUpstreamRequest(
                 frameBuffer = "";
                 binaryFrameBuffer = Buffer.alloc(0);
               }
-              // If sawDone is true: client closed after consuming `[DONE]`
-              // (e.g. the OpenAI Python SDK). The upstream is logically
-              // complete; let it run to `res.end` so the full body is
+              // If sawDone is true: client closed after consuming a terminal
+              // frame. The upstream is logically complete; let it run to
+              // `res.end` so the full body is
               // buffered and the fixture can be persisted. The
               // `!clientDisconnected` guard inside `onUpstreamData` already
               // prevents further writes to the now-closed client socket.
@@ -1279,9 +1291,9 @@ function makeUpstreamRequest(
               const frame = parts[fi].trim();
               if (frame.length > 0) {
                 frameTimestamps.push(Date.now());
-                // Track the SSE terminal marker so the client-close handler
-                // can distinguish a post-[DONE] close from a mid-stream abort.
-                if (frame === "data: [DONE]") sawDone = true;
+                // Track typed and legacy terminal frames so the client-close
+                // handler can distinguish a complete stream from an abort.
+                if (isTerminalSSEFrame(frame)) sawDone = true;
               }
             }
             // Last part stays in buffer (may be incomplete). Skip when the

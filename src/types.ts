@@ -472,7 +472,7 @@ export type RealtimePhase = "final_answer" | "commentary";
 
 export interface GASessionAudioConfig {
   voice: string | null;
-  input_audio_format: string | null;
+  input_audio_format: { type: string; rate?: number; [key: string]: unknown } | null;
   output_audio_format: string | null;
   input_audio_noise_reduction: { type: string } | null;
   input_audio_transcription: { model: string } | null;

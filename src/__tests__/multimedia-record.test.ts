@@ -78,12 +78,12 @@ function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "aimock-mm-record-"));
 }
 
-async function requestStreamingTranscription(url: string): Promise<Response> {
+async function requestStreamingTranscription(url: string, signal?: AbortSignal): Promise<Response> {
   const formData = new FormData();
   formData.append("file", new Blob(["audio"], { type: "audio/wav" }), "audio.wav");
   formData.append("model", "gpt-transcribe");
   formData.append("stream", "true");
-  return fetch(`${url}/v1/audio/transcriptions`, { method: "POST", body: formData });
+  return fetch(`${url}/v1/audio/transcriptions`, { method: "POST", body: formData, signal });
 }
 
 async function requestJsonTranscription(url: string): Promise<Response> {
@@ -278,6 +278,43 @@ describe("multimedia record: transcription response detection", () => {
     } finally {
       await closeServer(recorder.server);
       await closeServer(upstream);
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a typed terminal stream when the client closes before upstream end", async () => {
+    const fixturePath = makeTmpDir();
+    const terminal =
+      'data: {"type":"transcript.text.done","text":"Typed terminal","languages":[{"code":"en"}]}\n\n';
+    const { server: upstream, url } = await createUpstream((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(terminal);
+      setTimeout(() => res.end(), 150);
+    });
+    const fixtures: Fixture[] = [];
+    const recorder = await createServer(fixtures, {
+      port: 0,
+      record: { providers: { openai: url }, fixturePath },
+    });
+
+    try {
+      const controller = new AbortController();
+      const recorded = await requestStreamingTranscription(recorder.url, controller.signal);
+      const reader = recorded.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(first).toContain('"type":"transcript.text.done"');
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      expect(fixtures).toHaveLength(1);
+      await closeServer(upstream);
+
+      const replay = await requestStreamingTranscription(recorder.url);
+      expect(replay.status).toBe(200);
+      expect(await replay.text()).toContain('"text":"Typed terminal"');
+    } finally {
+      await closeServer(recorder.server);
+      if (upstream.listening) await closeServer(upstream);
       fs.rmSync(fixturePath, { recursive: true, force: true });
     }
   });
