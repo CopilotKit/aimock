@@ -1,17 +1,26 @@
 name: Fix Drift
 on:
   workflow_dispatch:
-  # C3: the deprecation detector fires on its OWN schedule, independent of the
-  # drift-failure gate below — a model family vanishing from a live `/models`
+  # C3: the deprecation detector fires on its OWN schedule, NOT off a
+  # drift-failure gate — a model family vanishing from a live `/models`
   # listing does not, by itself, red the Drift Tests workflow (a vanished
-  # family simply stops appearing in `live`), so it would never auto-fire under
-  # the workflow_run gate alone.
+  # family simply stops appearing in `live`), so it would never auto-fire from
+  # a Drift-Tests-failure trigger.
+  #
+  # This cron is the ONLY automatic trigger, deliberately. There used to ALSO
+  # be a `workflow_run: {workflows: ["Drift Tests"], types: [completed]}` leg
+  # admitted whenever the upstream run concluded `failure`. While Drift Tests
+  # was green that leg resolved `skipped` and the duplication was invisible;
+  # from the day Drift Tests went red (2026-07-29) EVERY day produced TWO
+  # identical Fix Drift runs — one `workflow_run`, one `schedule` — each
+  # re-running the whole sync and each firing its own Slack alert
+  # (`concurrency: drift-fix` serialises them but does not dedupe them). The
+  # leg bought nothing: test-drift.yml's only main-branch trigger is its own
+  # 6:00 cron and this one is 6:10, so its entire contribution was ~9 minutes
+  # of latency on an unattended daily job. Pinned by the double-fire guard in
+  # src/__tests__/fix-drift-workflow.test.ts.
   schedule:
     - cron: "10 6 * * *" # Daily 6:10am UTC (offset from test-drift.yml's 6:00am)
-  workflow_run:
-    workflows: ["Drift Tests"]
-    types: [completed]
-    branches: [main]
 
 concurrency:
   group: drift-fix
@@ -37,8 +46,7 @@ jobs:
   sync:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      github.event.workflow_run.conclusion == 'failure'
+      github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
