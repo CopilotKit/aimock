@@ -2082,6 +2082,31 @@ describe("WS-5 — unknown surface slug fails LOUD (throws), never silent quaran
 });
 
 describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () => {
+  /**
+   * A DriftEntry shaped as main() really writes them: entries exist only for
+   * FAILED assertions, and always carry at least one diff (a block that parses to
+   * zero diffs is routed to the unparseable/quarantine lane instead). Fixtures
+   * below use this rather than an entry with `diffs: []`, which main() never emits.
+   */
+  const driftingEntry = (): DriftReport["entries"][number] => ({
+    provider: "OpenAI Chat",
+    scenario: "non-streaming text",
+    builderFile: "src/helpers.ts",
+    builderFunctions: ["buildTextCompletion"],
+    typesFile: "src/types.ts",
+    sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+    diffs: [
+      {
+        path: "usage.prompt_tokens",
+        severity: "critical",
+        issue: "type mismatch",
+        expected: "number",
+        real: "string",
+        mock: "number",
+      },
+    ],
+  });
+
   it("conclusionForExitCode maps exit codes to coarse conclusions", () => {
     expect(conclusionForExitCode(0)).toBe("clean");
     expect(conclusionForExitCode(2)).toBe("critical");
@@ -2089,26 +2114,55 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     expect(conclusionForExitCode(1)).toBe("skipped");
   });
 
-  it("isBaseReportReusable accepts a written clean report (reuse works)", () => {
-    // A report shaped like what main() now writes for a clean run.
+  // KNOWN DEFECT, PINNED AS-IS — do not "fix" this test by inventing entries.
+  //
+  // An earlier version of this test claimed to use "a report shaped like what
+  // main() writes for a clean run" but gave it a non-empty `entries[]` holding an
+  // entry with `diffs: []`. main() writes neither: entries come only from FAILED
+  // assertions, and an assertion whose block parses to zero diffs is routed to the
+  // unparseable/quarantine lane, so no entry is ever written with empty `diffs`.
+  // A clean run (exit 0) writes `entries: []` — verified by running
+  // collectDriftEntries over an all-passing result.
+  //
+  // With the accurate fixture the guard REJECTS it, and that is the finding the
+  // invented fixture was concealing: `isBaseReportReusable` requires non-empty
+  // `entries[]`, but the only conclusions it accepts are "clean"/"success", and
+  // "clean" is exactly the run that has no entries. So a healthy main can never
+  // supply a reusable base — every PR pays for a fresh live base run. The guard
+  // conflates "empty" (main is clean: the MOST useful base, since it makes every
+  // head finding new-in-head) with "malformed" (truncated/garbage cached JSON),
+  // when the signal that separates them is the `conclusion`/`generatedAt` pair.
+  //
+  // Pinned rather than papered over: when the guard is corrected to accept a
+  // conclusion-attested empty base, this test goes RED and must be updated
+  // deliberately, which is the point.
+  it("a clean report as main() ACTUALLY writes it is NOT reusable (known defect: reuse is dead for a healthy main)", () => {
     const timestamp = new Date().toISOString();
     const report: DriftReport = {
       timestamp,
       generatedAt: timestamp,
       conclusion: conclusionForExitCode(0),
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      // What main() really writes for a clean run — no failed assertions, no entries.
+      entries: [],
     };
-    // Same-UTC-day + known-good conclusion + non-empty entries → reusable.
+    expect(report.conclusion, "a clean run's conclusion is known-good").toBe("clean");
+    expect(
+      isBaseReportReusable(report, report.conclusion, true),
+      "same UTC day and a known-good conclusion, yet rejected purely for having no entries",
+    ).toBe(false);
+  });
+
+  // The reuse path is reachable ONLY for a base that carries drift — i.e. when
+  // main is already broken. This is the complement of the case above and is what
+  // keeps the guard's non-empty branch from being untested in both directions.
+  it("a base report that DOES carry drift is reusable", () => {
+    const timestamp = new Date().toISOString();
+    const report: DriftReport = {
+      timestamp,
+      generatedAt: timestamp,
+      conclusion: "success",
+      entries: [driftingEntry()],
+    };
     expect(isBaseReportReusable(report, report.conclusion, true)).toBe(true);
   });
 
@@ -2116,17 +2170,7 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     const timestamp = new Date().toISOString();
     const legacy: DriftReport = {
       timestamp,
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      entries: [driftingEntry()],
     };
     // No conclusion field → falls back to undefined → not reusable.
     expect(isBaseReportReusable(legacy, legacy.conclusion, true)).toBe(false);
@@ -2148,25 +2192,19 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     };
 
     const now = new Date("2026-07-15T12:00:00.000Z");
-    const cleanReport = (generatedAt: string): DriftReport => ({
+    // A base that is otherwise reusable, so the ONLY variable is its UTC day.
+    // Note it has to be a report that CARRIES drift — see the known-defect test
+    // above: a clean (empty-entries) base is rejected outright, so it could not
+    // isolate the staleness behaviour being pinned here.
+    const reusableBase = (generatedAt: string): DriftReport => ({
       timestamp: generatedAt,
       generatedAt,
-      conclusion: conclusionForExitCode(0),
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      conclusion: "success",
+      entries: [driftingEntry()],
     });
 
     // Same UTC day (later hour, same date) → derivation true → reusable.
-    const today = cleanReport("2026-07-15T03:00:00.000Z");
+    const today = reusableBase("2026-07-15T03:00:00.000Z");
     expect(sameUtcDay(today.generatedAt!, now)).toBe(true);
     expect(isBaseReportReusable(today, today.conclusion, sameUtcDay(today.generatedAt!, now))).toBe(
       true,
@@ -2174,7 +2212,7 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
 
     // Prior UTC day → derivation false → NOT reusable, despite an otherwise
     // identical clean report. generatedAt is what makes the difference.
-    const yesterday = cleanReport("2026-07-14T23:59:59.000Z");
+    const yesterday = reusableBase("2026-07-14T23:59:59.000Z");
     expect(sameUtcDay(yesterday.generatedAt!, now)).toBe(false);
     expect(
       isBaseReportReusable(
