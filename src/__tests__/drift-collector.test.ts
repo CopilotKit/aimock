@@ -334,6 +334,29 @@ describe("extractProviderName", () => {
     expect(extractProviderName("OpenAI Chat (non-streaming text)")).toBe("OpenAI Chat");
     expect(extractProviderName("Anthropic (streaming text)")).toBe("Anthropic");
   });
+
+  // A label appearing ANYWHERE in the text used to win on length alone, so a
+  // qualifier later in the title could outrank the surface the title is actually
+  // about: "Gemini Live Transcription session" resolved to `Transcription`
+  // (13 chars) over `Gemini Live` (11), silently routing a Gemini Live drift at
+  // src/transcription.ts. It failed OPEN — a confident wrong attribution, no
+  // error. Both `parsed.context` (`formatDriftReport`'s "<Provider> (<scenario>)")
+  // and a drift describe title LEAD with the provider label, so the match is now
+  // anchored at the start.
+  it("does not let a later qualifier outrank the leading provider label", () => {
+    expect(extractProviderName("Gemini Live Transcription session")).toBe("Gemini Live");
+    expect(extractProviderName("Gemini Live Transcription drift")).toBe("Gemini Live");
+    expect(extractProviderName("OpenAI Video Transcription drift")).toBe("OpenAI Video");
+    // …and the label that legitimately leads still resolves to itself.
+    expect(extractProviderName("Transcription (whisper-1 verbose_json)")).toBe("Transcription");
+  });
+
+  it("fails closed when the provider label is not the leading token", () => {
+    // Not anchored → unattributable → null, which routes the block to the
+    // quarantine lane (exit 5, human review) rather than to a fabricated owner.
+    expect(extractProviderName("drift detected in OpenAI Chat")).toBeNull();
+    expect(extractProviderName("session for Gemini Live")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

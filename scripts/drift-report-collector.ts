@@ -185,19 +185,37 @@ export function extractSurfaceKey(text: string): string | null {
 
 /**
  * LEGACY provider-name fallback for a drift block that carries NO `Surface:`
- * marker (predates the slug marker, or a path not yet migrated). Matches the
- * text against the registry's human `provider` labels (longest first to avoid
- * partial matches). Newer blocks resolve structurally via `extractSurfaceKey`;
- * this exists only as a defensive back-compat net.
+ * marker (predates the slug marker, or a path not yet migrated). Newer blocks
+ * resolve structurally via `extractSurfaceKey`; this exists only as a defensive
+ * back-compat net.
+ *
+ * ANCHORED AT THE START, longest label first. It used to accept a label found
+ * ANYWHERE in the text and rank candidates by length alone, so a qualifier later
+ * in the title could outrank the surface the title is about: "Gemini Live
+ * Transcription session" resolved to `Transcription` (13 chars) over `Gemini
+ * Live` (11) and routed a Gemini Live drift at `src/transcription.ts`. That
+ * failed OPEN — a confident wrong owner, no error, and the entry then drives
+ * remediation. Both inputs this is called with lead with the provider label:
+ * `parsed.context` is `formatDriftReport`'s "<Provider> (<scenario>)", and a drift
+ * describe title reads "<Provider> <rest>". So an unanchored occurrence is not
+ * evidence of ownership, and a text that does not START with a known label is
+ * unattributable → null → the caller quarantines it for human review (exit 5)
+ * rather than inventing an owner.
+ *
+ * Longest-first still resolves genuinely nested labels at the same anchor
+ * ("Google Gemini" over "Gemini", "Bedrock ConverseStream" over "Bedrock
+ * Converse", "OpenAI Responses WS" over "OpenAI Responses").
  *
  * Examples:
- *   "OpenAI Chat Completions drift" → "OpenAI Chat"
- *   "Anthropic Claude drift" → "Anthropic Claude"
+ *   "OpenAI Chat Completions drift"      → "OpenAI Chat"
+ *   "Anthropic Claude drift"             → "Anthropic Claude"
+ *   "Gemini Live Transcription session"  → "Gemini Live"  (not "Transcription")
+ *   "drift detected in OpenAI Chat"      → null           (not anchored)
  */
 export function extractProviderName(text: string): string | null {
   const sorted = Object.keys(PROVIDER_LABEL_MAP).sort((a, b) => b.length - a.length);
   for (const key of sorted) {
-    if (text.includes(key)) return key;
+    if (text.startsWith(key)) return key;
   }
   return null;
 }
