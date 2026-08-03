@@ -49,8 +49,10 @@
  * The repo ships no YAML dependency and this suite adds none; actionlint in CI
  * covers structural validity separately.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, it, expect } from "vitest";
 
@@ -889,6 +891,61 @@ function simulateJob(
     alerts: selected.filter(isAlertStep).map((s) => s.name!),
     jobFailed: ctx.jobFailed,
   };
+}
+
+/**
+ * EXECUTE the sync step's own `run:` body against a drift-sync that CRASHES
+ * before printing any `reason=` line, and report what the runner would see.
+ *
+ * This is an OBSERVATION, not an assertion about the body's text: the step is
+ * run under bash with `npx` replaced by a stub standing in for drift-sync.ts's
+ * fatal handler (`drift-sync fatal error: …` on stderr, exit 1 — it fires before
+ * the first `console.log`, because runDriftSyncCli awaits every provider's churn
+ * input up front). Whatever the step then does with that exit code — swallow it
+ * or propagate it — is measured, not guessed.
+ */
+function observeSyncStepUnderCrash(src: string = wf): {
+  stepExit: number;
+  outputs: Record<string, string>;
+  stdio: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-crash-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "npx"),
+      "#!/bin/sh\necho 'drift-sync fatal error: fetch failed' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    const outFile = join(dir, "github_output");
+    writeFileSync(outFile, "");
+    const script = join(dir, "step.sh");
+    writeFileSync(script, runOf(stepById("sync", src)));
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SYNC_LOG: join(dir, "drift-sync.log"),
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("fix-drift.yml — the workflow parses (every guard below depends on it)", () => {
@@ -1788,5 +1845,67 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     expect(
       simulateJob({ outputs: { sync: { reason: SyncCoreReason.OK_APPLIED } } }).alerts,
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M1 (crash window). drift-sync.ts's fatal handler prints
+// `drift-sync fatal error: …` to stderr and exits 1 BEFORE its first
+// `console.log`, so a crash emits NO `reason=` line at all. The sync step wraps
+// the invocation in `set +e` and captures the code into an output rather than
+// re-raising it, so:
+//
+//   step exit 0 -> step outcome success -> job GREEN
+//   reason ''   -> every reason-keyed alert `if:` false
+//   failure()   -> false, so the end-of-job catch-all stays silent too
+//
+// Net effect on an unattended daily cron: the sync crashes and NOTHING is
+// reported. Not hypothetical — an invalid GOOGLE_API_KEY makes Gemini answer
+// 400, and isInfraSkip() only absorbs 401/402/403/429/5xx, so a 400 throws
+// straight out through that fatal handler.
+//
+// The guard below does not pattern-match a fix. It EXECUTES the step's own run
+// body against a crashing drift-sync (`observeSyncStepUnderCrash`), takes the
+// step's real exit status and real `$GITHUB_OUTPUT` as the scenario, and then
+// asks the runner's own step-selection rules whether anything would tell a
+// human. Any fix that makes the crash audible satisfies it; no fix-SHAPED
+// change that leaves the crash silent can.
+//
+// Anchored on a recorded observation of the UNFIXED workflow (F1 RED artifact,
+// 2026-08-03): step exit 0, outcome success, job green, exit_code='1',
+// reason='', zero alert steps selected.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent", () => {
+  it("the crash is observable in the step's captured outputs at all", () => {
+    const obs = observeSyncStepUnderCrash();
+    expect(obs.stdio).toContain("drift-sync fatal error");
+    // drift-sync's real exit code is captured even though the step may swallow it.
+    expect(obs.outputs.exit_code).toBe("1");
+  });
+
+  it("a crashing drift-sync selects at least one alert step", () => {
+    const obs = observeSyncStepUnderCrash();
+    const sim = simulateJob({
+      failing: obs.stepExit === 0 ? [] : ["sync"],
+      outputs: { sync: obs.outputs },
+    });
+    expect(
+      sim.alerts,
+      `drift-sync crashed (exit_code=${obs.outputs.exit_code}) but the sync STEP exited ` +
+        `${obs.stepExit} and published reason=${JSON.stringify(obs.outputs.reason ?? "")}, so the ` +
+        `job concludes ${sim.jobFailed ? "RED" : "GREEN"} with ${sim.alerts.length} alerts. ` +
+        "A crash of the daily unattended sync must reach a human — either the step " +
+        "propagates the non-zero exit (so the end-of-job catch-all fires) or it " +
+        "publishes a reason an alert is keyed on.",
+    ).not.toEqual([]);
+  });
+
+  it("the reasons that signal a PROBLEM always alert", () => {
+    for (const reason of [SyncCoreReason.GATE_FAILED, SyncCoreReason.NEEDS_HUMAN]) {
+      expect(
+        simulateJob({ outputs: { sync: { reason, exit_code: "1" } } }).alerts,
+        `reason=${reason} raises no alert`,
+      ).not.toEqual([]);
+    }
   });
 });
