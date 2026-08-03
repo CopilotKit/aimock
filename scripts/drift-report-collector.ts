@@ -741,7 +741,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   severity: "critical" as const,
                   issue:
                     "Unknown realtime model detected (observed in the same run as the missing GA " +
-                    "family) — add to knownModels in ws-realtime.drift.ts",
+                    "family) — add to knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
                   path: "knownModels",
                   expected: "(not in knownModels set)",
                   real: id,
@@ -759,7 +759,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                 ...canary.ids.map((id) => ({
                   severity: "critical" as const,
                   issue:
-                    "Unknown realtime model detected — add to knownModels in ws-realtime.drift.ts",
+                    "Unknown realtime model detected — add to knownVoiceModelFamilies in " +
+                    "src/__tests__/drift/voice-models.ts",
                   path: "knownModels",
                   expected: "(not in knownModels set)",
                   real: id,
