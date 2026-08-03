@@ -725,6 +725,11 @@ jobs:
           PR_NUMBER: ${{ steps.needs_human_pr.outputs.number }}
         run: |
           set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
           echo "::error::drift-sync found a genuinely-new model family or a still-referenced deprecation — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::SLACK_WEBHOOK not set — cannot send needs-human alert"
@@ -740,7 +745,7 @@ jobs:
           else
             WHERE="No open PR carries this decision (the note may not have been persisted, or its PR was merged/closed). See the drift-sync-log artifact and \`drift-proposals/\`."
           fi
-          MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
@@ -791,6 +796,11 @@ jobs:
           NEEDS_HUMAN_PR_OUTCOME: ${{ steps.needs_human_pr.outcome }}
         run: |
           set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
           if [ "${SYNC_REASON}" = "sync-crashed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts CRASHED — exited ${SYNC_EXIT_CODE:-?} without printing a classifiable reason= line; see the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "gate-failed" ]; then
@@ -811,7 +821,7 @@ jobs:
             echo "::error::SLACK_WEBHOOK not set — cannot send gate-failure alert"
             exit 1
           fi
-          MSG="🔒❌ *Drift sync — gate refused* — failing step: ${FAILING_STEP}. This needs engineering triage, not a product decision.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🔒❌ *Drift sync — gate refused* — failing step: ${FAILING_STEP}. This needs engineering triage, not a product decision.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
@@ -830,6 +840,11 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::SLACK_WEBHOOK not set — cannot send sync-success alert"
             exit 0
@@ -838,9 +853,9 @@ jobs:
           # from "still sitting there unmerged" rather than claiming a PR was
           # opened when none was.
           if [ "${DEDUPED:-}" = "true" ]; then
-            MSG="⏳ *Drift-sync PR still open — needs human review + merge*\nThe same data-only model-family sync was re-detected today because its PR is still unmerged. No duplicate was opened.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            MSG="⏳ *Drift-sync PR still open — needs human review + merge*${NL}The same data-only model-family sync was re-detected today because its PR is still unmerged. No duplicate was opened.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           else
-            MSG="✅ *Drift-sync PR opened — needs human review + merge*\nA data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.\nPR: ${PR_URL}\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            MSG="✅ *Drift-sync PR opened — needs human review + merge*${NL}A data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           fi
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
@@ -876,6 +891,11 @@ jobs:
           SYNC_REASON: ${{ steps.sync.outputs.reason }}
         run: |
           set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
           # Name the window, so "catch-all" never means "unexplained".
           if [ -z "${SYNC_REASON:-}" ]; then
             WHERE="during INFRA/SETUP (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran"
@@ -886,7 +906,7 @@ jobs:
             echo "::error::Drift-sync job failed ${WHERE} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
             exit 1
           fi
-          MSG="🧱❌ *Drift-sync job — uncovered failure* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧱❌ *Drift-sync job — uncovered failure* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
