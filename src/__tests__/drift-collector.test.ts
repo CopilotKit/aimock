@@ -724,11 +724,14 @@ describe("collectDriftEntries", () => {
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
     expect(entry.diffs.every((d) => d.severity === "critical")).toBe(true);
-    // The unknown model ids survive as `real` values on knownModels diffs.
-    const knownModelReals = entry.diffs.filter((d) => d.path === "knownModels").map((d) => d.real);
+    // The unknown model ids survive as `real` values on the
+    // knownVoiceModelFamilies diffs.
+    const knownModelReals = entry.diffs
+      .filter((d) => d.path === "knownVoiceModelFamilies")
+      .map((d) => d.real);
     expect(knownModelReals).toEqual(["gpt-realtime-99", "gpt-realtime-99-mini"]);
     // The GA-family diff is still present.
-    expect(entry.diffs.some((d) => d.path === "gaModels")).toBe(true);
+    expect(entry.diffs.some((d) => d.path === "gaRealtimeModels")).toBe(true);
   });
 
   it("maps an EMPTY NO_GA marker (no realtime models observed) to a CRITICAL entry too", () => {

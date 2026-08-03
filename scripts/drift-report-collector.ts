@@ -722,8 +722,8 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   issue:
                     "GA realtime family unavailable — no known GA model in the OpenAI realtime list. " +
                     "OpenAI may have renamed/removed the GA family, or the realtime credential cannot see it. " +
-                    "Update the gaModels list in ws-realtime.drift.ts.",
-                  path: "gaModels",
+                    "Update gaRealtimeModels in src/__tests__/drift/voice-models.ts.",
+                  path: "gaRealtimeModels",
                   expected: "(at least one GA realtime model present)",
                   real:
                     canary.ids.length > 0
@@ -742,13 +742,13 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   issue:
                     "Unknown realtime model detected (observed in the same run as the missing GA " +
                     "family) — add to knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
-                  path: "knownModels",
-                  expected: "(not in knownModels set)",
+                  path: "knownVoiceModelFamilies",
+                  expected: "(not in knownVoiceModelFamilies)",
                   real: id,
                   mock: NO_MOCK_LEG,
                   // D6.2: set `id` to the model id so the delta layer (D6.1)
                   // can key by provider+id, yielding one distinct key per model
-                  // rather than collapsing all entries under path:"knownModels".
+                  // rather than collapsing all entries under one path bucket.
                   id,
                 })),
               ]
@@ -761,13 +761,13 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   issue:
                     "Unknown realtime model detected — add to knownVoiceModelFamilies in " +
                     "src/__tests__/drift/voice-models.ts",
-                  path: "knownModels",
-                  expected: "(not in knownModels set)",
+                  path: "knownVoiceModelFamilies",
+                  expected: "(not in knownVoiceModelFamilies)",
                   real: id,
                   mock: NO_MOCK_LEG,
                   // D6.2: set `id` to the model id so the delta layer (D6.1)
                   // can key by provider+id, yielding one distinct key per model
-                  // rather than collapsing all entries under path:"knownModels".
+                  // rather than collapsing all entries under one path bucket.
                   id,
                 })),
                 ...(canary.truncated
@@ -778,7 +778,7 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                           "Additional unknown realtime models were truncated in CI output — " +
                           "the full list is unrecoverable without the UNKNOWN_REALTIME_MODELS= marker. " +
                           "Re-run with the marker to enumerate them.",
-                        path: "knownModels[truncated]",
+                        path: "knownVoiceModelFamilies[truncated]",
                         // CLASS 3: `real`/`expected` NEVER carry a prose sentinel.
                         // The truncation fact lives entirely in `issue`/`path`;
                         // there is no observed model value to report here.
