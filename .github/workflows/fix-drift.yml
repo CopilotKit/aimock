@@ -144,11 +144,18 @@ jobs:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           SYNC_LOG: ${{ runner.temp }}/drift-sync.log
         run: |
+          # `set +e` covers ONLY the sync itself: a non-zero exit is a
+          # CLASSIFIED outcome here (needs-human and gate-failed both exit 1 by
+          # design — `return outcome.ok ? 0 : 1` in runDriftSyncCli), so it must
+          # not kill the step before the reason is read. pipefail is on so the
+          # two tolerated pipelines below say so with an explicit `|| true`
+          # instead of passing by accident on grep's no-match exit 1.
+          set -uo pipefail
           set +e
           npx tsx scripts/drift-sync.ts 2>&1 | tee "${SYNC_LOG}"
           SYNC_EXIT=${PIPESTATUS[0]}
           set -e
-          REASON="$(grep '^reason=' "${SYNC_LOG}" | tail -n1)"
+          REASON="$(grep '^reason=' "${SYNC_LOG}" | tail -n1 || true)"
           REASON="${REASON#reason=}"
           # Stable, date-independent identity of this run's changeset (the sorted
           # set of applied + deferred family outcomes, hashed — see
@@ -156,14 +163,52 @@ jobs:
           # this so a daily re-fire of the same drift never opens a second PR,
           # in EVERY run shape — including the mixed run that commits a registry
           # edit but NO new note file (where a note-path-only key is empty).
-          CHANGESET_KEY="$(grep '^changeset-key=' "${SYNC_LOG}" | tail -n1)"
+          CHANGESET_KEY="$(grep '^changeset-key=' "${SYNC_LOG}" | tail -n1 || true)"
           CHANGESET_KEY="${CHANGESET_KEY#changeset-key=}"
+
+          # A CRASH MUST NOT BE SILENT.
+          #
+          # drift-sync.ts's fatal handler (`drift-sync fatal error: …` then
+          # exit 1) fires BEFORE its first console.log, because
+          # runDriftSyncCli awaits fetchProviderChurnInput for EVERY provider
+          # up front — so a crash emits no `reason=` line at all. This step used
+          # to swallow that completely: `set +e` plus an implicit exit 0 left
+          # the step GREEN with REASON="", which made every alert `if:` keyed on
+          # a reason value false, and the end-of-job catch-all needs
+          # `failure()`, so it stayed silent too. Net effect on an unattended
+          # daily cron: the sync crashes and NOTHING is reported.
+          #
+          # Not hypothetical: an invalid GOOGLE_API_KEY makes Gemini answer 400,
+          # and isInfraSkip() only absorbs 401/402/403/429/5xx — so a 400 throws
+          # straight out through that fatal handler.
+          #
+          # An UNRECOGNISED reason is treated identically: if the run cannot be
+          # classified, it must not be reported as a success.
+          case "${REASON}" in
+            ok-no-churn | ok-applied | needs-human | gate-failed) ;;
+            *)
+              if [ -n "${REASON}" ]; then
+                CRASH_DETAIL="printed an unrecognised reason '${REASON}'"
+              else
+                CRASH_DETAIL="printed no reason= line at all (it crashed)"
+              fi
+              REASON="sync-crashed"
+              echo "::error::drift-sync exited ${SYNC_EXIT} and ${CRASH_DETAIL} — classifying as sync-crashed so it cannot pass silently"
+              ;;
+          esac
           {
             echo "exit_code=${SYNC_EXIT}"
             echo "reason=${REASON}"
             echo "changeset_key=${CHANGESET_KEY}"
           } >> "$GITHUB_OUTPUT"
           echo "drift-sync exited ${SYNC_EXIT} (reason=${REASON}, changeset_key=${CHANGESET_KEY})"
+          # Fail the step so the job goes RED and the gate-failure alert (which
+          # now covers reason == 'sync-crashed') fires. The three classified
+          # reasons still exit 0 here, because the steps that handle them are
+          # gated on `success()`.
+          if [ "${REASON}" = "sync-crashed" ]; then
+            exit 1
+          fi
 
       - name: Upload drift-sync log
         if: always()
@@ -538,6 +583,7 @@ jobs:
       # that window is a tooling fault handled by the distinct gate-failure alert
       # below, so the two never double-fire.
       - name: Alert on needs-human decision
+        id: alert_needs_human
         if: >-
           always() &&
           steps.sync.outputs.reason == 'needs-human' &&
@@ -595,9 +641,11 @@ jobs:
       # belongs here rather than in the needs-human alert (which is skipped on a
       # persist failure, so the two never double-fire).
       - name: Alert on drift-sync-check gate failure
+        id: alert_gate
         if: >-
           always() &&
           (steps.sync.outputs.reason == 'gate-failed' ||
+           steps.sync.outputs.reason == 'sync-crashed' ||
            (steps.sync.outputs.reason == 'ok-applied' && failure()) ||
            (steps.sync.outputs.reason == 'needs-human' && steps.needs_human_pr.outcome == 'failure'))
         env:
@@ -605,12 +653,15 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           SYNC_REASON: ${{ steps.sync.outputs.reason }}
+          SYNC_EXIT_CODE: ${{ steps.sync.outputs.exit_code }}
           ASSERT_OUTCOME: ${{ steps.assert.outcome }}
           PR_OUTCOME: ${{ steps.pr.outcome }}
           NEEDS_HUMAN_PR_OUTCOME: ${{ steps.needs_human_pr.outcome }}
         run: |
           set -euo pipefail
-          if [ "${SYNC_REASON}" = "gate-failed" ]; then
+          if [ "${SYNC_REASON}" = "sync-crashed" ]; then
+            FAILING_STEP="Run deterministic drift sync (drift-sync.ts CRASHED — exited ${SYNC_EXIT_CODE:-?} without printing a classifiable reason= line; see the drift-sync-log artifact)"
+          elif [ "${SYNC_REASON}" = "gate-failed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts's own internal drift-sync-check gate reverted the mechanical edit before commit)"
           elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Persist needs-human note + open PR (push rejected, gh pr create error, or PR-match polling exhausted — the needs-human note may not have been persisted)"
@@ -655,27 +706,45 @@ jobs:
             -d "$PAYLOAD"
 
       # End-of-job CATCH-ALL for ANY job failure the specific alerts above did
-      # NOT cover — chiefly the EARLY-infra window (checkout / mint-app-token /
-      # pnpm install / clone ag-ui / git config / ollama provisioning) that runs
-      # BEFORE the `sync` step sets its outputs. That window leaves
-      # `steps.sync.outputs.reason` empty, so none of the three specific alerts
-      # fire and the job would otherwise die red with ZERO Slack signal. This
-      # step is UNCONDITIONAL on the earlier step outputs (only `failure()` +
-      # the anti-double-alert guard below), so it fires whenever nothing else
-      # did.
+      # NOT cover. Its canonical case is the EARLY-infra window (checkout /
+      # mint-app-token / pnpm install / clone ag-ui / git config / ollama
+      # provisioning) that runs BEFORE the `sync` step sets its outputs.
+      #
+      # It used to be keyed on `steps.sync.outputs.reason == ''`, which made it
+      # a catch-all in NAME ONLY and contradicted the comment above it: on an
+      # `ok-no-churn` day (by far the most common outcome) a failure in ANY
+      # later step — most plausibly one of the two `always()` artifact uploads —
+      # left reason == 'ok-no-churn', so this guard was false, no specific alert
+      # matched either, and the job died RED with ZERO Slack.
+      #
+      # So it is now keyed on the thing it actually means: the job failed and
+      # NEITHER specific alert ran. Both of those steps end in a deliberate
+      # `exit 1`, so their outcome is 'failure' whenever they fire and
+      # 'skipped' only when they did not run — which makes 'skipped' the exact
+      # discriminator for "nothing else alerted".
       - name: Alert on early-infra failure (catch-all)
-        if: failure() && steps.sync.outputs.reason == ''
+        if: >-
+          failure() &&
+          steps.alert_needs_human.outcome == 'skipped' &&
+          steps.alert_gate.outcome == 'skipped'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          SYNC_REASON: ${{ steps.sync.outputs.reason }}
         run: |
           set -euo pipefail
+          # Name the window, so "catch-all" never means "unexplained".
+          if [ -z "${SYNC_REASON:-}" ]; then
+            WHERE="during INFRA/SETUP (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran"
+          else
+            WHERE="AFTER drift-sync reported reason='${SYNC_REASON}', in a step no specific alert covers (e.g. an artifact upload)"
+          fi
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::Drift-sync job failed during INFRA/SETUP (before drift-sync ran) AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            echo "::error::Drift-sync job failed ${WHERE} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
             exit 1
           fi
-          MSG="🧱❌ *Drift-sync job — INFRA/SETUP failure* — the job failed during setup (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran; this is not a sync-gate failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧱❌ *Drift-sync job — uncovered failure* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.\nRun: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
