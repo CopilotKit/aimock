@@ -200,15 +200,31 @@ describe("drift remediation strings point at symbols that exist", () => {
     expect(REQUIRED_SURFACES.map((s) => s.label)).not.toHaveLength(0);
   });
 
+  // This asserted `requiredPairs.map(…)` had length `requiredPairs.length`, which
+  // is true of any array and could not fail, leaving a raw-count floor of 3 as the
+  // only real check — and the required surface cites the SAME
+  // `knownVoiceModelFamilies in …voice-models.ts` pair twice, so 3 raw pairs are
+  // only 2 DISTINCT citations. A raw count cannot tell "a citation was reshaped
+  // away" from "a citation is mentioned once more", which is the exact silent-drop
+  // this guard exists to catch. Assert the citations BY IDENTITY instead.
   it("finds the symbol-and-file pairs it is meant to guard", () => {
-    expect(
-      requiredPairs.map((p) => `${p.surface}: ${p.symbol} in ${p.file}`),
-      `The hand-written remediation surfaces yielded fewer than 3 "<symbol> in ` +
-        `<file>" pairs. Either the prose was removed, or a citation was reshaped ` +
-        `into something the extraction no longer recognises — which silently ` +
-        `drops it from this guard instead of failing it.`,
-    ).toHaveLength(requiredPairs.length);
-    expect(requiredPairs.length).toBeGreaterThanOrEqual(3);
+    const distinct = [...new Set(requiredPairs.map((p) => `${p.symbol} in ${p.file}`))].sort();
+    const why =
+      `A citation the required remediation prose is supposed to make was not ` +
+      `extracted. Either the prose was removed, or the citation was reshaped into ` +
+      `something the extraction no longer recognises — which silently drops it ` +
+      `from this guard instead of failing it. Extracted: ${JSON.stringify(distinct)}`;
+
+    // Every symbol the exit-2 realtime lane tells a human to go edit. Named
+    // individually: a count cannot distinguish losing one of these from repeating
+    // another, and it is the identity that has to survive a reshape.
+    expect(distinct, why).toContain("gaRealtimeModels in src/__tests__/drift/voice-models.ts");
+    expect(distinct, why).toContain(
+      "knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
+    );
+    // Vacuity floor, in DISTINCT citations — scales if a surface starts citing
+    // more, and unlike the raw count it cannot be satisfied by duplication.
+    expect(distinct.length, why).toBeGreaterThanOrEqual(2);
   });
 
   for (const surface of REQUIRED_SURFACES) {
