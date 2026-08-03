@@ -237,7 +237,8 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // `isReasoningModel()` must keep answering false for it (model-utils.ts's
     // NONREASONING_FAMILIES). Same treatment as gemini-pro above: still
     // referenced + still mocked, just not counted as text-generation drift.
-    // See drift-proposals/gemini-gemini-1.5-{pro,flash}-deprecated-referenced.md.
+    // Decision + rationale: commit a3dc250 (the drift-proposals/ notes it
+    // resolved are gone — they carried no content beyond that commit message).
     "gemini-1.5-pro",
     "gemini-1.5-flash",
     // Embeddings (non-text-generation)
