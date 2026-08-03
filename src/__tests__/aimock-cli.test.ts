@@ -32,7 +32,10 @@ function runCli(
  * Spawn the CLI expecting a long-running server.  Returns the child
  * process plus helpers to read accumulated output and send signals.
  */
-function spawnCli(args: string[]): {
+function spawnCli(
+  args: string[],
+  envOverrides: NodeJS.ProcessEnv = {},
+): {
   cp: ChildProcess;
   stdout: () => string;
   stderr: () => string;
@@ -41,7 +44,9 @@ function spawnCli(args: string[]): {
 } {
   let out = "";
   let err = "";
-  const cp = execFile("node", [CLI_PATH, ...args]);
+  const env = { ...process.env, ...envOverrides };
+  if (!("AIMOCK_API_KEYS" in envOverrides)) delete env.AIMOCK_API_KEYS;
+  const cp = execFile("node", [CLI_PATH, ...args], { env });
   cp.stdout?.on("data", (d) => {
     out += d;
   });
@@ -169,6 +174,48 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: server lifecycle", () => {
     await new Promise<void>((resolve) => {
       child.cp.on("close", () => resolve());
     });
+  });
+
+  it("applies config auth and lets AIMOCK_API_KEYS override it", async () => {
+    const fixturePath = writeFixtureFile(tmpDir);
+    const configPath = writeConfig(tmpDir, {
+      llm: { fixtures: fixturePath },
+      auth: { apiKeys: ["config-key"] },
+    });
+    const body = JSON.stringify({
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    const requestWith = (url: string, key: string): Promise<Response> =>
+      fetch(`${url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body,
+      });
+
+    const configured = spawnCli(["--config", configPath]);
+    await configured.waitForOutput(/listening on/i);
+    const configuredUrl = configured.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+    expect(configuredUrl).toBeTruthy();
+    try {
+      expect((await requestWith(configuredUrl!, "wrong-key")).status).toBe(401);
+      expect((await requestWith(configuredUrl!, "config-key")).status).toBe(200);
+    } finally {
+      configured.kill();
+      await new Promise<void>((resolve) => configured.cp.on("close", () => resolve()));
+    }
+
+    const overridden = spawnCli(["--config", configPath], { AIMOCK_API_KEYS: "environment-key" });
+    await overridden.waitForOutput(/listening on/i);
+    const overriddenUrl = overridden.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+    expect(overriddenUrl).toBeTruthy();
+    try {
+      expect((await requestWith(overriddenUrl!, "config-key")).status).toBe(401);
+      expect((await requestWith(overriddenUrl!, "environment-key")).status).toBe(200);
+    } finally {
+      overridden.kill();
+      await new Promise<void>((resolve) => overridden.cp.on("close", () => resolve()));
+    }
   });
 
   it("applies port override from --port flag", async () => {

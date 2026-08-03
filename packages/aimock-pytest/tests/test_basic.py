@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from unittest import mock
 
 import requests
@@ -60,6 +63,48 @@ def test_api_key_controls_and_client_requests(_aimock_node_manager):
         assert requests.post(f"{server.base_url}/__aimock/fixtures", json={"fixtures": []}).status_code == 401
     finally:
         server.stop()
+
+
+def test_aimock_api_key_option_authenticates_plugin_fixture_in_a_subprocess(tmp_path):
+    """The pytest option reaches the child and the fixture's control client."""
+    test_file = tmp_path / "test_keyed_fixture.py"
+    test_file.write_text(
+        """
+import requests
+
+
+def test_keyed_fixture(aimock):
+    aimock.on_message("hello", {"content": "keyed fixture"})
+    body = {"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}
+    assert requests.post(f"{aimock.base_url}/v1/chat/completions", json=body).status_code == 401
+    response = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json=body,
+        headers={"Authorization": "Bearer subprocess-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "keyed fixture"
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "aimock_pytest.plugin",
+            "--aimock-api-key",
+            "subprocess-key",
+            str(test_file),
+        ],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_add_fixture_and_match(aimock):
