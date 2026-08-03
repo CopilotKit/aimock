@@ -102,7 +102,7 @@ describe("timing-aware replay through handleCompletions", () => {
     expect(elapsed).toBeGreaterThanOrEqual(40); // at least ~TTFT minus jitter
   });
 
-  it("replaySpeed 2.0 halves the replay duration", async () => {
+  it("replaySpeed 2.0 is applied through the completions route", async () => {
     // 80ms TTFT + 4 x 40ms inter-chunk = ~240ms at 1x speed
     const timings: RecordedTimings = {
       ttftMs: 80,
@@ -132,11 +132,11 @@ describe("timing-aware replay through handleCompletions", () => {
     const chunks = parseSSEResponse(res.body);
     expect(chunks.length).toBeGreaterThan(1);
 
-    // At 2x speed, effective delays are halved. The full 1x duration would be
-    // ~240ms, so at 2x it should be ~120ms. We verify it's well below 1x
-    // but still non-trivial (delays are being applied, just faster).
+    // This real HTTP-path check confirms the option reaches the stream writer.
+    // Exact replay-speed semantics are asserted with fake timers in
+    // streaming-physics.test.ts, rather than imposing a wall-clock upper bound
+    // that also includes HTTP, event-loop, and timer-resolution overhead.
     expect(elapsed).toBeGreaterThanOrEqual(50); // still has meaningful delay
-    expect(elapsed).toBeLessThan(200); // well below 1x baseline of ~240ms
   });
 
   it("recordedTimings alone impose real delays (positive control)", async () => {

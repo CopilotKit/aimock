@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { PassThrough } from "node:stream";
 import type * as http from "node:http";
 import { writeSSEStream, calculateDelay } from "../sse-writer.js";
-import type { SSEChunk, StreamingProfile } from "../types.js";
+import type { SSEChunk, StreamingProfile, RecordedTimings } from "../types.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -196,6 +196,29 @@ describe("writeSSEStream with streamingProfile", () => {
     await promise;
 
     expect(output()).toContain(JSON.stringify(chunks[0]));
+  });
+
+  it("scales every recorded replay delay by replaySpeed", async () => {
+    vi.useFakeTimers();
+    const { res, output } = makeMockResponse();
+    const chunks = Array.from({ length: 8 }, (_, index) => makeChunk(String(index), "chunk"));
+    const recordedTimings: RecordedTimings = {
+      ttftMs: 80,
+      interChunkDelaysMs: [40, 40, 40, 40],
+      totalDurationMs: 240,
+    };
+
+    const promise = writeSSEStream(res, chunks, { recordedTimings, replaySpeed: 2 });
+
+    // 8 emitted frames: 80ms / 2 for the first, then 40ms / 2 for each
+    // remaining frame (the writer uses the recorded average after the fourth gap).
+    for (const delayMs of [40, 20, 20, 20, 20, 20, 20, 20]) {
+      await vi.advanceTimersByTimeAsync(delayMs);
+    }
+    await promise;
+
+    expect(output()).toContain(JSON.stringify(chunks.at(-1)));
+    expect(output()).toContain("[DONE]");
   });
 
   it("jitter causes variable delays (not all identical)", async () => {
