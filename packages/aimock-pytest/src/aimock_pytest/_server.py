@@ -27,10 +27,12 @@ class AIMockServer:
         node_manager: NodeManager,
         port: int = 0,
         fixtures_path: str | Path | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.node_manager = node_manager
         self.port = port
         self.fixtures_path = fixtures_path
+        self.api_key = api_key
         self._proc: subprocess.Popen[str] | None = None
         self._base_url: str | None = None
         # Background stdout drainer state. The reader thread continuously
@@ -81,11 +83,15 @@ class AIMockServer:
             fixtures_arg,
         ]
 
+        child_env = os.environ.copy()
+        if self.api_key is not None:
+            child_env["AIMOCK_API_KEYS"] = self.api_key
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=child_env,
         )
         atexit.register(self.stop)
 
@@ -163,6 +169,16 @@ class AIMockServer:
 
     # ── control API methods ─────────────────────────────────────────────
 
+    def _control_headers(self) -> dict[str, str]:
+        api_key = getattr(self, "api_key", None)
+        return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    def _control_request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+        headers = dict(kwargs.pop("headers", {}))
+        headers.update(self._control_headers())
+        request_fn = getattr(requests, method.lower())
+        return request_fn(f"{self.base_url}/__aimock{path}", headers=headers, **kwargs)
+
     # Match-level option keys. These belong under the fixture's ``match``
     # block: the server reads exactly these fields from ``entry.match`` in
     # ``entryToFixture`` (src/fixture-loader.ts). This set MUST track that
@@ -218,8 +234,7 @@ class AIMockServer:
                 fixture_match[key] = value
             else:
                 fixture[key] = value
-        r = requests.post(
-            f"{self.base_url}/__aimock/fixtures",
+        r = self._control_request("POST", "/fixtures",
             json={"fixtures": [fixture]},
             timeout=5,
         )
@@ -293,8 +308,7 @@ class AIMockServer:
                 f"got {type(data).__name__}"
             )
 
-        r = requests.post(
-            f"{self.base_url}/__aimock/fixtures",
+        r = self._control_request("POST", "/fixtures",
             json={"fixtures": fixtures},
             timeout=5,
         )
@@ -303,9 +317,7 @@ class AIMockServer:
 
     def clear_fixtures(self) -> AIMockServer:
         """Delete all fixtures via ``DELETE /__aimock/fixtures``."""
-        requests.delete(
-            f"{self.base_url}/__aimock/fixtures", timeout=5
-        ).raise_for_status()
+        self._control_request("DELETE", "/fixtures", timeout=5).raise_for_status()
         return self
 
     def reset(self) -> AIMockServer:
@@ -316,22 +328,18 @@ class AIMockServer:
     def reset_fixtures(self) -> AIMockServer:
         """Clear fixtures + generation state (and journal) via
         ``POST /__aimock/reset/fixtures``."""
-        requests.post(
-            f"{self.base_url}/__aimock/reset/fixtures", timeout=5
-        ).raise_for_status()
+        self._control_request("POST", "/reset/fixtures", timeout=5).raise_for_status()
         return self
 
     def reset_journal(self) -> AIMockServer:
         """Clear ONLY the request journal, leaving fixtures intact, via
         ``POST /__aimock/reset/journal``."""
-        requests.post(
-            f"{self.base_url}/__aimock/reset/journal", timeout=5
-        ).raise_for_status()
+        self._control_request("POST", "/reset/journal", timeout=5).raise_for_status()
         return self
 
     def get_journal(self) -> list[dict[str, Any]]:
         """Return all recorded journal entries."""
-        r = requests.get(f"{self.base_url}/__aimock/journal", timeout=5)
+        r = self._control_request("GET", "/journal", timeout=5)
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 
@@ -346,8 +354,7 @@ class AIMockServer:
         body: dict[str, Any] | None = None,
     ) -> AIMockServer:
         """Queue a one-shot error via ``POST /__aimock/error``."""
-        requests.post(
-            f"{self.base_url}/__aimock/error",
+        self._control_request("POST", "/error",
             json={"status": status, "body": body or {}},
             timeout=5,
         ).raise_for_status()
@@ -432,9 +439,8 @@ class AIMockServer:
                 while time.monotonic() < health_deadline:
                     attempts += 1
                     try:
-                        r = requests.get(
-                            f"{url}/__aimock/health", timeout=0.5
-                        )
+                        headers = self._control_headers()
+                        r = requests.get(f"{url}/__aimock/health", headers=headers, timeout=0.5)
                         if r.status_code == 200:
                             return url
                     except requests.RequestException:

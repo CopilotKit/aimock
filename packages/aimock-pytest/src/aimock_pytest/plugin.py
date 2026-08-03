@@ -26,6 +26,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=AIMOCK_VERSION,
         help=f"aimock npm package version to use (default: {AIMOCK_VERSION})",
     )
+    group.addoption(
+        "--aimock-api-key",
+        default=None,
+        help="Inbound API key passed to the aimock child process",
+    )
 
 
 @pytest.fixture(scope="session")
@@ -38,20 +43,20 @@ def _aimock_node_manager(request: pytest.FixtureRequest) -> NodeManager:
 
 
 @pytest.fixture
-def aimock(_aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
+def aimock(request: pytest.FixtureRequest, _aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
     """Function-scoped aimock server.  A fresh server is started for every
     test that requests this fixture, and torn down afterwards."""
-    server = AIMockServer(_aimock_node_manager, port=0)
+    server = AIMockServer(_aimock_node_manager, port=0, api_key=request.config.getoption("--aimock-api-key"))
     server.start()
     yield server
     server.stop()
 
 
 @pytest.fixture(scope="session")
-def aimock_session(_aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
+def aimock_session(request: pytest.FixtureRequest, _aimock_node_manager: NodeManager) -> Generator[AIMockServer, None, None]:
     """Session-scoped aimock server.  One server is shared across all tests
     that request this fixture."""
-    server = AIMockServer(_aimock_node_manager, port=0)
+    server = AIMockServer(_aimock_node_manager, port=0, api_key=request.config.getoption("--aimock-api-key"))
     server.start()
     yield server
     server.stop()

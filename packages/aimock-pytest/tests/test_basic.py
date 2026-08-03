@@ -38,6 +38,30 @@ def test_server_starts(aimock):
     assert r.json()["status"] == "ok"
 
 
+def test_api_key_controls_and_client_requests(_aimock_node_manager):
+    """The helper authenticates control traffic without bypassing client auth."""
+    from aimock_pytest import AIMockServer
+
+    server = AIMockServer(_aimock_node_manager, api_key="pytest-test-key")
+    try:
+        server.start()
+        server.on_message("hello", {"content": "keyed"})
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        assert requests.post(f"{server.base_url}/v1/chat/completions", json=body).status_code == 401
+        response = requests.post(
+            f"{server.base_url}/v1/chat/completions",
+            json=body,
+            headers={"Authorization": "Bearer pytest-test-key"},
+        )
+        assert response.status_code == 200
+        assert requests.post(f"{server.base_url}/__aimock/fixtures", json={"fixtures": []}).status_code == 401
+    finally:
+        server.stop()
+
+
 def test_add_fixture_and_match(aimock):
     """Add a fixture via control API, then hit it."""
     aimock.on_message("hello", {"content": "Hi there!"})
