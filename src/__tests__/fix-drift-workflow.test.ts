@@ -1081,39 +1081,226 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
 // Read from the JOB's own `permissions:` node. The old guard sliced from the
 // first `indexOf("permissions:")`, which is the WORKFLOW-level block (`contents:
 // read`, ~line 29) — never the sync job's (~line 52). It passed by coincidence.
+//
+// ── WHY A CEILING AND NOT AN ALLOWLIST ────────────────────────────────────
+// The first structural rewrite of this guard replaced the byte-window slice
+// with a SCOPE-NAME allowlist (`contents`/`pull-requests`, at `read` or
+// `write`), reasoning that least privilege must stay free to get tighter. It
+// constrained only the scope NAMES, so it did not pin the tightening it was
+// written to protect: restoring the pre-PR grant verbatim —
+//
+//     permissions:
+//       contents: write
+//       pull-requests: write
+//
+// left the whole suite GREEN (86/86, observed). The guard permitted exactly the
+// regression it exists to prevent.
+//
+// So the property is expressed as a per-scope CEILING instead. Levels are
+// ordered (`none` < `read` < `write`) and an ABSENT scope grants nothing, so
+// "no wider than the baseline" is a single monotone comparison that reds on
+// every widening (a level promoted, a scope re-added, a new scope introduced,
+// or the blanket `read-all`/`write-all` scalar) while still admitting every
+// tightening (a scope dropped, a level demoted to `none`, the whole map
+// emptied). Both the WORKFLOW-level and the JOB-level block are checked — the
+// original defect was reading the wrong one of the two, so the falsifiability
+// table below runs every fixture through BOTH placements.
 // ---------------------------------------------------------------------------
+
+/** GitHub-Actions GITHUB_TOKEN permission levels, weakest first. */
+const PERMISSION_LEVELS = ["none", "read", "write"] as const;
+type PermissionLevel = (typeof PERMISSION_LEVELS)[number];
+
+/** Rank of a level; an absent scope grants nothing, i.e. `none`. */
+function permissionRank(level: YNode | undefined): number {
+  const name = level === undefined || level === null ? "none" : String(level);
+  const rank = (PERMISSION_LEVELS as readonly string[]).indexOf(name);
+  if (rank < 0) throw new Error(`unknown GITHUB_TOKEN permission level: ${JSON.stringify(name)}`);
+  return rank;
+}
+
+/**
+ * The level each block was tightened to. A CEILING, not an exact pin: the
+ * workflow may go tighter (every write here goes through the minted app token,
+ * never GITHUB_TOKEN) but never wider.
+ */
+const PERMISSIONS_CEILING: Readonly<Record<string, PermissionLevel>> = { contents: "read" };
+
+/**
+ * Scopes where `actual` grants MORE than `ceiling`. Empty ⇒ `actual` is no
+ * wider than the ceiling (equal, or tighter).
+ *
+ * `undefined` means the block is absent, which INHERITS the enclosing level
+ * rather than granting anything of its own — capped by whichever block does
+ * declare, so it contributes no widening here. Any other non-mapping node
+ * (`read-all`, `write-all`, a bare `permissions:`) is a blanket grant across
+ * scopes the ceiling never named, so it is always a widening.
+ */
+function permissionWidenings(
+  actual: YNode | undefined,
+  ceiling: Readonly<Record<string, PermissionLevel>> = PERMISSIONS_CEILING,
+): string[] {
+  if (actual === undefined) return [];
+  if (actual === null || typeof actual !== "object" || Array.isArray(actual)) {
+    return [`\`permissions: ${String(actual)}\` is a blanket grant, not a per-scope mapping`];
+  }
+  const perms = actual as Record<string, YNode>;
+  const widenings: string[] = [];
+  for (const scope of new Set([...Object.keys(perms), ...Object.keys(ceiling)])) {
+    const granted = permissionRank(perms[scope]);
+    const allowed = permissionRank(ceiling[scope]);
+    if (granted > allowed) {
+      widenings.push(
+        `${scope}: ${String(perms[scope])} (ceiling: ${ceiling[scope] ?? "none/absent"})`,
+      );
+    }
+  }
+  return widenings;
+}
+
+/** A minimal workflow carrying `block` as its WORKFLOW-level `permissions:`. */
+const workflowLevelPerms = (block: string): string =>
+  `name: Fix Drift\non:\n  schedule:\n    - cron: "10 6 * * *"\n\n${block.replace(/\s+$/, "")}\n\njobs:\n  sync:\n    if: github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`;
+
+/** A minimal workflow carrying `block` as the SYNC JOB's own `permissions:`. */
+const jobLevelPerms = (block: string): string => {
+  const indented = block
+    .replace(/\s+$/, "")
+    .split("\n")
+    .map((line) => (line === "" ? "" : `    ${line}`))
+    .join("\n");
+  return `name: Fix Drift\non:\n  schedule:\n    - cron: "10 6 * * *"\n\njobs:\n  sync:\n    if: github.event_name == 'schedule'\n    runs-on: ubuntu-latest\n${indented}\n    steps:\n      - run: echo hi\n`;
+};
+
+/** `permissions:` blocks that ALL widen past the tightened baseline. */
+const WIDENING_PERMISSIONS: Array<{ label: string; block: string }> = [
+  {
+    label: "the pre-PR grant restored verbatim (contents + pull-requests, both write)",
+    block: `permissions:\n  contents: write\n  pull-requests: write\n`,
+  },
+  { label: "contents promoted read -> write", block: `permissions:\n  contents: write\n` },
+  {
+    label: "pull-requests re-added, only at read",
+    block: `permissions:\n  contents: read\n  pull-requests: read\n`,
+  },
+  {
+    label: "the dead checks/statuses grants re-added",
+    block: `permissions:\n  contents: read\n  checks: read\n  statuses: read\n`,
+  },
+  {
+    label: "a scope the ceiling never named (issues: write)",
+    block: `permissions:\n  contents: read\n  issues: write\n`,
+  },
+  { label: "flow mapping", block: `permissions: { contents: write }\n` },
+  { label: "quoted key and value", block: `permissions:\n  "contents": "write"\n` },
+  { label: "4-space indentation", block: `permissions:\n    contents: write\n` },
+  {
+    label: "an interleaved comment above the widened scope",
+    block: `permissions:\n  # re-widened by hand\n  contents: write\n`,
+  },
+  { label: "read-all (blanket scalar)", block: `permissions: read-all\n` },
+  { label: "write-all (blanket scalar)", block: `permissions: write-all\n` },
+];
+
+/**
+ * `permissions:` blocks that must NOT be flagged — the negative controls. A
+ * guard that fires on a further tightening is noise, not safety.
+ */
+const TIGHTENING_PERMISSIONS: Array<{ label: string; block: string }> = [
+  {
+    label: "the tightened baseline itself (what both blocks ship)",
+    block: `permissions:\n  contents: read\n`,
+  },
+  {
+    label: "contents demoted read -> none (strictly tighter)",
+    block: `permissions:\n  contents: none\n`,
+  },
+  { label: "flow mapping at the baseline", block: `permissions: { contents: read }\n` },
+  {
+    label: "every scope dropped (`permissions: {}`, the tightest state there is)",
+    block: `permissions: {}\n`,
+  },
+];
+
 describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", () => {
   const jobPermissions = (): Record<string, YNode> => {
     const perms = syncJob().permissions;
-    expect(perms && typeof perms === "object" && !Array.isArray(perms)).toBe(true);
+    expect(
+      perms && typeof perms === "object" && !Array.isArray(perms),
+      "the sync job must declare its own per-scope `permissions:` mapping — an " +
+        "absent block silently inherits, and a blanket `read-all`/`write-all` " +
+        "grants scopes the ceiling below never named",
+    ).toBe(true);
     return perms as Record<string, YNode>;
   };
 
-  it("the sync JOB's own permissions grant NO scope beyond contents + pull-requests", () => {
-    // An allowlist, not an exact pin. Least privilege must be free to get
-    // TIGHTER — the job may drop a write, or drop a scope entirely, since every
-    // write here goes through the minted app token rather than GITHUB_TOKEN —
-    // but it must never get WIDER. An exact pin blocks the correct direction:
-    // it reds on `contents: read`, which is strictly safer than what it pinned.
-    const perms = jobPermissions();
-    const allowed = ["contents", "pull-requests"];
-    for (const [scope, level] of Object.entries(perms)) {
-      expect(
-        allowed,
-        `the sync job grants an unexpected scope \`${scope}: ${String(level)}\``,
-      ).toContain(scope);
-      expect(["read", "write"]).toContain(String(level));
-    }
-    expect(Object.keys(perms).length).toBeGreaterThan(0);
+  it("the sync JOB's own permissions are NO WIDER than the tightened baseline", () => {
+    expect(
+      permissionWidenings(jobPermissions()),
+      "the sync job re-widened its GITHUB_TOKEN grant — every write here goes " +
+        "through the minted app token, so nothing in the job needs one",
+    ).toEqual([]);
   });
 
-  it("nothing in the job relies on GITHUB_TOKEN — the premise the allowlist rests on", () => {
-    // The allowlist above deliberately admits `contents: write` again, so that a
-    // tightening is never blocked. That leaves the PREMISE unguarded: the reason
-    // the job can run on `contents: read` at all is that it never uses
-    // GITHUB_TOKEN. Checked here directly, so a step that quietly starts
-    // depending on the ambient token reds rather than silently re-earning the
-    // write grant.
+  it("the WORKFLOW-level permissions are NO WIDER than the tightened baseline", () => {
+    expect(permissionWidenings(docOf(wf).permissions)).toEqual([]);
+  });
+
+  it("the WORKFLOW-level permissions block is DECLARED at all", () => {
+    // Not `.length > 0` — an empty map is the tightest state there is and must
+    // stay legal. What must not happen is the block VANISHING: with no
+    // workflow-level `permissions:`, a job that declares none of its own falls
+    // back to the repository/organisation default, which on older repos is
+    // read-WRITE on every scope. The ceiling can only cap what is declared.
+    expect(Object.prototype.hasOwnProperty.call(docOf(wf), "permissions")).toBe(true);
+  });
+
+  it("the ceiling itself grants no write — it cannot admit the regression it pins", () => {
+    // The vacuity risk for a ceiling is the ceiling being too WIDE. Nothing in
+    // this job uses GITHUB_TOKEN, so `read` is the most any scope may reach;
+    // a `write` here would silently re-admit the pre-PR grant.
+    expect(Object.keys(PERMISSIONS_CEILING).length).toBeGreaterThan(0);
+    for (const [scope, level] of Object.entries(PERMISSIONS_CEILING)) {
+      expect(level, `the ceiling itself grants \`${scope}: write\``).toBe("read");
+    }
+  });
+
+  describe("the permissions ceiling is FALSIFIABLE (a re-widening reds in every spelling, at BOTH levels)", () => {
+    for (const { label, block } of WIDENING_PERMISSIONS) {
+      it(`flags a re-widening written as: ${label}`, () => {
+        expect(
+          permissionWidenings(docOf(workflowLevelPerms(block)).permissions),
+          `the ceiling is BLIND to this WORKFLOW-level spelling — re-widening ` +
+            `as "${label}" would keep the guard GREEN`,
+        ).not.toEqual([]);
+        expect(
+          permissionWidenings(syncJob(jobLevelPerms(block)).permissions),
+          `the ceiling is BLIND to this JOB-level spelling — re-widening as ` +
+            `"${label}" would keep the guard GREEN`,
+        ).not.toEqual([]);
+      });
+    }
+
+    for (const { label, block } of TIGHTENING_PERMISSIONS) {
+      it(`does NOT flag: ${label}`, () => {
+        expect(permissionWidenings(docOf(workflowLevelPerms(block)).permissions)).toEqual([]);
+        expect(permissionWidenings(syncJob(jobLevelPerms(block)).permissions)).toEqual([]);
+      });
+    }
+
+    it("does NOT flag: no job-level block at all (it inherits the capped workflow level)", () => {
+      const src = jobLevelPerms("");
+      expect(Object.prototype.hasOwnProperty.call(syncJob(src), "permissions")).toBe(false);
+      expect(permissionWidenings(syncJob(src).permissions)).toEqual([]);
+    });
+  });
+
+  it("nothing in the job relies on GITHUB_TOKEN — the premise the ceiling rests on", () => {
+    // The ceiling admits `contents: read`, so an ambient token still exists.
+    // That leaves the PREMISE unguarded: the reason the job can run on
+    // `contents: read` at all is that it never uses GITHUB_TOKEN. Checked here
+    // directly, so a step that quietly starts depending on the ambient token
+    // reds rather than silently re-earning the write grant.
     expect(codeSurface(wf)).not.toMatch(/GITHUB_TOKEN|github\.token/);
     // `shellInvocations`, not a bare /\bgh\b/ scan: the gate-failure alert's
     // FAILING_STEP strings NAME the commands that could have failed ("push
