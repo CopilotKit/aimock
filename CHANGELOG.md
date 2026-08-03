@@ -7,6 +7,7 @@
 ### Added
 
 - OpenAI transcription replay for `gpt-transcribe` HTTP streams and `gpt-live-transcribe` Realtime sessions. Recorded responses retain transcript languages and usage metadata; replay supports progressive transcript events, timing controls, strict fixture matching, and interruption behavior.
+- Opt-in inbound API-key validation for HTTP, control, mount, and WebSocket boundaries. Validated test credentials are never forwarded by the generic record/proxy path; auth-enabled proxying requires a configured provider credential.
 
 ### Added
 

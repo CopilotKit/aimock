@@ -80,7 +80,12 @@ aimock.reset()             # alias for reset_fixtures()
 ```
 --aimock-node PATH       Path to node binary
 --aimock-version VER     aimock npm version (default: 1.38.0)
+--aimock-api-key KEY     Inbound API key for the aimock child process
 ```
+
+## API-key validation
+
+Pass `pytest --aimock-api-key test-key` to protect the aimock child. The helper sends this key on all control API calls, and the child receives it through `AIMOCK_API_KEYS`, never through process arguments. Direct client calls must use `Authorization: Bearer test-key`. For direct construction, use `AIMockServer(node_manager, api_key="test-key")`.
 
 ## Environment Variables
 
