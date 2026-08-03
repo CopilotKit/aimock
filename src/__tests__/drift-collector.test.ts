@@ -1610,8 +1610,11 @@ describe("canary delta keys are decoupled from the human-facing path string", ()
  *              a key and is never mistaken for a symbol to go look up.
  *   observed — the id IS the value the live API returned (it equals the diff's
  *              `real`), i.e. wire data rather than repo prose.
- *   declared — the id is an identifier this repo actually DECLARES, so a reader
- *              who greps it lands on something real.
+ *   declared — the id is a symbol EXPORTED by a drift classification module
+ *              (`src/__tests__/drift/*.ts`), so a reader who greps it lands on the
+ *              actual seed set / rule the annotation is pointing at. Deliberately
+ *              NOT "declared anywhere in the repo" — see
+ *              `driftModuleExportsIdentifier`.
  *
  * Anything else fails: a bare display string, a prose bucket, a retired symbol
  * name, or a missing `id` whose `path` falls through to the key.
@@ -1654,37 +1657,49 @@ function deltaIdNamespace(id: string): string | null {
 }
 
 /**
- * Contents of every `.ts` file whose declarations a delta key may name. Read once
- * — the per-key check below runs over the cached text, not the filesystem.
+ * The drift CLASSIFICATION package — `src/__tests__/drift/*.ts`: the voice/model
+ * seed sets, the registry, the normalizers, the surface registry. These are the
+ * modules a human sent a delta key would actually open, because they hold the data
+ * the key names and the rule that has to change.
+ *
+ * SCOPED DELIBERATELY. An earlier revision of this guard scanned every `.ts` under
+ * `src/` and `scripts/` for ANY `const|function|class|…` declaration of the name,
+ * which made the `declared` provenance a near-wildcard: `path`, `models`,
+ * `entries`, `key`, `id`, `usage`, `body`, `type` — 20 of 20 generic one-word
+ * strings tried — are each some local `const` somewhere in the tree, so a bare
+ * display path satisfied it and the guard stopped binding on the thing it exists
+ * to prevent. Read once; the per-key check runs over the cached text.
  */
-let repoSourcesCache: string[] | null = null;
-function repoSources(): string[] {
-  if (repoSourcesCache !== null) return repoSourcesCache;
-  const repoRoot = resolve(__dirname, "..", "..");
-  const sources: string[] = [];
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir, { withFileTypes: true })) {
-      const abs = resolve(dir, name.name);
-      if (name.isDirectory()) {
-        if (name.name === "node_modules" || name.name === "dist") continue;
-        walk(abs);
-      } else if (name.name.endsWith(".ts")) {
-        sources.push(readFileSync(abs, "utf8"));
-      }
-    }
-  };
-  for (const root of ["src", "scripts"]) walk(resolve(repoRoot, root));
-  repoSourcesCache = sources;
-  return sources;
+let driftModuleSourcesCache: string[] | null = null;
+function driftModuleSources(): string[] {
+  if (driftModuleSourcesCache !== null) return driftModuleSourcesCache;
+  const dir = resolve(__dirname, "drift");
+  driftModuleSourcesCache = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .map((e) => readFileSync(resolve(dir, e.name), "utf8"));
+  return driftModuleSourcesCache;
 }
 
-/** Does any repo source DECLARE `id` (not merely mention it in prose)? */
-function repoDeclaresIdentifier(id: string): boolean {
+/**
+ * Does a drift classification module EXPORT `id` under exactly that name?
+ *
+ * Two structural requirements, both load-bearing:
+ *   - EXPORTED (`^export`, `m`-anchored so it is a top-level export and not an
+ *     indented interior binding) — an unexported local is not something a reader
+ *     can look up, and it is what let bare display words through.
+ *   - declared IN the drift package — a symbol from an unrelated corner of the
+ *     repo is not the data set the annotation is pointing at.
+ *
+ * `\b` after the name keeps the match exact (`gaModels` must not be satisfied by
+ * `gaModelsRetired`).
+ */
+function driftModuleExportsIdentifier(id: string): boolean {
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id)) return false;
   const decl = new RegExp(
-    `(?:export\\s+)?(?:declare\\s+)?(?:const|let|var|function|class|interface|type|enum)\\s+${id}\\b`,
+    `^export\\s+(?:declare\\s+)?(?:const|let|var|function|class|interface|type|enum)\\s+${id}\\b`,
+    "m",
   );
-  return repoSources().some((src) => decl.test(src));
+  return driftModuleSources().some((src) => decl.test(src));
 }
 
 type DeltaKeyProvenance = "semantic" | "observed" | "declared";
@@ -1700,7 +1715,7 @@ function deltaKeyProvenanceOf(diff: ParsedDiff): DeltaKeyProvenance | null {
   const namespace = deltaIdNamespace(key);
   if (namespace !== null && SEMANTIC_DELTA_ID_NAMESPACES.includes(namespace)) return "semantic";
   if (key.length > 0 && key === diff.real) return "observed";
-  if (repoDeclaresIdentifier(key)) return "declared";
+  if (driftModuleExportsIdentifier(key)) return "declared";
   return null;
 }
 
@@ -1796,6 +1811,43 @@ describe("every delta key the collector constructs has a provenance", () => {
       }),
       "display path copied into the id",
     ).toBeNull();
+  });
+
+  // The `declared` provenance is the loosest of the three, so it is the one that
+  // can quietly stop binding. It must mean "names a symbol the drift
+  // classification modules EXPORT" — a reader greps it and lands on the data set
+  // to edit. It must NOT mean "this string appears as any identifier anywhere in
+  // src/ or scripts/": every one of these bare words is some local `const`
+  // somewhere in the repo, so under that reading a one-word display path would
+  // satisfy the guard and the gate could print `<provider> path` at a human.
+  it("rejects a bare generic one-word display path (`declared` is not a near-wildcard)", () => {
+    for (const word of [
+      "path",
+      "models",
+      "entries",
+      "key",
+      "id",
+      "report",
+      "usage",
+      "choices",
+      "message",
+      "content",
+      "delta",
+      "error",
+      "data",
+      "result",
+      "response",
+      "request",
+      "body",
+      "status",
+      "type",
+      "value",
+    ]) {
+      expect(
+        deltaKeyProvenanceOf(idLess(word)),
+        `"${word}" is a bare display path, not a symbol a reader can look up`,
+      ).toBeNull();
+    }
   });
 
   for (const { lane, diff } of constructed) {
