@@ -79,7 +79,7 @@ aimock.reset()             # alias for reset_fixtures()
 
 ```
 --aimock-node PATH       Path to node binary
---aimock-version VER     aimock npm version (default: 1.35.1)
+--aimock-version VER     aimock npm version (default: 1.38.0)
 ```
 
 ## Environment Variables

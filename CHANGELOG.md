@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-08-03
+
+### Added
+
+- OpenAI transcription replay for `gpt-transcribe` HTTP streams and `gpt-live-transcribe` Realtime sessions. Recorded responses retain transcript languages and usage metadata; replay supports progressive transcript events, timing controls, strict fixture matching, and interruption behavior.
+
 ### Added
 
 - **OpenRouter chat / LLM router simulation.** Requests whose original path starts with `/api/v1/` (point any OpenAI SDK at a `baseURL` ending `/api/v1`) are detected as OpenRouter and shaped to match real OpenRouter bytes: a `gen-` id prefix (a fixture `id` override still wins), a top-level `provider` (default = the winning model slug's author, fixture-overridable via `provider`), both `finish_reason` and `native_finish_reason` on every choice/delta, an always-present `system_fingerprint` and `service_tier` (null by default), `message.reasoning`, and a rich `usage` with a **fixture-scriptable** `cost` + `cost_details` (emitted only when a fixture supplies a cost — never fabricated), plus `is_byok` / `prompt_tokens_details` / `completion_tokens_details` when overridden. Callers on the plain OpenAI `/v1/...` base are byte-for-byte unchanged.
