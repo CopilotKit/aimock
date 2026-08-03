@@ -294,18 +294,41 @@ jobs:
           # the date-independent changeset key, NOT the date-stamped branch name
           # or diff bytes). An applied edit deserves exactly ONE open PR,
           # re-findable across runs.
-          if [ -n "${CHANGESET_KEY:-}" ]; then
-            # --limit 200: `gh pr list` defaults to 30, which silently truncates
-            # this guard's view of the open PRs — once 30 newer PRs exist, the
-            # older already-proposed PR falls out of the window and the guard
-            # opens a duplicate. The limit is load-bearing, not cosmetic.
-            OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body 2>/dev/null || echo '[]')"
-            DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
-              'map(select(.body | contains($m))) | .[0].number // empty')"
-            if [ -n "$DUP" ]; then
-              echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
-              exit 0
-            fi
+          # An EMPTY changeset key silently switched this guard off entirely
+          # (`if [ -n ... ]`) and fell through to opening a PR — which is
+          # exactly how unbounded daily duplicates start. computeChangesetKey
+          # returns "" only when every outcome is a no-op, i.e. ok-no-churn, and
+          # this step only runs on ok-applied, so an empty key here means
+          # drift-sync misbehaved. Fail closed rather than dedup-blind.
+          if [ -z "${CHANGESET_KEY:-}" ]; then
+            echo "::error::changeset_key is empty on an ok-applied run — the PRIMARY dedup guard cannot run, and opening a PR anyway is how daily duplicate PRs start. Refusing."
+            exit 1
+          fi
+          # FAIL CLOSED on an API fault. `2>/dev/null || echo '[]'` turned ANY
+          # gh failure (a 401 after a token hiccup, a secondary rate limit, a
+          # GitHub 5xx) into the assertion "there are no open PRs" — which does
+          # not degrade this guard, it DISABLES it, and the very next thing this
+          # step does is open the duplicate PR the guard exists to prevent.
+          # "Found nothing" and "could not look" are different facts and must
+          # not share an encoding.
+          #
+          # --limit 200: `gh pr list` defaults to 30, which silently truncates
+          # this guard's view of the open PRs — once 30 newer PRs exist, the
+          # older already-proposed PR falls out of the window and the guard
+          # opens a duplicate. The limit is load-bearing, not cosmetic.
+          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+            exit 1
+          fi
+          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+            exit 1
+          fi
+          DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
+            'map(select(.body | contains($m))) | .[0].number // empty')"
+          if [ -n "$DUP" ]; then
+            echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
+            exit 0
           fi
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
           git push -u origin "$BRANCH"
@@ -348,19 +371,32 @@ jobs:
 
           PR_URL=""
           PR_NUMBER=""
+          LOOKUP_ERR=""
           for attempt in $(seq 1 6); do
-            MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
-              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>/dev/null || true)"
+            # Keep WHY the lookup came back empty: `2>/dev/null || true` reported
+            # a hard API failure as "not indexed yet", so the loop timed out and
+            # blamed a missing PR for what was really a 401 / rate limit.
+            if MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
+              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>&1)"; then
+              LOOKUP_ERR=""
+            else
+              LOOKUP_ERR="$MATCH"
+              MATCH=""
+            fi
             if [ -n "$MATCH" ]; then
               PR_URL="$(printf '%s' "$MATCH" | jq -r '.url')"
               PR_NUMBER="$(printf '%s' "$MATCH" | jq -r '.number')"
               break
             fi
-            echo "PR for head SHA not indexed yet (attempt $attempt/6), waiting 10s..."
+            echo "PR for head SHA not resolved yet (attempt $attempt/6)${LOOKUP_ERR:+ — gh error: ${LOOKUP_ERR}}, waiting 10s..."
             sleep 10
           done
           if [ -z "$PR_URL" ]; then
-            echo "::error::No open PR found whose head matches pushed SHA $HEAD_SHA"
+            if [ -n "$LOOKUP_ERR" ]; then
+              echo "::error::Could not look up the PR for pushed SHA $HEAD_SHA — gh kept failing: ${LOOKUP_ERR}"
+            else
+              echo "::error::No open PR found whose head matches pushed SHA $HEAD_SHA"
+            fi
             exit 1
           fi
           echo "Matched PR #$PR_NUMBER: $PR_URL"
@@ -424,7 +460,19 @@ jobs:
           # the dedup guards' view of the open PRs — once 30 newer PRs exist,
           # the older already-proposed PR falls out of the window, the guard
           # misses it and a duplicate PR gets opened. Load-bearing, not cosmetic.
-          OPEN_PRS="$(gh pr list --state open --limit 200 --json number,url,body 2>/dev/null || echo '[]')"
+          #
+          # FAIL CLOSED on an API fault: `2>/dev/null || echo '[]'` turned ANY
+          # gh failure (401, secondary rate limit, 5xx) into "there are no open
+          # PRs", which DISABLES both dedup guards below rather than degrading
+          # them, and the step then opens the duplicate they exist to prevent.
+          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,url,body 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+            exit 1
+          fi
+          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+            exit 1
+          fi
 
           # Emit the PR a human must act on, so the Slack alert can name AND
           # link it. No-op when there is no PR to name (nothing was found and
@@ -439,15 +487,22 @@ jobs:
 
           # The open PR (if any) already carrying this run's stable changeset
           # marker. Resolved BEFORE the guards below so every path can cite it.
+          # An EMPTY key silently switched the PRIMARY guard off and fell
+          # through to an unconditional push + PR. computeChangesetKey only
+          # returns "" when every outcome is a no-op (ok-no-churn), which cannot
+          # be true on a needs-human run, so an empty key here means drift-sync
+          # misbehaved — fail closed instead of running dedup-blind.
+          if [ -z "${CHANGESET_KEY:-}" ]; then
+            echo "::error::changeset_key is empty on a needs-human run — the PRIMARY dedup guard cannot run, and pushing anyway is how daily duplicate PRs start. Refusing."
+            exit 1
+          fi
           DUP_NUMBER=""
           DUP_URL=""
-          if [ -n "${CHANGESET_KEY:-}" ]; then
-            DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
-              'map(select(.body | contains($m))) | .[0] // empty')"
-            if [ -n "$DUP" ]; then
-              DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
-              DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
-            fi
+          DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
+            'map(select(.body | contains($m))) | .[0] // empty')"
+          if [ -n "$DUP" ]; then
+            DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
+            DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
           fi
 
           # Re-fire of an already-persisted note: no new commit -> already reachable.
@@ -545,19 +600,31 @@ jobs:
 
           PR_URL=""
           PR_NUMBER=""
+          LOOKUP_ERR=""
           for attempt in $(seq 1 6); do
-            MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
-              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>/dev/null || true)"
+            # See the ok-applied loop above: a hard API failure must not be
+            # reported as "not indexed yet".
+            if MATCH="$(gh pr list --state open --limit 200 --json url,number,headRefOid \
+              --jq ".[] | select(.headRefOid == \"$HEAD_SHA\") | {url, number}" 2>&1)"; then
+              LOOKUP_ERR=""
+            else
+              LOOKUP_ERR="$MATCH"
+              MATCH=""
+            fi
             if [ -n "$MATCH" ]; then
               PR_URL="$(printf '%s' "$MATCH" | jq -r '.url')"
               PR_NUMBER="$(printf '%s' "$MATCH" | jq -r '.number')"
               break
             fi
-            echo "needs-human PR for head SHA not indexed yet (attempt $attempt/6), waiting 10s..."
+            echo "needs-human PR for head SHA not resolved yet (attempt $attempt/6)${LOOKUP_ERR:+ — gh error: ${LOOKUP_ERR}}, waiting 10s..."
             sleep 10
           done
           if [ -z "$PR_URL" ]; then
-            echo "::error::No open needs-human PR found whose head matches pushed SHA $HEAD_SHA"
+            if [ -n "$LOOKUP_ERR" ]; then
+              echo "::error::Could not look up the needs-human PR for pushed SHA $HEAD_SHA — gh kept failing: ${LOOKUP_ERR}"
+            else
+              echo "::error::No open needs-human PR found whose head matches pushed SHA $HEAD_SHA"
+            fi
             exit 1
           fi
           echo "Opened needs-human PR #$PR_NUMBER: $PR_URL"
