@@ -87,6 +87,10 @@ def test_keyed_fixture(aimock):
 """,
         encoding="utf-8",
     )
+    child_env = os.environ.copy()
+    # The child loads the plugin explicitly so source-tree and installed-package
+    # runs exercise the same fixture path without registering it twice.
+    child_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     result = subprocess.run(
         [
             sys.executable,
@@ -99,7 +103,7 @@ def test_keyed_fixture(aimock):
             "subprocess-key",
             str(test_file),
         ],
-        env=os.environ.copy(),
+        env=child_env,
         capture_output=True,
         text=True,
         timeout=30,
