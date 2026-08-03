@@ -949,7 +949,9 @@ function simulateJob(
   const selected: Step[] = [];
   for (const s of steps(src)) {
     const runs = s.if === undefined ? !ctx.jobFailed : evaluateIf(s.if, ctx);
-    const fails = runs && (failing.has(s.id ?? " ") || failing.has(s.name ?? " "));
+    const fails =
+      runs &&
+      ((s.id !== undefined && failing.has(s.id)) || (s.name !== undefined && failing.has(s.name)));
     if (s.id) {
       ctx.steps[s.id] = {
         outcome: runs ? (fails ? "failure" : "success") : "skipped",
@@ -1103,6 +1105,34 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
       expect(["read", "write"]).toContain(String(level));
     }
     expect(Object.keys(perms).length).toBeGreaterThan(0);
+  });
+
+  it("nothing in the job relies on GITHUB_TOKEN — the premise the allowlist rests on", () => {
+    // The allowlist above deliberately admits `contents: write` again, so that a
+    // tightening is never blocked. That leaves the PREMISE unguarded: the reason
+    // the job can run on `contents: read` at all is that it never uses
+    // GITHUB_TOKEN. Checked here directly, so a step that quietly starts
+    // depending on the ambient token reds rather than silently re-earning the
+    // write grant.
+    expect(codeSurface(wf)).not.toMatch(/GITHUB_TOKEN|github\.token/);
+    // `shellInvocations`, not a bare /\bgh\b/ scan: the gate-failure alert's
+    // FAILING_STEP strings NAME the commands that could have failed ("push
+    // rejected, gh pr create error, …"), and prose about `gh` is not a call to it.
+    let ghSteps = 0;
+    for (const step of steps()) {
+      if (shellInvocations(runOf(step), "gh ").length === 0) continue;
+      ghSteps++;
+      expect(step.env?.GH_TOKEN, `step "${step.name}" runs \`gh\` without an app GH_TOKEN`).toBe(
+        "${{ steps.app-token.outputs.token }}",
+      );
+    }
+    expect(ghSteps, "no step invokes `gh` at all — this guard would pass vacuously").toBe(2);
+    // The push authenticates through the app token too, not the checkout's
+    // ambient credential (which `persist-credentials: false` withholds anyway).
+    expect(stepByName("Configure git for push").env?.TOKEN).toBe(
+      "${{ steps.app-token.outputs.token }}",
+    );
+    expect(stepById("app-token").with?.["permission-contents"]).toBe("write");
   });
 
   it("the sync job's permissions block does not grant checks: read", () => {
