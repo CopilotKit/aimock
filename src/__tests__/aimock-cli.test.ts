@@ -9,12 +9,17 @@ import type { AimockConfig } from "../config-loader.js";
 const CLI_PATH = resolve(__dirname, "../../dist/aimock-cli.js");
 const CLI_AVAILABLE = existsSync(CLI_PATH);
 
+// These integration tests spawn an additional Node process. Under the full
+// parallel suite the default 5s runner deadline can expire before a healthy
+// child gets CPU time to print its immediate startup/error result.
+vi.setConfig({ testTimeout: 15_000 });
+
 /** Spawn the CLI and collect stdout/stderr/exit code. */
 function runCli(
   args: string[],
   opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const timeout = opts.timeout ?? 5000;
+  const timeout = opts.timeout ?? 10_000;
   return new Promise((res) => {
     const cp = execFile("node", [CLI_PATH, ...args], { timeout }, (err, stdout, stderr) => {
       const code = cp.exitCode ?? (err && "code" in err ? (err as { code: number }).code : null);
