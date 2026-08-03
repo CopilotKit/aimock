@@ -8,6 +8,8 @@
 
 - OpenAI transcription replay for `gpt-transcribe` HTTP streams and `gpt-live-transcribe` Realtime sessions. Recorded responses retain transcript languages and usage metadata; replay supports progressive transcript events, timing controls, strict fixture matching, and interruption behavior.
 - Opt-in inbound API-key validation for HTTP, control, mount, and WebSocket boundaries. Validated test credentials are never forwarded by the generic record/proxy path; auth-enabled proxying requires a configured provider credential.
+- API-key egress isolation is request-scoped across generic, AG-UI, fal, and video record paths. Authorization schemes are case-insensitive, and OpenRouter off-origin unsigned URLs never receive a configured provider credential.
+- `aimock-pytest` `0.5.2` is released after npm `@copilotkit/aimock` `1.38.0`; its PyPI workflow verifies the pinned npm package is already published before building a wheel.
 
 ### Added
 

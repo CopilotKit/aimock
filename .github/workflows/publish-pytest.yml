@@ -22,6 +22,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Verify pinned npm release is published
+        run: |
+          VERSION=$(python -c "import sys; sys.path.insert(0, 'packages/aimock-pytest/src'); from aimock_pytest._version import AIMOCK_VERSION; print(AIMOCK_VERSION)")
+          npm view "@copilotkit/aimock@${VERSION}" version
 
       - name: Install build tools
         run: pip install hatch
