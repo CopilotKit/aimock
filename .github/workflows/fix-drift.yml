@@ -877,9 +877,13 @@ jobs:
           # already is: jq --arg then escapes it to \\n. A REAL newline is
           # what jq encodes into a line break. Same idiom as test-drift.yml.
           NL=$'\n'
+          # exit 1, like all three sibling alerts: a missing webhook means the
+          # notification was DROPPED, and swallowing that with exit 0 left the
+          # job green while nobody was told a PR is waiting — the same
+          # fail-silent shape this workflow is being fixed for.
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::SLACK_WEBHOOK not set — cannot send sync-success alert"
-            exit 0
+            exit 1
           fi
           # The dedup path now names its PR too, so distinguish "just opened"
           # from "still sitting there unmerged" rather than claiming a PR was
