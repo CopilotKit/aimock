@@ -577,11 +577,15 @@ jobs:
           # re-alerting about it — every morning is the spam that made following
           # the instruction a punishment. A genuinely different drift hashes to a
           # different changeset key, so only this decision is suppressed.
-          REJECTED="$(printf '%s' "$ALL_PRS" | jq -r --arg m "$MARKER" \
-            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0].number // empty')"
-          if [ -n "$REJECTED" ]; then
+          REJECTED_PR="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0] // empty')"
+          if [ -n "$REJECTED_PR" ]; then
+            REJECTED="$(printf '%s' "$REJECTED_PR" | jq -r '.number')"
             echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
             echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it and not re-alerting"
+            # Emit it like every other early return, so the rejected PR is
+            # still nameable (and the "every exit names a PR" invariant holds).
+            emit_pr "$REJECTED" "$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
             exit 0
           fi
 
@@ -937,17 +941,21 @@ jobs:
           # already is: jq --arg then escapes it to \\n. A REAL newline is
           # what jq encodes into a line break. Same idiom as test-drift.yml.
           NL=$'\n'
-          # Name the window, so "catch-all" never means "unexplained".
+          # Name the window, so "catch-all" never means "unexplained". The
+          # headline distinguishes the two cases the step now covers, rather
+          # than always blaming setup.
           if [ -z "${SYNC_REASON:-}" ]; then
+            HEADLINE="INFRA/SETUP failure"
             WHERE="during INFRA/SETUP (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran"
           else
+            HEADLINE="uncovered failure"
             WHERE="AFTER drift-sync reported reason='${SYNC_REASON}', in a step no specific alert covers (e.g. an artifact upload)"
           fi
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::Drift-sync job failed ${WHERE} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
             exit 1
           fi
-          MSG="🧱❌ *Drift-sync job — uncovered failure* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧱❌ *Drift-sync job — ${HEADLINE}* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
