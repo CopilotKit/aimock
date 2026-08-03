@@ -12,6 +12,7 @@ import type {
 } from "./agui-types.js";
 import { extractLastUserMessage, getLastMessageIfToolResult } from "./agui-handler.js";
 import type { Logger } from "./logger.js";
+import { isAuthenticatedRequest } from "./api-key-auth.js";
 
 /**
  * Sentinel `match.message` value written to disk when the request had no
@@ -85,6 +86,14 @@ export async function proxyAndRecordAGUI(
   config: AGUIRecordConfig,
   logger: Logger,
 ): Promise<number | false> {
+  // AG-UI has no provider-specific static credential contract. An inbound
+  // test key must never become an implicit upstream credential, so fail before
+  // opening an upstream connection.
+  if (isAuthenticatedRequest(req)) {
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "No configured provider credential" }));
+    return 502;
+  }
   if (!config.upstream) {
     logger.warn("No upstream URL configured for AG-UI recording — cannot proxy");
     return false;

@@ -183,7 +183,7 @@ export {
 export type { CollapseResult } from "./stream-collapse.js";
 
 // Mountable
-export type { Mountable } from "./types.js";
+export type { Mountable, ApiKeyAuthConfig } from "./types.js";
 
 // MCP
 export { MCPMock } from "./mcp-mock.js";

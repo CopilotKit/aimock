@@ -1,10 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LLMock } from "./llmock.js";
+import { LLMock, createLLMockWithResolvedAuth } from "./llmock.js";
+import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
 import { MCPMock } from "./mcp-mock.js";
 import { A2AMock } from "./a2a-mock.js";
 import { AGUIMock } from "./agui-mock.js";
-import type { ChaosConfig, RecordConfig } from "./types.js";
+import type { ApiKeyAuthConfig, ChaosConfig, RecordConfig } from "./types.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
 import type { A2AAgentDefinition, A2APart, A2AArtifact, A2AStreamEvent } from "./a2a-types.js";
 import type { AGUIEvent } from "./agui-types.js";
@@ -88,6 +89,7 @@ export interface VectorConfig {
 }
 
 export interface AimockConfig {
+  auth?: ApiKeyAuthConfig;
   llm?: {
     fixtures?: string;
     latency?: number;
@@ -128,18 +130,22 @@ export async function startFromConfig(
   }
 
   // Load fixtures if specified
-  const llmock = new LLMock({
-    port: overrides?.port ?? config.port ?? 0,
-    host: overrides?.host ?? config.host ?? "127.0.0.1",
-    latency: config.llm?.latency,
-    chunkSize: config.llm?.chunkSize,
-    replaySpeed,
-    logLevel: config.llm?.logLevel,
-    chaos: config.llm?.chaos,
-    record: config.llm?.record,
-    metrics: config.metrics,
-    strict: config.strict,
-  });
+  const resolvedAuth = resolveInboundAuth(selectInboundAuthSource(config.auth));
+  const llmock = createLLMockWithResolvedAuth(
+    {
+      port: overrides?.port ?? config.port ?? 0,
+      host: overrides?.host ?? config.host ?? "127.0.0.1",
+      latency: config.llm?.latency,
+      chunkSize: config.llm?.chunkSize,
+      replaySpeed,
+      logLevel: config.llm?.logLevel,
+      chaos: config.llm?.chaos,
+      record: config.llm?.record,
+      metrics: config.metrics,
+      strict: config.strict,
+    },
+    resolvedAuth,
+  );
 
   if (config.llm?.fixtures) {
     const fixturePath = path.resolve(config.llm.fixtures);

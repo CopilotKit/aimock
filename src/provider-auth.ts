@@ -40,7 +40,7 @@ export function getDummyKeyMarker(): string {
  * and a real Entra bearer token from the caller is never dummy-prefixed, so it
  * is always forwarded verbatim (the caller overrides aimock).
  */
-type AuthScheme =
+export type AuthScheme =
   | { kind: "bearer" } // Authorization: Bearer <key>
   | { kind: "fal-key" } // Authorization: Key <key>
   | { kind: "x-api-key" } // x-api-key: <key>
@@ -68,6 +68,36 @@ const PROVIDER_AUTH_SCHEMES: Partial<Record<RecordProviderKey, AuthScheme>> = {
   // fal.ai — uses the `Key ` prefix on Authorization, NOT `Bearer `.
   fal: { kind: "fal-key" },
 };
+
+export function hasStaticProviderAuthScheme(providerKey: RecordProviderKey): boolean {
+  return PROVIDER_AUTH_SCHEMES[providerKey] !== undefined;
+}
+
+/** Force a known provider credential onto an already-scrubbed outbound map. */
+export function applyConfiguredProviderAuth(
+  forwardHeaders: Record<string, string>,
+  target: URL,
+  providerKey: RecordProviderKey,
+  providerCredential: string,
+): boolean {
+  void target;
+  const scheme = PROVIDER_AUTH_SCHEMES[providerKey];
+  if (!scheme) return false;
+  switch (scheme.kind) {
+    case "bearer":
+      takeHeader(forwardHeaders, "authorization");
+      forwardHeaders.Authorization = `Bearer ${providerCredential}`;
+      break;
+    case "fal-key":
+      takeHeader(forwardHeaders, "authorization");
+      forwardHeaders.Authorization = `Key ${providerCredential}`;
+      break;
+    default:
+      takeHeader(forwardHeaders, authHeaderName(scheme));
+      forwardHeaders[authHeaderName(scheme)] = providerCredential;
+  }
+  return true;
+}
 
 /**
  * Case-insensitively delete a header from a forward-header map, returning the

@@ -20,7 +20,20 @@ import type { Logger } from "./logger.js";
 import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
-import { applyProviderAuth } from "./provider-auth.js";
+import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
+import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
+
+const authEnabledRecords = new WeakSet<RecordConfig>();
+
+/** @internal Server startup marks a record config without exposing its inbound key policy. */
+export function markRecordAuthEnabled(record: RecordConfig | undefined): void {
+  if (record) authEnabledRecords.add(record);
+}
+
+/** @internal True only for record configs attached to an authenticated server. */
+export function isRecordAuthEnabled(record: RecordConfig): boolean {
+  return authEnabledRecords.has(record);
+}
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 
@@ -142,12 +155,42 @@ export function buildForwardHeaders(req: http.IncomingMessage): Record<string, s
   const out: Record<string, string> = {};
   for (const [name, val] of Object.entries(req.headers)) {
     const lower = name.toLowerCase();
-    if (val === undefined || STRIP_HEADERS.has(lower) || lower.startsWith("x-aimock-chaos-")) {
+    if (
+      val === undefined ||
+      STRIP_HEADERS.has(lower) ||
+      lower.startsWith("x-aimock-chaos-") ||
+      (isAuthenticatedRequest(req) && isRecognizedApiKeyHeader(lower))
+    ) {
       continue;
     }
     out[name] = Array.isArray(val) ? val.join(", ") : val;
   }
   return out;
+}
+
+/**
+ * Construct the only safe egress map when inbound access control is enabled.
+ * Test credentials are always removed; a static configured provider credential
+ * is mandatory so an accepted test credential can never become an upstream one.
+ */
+export function prepareEgressHeaders(
+  req: http.IncomingMessage,
+  target: URL,
+  providerKey: RecordProviderKey,
+  configuredKey: string | undefined,
+  record: RecordConfig,
+): Record<string, string> | undefined {
+  const headers = buildForwardHeaders(req);
+  if (!authEnabledRecords.has(record)) {
+    applyProviderAuth(headers, target, providerKey, configuredKey);
+    return headers;
+  }
+  for (const name of Object.keys(headers)) {
+    if (isRecognizedApiKeyHeader(name)) delete headers[name];
+  }
+  return configuredKey && applyConfiguredProviderAuth(headers, target, providerKey, configuredKey)
+    ? headers
+    : undefined;
 }
 
 /**
@@ -456,13 +499,23 @@ export async function proxyAndRecord(
   defaults.logger.warn(`NO FIXTURE MATCH — proxying to ${upstreamUrl}${pathname}`);
 
   // Forward all request headers except hop-by-hop and client-set ones.
-  const forwardHeaders = buildForwardHeaders(req);
-
-  // If aimock owns a built-in upstream key for this provider, inject it now
-  // (opt-in, backward-compatible). A real caller credential overrides it; an
-  // absent or dummy-prefixed caller credential is replaced. gemini-interactions
-  // reuses the Gemini key, mirroring the upstream-URL remap above.
-  applyProviderAuth(forwardHeaders, target, providerKey, record.providerKeys?.[lookupKey]);
+  const forwardHeaders = prepareEgressHeaders(
+    req,
+    target,
+    providerKey,
+    record.providerKeys?.[lookupKey],
+    record,
+  );
+  if (!forwardHeaders) {
+    writeErrorResponse(
+      res,
+      502,
+      JSON.stringify({
+        error: { message: "No configured provider credential", type: "proxy_error" },
+      }),
+    );
+    return "relayed";
+  }
 
   const requestBody = rawBody ?? JSON.stringify(request);
 

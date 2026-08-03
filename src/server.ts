@@ -109,7 +109,15 @@ import {
   GROK_VIDEO_SUBMIT_PATH,
   GROK_VIDEO_STATUS_RE,
 } from "./metrics.js";
-import { proxyAndRecord } from "./recorder.js";
+import { markRecordAuthEnabled, proxyAndRecord } from "./recorder.js";
+import {
+  resolveInboundAuth,
+  markAuthenticatedRequest,
+  validateRequestApiKey,
+  writeApiKeyHttpRejection,
+  writeApiKeyUpgradeRejection,
+  type ResolvedInboundAuth,
+} from "./api-key-auth.js";
 
 export interface ServerInstance {
   server: http.Server;
@@ -1327,6 +1335,18 @@ export async function createServer(
   mounts?: Array<{ path: string; handler: Mountable }>,
   serviceFixtures?: ServiceFixtures,
 ): Promise<ServerInstance> {
+  const resolvedAuth = resolveInboundAuth({ value: options?.auth, label: "options.auth" });
+  return createServerWithResolvedAuth(fixtures, options, resolvedAuth, mounts, serviceFixtures);
+}
+
+/** @internal Config startup uses this to avoid parsing a selected auth source twice. */
+export async function createServerWithResolvedAuth(
+  fixtures: Fixture[],
+  options: MockServerOptions | undefined,
+  resolvedAuth: ResolvedInboundAuth,
+  mounts?: Array<{ path: string; handler: Mountable }>,
+  serviceFixtures?: ServiceFixtures,
+): Promise<ServerInstance> {
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
   const logger = new Logger(options?.logLevel ?? "silent");
@@ -1363,6 +1383,8 @@ export async function createServer(
       return serverOptions.grokVideo;
     },
   };
+
+  if (resolvedAuth.policy.enabled) markRecordAuthEnabled(options?.record);
 
   // Validate chaos config rates
   if (options?.chaos) {
@@ -1458,12 +1480,6 @@ export async function createServer(
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
-    // OPTIONS preflight
-    if (req.method === "OPTIONS") {
-      handleOptions(res);
-      return;
-    }
-
     // Record start time for metrics
     const startTime = registry ? process.hrtime.bigint() : 0n;
 
@@ -1500,6 +1516,29 @@ export async function createServer(
           defaults.logger.warn("metrics instrumentation error", err);
         }
       });
+    }
+
+    // Browser CORS preflights do not carry application credentials. A bare
+    // OPTIONS is still a route request and must pass the normal auth boundary.
+    if (
+      req.method === "OPTIONS" &&
+      (!resolvedAuth.policy.enabled ||
+        (req.headers.origin !== undefined &&
+          req.headers["access-control-request-method"] !== undefined))
+    ) {
+      handleOptions(res);
+      return;
+    }
+
+    const isPublicProbe =
+      req.method === "GET" &&
+      (pathname === HEALTH_PATH || pathname === READY_PATH || pathname === "/metrics");
+    if (!isPublicProbe) {
+      if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
+        writeApiKeyHttpRejection(res, setCorsHeaders);
+        return;
+      }
+      markAuthenticatedRequest(req, resolvedAuth.policy);
     }
 
     // Control API — must be checked before mounts and path rewrites
@@ -3100,6 +3139,11 @@ export async function createServer(
   ): Promise<void> {
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     let pathname = parsedUrl.pathname;
+
+    if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
+      writeApiKeyUpgradeRejection(socket);
+      return;
+    }
 
     // Dispatch to mounted services before any path rewrites
     if (mounts) {

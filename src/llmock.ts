@@ -17,7 +17,8 @@ import type {
   TranscriptionResponse,
   VideoResponse,
 } from "./types.js";
-import { createServer, type ServerInstance } from "./server.js";
+import { createServer, createServerWithResolvedAuth, type ServerInstance } from "./server.js";
+import type { ResolvedInboundAuth } from "./api-key-auth.js";
 import {
   loadFixtureFile,
   loadFixturesFromDir,
@@ -40,9 +41,11 @@ export class LLMock {
   private mounts: Array<{ path: string; handler: Mountable }> = [];
   private serverInstance: ServerInstance | null = null;
   private options: MockServerOptions;
+  private readonly resolvedInboundAuth?: ResolvedInboundAuth;
 
-  constructor(options?: MockServerOptions) {
+  constructor(options?: MockServerOptions, resolvedInboundAuth?: ResolvedInboundAuth) {
     this.options = options ?? {};
+    this.resolvedInboundAuth = resolvedInboundAuth;
   }
 
   // ---- Fixture management ----
@@ -440,11 +443,23 @@ export class LLMock {
     if (this.serverInstance) {
       throw new Error("Server already started");
     }
-    this.serverInstance = await createServer(this.fixtures, this.options, this.mounts, {
-      search: this.searchFixtures,
-      rerank: this.rerankFixtures,
-      moderation: this.moderationFixtures,
-    });
+    this.serverInstance = await (this.resolvedInboundAuth
+      ? createServerWithResolvedAuth(
+          this.fixtures,
+          this.options,
+          this.resolvedInboundAuth,
+          this.mounts,
+          {
+            search: this.searchFixtures,
+            rerank: this.rerankFixtures,
+            moderation: this.moderationFixtures,
+          },
+        )
+      : createServer(this.fixtures, this.options, this.mounts, {
+          search: this.searchFixtures,
+          rerank: this.rerankFixtures,
+          moderation: this.moderationFixtures,
+        }));
     return this.serverInstance.url;
   }
 
@@ -494,4 +509,12 @@ export class LLMock {
     await instance.start();
     return instance;
   }
+}
+
+/** @internal Configuration startup preserves a policy resolved from the selected source. */
+export function createLLMockWithResolvedAuth(
+  options: MockServerOptions,
+  resolvedAuth: ResolvedInboundAuth,
+): LLMock {
+  return new LLMock(options, resolvedAuth);
 }

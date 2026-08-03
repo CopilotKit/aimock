@@ -1016,6 +1016,8 @@ export interface FalRecordConfig {
 }
 
 export interface MockServerOptions {
+  /** Optional inbound test-client access keys. Omit to preserve permissive behavior. */
+  auth?: ApiKeyAuthConfig;
   port?: number;
   host?: string;
   latency?: number;
@@ -1098,6 +1100,10 @@ export interface MockServerOptions {
    * poll count.
    */
   grokVideo?: FalQueueConfig;
+}
+
+export interface ApiKeyAuthConfig {
+  apiKeys: readonly string[];
 }
 
 /**
