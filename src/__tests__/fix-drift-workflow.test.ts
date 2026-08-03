@@ -753,35 +753,55 @@ function selectedSteps(ctx: EvalCtx, src: string = wf): Step[] {
 const isAlertStep = (s: Step): boolean => /^(Alert|Notify)\b/.test(s.name ?? "");
 
 /**
- * ASSEMBLE a Slack alert's message the way bash will, and return the result.
+ * ASSEMBLE every Slack message a step can build, the way bash will, and return
+ * them.
  *
  * The raw YAML text cannot answer "does this message contain a newline": the
  * literal two characters `\n` (which bash does NOT expand inside double quotes)
- * and a `${NL}` holding a real newline look equally plausible in source. So run
- * the step's own body up to and including its `MSG=` assignment — with every env
- * key it declares filled in — and print what `$MSG` actually holds.
+ * and a `${NL}` holding a real newline look equally plausible in source. So each
+ * `MSG=` assignment is EVALUATED — preceded by every side-effect-free literal
+ * assignment above it, so `NL=$'\n'` and the `WHERE=`/`HEADLINE=` branches are
+ * in scope — and the resulting string is printed.
+ *
+ * Assignments are evaluated one at a time rather than by running the body up to
+ * the last one: a step may legitimately build DIFFERENT messages in different
+ * branches (the success alert distinguishes "PR just opened" from "PR still
+ * open"), and truncating mid-`if` produced a bash syntax error rather than a
+ * finding. Branch structure is irrelevant here — what is under test is how each
+ * string is BUILT, so every one of them gets checked.
  */
-function assembleSlackMessage(step: Step): string {
+function assembleSlackMessages(step: Step): string[] {
   const lines = runOf(step).split("\n");
-  const last = lines.reduce((acc, l, i) => (/\bMSG=/.test(l) ? i : acc), -1);
-  if (last === -1) throw new Error(`${step.name}: no MSG= assignment to assemble`);
+  const isMsg = (l: string) => /^\s*MSG=/.test(l);
+  const isLiteralAssignment = (l: string) =>
+    /^\s*[A-Za-z_][A-Za-z0-9_]*=/.test(l) && !l.includes("$(") && !l.includes("`");
+  const msgLines = lines.flatMap((l, i) => (isMsg(l) ? [i] : []));
+  if (msgLines.length === 0) throw new Error(`${step.name}: no MSG= assignment to assemble`);
+
+  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  for (const key of Object.keys(step.env ?? {})) env[key] = `<${key}>`;
+
   const dir = mkdtempSync(join(tmpdir(), "fix-drift-msg-"));
   try {
-    const outFile = join(dir, "msg.txt");
-    const script = join(dir, "msg.sh");
-    writeFileSync(
-      script,
-      [...lines.slice(0, last + 1), `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`].join("\n"),
-    );
-    const env: Record<string, string> = { ...process.env } as Record<string, string>;
-    // Non-empty placeholders for everything the step declares, so `set -u` is
-    // satisfied and each message takes its content-bearing branch.
-    for (const key of Object.keys(step.env ?? {})) env[key] = `<${key}>`;
-    const res = spawnSync("/bin/bash", [script], { cwd: dir, encoding: "utf-8", env });
-    if (res.status !== 0) {
-      throw new Error(`${step.name}: assembling MSG failed (${res.status}): ${res.stderr}`);
-    }
-    return readFileSync(outFile, "utf-8");
+    return msgLines.map((idx) => {
+      const outFile = join(dir, `msg-${idx}.txt`);
+      const script = join(dir, `msg-${idx}.sh`);
+      writeFileSync(
+        script,
+        [
+          ...lines.slice(0, idx).filter((l) => isLiteralAssignment(l) && !isMsg(l)),
+          lines[idx],
+          `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`,
+        ].join("\n"),
+      );
+      const res = spawnSync("/bin/bash", [script], { cwd: dir, encoding: "utf-8", env });
+      if (res.status !== 0) {
+        throw new Error(
+          `${step.name}: assembling the MSG on line ${idx + 1} failed (${res.status}): ${res.stderr}`,
+        );
+      }
+      return readFileSync(outFile, "utf-8");
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -795,10 +815,17 @@ function assembleSlackMessage(step: Step): string {
  * Every invocation of `cmd` in `run`, as the WHOLE command (backslash line
  * continuations joined), regardless of flag ORDER.
  *
- * The old `--limit` guard used `/gh pr list[^|]*?--json [a-zA-Z,]+/`, which
- * only ever saw an invocation whose `--json` came before any `|` — so a
- * `gh pr list` with its flags reordered, or with no `--json` at all, was never
- * examined and silently kept its default limit of 30.
+ * The old `--limit` guard used `/gh pr list[^|]*?--json [a-zA-Z,]+/`, which only
+ * ever saw an invocation whose `--json` came before any `|` — so a `gh pr list`
+ * with its flags reordered, or with no `--json` at all, was never examined and
+ * silently kept its default limit of 30.
+ *
+ * Distinguishing a COMMAND from a message ABOUT a command needs more than a
+ * substring search, and more than naive quote tracking: `X="$(gh pr list …)"`
+ * is an invocation even though it sits inside double quotes, while
+ * `echo "::error::gh pr list failed …"` is not one at all. So the body is
+ * scanned with a stack of command-substitution frames — `$( … )` opens a FRESH
+ * command context, quoting and all — and only unquoted occurrences count.
  */
 function shellInvocations(run: string, cmd: string): string[] {
   // Shell COMMENT lines are dropped first: the workflow documents `--limit 200`
@@ -809,12 +836,49 @@ function shellInvocations(run: string, cmd: string): string[] {
     .filter((l) => !/^\s*#/.test(l))
     .join("\n")
     .replace(/\\\n\s*/g, " ");
-  const out: string[] = [];
-  let from = 0;
-  for (;;) {
-    const at = joined.indexOf(cmd, from);
-    if (at === -1) break;
-    from = at + cmd.length;
+
+  const starts: number[] = [];
+  const frames: Array<{ quote: '"' | "'" | null }> = [{ quote: null }];
+  for (let i = 0; i < joined.length; i++) {
+    const f = frames[frames.length - 1];
+    const c = joined[i];
+    if (f.quote === "'") {
+      if (c === "'") f.quote = null;
+      continue;
+    }
+    if (f.quote === '"') {
+      if (c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === '"') {
+        f.quote = null;
+        continue;
+      }
+      // Command substitution inside double quotes is still a command context.
+      if (c === "$" && joined[i + 1] === "(") {
+        frames.push({ quote: null });
+        i++;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      f.quote = c;
+      continue;
+    }
+    if (c === "$" && joined[i + 1] === "(") {
+      frames.push({ quote: null });
+      i++;
+      continue;
+    }
+    if (c === ")" && frames.length > 1) {
+      frames.pop();
+      continue;
+    }
+    if (joined.startsWith(cmd, i)) starts.push(i);
+  }
+
+  return starts.map((at) => {
     let end = joined.length;
     let quote: '"' | "'" | null = null;
     for (let i = at; i < joined.length; i++) {
@@ -825,7 +889,7 @@ function shellInvocations(run: string, cmd: string): string[] {
         continue;
       }
       if (c === '"' || c === "'") {
-        quote = c as '"' | "'";
+        quote = c;
         continue;
       }
       if (c === "\n" || c === ";" || c === "|" || c === ")" || c === "&") {
@@ -833,9 +897,8 @@ function shellInvocations(run: string, cmd: string): string[] {
         break;
       }
     }
-    out.push(joined.slice(at, end).trim());
-  }
-  return out;
+    return joined.slice(at, end).trim();
+  });
 }
 
 /**
@@ -860,29 +923,6 @@ function enclosingGuardBody(lines: string[], idx: number): string {
     }
   }
   return lines.slice(start, idx).join("\n");
-}
-
-/** Every `MSG=` assignment in a body, as its raw (unexpanded) double-quoted value. */
-function slackMessageBodies(run: string): string[] {
-  const out: string[] = [];
-  const re = /\bMSG=(")/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(run)) !== null) {
-    let i = m.index + m[0].length;
-    let v = "";
-    for (; i < run.length; i++) {
-      if (run[i] === "\\") {
-        v += run[i] + (run[i + 1] ?? "");
-        i++;
-        continue;
-      }
-      if (run[i] === '"') break;
-      v += run[i];
-    }
-    out.push(v);
-    re.lastIndex = i;
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,10 +1087,22 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
     return perms as Record<string, YNode>;
   };
 
-  it("the sync JOB's own permissions block grants only contents + pull-requests write", () => {
-    // Pinned exactly: a re-added `checks`/`statuses` scope fails here, and so
-    // does any other new scope, which is the point of a least-privilege pin.
-    expect(jobPermissions()).toEqual({ contents: "write", "pull-requests": "write" });
+  it("the sync JOB's own permissions grant NO scope beyond contents + pull-requests", () => {
+    // An allowlist, not an exact pin. Least privilege must be free to get
+    // TIGHTER — the job may drop a write, or drop a scope entirely, since every
+    // write here goes through the minted app token rather than GITHUB_TOKEN —
+    // but it must never get WIDER. An exact pin blocks the correct direction:
+    // it reds on `contents: read`, which is strictly safer than what it pinned.
+    const perms = jobPermissions();
+    const allowed = ["contents", "pull-requests"];
+    for (const [scope, level] of Object.entries(perms)) {
+      expect(
+        allowed,
+        `the sync job grants an unexpected scope \`${scope}: ${String(level)}\``,
+      ).toContain(scope);
+      expect(["read", "write"]).toContain(String(level));
+    }
+    expect(Object.keys(perms).length).toBeGreaterThan(0);
   });
 
   it("the sync job's permissions block does not grant checks: read", () => {
@@ -1420,12 +1472,19 @@ describe("fix-drift.yml — human-approval backstop: no unattended auto-merge", 
   });
 
   it("the success Slack message says the PR needs human review + merge, NOT merged to main", () => {
-    const success = stepByName("Notify Slack on sync success");
-    const msgs = slackMessageBodies(runOf(success));
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0]).not.toContain("merged to main");
-    expect(msgs[0]).toContain("Drift-sync PR opened — needs human review + merge");
-    expect(msgs[0]).toContain("a human must review CI + the diff and merge");
+    // EVERY message the step can build, not just the first: a step may
+    // legitimately distinguish "PR just opened" from "PR still open and
+    // unmerged", and each variant has to keep the promise.
+    const msgs = assembleSlackMessages(stepByName("Notify Slack on sync success"));
+    expect(msgs.length).toBeGreaterThan(0);
+    for (const msg of msgs) {
+      expect(msg, "a success message claims the change reached main").not.toContain(
+        "merged to main",
+      );
+      expect(msg, "a success message does not say a human must still merge").toContain(
+        "needs human review + merge",
+      );
+    }
   });
 });
 
@@ -1969,19 +2028,20 @@ describe("fix-drift.yml — Slack message bodies use REAL newlines, not a litera
 
   it("each alert's ASSEMBLED message carries a real newline and no literal backslash-n", () => {
     for (const step of slackSteps()) {
-      const msg = assembleSlackMessage(step);
-      expect(
-        msg,
-        `${step.name}: the assembled message contains the two characters "\\n". Bash does ` +
-          "NOT expand a backslash-n inside double quotes, and jq then escapes the " +
-          "backslash, so Slack renders it literally in the middle of the alert " +
-          "instead of breaking the line before the run link.",
-      ).not.toMatch(/\\n/);
-      expect(
-        msg,
-        `${step.name}: the assembled message has no newline at all — the run link is ` +
-          "jammed onto the end of the prose.",
-      ).toMatch(/\n/);
+      for (const msg of assembleSlackMessages(step)) {
+        expect(
+          msg,
+          `${step.name}: the assembled message contains the two characters "\\n". Bash does ` +
+            "NOT expand a backslash-n inside double quotes, and jq then escapes the " +
+            "backslash, so Slack renders it literally in the middle of the alert " +
+            "instead of breaking the line before the run link.",
+        ).not.toMatch(/\\n/);
+        expect(
+          msg,
+          `${step.name}: the assembled message has no newline at all — the run link is ` +
+            "jammed onto the end of the prose.",
+        ).toMatch(/\n/);
+      }
     }
   });
 });
