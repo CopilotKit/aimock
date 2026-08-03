@@ -202,6 +202,13 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "gpt-4o-transcribe-diarize",
+    // 2026-07-28 transcription line. `gpt-transcribe` serves
+    // /v1/audio/transcriptions + realtime transcription sessions;
+    // `gpt-live-transcribe` is realtime-transcription-only. NEITHER answers on
+    // /v1/chat/completions, so both are wrong-modality here — same treatment as
+    // the gpt-4o-transcribe cluster above.
+    "gpt-transcribe",
+    "gpt-live-transcribe",
     "gpt-realtime",
     "gpt-realtime-mini",
     "gpt-realtime-2",

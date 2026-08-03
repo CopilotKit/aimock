@@ -208,7 +208,7 @@ const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
   },
   "excludeFamilies.openai": {
     members: [...excludeFamilies.openai].sort(),
-    pin: "aa2fc084639c7b4de847e3db2a8d93b8c4a060e66acfa527b7462e5682377ecc",
+    pin: "e4484f780a6a64928a54004a52420969c28d92c861272b10fffbbc7f96625f76",
   },
   "excludeFamilies.anthropic": {
     members: [...excludeFamilies.anthropic].sort(),
