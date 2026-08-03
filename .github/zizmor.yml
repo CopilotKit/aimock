@@ -11,11 +11,6 @@ rules:
   # zero-scopes `GITHUB_TOKEN`. Only `pull_request.{title,html_url,user.login,number}`
   # is exposed, and all three are passed via `env:` so shell interpolation is
   # not possible.
-  #
-  # `fix-drift.yml` uses `workflow_run` triggered by the Drift Tests workflow
-  # which is restricted to `branches: [main]`. The trigger payload cannot be
-  # forged from a PR; the workflow runs against `main` HEAD only.
   dangerous-triggers:
     ignore:
       - notify-pr.yml
-      - fix-drift.yml

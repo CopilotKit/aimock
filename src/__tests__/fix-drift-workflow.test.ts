@@ -8,10 +8,11 @@
  * Both have been DELETED entirely. This suite (retargeted from the deleted
  * predicate-era assertions) pins the NEW, load-bearing wiring instead:
  *
- *   - the workflow triggers on workflow_dispatch, a SCHEDULED cron (the
+ *   - the workflow triggers on workflow_dispatch and a SCHEDULED cron (the
  *     deprecation detector fires independently of drift-test failure — a
  *     vanished model family does not, by itself, red the Drift Tests
- *     workflow), and workflow_run(Drift Tests, failure).
+ *     workflow), and on AT MOST ONE trigger for a given Drift Tests failure
+ *     (see the double-fire section below).
  *   - the "Auto-fix drift" step is replaced by `scripts/drift-sync.ts` (the
  *     deterministic, zero-LLM model-family sync core).
  *   - the "Assert drift truly resolved" step is replaced by
@@ -38,6 +39,57 @@ const wf = readFileSync(WORKFLOW_PATH, "utf-8");
 
 /** Collapse runs of whitespace so multi-line YAML `run:` blocks match linearly. */
 const wfFlat = wf.replace(/\s+/g, " ");
+
+/**
+ * Read the workflow's top-level `on:` mapping and report which triggers are
+ * declared (plus, for `workflow_run`, which upstream workflows it keys off).
+ *
+ * Scoped deliberately to the trigger block — a top-level key followed by
+ * two-space-indented child keys — rather than pulling in a YAML parser the
+ * repo does not ship. Comments and blank lines are skipped; the block ends at
+ * the next column-0 key.
+ */
+function parseTriggers(src: string): {
+  names: string[];
+  workflowRunWorkflows: string[];
+} {
+  const lines = src.split("\n");
+  const onIdx = lines.findIndex((l) => /^on:\s*$/.test(l));
+  if (onIdx === -1) throw new Error("fix-drift.yml: no top-level `on:` block found");
+
+  const names: string[] = [];
+  const workflowRunWorkflows: string[] = [];
+  let inWorkflowRun = false;
+
+  for (let i = onIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    if (/^\S/.test(line)) break; // next column-0 key ends the `on:` block
+
+    const key = /^ {2}([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
+    if (key) {
+      names.push(key[1]);
+      inWorkflowRun = key[1] === "workflow_run";
+      continue;
+    }
+    if (inWorkflowRun) {
+      const wfs = /^ {4}workflows:\s*\[(.*)\]\s*$/.exec(line);
+      if (wfs) {
+        workflowRunWorkflows.push(
+          ...wfs[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")),
+        );
+      }
+    }
+  }
+  return { names, workflowRunWorkflows };
+}
+
+/** The `sync` job's `if:` gate, as a single flattened expression string. */
+function syncJobIf(src: string): string {
+  const idx = src.indexOf("    if: >-");
+  if (idx === -1) throw new Error("fix-drift.yml: no `sync` job `if:` gate found");
+  return src.slice(idx, src.indexOf("runs-on:", idx)).replace(/\s+/g, " ");
+}
 
 describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE", () => {
   it("never references the deleted invokeClaudeCode / Claude Code CLI spawn", () => {
@@ -106,7 +158,7 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
   });
 });
 
-describe("fix-drift.yml — triggers on workflow_dispatch, a SCHEDULED cron, and drift-test failure", () => {
+describe("fix-drift.yml — triggers on workflow_dispatch and a SCHEDULED cron", () => {
   it("triggers on workflow_dispatch", () => {
     expect(wf).toMatch(/on:\s*\n\s*workflow_dispatch:/);
   });
@@ -115,18 +167,71 @@ describe("fix-drift.yml — triggers on workflow_dispatch, a SCHEDULED cron, and
     expect(wf).toMatch(/schedule:\s*\n\s*-\s*cron:/);
   });
 
-  it("still triggers on workflow_run of the Drift Tests workflow completing", () => {
-    expect(wf).toContain('workflows: ["Drift Tests"]');
-    expect(wf).toContain("types: [completed]");
-  });
-
-  it("the job runs on workflow_dispatch, schedule, OR a failed Drift Tests run", () => {
-    const idx = wf.indexOf("if: >-");
-    expect(idx).toBeGreaterThan(-1);
-    const block = wf.slice(idx, wf.indexOf("runs-on:", idx));
+  it("the job runs on workflow_dispatch OR the schedule", () => {
+    const block = syncJobIf(wf);
     expect(block).toContain("github.event_name == 'workflow_dispatch'");
     expect(block).toContain("github.event_name == 'schedule'");
-    expect(block).toContain("github.event.workflow_run.conclusion == 'failure'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DOUBLE-FIRE GUARD. This workflow declared BOTH a `schedule` cron AND
+// `workflow_run: ["Drift Tests"]`, and admitted the latter whenever the
+// upstream run concluded `failure`. While Drift Tests was green the
+// workflow_run leg resolved `skipped`, so the duplication was invisible; the
+// moment Drift Tests went red (2026-07-29) EVERY day produced TWO Fix Drift
+// runs — one `workflow_run` and one `schedule` — each doing the identical
+// work and each firing its own Slack alert. `concurrency: drift-fix`
+// serialises the two runs but does NOT dedupe them.
+//
+// The workflow_run leg bought nothing: test-drift.yml's only main-branch
+// trigger is its own 6:00 cron and Fix Drift's cron is 6:10, so the leg's
+// entire contribution was ~9 minutes of latency on a daily unattended job.
+//
+// The guard below is written against the PARSED trigger block (not a
+// hand-picked string), so re-adding a `workflow_run` leg on "Drift Tests"
+// while the cron is still present fails this suite.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — at most ONE trigger can fire per Drift Tests failure", () => {
+  const { names, workflowRunWorkflows } = parseTriggers(wf);
+
+  it("the trigger block parses (guard is not vacuous)", () => {
+    expect(names).toContain("workflow_dispatch");
+    expect(names).toContain("schedule");
+  });
+
+  it("AT MOST ONE declared trigger fires when 'Drift Tests' concludes failure", () => {
+    // Triggers that fire on the day/run in which "Drift Tests" goes red:
+    //   - schedule                     — the 6:10 cron fires that morning anyway.
+    //   - workflow_run(["Drift Tests"]) — fires on that very run's completion.
+    // workflow_dispatch is manual and never self-fires, so it does not count.
+    const firesOnDriftFailure = [
+      names.includes("schedule") ? "schedule" : null,
+      workflowRunWorkflows.includes("Drift Tests") ? 'workflow_run(["Drift Tests"])' : null,
+    ].filter((t): t is string => t !== null);
+
+    expect(
+      firesOnDriftFailure,
+      "two triggers both fire on a Drift Tests failure — that is two identical " +
+        "Fix Drift runs and two Slack alerts every red day",
+    ).toHaveLength(1);
+  });
+
+  it("the job `if:` has no dead leg gated on an undeclared event", () => {
+    const gate = syncJobIf(wf);
+
+    // Every `github.event_name == 'X'` leg must name a DECLARED trigger,
+    // otherwise it is unreachable.
+    const compared = [...gate.matchAll(/github\.event_name == '([a-z_]+)'/g)].map((m) => m[1]);
+    expect(compared.length).toBeGreaterThan(0);
+    for (const ev of compared) expect(names).toContain(ev);
+
+    // `github.event.workflow_run.*` is populated ONLY under the workflow_run
+    // trigger; referencing it without that trigger leaves a leg that can
+    // never be satisfied (and reads as if the drift-failure gate still exists).
+    if (!names.includes("workflow_run")) {
+      expect(gate).not.toContain("github.event.workflow_run");
+    }
   });
 });
 
