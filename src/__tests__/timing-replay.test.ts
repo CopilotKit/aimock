@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture, SSEChunk, ChatCompletionRequest, RecordedTimings } from "../types.js";
+import * as sseWriter from "../sse-writer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,7 +103,7 @@ describe("timing-aware replay through handleCompletions", () => {
     expect(elapsed).toBeGreaterThanOrEqual(40); // at least ~TTFT minus jitter
   });
 
-  it("replaySpeed 2.0 is applied through the completions route", async () => {
+  it("forwards fixture replaySpeed and recordedTimings through the completions route", async () => {
     // 80ms TTFT + 4 x 40ms inter-chunk = ~240ms at 1x speed
     const timings: RecordedTimings = {
       ttftMs: 80,
@@ -124,19 +125,18 @@ describe("timing-aware replay through handleCompletions", () => {
       chunkSize: 5,
     });
 
-    const start = Date.now();
+    const writeSSEStream = vi.spyOn(sseWriter, "writeSSEStream");
     const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("speed-test"));
-    const elapsed = Date.now() - start;
 
     expect(res.status).toBe(200);
     const chunks = parseSSEResponse(res.body);
     expect(chunks.length).toBeGreaterThan(1);
 
-    // This real HTTP-path check confirms the option reaches the stream writer.
-    // Exact replay-speed semantics are asserted with fake timers in
-    // streaming-physics.test.ts, rather than imposing a wall-clock upper bound
-    // that also includes HTTP, event-loop, and timer-resolution overhead.
-    expect(elapsed).toBeGreaterThanOrEqual(50); // still has meaningful delay
+    expect(writeSSEStream).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ recordedTimings: timings, replaySpeed: 2 }),
+    );
   });
 
   it("recordedTimings alone impose real delays (positive control)", async () => {

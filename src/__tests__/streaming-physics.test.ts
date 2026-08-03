@@ -200,7 +200,7 @@ describe("writeSSEStream with streamingProfile", () => {
 
   it("scales every recorded replay delay by replaySpeed", async () => {
     vi.useFakeTimers();
-    const { res, output } = makeMockResponse();
+    const { res, output, ended } = makeMockResponse();
     const chunks = Array.from({ length: 8 }, (_, index) => makeChunk(String(index), "chunk"));
     const recordedTimings: RecordedTimings = {
       ttftMs: 80,
@@ -212,12 +212,23 @@ describe("writeSSEStream with streamingProfile", () => {
 
     // 8 emitted frames: 80ms / 2 for the first, then 40ms / 2 for each
     // remaining frame (the writer uses the recorded average after the fourth gap).
-    for (const delayMs of [40, 20, 20, 20, 20, 20, 20, 20]) {
-      await vi.advanceTimersByTimeAsync(delayMs);
+    for (const [index, delayMs] of [40, 20, 20, 20, 20, 20, 20, 20].entries()) {
+      const frame = JSON.stringify(chunks[index]);
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(output()).not.toContain(frame);
+      expect(ended()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(output()).toContain(frame);
+      for (let previous = 0; previous < index; previous++) {
+        expect(output().indexOf(JSON.stringify(chunks[previous]))).toBeLessThan(
+          output().indexOf(frame),
+        );
+      }
+      expect(ended()).toBe(index === chunks.length - 1);
     }
     await promise;
 
-    expect(output()).toContain(JSON.stringify(chunks.at(-1)));
     expect(output()).toContain("[DONE]");
   });
 
