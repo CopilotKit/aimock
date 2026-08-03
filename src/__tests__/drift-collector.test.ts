@@ -1587,6 +1587,234 @@ describe("canary delta keys are decoupled from the human-facing path string", ()
 });
 
 // ===========================================================================
+// Delta-key PROVENANCE — the gate's annotation cannot print a symbol that
+// does not exist
+// ===========================================================================
+
+/**
+ * The delta gate annotates a blocking key as `${k.provider} ${k.id}` (the
+ * "Delta gate" step of .github/workflows/test-drift.yml), so `DeltaKey.id` is the
+ * entire identifier a human gets when the required check hard-fails. `indexReport`
+ * builds it as `diff.id ?? diff.path` — so a diff with no `id` promotes a
+ * HUMAN-FACING DISPLAY STRING to the key. That is how `gaModels` and
+ * `knownModels[truncated]`, symbols retired from this repo, became printable delta
+ * keys: the annotation named a symbol the reader could not find anywhere.
+ *
+ * `98b9cf1` gave those two diffs explicit semantic ids, which fixes the current
+ * tree; this makes the property STRUCTURAL. Every key a collector-CONSTRUCTED diff
+ * can contribute must have one of three provenances, none of which can be an
+ * arbitrary display string:
+ *
+ *   semantic — `<namespace>:<slug>` with the namespace in the explicit
+ *              SEMANTIC_DELTA_ID_NAMESPACES allowlist. Namespaced, so it reads as
+ *              a key and is never mistaken for a symbol to go look up.
+ *   observed — the id IS the value the live API returned (it equals the diff's
+ *              `real`), i.e. wire data rather than repo prose.
+ *   declared — the id is an identifier this repo actually DECLARES, so a reader
+ *              who greps it lands on something real.
+ *
+ * Anything else fails: a bare display string, a prose bucket, a retired symbol
+ * name, or a missing `id` whose `path` falls through to the key.
+ *
+ * SCOPE: the diffs the collector writes ITSELF — the realtime-canary and WS
+ * handshake lanes — whose `path`/`id` are hand-authored. A diff parsed out of a
+ * formatted drift block carries the probe's observed wire path
+ * (`choices[0].message.refusal`), which is data from the run rather than a symbol
+ * citation, and is out of scope.
+ *
+ * Composes with drift-remediation-strings.test.ts, which separately forbids any
+ * RETIRED symbol name anywhere in the collector source: a `declared` id cannot be
+ * a retired symbol here, and a `semantic` id cannot smuggle one into its slug
+ * there.
+ */
+const SEMANTIC_DELTA_ID_NAMESPACES: readonly string[] = [
+  // The two id-less realtime-canary diffs: NO_GA_DELTA_ID / TRUNCATED_DELTA_ID.
+  "openai-realtime",
+  // The WS handshake lane: `ws-handshake:<provider error code>`.
+  "ws-handshake",
+];
+
+/**
+ * The WS handshake lane's fixture. Shaped to parseWSHandshakeFailure's three
+ * documented gates — a `waitUntil timeout`, the ws-realtime.drift.ts stack frame,
+ * and a surfaced provider `error` body. Unlike the canary fixtures above, this one
+ * is hand-authored to those gates rather than captured.
+ */
+const WS_HANDSHAKE_ERROR_FAILURE =
+  "AssertionError: waitUntil timeout after 10000ms; last message: " +
+  '{"type":"error","error":{"type":"invalid_request_error","code":"invalid_api_key",' +
+  '"message":"Incorrect API key provided."}}\n' +
+  "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:64:11";
+
+/** The namespace of a `<namespace>:<slug>` id, or null when it is not namespaced. */
+function deltaIdNamespace(id: string): string | null {
+  const colon = id.indexOf(":");
+  if (colon <= 0 || colon >= id.length - 1) return null;
+  return id.slice(0, colon);
+}
+
+/**
+ * Contents of every `.ts` file whose declarations a delta key may name. Read once
+ * — the per-key check below runs over the cached text, not the filesystem.
+ */
+let repoSourcesCache: string[] | null = null;
+function repoSources(): string[] {
+  if (repoSourcesCache !== null) return repoSourcesCache;
+  const repoRoot = resolve(__dirname, "..", "..");
+  const sources: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir, { withFileTypes: true })) {
+      const abs = resolve(dir, name.name);
+      if (name.isDirectory()) {
+        if (name.name === "node_modules" || name.name === "dist") continue;
+        walk(abs);
+      } else if (name.name.endsWith(".ts")) {
+        sources.push(readFileSync(abs, "utf8"));
+      }
+    }
+  };
+  for (const root of ["src", "scripts"]) walk(resolve(repoRoot, root));
+  repoSourcesCache = sources;
+  return sources;
+}
+
+/** Does any repo source DECLARE `id` (not merely mention it in prose)? */
+function repoDeclaresIdentifier(id: string): boolean {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id)) return false;
+  const decl = new RegExp(
+    `(?:export\\s+)?(?:declare\\s+)?(?:const|let|var|function|class|interface|type|enum)\\s+${id}\\b`,
+  );
+  return repoSources().some((src) => decl.test(src));
+}
+
+type DeltaKeyProvenance = "semantic" | "observed" | "declared";
+
+/**
+ * Classify the provenance of the delta key a diff will contribute, keying it
+ * EXACTLY as `indexReport` does (`diff.id ?? diff.path`). null = no provenance:
+ * the key is an arbitrary display string and the gate could annotate it at a
+ * human as if it were something to look up.
+ */
+function deltaKeyProvenanceOf(diff: ParsedDiff): DeltaKeyProvenance | null {
+  const key = diff.id ?? diff.path;
+  const namespace = deltaIdNamespace(key);
+  if (namespace !== null && SEMANTIC_DELTA_ID_NAMESPACES.includes(namespace)) return "semantic";
+  if (key.length > 0 && key === diff.real) return "observed";
+  if (repoDeclaresIdentifier(key)) return "declared";
+  return null;
+}
+
+/** Every diff the collector CONSTRUCTS itself, labelled by the lane it came from. */
+function constructedDiffs(): { lane: string; diff: ParsedDiff }[] {
+  const lanes: Record<string, string> = {
+    "canary no-GA (marker)": CANARY_NO_GA_MARKER,
+    "canary no-GA + unknown": CANARY_NO_GA_WITH_UNKNOWN,
+    "canary no-GA (empty list)": CANARY_NO_GA_EMPTY,
+    "canary unknown models": CANARY_MARKER_MULTI,
+    "canary truncated": CANARY_FALLBACK_TRUNCATED,
+    "WS handshake error": WS_HANDSHAKE_ERROR_FAILURE,
+  };
+  const out: { lane: string; diff: ParsedDiff }[] = [];
+  for (const [lane, message] of Object.entries(lanes)) {
+    const entries = entriesOf(
+      makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Realtime API drift"],
+          title: "canary: GA realtime models available",
+          failureMessages: [message],
+        }),
+      ]),
+    );
+    for (const entry of entries) {
+      for (const diff of entry.diffs) out.push({ lane, diff });
+    }
+  }
+  return out;
+}
+
+describe("every delta key the collector constructs has a provenance", () => {
+  const constructed = constructedDiffs();
+
+  const idLess = (path: string): ParsedDiff => ({
+    path,
+    severity: "critical",
+    issue: "GA realtime family unavailable",
+    expected: "(at least one GA realtime model present)",
+    real: "no realtime models observed",
+    mock: "<no mock leg>",
+  });
+
+  // Vacuity guard: the per-key cases below are GENERATED from the enumeration, so
+  // an enumeration that quietly found nothing would report a green suite with no
+  // cases in it. Both id-less canary diffs, the per-model diffs and the WS lane
+  // must be present.
+  it("enumerates the collector's constructed diffs", () => {
+    expect(constructed.length, "constructed diffs found").toBeGreaterThanOrEqual(8);
+    expect(new Set(constructed.map((c) => c.lane)).size, "lanes covered").toBe(6);
+    const keys = constructed.map((c) => c.diff.id ?? c.diff.path);
+    expect(keys).toContain(NO_GA_DELTA_ID);
+    expect(keys).toContain(TRUNCATED_DELTA_ID);
+    expect(keys).toContain("ws-handshake:invalid_api_key");
+  });
+
+  // Known-positive controls: the classifier must ACCEPT each provenance, not just
+  // reject bad input. Without these a classifier that returned "semantic" for
+  // everything, or a repo scan that matched everything, would look green.
+  it("accepts each of the three provenances", () => {
+    expect(deltaKeyProvenanceOf(idLess("x")), "unclassifiable control").toBeNull();
+    expect(deltaKeyProvenanceOf({ ...idLess("gaRealtimeModels"), id: NO_GA_DELTA_ID })).toBe(
+      "semantic",
+    );
+    expect(
+      deltaKeyProvenanceOf({
+        ...idLess("knownVoiceModelFamilies"),
+        id: "gpt-realtime-99",
+        real: "gpt-realtime-99",
+      }),
+    ).toBe("observed");
+    // `gaRealtimeModels` really is declared in src/__tests__/drift/voice-models.ts.
+    expect(deltaKeyProvenanceOf(idLess("gaRealtimeModels"))).toBe("declared");
+  });
+
+  // Known-negative controls: the two keys that actually shipped, and the shape of
+  // the regression this guard exists to catch.
+  it("rejects a retired symbol name and a prose bucket", () => {
+    expect(deltaKeyProvenanceOf(idLess("gaModels")), "retired symbol as path").toBeNull();
+    expect(
+      deltaKeyProvenanceOf(idLess("knownModels[truncated]")),
+      "retired symbol + bucket suffix as path",
+    ).toBeNull();
+    expect(
+      deltaKeyProvenanceOf({ ...idLess("gaRealtimeModels"), id: "gaModels" }),
+      "retired symbol as an explicit id",
+    ).toBeNull();
+    expect(
+      deltaKeyProvenanceOf({
+        ...idLess("knownVoiceModelFamilies[truncated]"),
+        id: "knownVoiceModelFamilies[truncated]",
+      }),
+      "display path copied into the id",
+    ).toBeNull();
+  });
+
+  for (const { lane, diff } of constructed) {
+    it(`${lane}: "${diff.id ?? diff.path}" has a provenance`, () => {
+      expect(
+        deltaKeyProvenanceOf(diff),
+        `The delta key for this ${lane} diff is "${diff.id ?? diff.path}", which is ` +
+          `neither a namespaced semantic id (${SEMANTIC_DELTA_ID_NAMESPACES.join(", ")}), ` +
+          `nor the value the API returned, nor an identifier this repo declares. The ` +
+          `drift gate prints that key verbatim at a human — as "<provider> ` +
+          `${diff.id ?? diff.path}" — when it hard-fails the required check, so it must ` +
+          `not be an arbitrary display string. Give the diff an explicit semantic id ` +
+          `(see NO_GA_DELTA_ID) instead of letting its display path become the key.`,
+      ).not.toBeNull();
+    });
+  }
+});
+
+// ===========================================================================
 // WS-5 — structural surface keying via SURFACE_REGISTRY
 // ===========================================================================
 
