@@ -752,6 +752,41 @@ function selectedSteps(ctx: EvalCtx, src: string = wf): Step[] {
 /** Steps that exist to tell a human something (Slack + `::error::`). */
 const isAlertStep = (s: Step): boolean => /^(Alert|Notify)\b/.test(s.name ?? "");
 
+/**
+ * ASSEMBLE a Slack alert's message the way bash will, and return the result.
+ *
+ * The raw YAML text cannot answer "does this message contain a newline": the
+ * literal two characters `\n` (which bash does NOT expand inside double quotes)
+ * and a `${NL}` holding a real newline look equally plausible in source. So run
+ * the step's own body up to and including its `MSG=` assignment — with every env
+ * key it declares filled in — and print what `$MSG` actually holds.
+ */
+function assembleSlackMessage(step: Step): string {
+  const lines = runOf(step).split("\n");
+  const last = lines.reduce((acc, l, i) => (/\bMSG=/.test(l) ? i : acc), -1);
+  if (last === -1) throw new Error(`${step.name}: no MSG= assignment to assemble`);
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-msg-"));
+  try {
+    const outFile = join(dir, "msg.txt");
+    const script = join(dir, "msg.sh");
+    writeFileSync(
+      script,
+      [...lines.slice(0, last + 1), `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`].join("\n"),
+    );
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    // Non-empty placeholders for everything the step declares, so `set -u` is
+    // satisfied and each message takes its content-bearing branch.
+    for (const key of Object.keys(step.env ?? {})) env[key] = `<${key}>`;
+    const res = spawnSync("/bin/bash", [script], { cwd: dir, encoding: "utf-8", env });
+    if (res.status !== 0) {
+      throw new Error(`${step.name}: assembling MSG failed (${res.status}): ${res.stderr}`);
+    }
+    return readFileSync(outFile, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Shell-level helpers over `run:` bodies.
 // ---------------------------------------------------------------------------
@@ -1906,6 +1941,47 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
         simulateJob({ outputs: { sync: { reason, exit_code: "1" } } }).alerts,
         `reason=${reason} raises no alert`,
       ).not.toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 (Slack message newlines). Each alert builds its payload as
+// `MSG="…\nRun: …"` and hands it to `jq -n --arg text "$MSG"`. Inside bash
+// double quotes `\n` is a LITERAL backslash followed by `n`; jq then escapes the
+// backslash, so Slack receives `\\n` and renders the two characters `\n` in the
+// middle of the message instead of a line break. The run link is the part that
+// gets mangled, in every alert.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — Slack message bodies use REAL newlines, not a literal backslash-n", () => {
+  /** Every step that POSTs a Slack payload built from a `MSG=` assignment. */
+  const slackSteps = () =>
+    steps().filter((s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)));
+
+  it("all four Slack-posting steps are found (needs-human, gate-failure, success, catch-all)", () => {
+    expect(slackSteps().map((s) => s.name)).toEqual([
+      "Alert on needs-human decision",
+      "Alert on drift-sync-check gate failure",
+      "Notify Slack on sync success",
+      "Alert on early-infra failure (catch-all)",
+    ]);
+  });
+
+  it("each alert's ASSEMBLED message carries a real newline and no literal backslash-n", () => {
+    for (const step of slackSteps()) {
+      const msg = assembleSlackMessage(step);
+      expect(
+        msg,
+        `${step.name}: the assembled message contains the two characters "\\n". Bash does ` +
+          "NOT expand a backslash-n inside double quotes, and jq then escapes the " +
+          "backslash, so Slack renders it literally in the middle of the alert " +
+          "instead of breaking the line before the run link.",
+      ).not.toMatch(/\\n/);
+      expect(
+        msg,
+        `${step.name}: the assembled message has no newline at all — the run link is ` +
+          "jammed onto the end of the prose.",
+      ).toMatch(/\n/);
     }
   });
 });
