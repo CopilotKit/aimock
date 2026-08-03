@@ -1911,6 +1911,18 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       expect: ["Alert on drift-sync-check gate failure"],
     },
     {
+      // The window a `reason == ''` catch-all leaves open. Nothing drifted, so
+      // no reason-keyed alert exists — but the job can still fail (an artifact
+      // upload, a runner hiccup) with a NON-empty reason, and then a catch-all
+      // keyed on an empty reason stands down and nobody is told anything.
+      label: "ok-no-churn, then a later step fails (non-empty reason, no reason-keyed alert)",
+      scenario: {
+        failing: ["Upload drift-sync-check log"],
+        outputs: { sync: { reason: SyncCoreReason.OK_NO_CHURN, exit_code: "0" } },
+      },
+      expect: ["Alert on early-infra failure (catch-all)"],
+    },
+    {
       label: "ok-applied all the way through — the success notification, not an alert",
       scenario: {
         outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" }, pr: OK },
