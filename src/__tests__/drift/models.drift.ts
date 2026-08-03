@@ -68,8 +68,16 @@ export function unclassifiedFamilies(modelIds: string[], provider: Provider): st
  * emit one critical drift diff per unclassified family inside a
  * `formatDriftReport` block so the collector routes it to the exit-2 auto-fix
  * lane (provider names match `PROVIDER_MAP` keys in the collector).
+ *
+ * EXPORTED FOR THE ANTI-SILENCE ANCHOR, not for reuse. `unclassifiedFamilies`
+ * (above) is behaviourally covered — neutering it to `return []` reddens three
+ * tests in the default suite. THIS wrapper was covered by nothing: replacing its
+ * computed `unclassified` with a literal `[]` silenced the entire live text-lane
+ * canary with the whole suite still green. `logic-pin.test.ts` now anchors it
+ * behaviourally (it must throw, naming the family). Do not un-export it without
+ * moving that anchor.
  */
-function assertNoUnclassifiedFamilies(
+export function assertNoUnclassifiedFamilies(
   modelIds: string[],
   provider: Provider,
   context: string,

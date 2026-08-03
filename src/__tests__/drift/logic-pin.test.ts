@@ -49,6 +49,10 @@ import {
   normalizeVoiceModelFamily,
   detectVoiceModelDrift,
 } from "./voice-models.js";
+// TEXT lane. `unclassifiedFamilies` is the detector (behaviourally covered
+// elsewhere); `assertNoUnclassifiedFamilies` is the live ASSERTION that turns its
+// result into a drift report, and it was covered by nothing — see the anchor below.
+import { unclassifiedFamilies, assertNoUnclassifiedFamilies } from "./models.drift.js";
 
 const famSrc = readFileSync(fileURLToPath(new URL("./model-family.ts", import.meta.url)), "utf8");
 const regSrc = readFileSync(fileURLToPath(new URL("./model-registry.ts", import.meta.url)), "utf8");
@@ -302,6 +306,46 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
     // snapshot that has to be normalized to be recognized.
     expect(detectVoiceModelDrift(["gpt-realtime-2025-08-28"]).hasGA).toBe(true);
     expect(detectVoiceModelDrift(["gpt-realtime-mini"]).hasGA).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TEXT lane — the mirror of the voice anchors above.
+  //
+  // The DETECTOR (`unclassifiedFamilies`) is already behaviourally covered:
+  // neutering it to `return []` reddens three tests in the default suite (its
+  // co-located regressions plus the drift-sync mirror-equivalence guard). It is
+  // the ASSERTION WRAPPER that was open — `assertNoUnclassifiedFamilies` is the
+  // only thing that turns a detected family into a `formatDriftReport` block the
+  // collector can route to the exit-2 lane, it runs ONLY under the live
+  // `test:drift` config, and replacing its computed `unclassified` with a literal
+  // `[]` left the entire 4820-test default suite green. That is exactly the
+  // `hasGA = true` shape on the text side: one line, canary dead, CI happy.
+  //
+  // Anchored behaviourally rather than by checksum: a checksum says "something
+  // changed", this says "it no longer reports an unclassified family".
+  // ---------------------------------------------------------------------------
+  it("keeps assertNoUnclassifiedFamilies FAILING on an unclassified family (live text canary)", () => {
+    // Sanity: the detector really does see this family as unclassified, so the
+    // assertion below is being fed a genuine drift signal.
+    expect(unclassifiedFamilies(["gpt-live"], "openai")).toEqual(["gpt-live"]);
+
+    // The canary's whole job. Short-circuiting the wrapper (`unclassified = []`,
+    // an unconditional pass, a swallowed expect) makes this NOT throw.
+    expect(() =>
+      assertNoUnclassifiedFamilies(["gpt-live"], "openai", "anchor (unclassified family)"),
+    ).toThrow(/gpt-live/);
+  });
+
+  it("keeps assertNoUnclassifiedFamilies PASSING on a fully-classified listing", () => {
+    // The negative control: the anchor above must not be satisfiable by a
+    // wrapper that simply always throws.
+    expect(() =>
+      assertNoUnclassifiedFamilies(
+        ["gpt-4o", "gpt-4o-2024-08-06", "tts-1", "gemini-interactions"],
+        "openai",
+        "anchor (fully classified)",
+      ),
+    ).not.toThrow();
   });
 });
 
