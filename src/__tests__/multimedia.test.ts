@@ -157,8 +157,13 @@ describe("audio transcription", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
+    // Live `gpt-transcribe&stream=true` capture ends with the `[DONE]`
+    // sentinel after `transcript.text.done`; clients that loop until it
+    // otherwise never terminate.
     expect(await res.text()).toBe(
-      'data: {"type":"transcript.text.delta","delta":"Welcome"}\n\ndata: {"type":"transcript.text.done","text":"Welcome"}\n\n',
+      'data: {"type":"transcript.text.delta","delta":"Welcome"}\n\n' +
+        'data: {"type":"transcript.text.done","text":"Welcome"}\n\n' +
+        "data: [DONE]\n\n",
     );
     await mock.stop();
   });
@@ -189,7 +194,9 @@ describe("audio transcription", () => {
       (match) => match[1],
     );
     expect(deltas).toEqual(["ab", "cd", "ef"]);
-    expect(frameTimes).toHaveLength(4);
+    // 3 delta frames + transcript.text.done + the terminal [DONE] sentinel.
+    expect(frameTimes).toHaveLength(5);
+    expect(body.endsWith("data: [DONE]\n\n")).toBe(true);
     expect(frameTimes[1] - frameTimes[0]).toBeGreaterThanOrEqual(20);
     expect(frameTimes[2] - frameTimes[1]).toBeGreaterThanOrEqual(20);
     await mock.stop();

@@ -309,6 +309,10 @@ export async function handleTranscription(
       return;
     }
     res.write(`data: ${JSON.stringify(done)}\n\n`);
+    // The live `gpt-transcribe&stream=true` stream ends with the `[DONE]`
+    // sentinel after `transcript.text.done`. Omitting it leaves clients that
+    // loop until the sentinel waiting on a stream that never terminates.
+    res.write("data: [DONE]\n\n");
     res.end();
     interruption?.cleanup();
     return;

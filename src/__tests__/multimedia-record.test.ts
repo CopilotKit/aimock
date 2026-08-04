@@ -269,11 +269,15 @@ describe("multimedia record: transcription response detection", () => {
         },
       });
 
+      // Replay goes through the local handler, which terminates the stream with
+      // the `[DONE]` sentinel the live API sends. The proxied passthrough above
+      // relays the upstream bytes verbatim, so only replay gains the sentinel.
       const replay = await requestStreamingTranscription(recorder.url);
       expect(replay.status).toBe(200);
       expect(await replay.text()).toBe(
         'data: {"type":"transcript.text.delta","delta":"Recorded stream"}\n\n' +
-          'data: {"type":"transcript.text.done","text":"Recorded stream","languages":[{"code":"en"}],"usage":{"type":"tokens","input_tokens":4,"output_tokens":5,"total_tokens":9}}\n\n',
+          'data: {"type":"transcript.text.done","text":"Recorded stream","languages":[{"code":"en"}],"usage":{"type":"tokens","input_tokens":4,"output_tokens":5,"total_tokens":9}}\n\n' +
+          "data: [DONE]\n\n",
       );
     } finally {
       await closeServer(recorder.server);
