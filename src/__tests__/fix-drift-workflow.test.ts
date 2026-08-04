@@ -2443,12 +2443,48 @@ function noteMarkerFor(note: string): string {
   return `${m[1]}${note}`;
 }
 
+/**
+ * The drift bot's login, taken from the step's OWN `bot_author` predicate so this
+ * suite never carries a second copy of it. Verified against the real bot PRs on
+ * this repo (#350/#343/#337 all report `app/copilotkit-devops-bot`).
+ */
+function botLoginFromWorkflow(): string {
+  const lib = shellSingleQuoted(runOf(stepById("needs_human_pr")), "JQ_LIB");
+  const m = /def bot_author:[\s\S]*?== "([^"]+)"/.exec(lib);
+  if (m === null) throw new Error("JQ_LIB no longer identifies the bot by a literal login");
+  return m[1];
+}
+
+const BOT_AUTHOR = { is_bot: true, login: botLoginFromWorkflow() };
+/** A human collaborator. `jpr5` is the login the needs-human PR assigns to. */
+const HUMAN_AUTHOR = { is_bot: false, login: "jpr5" };
+
 interface FixturePR {
   number: number;
   headRefName: string;
+  /**
+   * REQUIRED, and runtime-checked below: the author is now half of the
+   * bot-managed discriminator, so a fixture that omits it silently tests the
+   * branch-shape half only — which is exactly the coverage hole H-F3's filter
+   * left behind. `src/__tests__` is excluded from tsconfig, so the type alone
+   * would not catch it.
+   */
+  author: { is_bot: boolean; login: string };
   body?: string;
   state?: string;
   files?: unknown;
+}
+
+function assertAuthored(prs: FixturePR[]): FixturePR[] {
+  for (const pr of prs) {
+    if (typeof pr.author?.login !== "string") {
+      throw new Error(
+        `fixture PR #${pr.number} declares no author, so it cannot exercise the ` +
+          "bot-author half of the candidate filter",
+      );
+    }
+  }
+  return prs;
 }
 
 /** Run the step's OWN candidate-selection program over `prs`. */
@@ -2459,7 +2495,15 @@ function selectCandidates(
 ): { status: number; err: string; selected: { number: number; wantMarkers: string[] }[] } {
   const run = runOf(stepById("needs_human_pr"));
   const program = shellSingleQuoted(run, "JQ_LIB") + shellSingleQuoted(run, "JQ_CANDIDATES");
-  const res = runJq(program, prs, { k: key }, { notes, noteMarkers: notes.map(noteMarkerFor) });
+  const res = runJq(
+    program,
+    assertAuthored(prs),
+    { k: key },
+    {
+      notes,
+      noteMarkers: notes.map(noteMarkerFor),
+    },
+  );
   return {
     status: res.status,
     err: res.err,
@@ -2471,16 +2515,21 @@ function selectCandidates(
 function unprovableCandidates(prs: FixturePR[], key: string): number[] {
   const run = runOf(stepById("needs_human_pr"));
   const program = shellSingleQuoted(run, "JQ_LIB") + shellSingleQuoted(run, "JQ_UNPROVEN");
-  const res = runJq(program, prs, { k: key });
+  const res = runJq(program, assertAuthored(prs), { k: key });
   if (res.status !== 0) throw new Error(`the audit program failed: ${res.err}`);
   return JSON.parse(res.out);
 }
 
 /**
- * EXECUTE the step's own candidate-selection SECTION — verbatim, from the
- * `NOTES_JSON=` line through the `REASSERTED=` line — under bash with only its
- * inputs seeded (`CHANGESET_KEY`, the `NOTES`/`NOTE_MARKERS` arrays, the
+ * EXECUTE the step's own candidate-selection SECTION — verbatim, from the first
+ * `$MANAGED` payload guard through the `REASSERTED=` line — under bash with only
+ * its inputs seeded (`CHANGESET_KEY`, the `NOTES`/`NOTE_MARKERS` arrays, the
  * `MANAGED` PR payload).
+ *
+ * The slice STARTS at the payload guards, not at `NOTES_JSON=`, so the checks
+ * that decide whether `$MANAGED` is usable at all (is it an array; does it carry
+ * the `author` field the bot-managed discriminator now needs) are observed rather
+ * than merely read.
  *
  * `selectCandidates` runs the jq programs in isolation, which proves what they
  * select but NOT that the step hands them the right arguments. This closes that
@@ -2492,12 +2541,22 @@ function observeCandidateSection(
   prs: FixturePR[],
   key: string,
   notes: string[],
+  /**
+   * Optional LAST-MOMENT corruption of the `$MANAGED` payload, applied AFTER the
+   * author assertion. Lets a guard hand the step a payload gh could really
+   * produce but a well-formed fixture cannot express — e.g. the `author` key
+   * absent because the `--json` field list dropped it.
+   */
+  corrupt: (prs: FixturePR[]) => unknown[] = (p) => p,
 ): { exit: number; mine: { number: number; wantMarkers: string[] }[]; stdio: string } {
+  assertAuthored(prs);
   const lines = runOf(stepById("needs_human_pr")).split("\n");
-  const from = lines.findIndex((l) => /^\s*NOTES_JSON=/.test(l));
+  const from = lines.findIndex((l) => /^\s*if ! printf '%s' "\$MANAGED" \| jq -e/.test(l));
   const to = lines.findIndex((l) => /^\s*REASSERTED=/.test(l));
   if (from === -1 || to === -1 || to < from) {
-    throw new Error("the step no longer has a NOTES_JSON…REASSERTED candidate-selection section");
+    throw new Error(
+      "the step no longer has a $MANAGED-guard…REASSERTED candidate-selection section",
+    );
   }
   const dir = mkdtempSync(join(tmpdir(), "fix-drift-cand-"));
   try {
@@ -2508,7 +2567,7 @@ function observeCandidateSection(
       `CHANGESET_KEY=${q(key)}`,
       `NOTES=(${notes.map(q).join(" ")})`,
       `NOTE_MARKERS=(${notes.map((n) => q(noteMarkerFor(n))).join(" ")})`,
-      `MANAGED=${q(JSON.stringify(prs))}`,
+      `MANAGED=${q(JSON.stringify(corrupt(prs)))}`,
       ...lines.slice(from, to + 1),
       'printf "%s" "$MINE" > "$RUNNER_TEMP/mine.json"',
     ].join("\n");
@@ -2559,7 +2618,14 @@ describe.skipIf(!JQ_AVAILABLE)(
       // it hashes to a different key. The changeset guard legitimately does not
       // fire and the per-note marker is all that prevents a duplicate PR.
       const { status, err, selected } = selectCandidates(
-        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        [
+          {
+            number: 900,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+        ],
         THIS_KEY,
         [NOTE],
       );
@@ -2573,7 +2639,14 @@ describe.skipIf(!JQ_AVAILABLE)(
 
     it("the SAME bot PR is NOT selected once this run carries no note paths (the note anchor is what selected it, nothing else)", () => {
       const { status, selected } = selectCandidates(
-        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        [
+          {
+            number: 900,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+        ],
         THIS_KEY,
         [],
       );
@@ -2583,7 +2656,14 @@ describe.skipIf(!JQ_AVAILABLE)(
 
     it("a bot PR whose changed files do NOT include a note path is not selected by the note anchor", () => {
       const { status, selected } = selectCandidates(
-        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: REGISTRY_FILE }],
+        [
+          {
+            number: 900,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: REGISTRY_FILE,
+          },
+        ],
         THIS_KEY,
         [NOTE],
       );
@@ -2593,7 +2673,14 @@ describe.skipIf(!JQ_AVAILABLE)(
 
     it("anchor (a) still selects a bot PR whose branch ends in THIS run's key, and it owns EVERY marker (keyAnchored)", () => {
       const { status, selected } = selectCandidates(
-        [{ number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: REGISTRY_FILE }],
+        [
+          {
+            number: 905,
+            headRefName: botNeedsHumanBranch(THIS_KEY),
+            author: BOT_AUTHOR,
+            files: REGISTRY_FILE,
+          },
+        ],
         THIS_KEY,
         [],
       );
@@ -2606,7 +2693,14 @@ describe.skipIf(!JQ_AVAILABLE)(
       // Executes the step's own NOTES_JSON…REASSERTED section, so the argument
       // wiring is observed and not merely the jq program.
       const ok = observeCandidateSection(
-        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        [
+          {
+            number: 900,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+        ],
         THIS_KEY,
         [NOTE],
       );
@@ -2618,8 +2712,18 @@ describe.skipIf(!JQ_AVAILABLE)(
     it("KNOWN NEGATIVE: the same section, on a MIXED run with no note paths, selects only the key-anchored PR and stays green", () => {
       const ok = observeCandidateSection(
         [
-          { number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE },
-          { number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: REGISTRY_FILE },
+          {
+            number: 900,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+          {
+            number: 905,
+            headRefName: botNeedsHumanBranch(THIS_KEY),
+            author: BOT_AUTHOR,
+            files: REGISTRY_FILE,
+          },
         ],
         THIS_KEY,
         [],
@@ -2630,7 +2734,14 @@ describe.skipIf(!JQ_AVAILABLE)(
 
     it("the section EXITS NON-ZERO with an ::error:: when a bot candidate's file list cannot be read", () => {
       const bad = observeCandidateSection(
-        [{ number: 902, headRefName: botNeedsHumanBranch(OTHER_KEY), files: "unavailable" }],
+        [
+          {
+            number: 902,
+            headRefName: botNeedsHumanBranch(OTHER_KEY),
+            author: BOT_AUTHOR,
+            files: "unavailable",
+          },
+        ],
         THIS_KEY,
         [NOTE],
       );
@@ -2659,7 +2770,14 @@ describe.skipIf(!JQ_AVAILABLE)(
       // signal, and "no files" is the answer that opens the duplicate.
       expect(
         unprovableCandidates(
-          [{ number: 902, headRefName: botNeedsHumanBranch(OTHER_KEY), files: "unavailable" }],
+          [
+            {
+              number: 902,
+              headRefName: botNeedsHumanBranch(OTHER_KEY),
+              author: BOT_AUTHOR,
+              files: "unavailable",
+            },
+          ],
           THIS_KEY,
         ),
       ).toEqual([902]);
@@ -2669,7 +2787,14 @@ describe.skipIf(!JQ_AVAILABLE)(
       const truncated = Array.from({ length: 100 }, (_, i) => ({ path: `src/gen/f${i}.ts` }));
       expect(
         unprovableCandidates(
-          [{ number: 903, headRefName: botNeedsHumanBranch(OTHER_KEY), files: truncated }],
+          [
+            {
+              number: 903,
+              headRefName: botNeedsHumanBranch(OTHER_KEY),
+              author: BOT_AUTHOR,
+              files: truncated,
+            },
+          ],
           THIS_KEY,
         ),
       ).toEqual([903]);
@@ -2679,9 +2804,24 @@ describe.skipIf(!JQ_AVAILABLE)(
       expect(
         unprovableCandidates(
           [
-            { number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE },
-            { number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: "unavailable" },
-            { number: 348, headRefName: "fix/drift-alert-signal", files: "unavailable" },
+            {
+              number: 900,
+              headRefName: botNeedsHumanBranch(OTHER_KEY),
+              author: BOT_AUTHOR,
+              files: TOUCHES_NOTE,
+            },
+            {
+              number: 905,
+              headRefName: botNeedsHumanBranch(THIS_KEY),
+              author: BOT_AUTHOR,
+              files: "unavailable",
+            },
+            {
+              number: 348,
+              headRefName: "fix/drift-alert-signal",
+              author: HUMAN_AUTHOR,
+              files: "unavailable",
+            },
           ],
           THIS_KEY,
         ),
@@ -2714,7 +2854,7 @@ describe.skipIf(!JQ_AVAILABLE)(
         "fix/drift-x",
       ]) {
         const { status, selected } = selectCandidates(
-          [{ number: 348, headRefName: branch, files: TOUCHES_NOTE }],
+          [{ number: 348, headRefName: branch, author: HUMAN_AUTHOR, files: TOUCHES_NOTE }],
           THIS_KEY,
           [NOTE],
         );
@@ -2727,7 +2867,7 @@ describe.skipIf(!JQ_AVAILABLE)(
       // Excluding the bot's own PRs would be worse than the bug it fixes.
       for (const branch of [botOkAppliedBranch(OTHER_KEY), botNeedsHumanBranch(OTHER_KEY)]) {
         const { status, selected } = selectCandidates(
-          [{ number: 901, headRefName: branch, files: TOUCHES_NOTE }],
+          [{ number: 901, headRefName: branch, author: BOT_AUTHOR, files: TOUCHES_NOTE }],
           THIS_KEY,
           [NOTE],
         );
@@ -2739,10 +2879,13 @@ describe.skipIf(!JQ_AVAILABLE)(
       }
     });
 
-    it("the bot-branch pattern is PINNED to BOTH branch-construction sites, so changing either branch shape reds instead of silently selecting nothing", () => {
+    it("the KEYED-branch pattern is PINNED to BOTH branch-construction sites, so changing either branch shape reds instead of silently selecting nothing", () => {
       const lib = shellSingleQuoted(runOf(stepById("needs_human_pr")), "JQ_LIB");
-      const rx = /def bot_managed:[\s\S]*?test\("([^"]+)"\)/.exec(lib);
-      expect(rx, "JQ_LIB no longer defines bot_managed via a single test() pattern").not.toBeNull();
+      const rx = /def keyed_branch:[\s\S]*?test\("([^"]+)"\)/.exec(lib);
+      expect(
+        rx,
+        "JQ_LIB no longer defines keyed_branch via a single test() pattern",
+      ).not.toBeNull();
       const botManaged = new RegExp(rx![1]);
 
       // Materialise each branch the workflow actually pushes, from its OWN
@@ -2769,9 +2912,133 @@ describe.skipIf(!JQ_AVAILABLE)(
           true,
         );
       }
+      // `okBase` — `fix/drift-<date>-<run id>` with NO key suffix — is here on
+      // purpose: as a BRANCH SHAPE it is not a bot marker (a human can name a
+      // branch that), which is why the keyed pattern must not match it. What makes
+      // a PR on such a branch bot-managed is its AUTHOR, covered below.
       for (const human of ["fix/drift-alert-signal", "fix/drift-2026-08-04-nope", okBase]) {
-        expect(botManaged.test(human), `bot_managed matches the human branch ${human}`).toBe(false);
+        expect(botManaged.test(human), `keyed_branch matches the human branch ${human}`).toBe(
+          false,
+        );
       }
+    });
+
+    // -----------------------------------------------------------------------
+    // N2: the keyed branch is only ONE SUFFICIENT signal for "bot-managed", and
+    // it is one this change INTRODUCED. Every bot PR that predates it — #350
+    // (`drift-needs-human/2026-08-04-30885817052`), #343, #337 — has no key
+    // suffix, so keying candidacy on the branch shape alone made the self-heal
+    // select NOTHING on exactly the PRs that motivated it: neither anchor was
+    // ever consulted, because candidacy is gated BEFORE both of them.
+    //
+    // Observed, not asserted: the branch below is the REAL #350 head branch and
+    // the login the REAL #350 reports.
+    // -----------------------------------------------------------------------
+    const PRE_KEY_BOT_BRANCH = "drift-needs-human/2026-08-04-30885817052";
+
+    it("a PRE-EXISTING bot PR whose branch carries NO changeset key IS selected — via its AUTHOR — so the note anchor is reachable at all", () => {
+      const { status, err, selected } = selectCandidates(
+        [{ number: 350, headRefName: PRE_KEY_BOT_BRANCH, author: BOT_AUTHOR, files: TOUCHES_NOTE }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(status, `the selection program failed: ${err}`).toBe(0);
+      expect(
+        selected.map((p) => p.number),
+        "a bot PR predating the keyed-branch shape is unreachable, so the self-healer " +
+          "cannot repair the very PRs whose body edits motivated it",
+      ).toEqual([350]);
+      expect(
+        selected[0].wantMarkers,
+        "selected by the note anchor but entitled to the wrong marker set",
+      ).toEqual([noteMarkerFor(NOTE)]);
+    });
+
+    it("the same PR is selected through the FULL section too (the author field is actually WIRED into the selection)", () => {
+      const ok = observeCandidateSection(
+        [{ number: 350, headRefName: PRE_KEY_BOT_BRANCH, author: BOT_AUTHOR, files: TOUCHES_NOTE }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(ok.exit, `the section failed: ${ok.stdio}`).toBe(0);
+      expect(ok.mine.map((p) => p.number)).toEqual([350]);
+    });
+
+    it("KNOWN NEGATIVE: a HUMAN PR on that SAME unkeyed bot-SHAPED branch is still NOT selected — the author is the discriminator, not the prefix", () => {
+      // If widening candidacy re-admitted human PRs it would undo H-F3 entirely:
+      // machine markers appended to a human's prose, and that human PR folded into
+      // the bot's dedup set, suppressing a genuine needs-human PR indefinitely.
+      for (const branch of [PRE_KEY_BOT_BRANCH, "fix/drift-2026-08-04-1234567890"]) {
+        const { status, selected } = selectCandidates(
+          [{ number: 902, headRefName: branch, author: HUMAN_AUTHOR, files: TOUCHES_NOTE }],
+          THIS_KEY,
+          [NOTE],
+        );
+        expect(status).toBe(0);
+        expect(
+          selected,
+          `a HUMAN PR on ${branch} was selected as bot-managed — widening re-admitted humans`,
+        ).toEqual([]);
+      }
+    });
+
+    it("KNOWN NEGATIVE: a bot PR on a NON-drift branch is not dragged in either (the author signal is ANDed with the drift prefix)", () => {
+      const { status, selected } = selectCandidates(
+        [
+          {
+            number: 800,
+            headRefName: "dependabot/npm_and_yarn/vitest-3.0.0",
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+        ],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(status).toBe(0);
+      expect(selected, "an unrelated bot branch became a candidate").toEqual([]);
+    });
+
+    it("the step REQUESTS the author field it now discriminates on, and FAILS CLOSED when the payload lacks it", () => {
+      // Dropping `author` from the `--json` list is invisible to every guard that
+      // only reads the jq programs, and it silently narrows candidacy back to
+      // keyed branches — the exact fail-silent regression being fixed.
+      // The self-heal's listing, identified by the field only IT needs — the head
+      // branch it anchors on. (The post-create head-SHA poll also lists `--state
+      // open`, and it has no business knowing about authors.)
+      const listing = shellInvocations(runOf(stepById("needs_human_pr")), "gh pr list").filter(
+        (c) => /--json [^ ]*\bheadRefName\b/.test(c),
+      );
+      expect(listing.length, "the self-heal no longer lists open PRs by head branch").toBe(1);
+      for (const call of listing) {
+        expect(call, `the self-heal's listing does not request the author: ${call}`).toMatch(
+          /--json [^ ]*\bauthor\b/,
+        );
+      }
+      // ...and observed: a payload with the field absent must not proceed.
+      const blind = observeCandidateSection(
+        [
+          {
+            number: 350,
+            headRefName: PRE_KEY_BOT_BRANCH,
+            author: BOT_AUTHOR,
+            files: TOUCHES_NOTE,
+          },
+        ],
+        THIS_KEY,
+        [NOTE],
+        // gh omits a key it was not asked for — that, not an empty login, is what
+        // a dropped `--json author` looks like on the wire.
+        (prs) =>
+          prs.map((pr) => {
+            const bare: Record<string, unknown> = { ...pr };
+            delete bare.author;
+            return bare;
+          }),
+      );
+      expect(blind.exit, "an author-less payload was selected against anyway").toBe(1);
+      expect(blind.stdio).toContain("::error::");
+      expect(blind.stdio).toContain("NO author field");
     });
   },
 );

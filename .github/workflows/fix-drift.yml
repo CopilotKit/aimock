@@ -669,13 +669,28 @@ jobs:
           # Listed with a plain `--state open` query, never `--search`: that index
           # is body-keyed AND lags an edit by minutes, so it cannot see a body this
           # step is about to repair.
+          # `author` is requested because it — not the branch shape — is the only
+          # signal that recognises a bot PR predating the trailing changeset key
+          # (see bot_managed below). Dropping it from this field list silently
+          # narrows candidacy back to keyed branches, so the presence check below
+          # fails closed on it rather than letting coverage quietly shrink.
           if ! MANAGED="$(gh pr list --state open --limit 200 \
-            --json number,url,state,body,headRefName,files 2>&1)"; then
+            --json number,url,state,body,headRefName,files,author 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove the dedup markers it owns are still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
             exit 1
           fi
           if ! printf '%s' "$MANAGED" | jq -e 'type == "array"' >/dev/null 2>&1; then
             echo "::error::gh pr list returned a non-array payload — refusing to self-heal markers against it: ${MANAGED}"
+            exit 1
+          fi
+          # `has("author")`, not "the login is non-empty": gh always emits every
+          # key it was asked for, so an ABSENT key means the `--json` list above
+          # (or gh's payload shape) changed and half of bot_managed's coverage
+          # went with it — the exact fail-silent regression that made the
+          # self-heal select nothing on #350/#343/#337. A merely odd login (a
+          # deleted account) is not that, and must not wedge the daily cron.
+          if ! printf '%s' "$MANAGED" | jq -e 'length == 0 or all(has("author"))' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned open PR(s) with NO author field, so this run cannot tell which of them are the drift bot's own — half of the candidate filter is blind and the marker self-heal would skip the very PRs it exists for. Refusing to risk a duplicate: ${MANAGED}"
             exit 1
           fi
           NOTES_JSON="$(printf '%s\n' "${NOTES[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')"
@@ -698,25 +713,54 @@ jobs:
           # (`keyAnchored`, `wantMarkers`) forward with each candidate, so nothing
           # downstream re-derives it.
           #
-          # bot_managed: candidacy is restricted to branches THIS WORKFLOW created.
+          # bot_managed: candidacy is restricted to PRs THIS WORKFLOW created.
           # `^fix/drift-` alone is NOT a bot marker — humans use `fix/drift-<slug>`
           # for drift work (that hand-off is exactly what the needs-human PR body
           # asks a human to do), and matching one lets this step append machine
           # markers to a HUMAN's PR body and fold that human PR into the bot's dedup
-          # set, suppressing a genuine needs-human PR indefinitely. The real bot
-          # marker is the one the ok-applied dedup already relies on: the trailing
-          # changeset key. Generalised here from "this run's key" to "a changeset
-          # key" (16 lowercase hex — computeChangesetKey's sha256 slice) plus the
-          # date-and-run-id segments both branch builders emit, so a bot PR carrying
-          # a DIFFERENT key still qualifies (that is precisely what the note-path
-          # anchor exists for) while `fix/drift-alert-signal` does not. A test pins
-          # this pattern against BOTH branch-construction sites, so changing either
-          # branch shape reds instead of silently selecting nothing.
+          # set, suppressing a genuine needs-human PR indefinitely.
+          #
+          # "Is this PR bot-managed" has TWO SUFFICIENT signals, because either one
+          # alone under-covers:
+          #
+          #   keyed_branch — the trailing changeset key the ok-applied dedup already
+          #     relies on, generalised from "this run's key" to "a changeset key" (16
+          #     lowercase hex — computeChangesetKey's sha256 slice) plus the
+          #     date-and-run-id segments both branch builders emit, so a bot PR
+          #     carrying a DIFFERENT key still qualifies (that is precisely what the
+          #     note-path anchor exists for) while `fix/drift-alert-signal` does not.
+          #     A test pins this pattern against BOTH branch-construction sites, so
+          #     changing either branch shape reds instead of silently selecting
+          #     nothing.
+          #
+          #   bot_author — the PR was OPENED BY the drift bot. Load-bearing, not
+          #     belt-and-braces: the trailing changeset key is an addition of the
+          #     very change that introduced this self-heal, so EVERY bot PR that
+          #     predates it — #350, #343, #337, all `drift-needs-human/<date>-<run
+          #     id>` with no key suffix — fails keyed_branch. Keyed on the branch
+          #     shape ALONE, those PRs were never candidates at all, so NEITHER
+          #     anchor below was ever consulted and this self-heal selected NOTHING
+          #     on exactly the PRs that motivated it (#343's wholesale body rewrite
+          #     -> duplicate #350). The author is both body-INDEPENDENT (a body edit
+          #     cannot change it) and era-INDEPENDENT (it does not depend on a
+          #     branch shape this workflow only started emitting today), which is
+          #     what the two anchors below need in order to be reachable.
+          #
+          # bot_author is ANDed with the drift branch PREFIX so that widening
+          # candidacy cannot drag an unrelated bot PR (a dependency bump, another
+          # workflow) into this step's fail-closed changed-file audit below. Every
+          # PR this workflow opens carries one of those two prefixes — both branch
+          # builders emit them — so the AND costs no coverage.
           # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
           JQ_LIB='
-            def bot_managed:
+            def keyed_branch:
               (.headRefName // "")
               | test("^(fix/drift-|drift-needs-human/)[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+-[0-9a-f]{16}$");
+            def drift_branch:
+              (.headRefName // "") | test("^(fix/drift-|drift-needs-human/)");
+            def bot_author:
+              ((.author.login // "") | ascii_downcase) == "app/copilotkit-devops-bot";
+            def bot_managed: keyed_branch or (drift_branch and bot_author);
             def key_anchored($k): (.headRefName // "") | endswith("-" + $k);
             def files_usable: (.files | type) == "array";
             def file_paths: [.files[] | .path];
