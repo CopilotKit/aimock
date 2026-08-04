@@ -924,6 +924,10 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
     expect(dedupRegion, "the per-note dedup does not match on the note-path marker").toContain(
       "drift-proposal-note: ${note}",
     );
+    // …and the jq filter must match on that marker, not on some other literal.
+    expect(dedupRegion, "the per-note dedup query does not test the marker it was given").toContain(
+      "contains($m)",
+    );
   });
 
   it("the needs-human persist step's PR body tells a human to set Decision: include and merge (closing the two-run loop), never auto-merged", () => {
