@@ -9,7 +9,8 @@
  *
  * The canary fixtures below are REAL vitest failure-message shapes captured by
  * running the canary / drift / infra assertions under
- * `vitest run … --reporter=json` (see PR #291 RED/GREEN logs under tmp/). They
+ * `vitest run … --reporter=json` (the capture artifacts were throwaway and are
+ * not in the repo; the RED/GREEN logs are on PR #291). They
  * are NOT hand-authored: the single-glyph Unicode ellipsis `…(N)`, the
  * `AssertionError:` prefix, the leading blank line before a formatted drift
  * report, and the stack-frame layout are exactly what vitest emits.
@@ -30,12 +31,14 @@ import {
   classifyUnparseableAsInfra,
   INFRA_INDICATOR_SOURCES,
   infraIndicatorSample,
+  NO_GA_DELTA_ID,
+  TRUNCATED_DELTA_ID,
 } from "../../scripts/drift-report-collector.js";
-import type { DriftEntry, QuarantineEntry } from "../../scripts/drift-types.js";
+import type { DriftEntry, QuarantineEntry, ParsedDiff } from "../../scripts/drift-types.js";
 import { SURFACE_REGISTRY, KNOWN_SURFACE_SLUGS, isKnownSurface } from "./drift/surface-registry.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { isBaseReportReusable } from "../../scripts/drift-delta.js";
+import { isBaseReportReusable, computeDelta } from "../../scripts/drift-delta.js";
 import type { DriftReport } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
@@ -111,18 +114,19 @@ const SAMPLE_DIFF_WARNING: ShapeDiff = {
 
 // ---------------------------------------------------------------------------
 // REAL captured vitest --reporter=json failure-message fixtures.
-// Captured via throwaway `*.drift.ts` capture tests run under the drift config;
-// see tmp/canary-fixtures.json + the PR #291 RED/GREEN logs.
+// Captured via throwaway `*.drift.ts` capture tests run under the drift config.
+// The capture files were throwaway and are not in the repo; the RED/GREEN logs
+// that show these exact shapes are on PR #291.
 // ---------------------------------------------------------------------------
 
 // Canary tripped with FOUR unknown models. The printed array is truncated by
 // vitest to `…(3)` (single-glyph Unicode ellipsis), but the custom assertion
 // message `UNKNOWN_REALTIME_MODELS=…` carries the full list verbatim.
-// NOTE (A4): the ids below are HYPOTHETICAL future models that are NOT in the
-// knownModels set in ws-realtime.drift.ts — so the real canary really could
-// emit them as unknown. (gpt-realtime-2.1 / -2.1-mini ARE in knownModels and
-// therefore can never appear here — the earlier fixture that used them was
-// impossible.)
+// NOTE (A4): the ids below are HYPOTHETICAL future models that are NOT in
+// knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts — so the real
+// canary really could emit them as unknown. (gpt-realtime-2.1 / -2.1-mini ARE in
+// that set and therefore can never appear here — the earlier fixture that used
+// them was impossible.)
 const CANARY_MARKER_MULTI =
   "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-3,gpt-realtime-3-mini,gpt-realtime-3-preview,gpt-realtime-ultra: expected [ 'gpt-realtime-3', …(3) ] to deeply equal []\n" +
   "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:108:69\n" +
@@ -157,7 +161,7 @@ const INFRA_TOKEN_IN_STACKFRAME_ONLY =
 const REAL_INFRA_BODY = "fetch failed\n    at handler (file:///repo/src/x.drift.ts:5:1)";
 
 // CLASS 2 — the canary `hasGA`-false mode. Captured REAL from a throwaway
-// `*.drift.ts` capture run under the drift config (see tmp/captured-vitest-shapes.json).
+// `*.drift.ts` capture run under the drift config (capture file was throwaway).
 // When OpenAI renames/removes the GA realtime family, the canary emits the
 // NO_GA_REALTIME_MODELS= marker (symmetric to UNKNOWN_REALTIME_MODELS=) and the
 // assertion fails with "expected false to be true". The collector must map this
@@ -329,6 +333,29 @@ describe("extractProviderName", () => {
   it("matches provider from context string (parenthetical format)", () => {
     expect(extractProviderName("OpenAI Chat (non-streaming text)")).toBe("OpenAI Chat");
     expect(extractProviderName("Anthropic (streaming text)")).toBe("Anthropic");
+  });
+
+  // A label appearing ANYWHERE in the text used to win on length alone, so a
+  // qualifier later in the title could outrank the surface the title is actually
+  // about: "Gemini Live Transcription session" resolved to `Transcription`
+  // (13 chars) over `Gemini Live` (11), silently routing a Gemini Live drift at
+  // src/transcription.ts. It failed OPEN — a confident wrong attribution, no
+  // error. Both `parsed.context` (`formatDriftReport`'s "<Provider> (<scenario>)")
+  // and a drift describe title LEAD with the provider label, so the match is now
+  // anchored at the start.
+  it("does not let a later qualifier outrank the leading provider label", () => {
+    expect(extractProviderName("Gemini Live Transcription session")).toBe("Gemini Live");
+    expect(extractProviderName("Gemini Live Transcription drift")).toBe("Gemini Live");
+    expect(extractProviderName("OpenAI Video Transcription drift")).toBe("OpenAI Video");
+    // …and the label that legitimately leads still resolves to itself.
+    expect(extractProviderName("Transcription (whisper-1 verbose_json)")).toBe("Transcription");
+  });
+
+  it("fails closed when the provider label is not the leading token", () => {
+    // Not anchored → unattributable → null, which routes the block to the
+    // quarantine lane (exit 5, human review) rather than to a fabricated owner.
+    expect(extractProviderName("drift detected in OpenAI Chat")).toBeNull();
+    expect(extractProviderName("session for Gemini Live")).toBeNull();
   });
 });
 
@@ -724,11 +751,14 @@ describe("collectDriftEntries", () => {
     const entry = entries[0];
     expect(entry.provider).toBe("OpenAI Realtime");
     expect(entry.diffs.every((d) => d.severity === "critical")).toBe(true);
-    // The unknown model ids survive as `real` values on knownModels diffs.
-    const knownModelReals = entry.diffs.filter((d) => d.path === "knownModels").map((d) => d.real);
+    // The unknown model ids survive as `real` values on the
+    // knownVoiceModelFamilies diffs.
+    const knownModelReals = entry.diffs
+      .filter((d) => d.path === "knownVoiceModelFamilies")
+      .map((d) => d.real);
     expect(knownModelReals).toEqual(["gpt-realtime-99", "gpt-realtime-99-mini"]);
     // The GA-family diff is still present.
-    expect(entry.diffs.some((d) => d.path === "gaModels")).toBe(true);
+    expect(entry.diffs.some((d) => d.path === "gaRealtimeModels")).toBe(true);
   });
 
   it("maps an EMPTY NO_GA marker (no realtime models observed) to a CRITICAL entry too", () => {
@@ -1377,7 +1407,8 @@ describe("classifyUnparseableAsInfra", () => {
 // The delta layer (D6.1) keys findings by `provider+id`. For N distinct unknown
 // model ids, the collector must produce N DISTINCT per-item `id` values so that
 // a downstream `provider+id` keying yields N distinct keys — not 1 collapsed
-// key under `path:"knownModels"` (pre-fix behaviour when `id` was absent/undefined).
+// key under the shared `path` bucket (pre-fix behaviour when `id` was
+// absent/undefined).
 //
 // RED (pre-fix): `id` is unset on every ParsedDiff produced by the canary path,
 //   so all 3 diffs have `id === undefined` → only 1 distinct key.
@@ -1386,8 +1417,8 @@ describe("classifyUnparseableAsInfra", () => {
 // ---------------------------------------------------------------------------
 
 describe("D6.2 — per-item id on ParsedDiff", () => {
-  // Three distinct hypothetical unknown model ids (not in the knownModels set
-  // in ws-realtime.drift.ts — A4 note: use future/hypothetical ids only).
+  // Three distinct hypothetical unknown model ids (not in knownVoiceModelFamilies
+  // in src/__tests__/drift/voice-models.ts — A4 note: hypothetical ids only).
   const THREE_UNKNOWN_IDS_CANARY =
     "AssertionError: UNKNOWN_REALTIME_MODELS=gpt-realtime-x1,gpt-realtime-x2,gpt-realtime-x3: " +
     "expected [ 'gpt-realtime-x1', …(2) ] to deeply equal []\n" +
@@ -1451,6 +1482,411 @@ describe("D6.2 — per-item id on ParsedDiff", () => {
       expect(diff.id).toBe(diff.path);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// The delta key must not be coupled to a DISPLAY string.
+//
+// drift-delta keys a failure by `provider + (diff.id ?? diff.path)`. Two canary
+// diffs shipped with NO `id` — the no-GA diff and the truncation diff — so their
+// delta key WAS their `path`, which is also the human-facing "Path:" line of the
+// alert. That coupling means renaming the prose (as 6614bb2 did, `gaModels` →
+// `gaRealtimeModels`) silently MOVES the key: a drift already recorded in the
+// cached same-UTC-day BASE report is re-classified as new-in-head and BLOCKS the
+// PR, while the base key is reported as spuriously "fixed".
+//
+// The fix is not to freeze the display string — a `path` naming a symbol that no
+// longer exists is the exact bug this file's sibling guard exists to kill. It is
+// to give those two diffs an explicit, stable, SEMANTIC id so the display string
+// is free to change and the key never moves again.
+// ---------------------------------------------------------------------------
+
+describe("canary delta keys are decoupled from the human-facing path string", () => {
+  function reportOf(diffs: ParsedDiff[], timestamp = "2026-08-03T00:00:00.000Z"): DriftReport {
+    return {
+      timestamp,
+      entries: [
+        {
+          provider: "OpenAI Realtime",
+          scenario: "known-models canary",
+          builderFile: "b.ts",
+          builderFunctions: ["f"],
+          typesFile: null,
+          sdkShapesFile: "shapes.ts",
+          diffs,
+        },
+      ],
+    };
+  }
+
+  function canaryDiffs(message: string): ParsedDiff[] {
+    const entries = entriesOf(
+      makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Realtime API drift"],
+          title: "canary: GA realtime models available",
+          failureMessages: [message],
+        }),
+      ]),
+    );
+    expect(entries).toHaveLength(1);
+    return entries[0].diffs;
+  }
+
+  // Characterization of the MECHANISM, so the coupling can never be re-created
+  // silently: with no `id`, a path-only rename moves the key. (Watched to fail by
+  // stubbing indexReport's `diff.id ?? diff.path` to a constant.)
+  it("MECHANISM: with no per-item id, renaming `path` alone moves the delta key", () => {
+    const idLess = (path: string): ParsedDiff => ({
+      path,
+      severity: "critical",
+      issue: "GA realtime family unavailable",
+      expected: "(at least one GA realtime model present)",
+      real: "no realtime models observed",
+      mock: "<no mock leg>",
+    });
+    const { block, advisory, fixed } = computeDelta(
+      reportOf([idLess("gaModels")]),
+      reportOf([idLess("gaRealtimeModels")]),
+    );
+    expect(advisory).toEqual([]);
+    expect(block.map((k) => k.id)).toEqual(["gaRealtimeModels"]);
+    expect(fixed.map((k) => k.id)).toEqual(["gaModels"]);
+  });
+
+  it("a stable per-item id makes the SAME path rename key-neutral (stays advisory)", () => {
+    const keyed = (path: string): ParsedDiff => ({
+      path,
+      id: NO_GA_DELTA_ID,
+      severity: "critical",
+      issue: "GA realtime family unavailable",
+      expected: "(at least one GA realtime model present)",
+      real: "no realtime models observed",
+      mock: "<no mock leg>",
+    });
+    const { block, advisory, fixed } = computeDelta(
+      reportOf([keyed("gaModels")]),
+      reportOf([keyed("gaRealtimeModels")]),
+    );
+    expect(block).toEqual([]);
+    expect(fixed).toEqual([]);
+    expect(advisory.map((k) => k.id)).toEqual([NO_GA_DELTA_ID]);
+  });
+
+  it("the collector sets the stable id on the no-GA diff", () => {
+    const diffs = canaryDiffs(CANARY_NO_GA_MARKER);
+    const noGA = diffs.filter((d) => d.path === "gaRealtimeModels");
+    expect(noGA).toHaveLength(1);
+    expect(noGA[0].id).toBe(NO_GA_DELTA_ID);
+  });
+
+  it("the collector sets the stable id on the truncation diff", () => {
+    const diffs = canaryDiffs(CANARY_FALLBACK_TRUNCATED);
+    const truncation = diffs.filter((d) => d.path === "knownVoiceModelFamilies[truncated]");
+    expect(truncation).toHaveLength(1);
+    expect(truncation[0].id).toBe(TRUNCATED_DELTA_ID);
+  });
+
+  // Vacuity guard: EVERY canary diff the collector can emit must now carry an
+  // `id`, so no future canary diff can silently re-acquire a path-derived key.
+  it("no canary diff is left keyed by its display path", () => {
+    for (const message of [
+      CANARY_NO_GA_MARKER,
+      CANARY_NO_GA_WITH_UNKNOWN,
+      CANARY_NO_GA_EMPTY,
+      CANARY_MARKER_MULTI,
+      CANARY_FALLBACK_TRUNCATED,
+    ]) {
+      for (const d of canaryDiffs(message)) {
+        expect(
+          d.id,
+          `canary diff path=${d.path} has no stable id — it would key on its ` +
+            `display path, so renaming the alert prose would move its delta key`,
+        ).toBeTruthy();
+      }
+    }
+  });
+});
+
+// ===========================================================================
+// Delta-key PROVENANCE — the gate's annotation cannot print a symbol that
+// does not exist
+// ===========================================================================
+
+/**
+ * The delta gate annotates a blocking key as `${k.provider} ${k.id}` (the
+ * "Delta gate" step of .github/workflows/test-drift.yml), so `DeltaKey.id` is the
+ * entire identifier a human gets when the required check hard-fails. `indexReport`
+ * builds it as `diff.id ?? diff.path` — so a diff with no `id` promotes a
+ * HUMAN-FACING DISPLAY STRING to the key. That is how `gaModels` and
+ * `knownModels[truncated]`, symbols retired from this repo, became printable delta
+ * keys: the annotation named a symbol the reader could not find anywhere.
+ *
+ * `98b9cf1` gave those two diffs explicit semantic ids, which fixes the current
+ * tree; this makes the property STRUCTURAL. Every key a collector-CONSTRUCTED diff
+ * can contribute must have one of three provenances, none of which can be an
+ * arbitrary display string:
+ *
+ *   semantic — `<namespace>:<slug>` with the namespace in the explicit
+ *              SEMANTIC_DELTA_ID_NAMESPACES allowlist. Namespaced, so it reads as
+ *              a key and is never mistaken for a symbol to go look up.
+ *   observed — the id IS the value the live API returned (it equals the diff's
+ *              `real`), i.e. wire data rather than repo prose.
+ *   declared — the id is a symbol EXPORTED by a drift classification module
+ *              (`src/__tests__/drift/*.ts`), so a reader who greps it lands on the
+ *              actual seed set / rule the annotation is pointing at. Deliberately
+ *              NOT "declared anywhere in the repo" — see
+ *              `driftModuleExportsIdentifier`.
+ *
+ * Anything else fails: a bare display string, a prose bucket, a retired symbol
+ * name, or a missing `id` whose `path` falls through to the key.
+ *
+ * SCOPE: the diffs the collector writes ITSELF — the realtime-canary and WS
+ * handshake lanes — whose `path`/`id` are hand-authored. A diff parsed out of a
+ * formatted drift block carries the probe's observed wire path
+ * (`choices[0].message.refusal`), which is data from the run rather than a symbol
+ * citation, and is out of scope.
+ *
+ * Composes with drift-remediation-strings.test.ts, which separately forbids any
+ * RETIRED symbol name anywhere in the collector source: a `declared` id cannot be
+ * a retired symbol here, and a `semantic` id cannot smuggle one into its slug
+ * there.
+ */
+const SEMANTIC_DELTA_ID_NAMESPACES: readonly string[] = [
+  // The two id-less realtime-canary diffs: NO_GA_DELTA_ID / TRUNCATED_DELTA_ID.
+  "openai-realtime",
+  // The WS handshake lane: `ws-handshake:<provider error code>`.
+  "ws-handshake",
+];
+
+/**
+ * The WS handshake lane's fixture. Shaped to parseWSHandshakeFailure's three
+ * documented gates — a `waitUntil timeout`, the ws-realtime.drift.ts stack frame,
+ * and a surfaced provider `error` body. Unlike the canary fixtures above, this one
+ * is hand-authored to those gates rather than captured.
+ */
+const WS_HANDSHAKE_ERROR_FAILURE =
+  "AssertionError: waitUntil timeout after 10000ms; last message: " +
+  '{"type":"error","error":{"type":"invalid_request_error","code":"invalid_api_key",' +
+  '"message":"Incorrect API key provided."}}\n' +
+  "    at /repo/src/__tests__/drift/ws-realtime.drift.ts:64:11";
+
+/** The namespace of a `<namespace>:<slug>` id, or null when it is not namespaced. */
+function deltaIdNamespace(id: string): string | null {
+  const colon = id.indexOf(":");
+  if (colon <= 0 || colon >= id.length - 1) return null;
+  return id.slice(0, colon);
+}
+
+/**
+ * The drift CLASSIFICATION package — `src/__tests__/drift/*.ts`: the voice/model
+ * seed sets, the registry, the normalizers, the surface registry. These are the
+ * modules a human sent a delta key would actually open, because they hold the data
+ * the key names and the rule that has to change.
+ *
+ * SCOPED DELIBERATELY. An earlier revision of this guard scanned every `.ts` under
+ * `src/` and `scripts/` for ANY `const|function|class|…` declaration of the name,
+ * which made the `declared` provenance a near-wildcard: `path`, `models`,
+ * `entries`, `key`, `id`, `usage`, `body`, `type` — 20 of 20 generic one-word
+ * strings tried — are each some local `const` somewhere in the tree, so a bare
+ * display path satisfied it and the guard stopped binding on the thing it exists
+ * to prevent. Read once; the per-key check runs over the cached text.
+ */
+let driftModuleSourcesCache: string[] | null = null;
+function driftModuleSources(): string[] {
+  if (driftModuleSourcesCache !== null) return driftModuleSourcesCache;
+  const dir = resolve(__dirname, "drift");
+  driftModuleSourcesCache = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+    .map((e) => readFileSync(resolve(dir, e.name), "utf8"));
+  return driftModuleSourcesCache;
+}
+
+/**
+ * Does a drift classification module EXPORT `id` under exactly that name?
+ *
+ * Two structural requirements, both load-bearing:
+ *   - EXPORTED (`^export`, `m`-anchored so it is a top-level export and not an
+ *     indented interior binding) — an unexported local is not something a reader
+ *     can look up, and it is what let bare display words through.
+ *   - declared IN the drift package — a symbol from an unrelated corner of the
+ *     repo is not the data set the annotation is pointing at.
+ *
+ * `\b` after the name keeps the match exact (`gaModels` must not be satisfied by
+ * `gaModelsRetired`).
+ */
+function driftModuleExportsIdentifier(id: string): boolean {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id)) return false;
+  const decl = new RegExp(
+    `^export\\s+(?:declare\\s+)?(?:const|let|var|function|class|interface|type|enum)\\s+${id}\\b`,
+    "m",
+  );
+  return driftModuleSources().some((src) => decl.test(src));
+}
+
+type DeltaKeyProvenance = "semantic" | "observed" | "declared";
+
+/**
+ * Classify the provenance of the delta key a diff will contribute, keying it
+ * EXACTLY as `indexReport` does (`diff.id ?? diff.path`). null = no provenance:
+ * the key is an arbitrary display string and the gate could annotate it at a
+ * human as if it were something to look up.
+ */
+function deltaKeyProvenanceOf(diff: ParsedDiff): DeltaKeyProvenance | null {
+  const key = diff.id ?? diff.path;
+  const namespace = deltaIdNamespace(key);
+  if (namespace !== null && SEMANTIC_DELTA_ID_NAMESPACES.includes(namespace)) return "semantic";
+  if (key.length > 0 && key === diff.real) return "observed";
+  if (driftModuleExportsIdentifier(key)) return "declared";
+  return null;
+}
+
+/** Every diff the collector CONSTRUCTS itself, labelled by the lane it came from. */
+function constructedDiffs(): { lane: string; diff: ParsedDiff }[] {
+  const lanes: Record<string, string> = {
+    "canary no-GA (marker)": CANARY_NO_GA_MARKER,
+    "canary no-GA + unknown": CANARY_NO_GA_WITH_UNKNOWN,
+    "canary no-GA (empty list)": CANARY_NO_GA_EMPTY,
+    "canary unknown models": CANARY_MARKER_MULTI,
+    "canary truncated": CANARY_FALLBACK_TRUNCATED,
+    "WS handshake error": WS_HANDSHAKE_ERROR_FAILURE,
+  };
+  const out: { lane: string; diff: ParsedDiff }[] = [];
+  for (const [lane, message] of Object.entries(lanes)) {
+    const entries = entriesOf(
+      makeResult([
+        makeAssertion({
+          status: "failed",
+          ancestorTitles: ["OpenAI Realtime API drift"],
+          title: "canary: GA realtime models available",
+          failureMessages: [message],
+        }),
+      ]),
+    );
+    for (const entry of entries) {
+      for (const diff of entry.diffs) out.push({ lane, diff });
+    }
+  }
+  return out;
+}
+
+describe("every delta key the collector constructs has a provenance", () => {
+  const constructed = constructedDiffs();
+
+  const idLess = (path: string): ParsedDiff => ({
+    path,
+    severity: "critical",
+    issue: "GA realtime family unavailable",
+    expected: "(at least one GA realtime model present)",
+    real: "no realtime models observed",
+    mock: "<no mock leg>",
+  });
+
+  // Vacuity guard: the per-key cases below are GENERATED from the enumeration, so
+  // an enumeration that quietly found nothing would report a green suite with no
+  // cases in it. Both id-less canary diffs, the per-model diffs and the WS lane
+  // must be present.
+  it("enumerates the collector's constructed diffs", () => {
+    expect(constructed.length, "constructed diffs found").toBeGreaterThanOrEqual(8);
+    expect(new Set(constructed.map((c) => c.lane)).size, "lanes covered").toBe(6);
+    const keys = constructed.map((c) => c.diff.id ?? c.diff.path);
+    expect(keys).toContain(NO_GA_DELTA_ID);
+    expect(keys).toContain(TRUNCATED_DELTA_ID);
+    expect(keys).toContain("ws-handshake:invalid_api_key");
+  });
+
+  // Known-positive controls: the classifier must ACCEPT each provenance, not just
+  // reject bad input. Without these a classifier that returned "semantic" for
+  // everything, or a repo scan that matched everything, would look green.
+  it("accepts each of the three provenances", () => {
+    expect(deltaKeyProvenanceOf(idLess("x")), "unclassifiable control").toBeNull();
+    expect(deltaKeyProvenanceOf({ ...idLess("gaRealtimeModels"), id: NO_GA_DELTA_ID })).toBe(
+      "semantic",
+    );
+    expect(
+      deltaKeyProvenanceOf({
+        ...idLess("knownVoiceModelFamilies"),
+        id: "gpt-realtime-99",
+        real: "gpt-realtime-99",
+      }),
+    ).toBe("observed");
+    // `gaRealtimeModels` really is declared in src/__tests__/drift/voice-models.ts.
+    expect(deltaKeyProvenanceOf(idLess("gaRealtimeModels"))).toBe("declared");
+  });
+
+  // Known-negative controls: the two keys that actually shipped, and the shape of
+  // the regression this guard exists to catch.
+  it("rejects a retired symbol name and a prose bucket", () => {
+    expect(deltaKeyProvenanceOf(idLess("gaModels")), "retired symbol as path").toBeNull();
+    expect(
+      deltaKeyProvenanceOf(idLess("knownModels[truncated]")),
+      "retired symbol + bucket suffix as path",
+    ).toBeNull();
+    expect(
+      deltaKeyProvenanceOf({ ...idLess("gaRealtimeModels"), id: "gaModels" }),
+      "retired symbol as an explicit id",
+    ).toBeNull();
+    expect(
+      deltaKeyProvenanceOf({
+        ...idLess("knownVoiceModelFamilies[truncated]"),
+        id: "knownVoiceModelFamilies[truncated]",
+      }),
+      "display path copied into the id",
+    ).toBeNull();
+  });
+
+  // The `declared` provenance is the loosest of the three, so it is the one that
+  // can quietly stop binding. It must mean "names a symbol the drift
+  // classification modules EXPORT" — a reader greps it and lands on the data set
+  // to edit. It must NOT mean "this string appears as any identifier anywhere in
+  // src/ or scripts/": every one of these bare words is some local `const`
+  // somewhere in the repo, so under that reading a one-word display path would
+  // satisfy the guard and the gate could print `<provider> path` at a human.
+  it("rejects a bare generic one-word display path (`declared` is not a near-wildcard)", () => {
+    for (const word of [
+      "path",
+      "models",
+      "entries",
+      "key",
+      "id",
+      "report",
+      "usage",
+      "choices",
+      "message",
+      "content",
+      "delta",
+      "error",
+      "data",
+      "result",
+      "response",
+      "request",
+      "body",
+      "status",
+      "type",
+      "value",
+    ]) {
+      expect(
+        deltaKeyProvenanceOf(idLess(word)),
+        `"${word}" is a bare display path, not a symbol a reader can look up`,
+      ).toBeNull();
+    }
+  });
+
+  for (const { lane, diff } of constructed) {
+    it(`${lane}: "${diff.id ?? diff.path}" has a provenance`, () => {
+      expect(
+        deltaKeyProvenanceOf(diff),
+        `The delta key for this ${lane} diff is "${diff.id ?? diff.path}", which is ` +
+          `neither a namespaced semantic id (${SEMANTIC_DELTA_ID_NAMESPACES.join(", ")}), ` +
+          `nor the value the API returned, nor an identifier this repo declares. The ` +
+          `drift gate prints that key verbatim at a human — as "<provider> ` +
+          `${diff.id ?? diff.path}" — when it hard-fails the required check, so it must ` +
+          `not be an arbitrary display string. Give the diff an explicit semantic id ` +
+          `(see NO_GA_DELTA_ID) instead of letting its display path become the key.`,
+      ).not.toBeNull();
+    });
+  }
 });
 
 // ===========================================================================
@@ -1646,6 +2082,31 @@ describe("WS-5 — unknown surface slug fails LOUD (throws), never silent quaran
 });
 
 describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () => {
+  /**
+   * A DriftEntry shaped as main() really writes them: entries exist only for
+   * FAILED assertions, and always carry at least one diff (a block that parses to
+   * zero diffs is routed to the unparseable/quarantine lane instead). Fixtures
+   * below use this rather than an entry with `diffs: []`, which main() never emits.
+   */
+  const driftingEntry = (): DriftReport["entries"][number] => ({
+    provider: "OpenAI Chat",
+    scenario: "non-streaming text",
+    builderFile: "src/helpers.ts",
+    builderFunctions: ["buildTextCompletion"],
+    typesFile: "src/types.ts",
+    sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
+    diffs: [
+      {
+        path: "usage.prompt_tokens",
+        severity: "critical",
+        issue: "type mismatch",
+        expected: "number",
+        real: "string",
+        mock: "number",
+      },
+    ],
+  });
+
   it("conclusionForExitCode maps exit codes to coarse conclusions", () => {
     expect(conclusionForExitCode(0)).toBe("clean");
     expect(conclusionForExitCode(2)).toBe("critical");
@@ -1653,26 +2114,55 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     expect(conclusionForExitCode(1)).toBe("skipped");
   });
 
-  it("isBaseReportReusable accepts a written clean report (reuse works)", () => {
-    // A report shaped like what main() now writes for a clean run.
+  // KNOWN DEFECT, PINNED AS-IS — do not "fix" this test by inventing entries.
+  //
+  // An earlier version of this test claimed to use "a report shaped like what
+  // main() writes for a clean run" but gave it a non-empty `entries[]` holding an
+  // entry with `diffs: []`. main() writes neither: entries come only from FAILED
+  // assertions, and an assertion whose block parses to zero diffs is routed to the
+  // unparseable/quarantine lane, so no entry is ever written with empty `diffs`.
+  // A clean run (exit 0) writes `entries: []` — verified by running
+  // collectDriftEntries over an all-passing result.
+  //
+  // With the accurate fixture the guard REJECTS it, and that is the finding the
+  // invented fixture was concealing: `isBaseReportReusable` requires non-empty
+  // `entries[]`, but the only conclusions it accepts are "clean"/"success", and
+  // "clean" is exactly the run that has no entries. So a healthy main can never
+  // supply a reusable base — every PR pays for a fresh live base run. The guard
+  // conflates "empty" (main is clean: the MOST useful base, since it makes every
+  // head finding new-in-head) with "malformed" (truncated/garbage cached JSON),
+  // when the signal that separates them is the `conclusion`/`generatedAt` pair.
+  //
+  // Pinned rather than papered over: when the guard is corrected to accept a
+  // conclusion-attested empty base, this test goes RED and must be updated
+  // deliberately, which is the point.
+  it("a clean report as main() ACTUALLY writes it is NOT reusable (known defect: reuse is dead for a healthy main)", () => {
     const timestamp = new Date().toISOString();
     const report: DriftReport = {
       timestamp,
       generatedAt: timestamp,
       conclusion: conclusionForExitCode(0),
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      // What main() really writes for a clean run — no failed assertions, no entries.
+      entries: [],
     };
-    // Same-UTC-day + known-good conclusion + non-empty entries → reusable.
+    expect(report.conclusion, "a clean run's conclusion is known-good").toBe("clean");
+    expect(
+      isBaseReportReusable(report, report.conclusion, true),
+      "same UTC day and a known-good conclusion, yet rejected purely for having no entries",
+    ).toBe(false);
+  });
+
+  // The reuse path is reachable ONLY for a base that carries drift — i.e. when
+  // main is already broken. This is the complement of the case above and is what
+  // keeps the guard's non-empty branch from being untested in both directions.
+  it("a base report that DOES carry drift is reusable", () => {
+    const timestamp = new Date().toISOString();
+    const report: DriftReport = {
+      timestamp,
+      generatedAt: timestamp,
+      conclusion: "success",
+      entries: [driftingEntry()],
+    };
     expect(isBaseReportReusable(report, report.conclusion, true)).toBe(true);
   });
 
@@ -1680,17 +2170,7 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     const timestamp = new Date().toISOString();
     const legacy: DriftReport = {
       timestamp,
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      entries: [driftingEntry()],
     };
     // No conclusion field → falls back to undefined → not reusable.
     expect(isBaseReportReusable(legacy, legacy.conclusion, true)).toBe(false);
@@ -1712,25 +2192,19 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
     };
 
     const now = new Date("2026-07-15T12:00:00.000Z");
-    const cleanReport = (generatedAt: string): DriftReport => ({
+    // A base that is otherwise reusable, so the ONLY variable is its UTC day.
+    // Note it has to be a report that CARRIES drift — see the known-defect test
+    // above: a clean (empty-entries) base is rejected outright, so it could not
+    // isolate the staleness behaviour being pinned here.
+    const reusableBase = (generatedAt: string): DriftReport => ({
       timestamp: generatedAt,
       generatedAt,
-      conclusion: conclusionForExitCode(0),
-      entries: [
-        {
-          provider: "OpenAI Chat",
-          scenario: "non-streaming text",
-          builderFile: "src/helpers.ts",
-          builderFunctions: ["buildTextCompletion"],
-          typesFile: "src/types.ts",
-          sdkShapesFile: "src/__tests__/drift/sdk-shapes.ts",
-          diffs: [],
-        },
-      ],
+      conclusion: "success",
+      entries: [driftingEntry()],
     });
 
     // Same UTC day (later hour, same date) → derivation true → reusable.
-    const today = cleanReport("2026-07-15T03:00:00.000Z");
+    const today = reusableBase("2026-07-15T03:00:00.000Z");
     expect(sameUtcDay(today.generatedAt!, now)).toBe(true);
     expect(isBaseReportReusable(today, today.conclusion, sameUtcDay(today.generatedAt!, now))).toBe(
       true,
@@ -1738,7 +2212,7 @@ describe("WS-5 — base-report reuse contract (generatedAt + conclusion)", () =>
 
     // Prior UTC day → derivation false → NOT reusable, despite an otherwise
     // identical clean report. generatedAt is what makes the difference.
-    const yesterday = cleanReport("2026-07-14T23:59:59.000Z");
+    const yesterday = reusableBase("2026-07-14T23:59:59.000Z");
     expect(sameUtcDay(yesterday.generatedAt!, now)).toBe(false);
     expect(
       isBaseReportReusable(

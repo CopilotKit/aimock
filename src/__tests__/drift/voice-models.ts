@@ -81,6 +81,8 @@ export const knownVoiceModelFamilies = new Set(
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "gpt-4o-transcribe-diarize",
+    "gpt-transcribe",
+    "gpt-live-transcribe",
     "whisper-1",
     // Legacy preview models (may still appear)
     "gpt-4o-realtime-preview",

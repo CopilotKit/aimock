@@ -482,7 +482,7 @@ describe("summarizeDriftReport — headline class", () => {
             {
               severity: "critical",
               issue: "model removed from mock",
-              path: "knownModels",
+              path: "knownVoiceModelFamilies",
               id: "gpt-4o-mini",
               expected: "present",
               real: "present",
