@@ -35,6 +35,7 @@ import {
   proxyAndRecord,
   sanitizeHeaderValue,
 } from "./recorder.js";
+import { isAuthenticatedRequest } from "./api-key-auth.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyProviderAuth } from "./provider-auth.js";
 import type { Journal } from "./journal.js";
@@ -894,6 +895,7 @@ export async function walkFalQueue(args: {
    * route through `proxyAndRecord`, so own-key injection lives here.
    */
   builtinKey?: string;
+  requireConfiguredKey?: boolean;
 }): Promise<FalQueueWalkResult> {
   const {
     upstreamBase,
@@ -907,7 +909,12 @@ export async function walkFalQueue(args: {
     fallbackResultPath,
     logger,
     builtinKey,
+    requireConfiguredKey,
   } = args;
+
+  if (requireConfiguredKey && !builtinKey) {
+    throw new Error("No configured provider credential");
+  }
 
   // Inject aimock's own fal credential onto the walk headers up front so every
   // fetch below (submit + polls) carries it. fal's scheme ignores the target
@@ -1083,6 +1090,7 @@ async function proxyAndRecordFalQueueSubmit(args: {
       // aimock's built-in fal key (Authorization: Key), injected by the walk on
       // a no/dummy caller credential; a real caller key overrides.
       builtinKey: record.providerKeys?.fal,
+      requireConfiguredKey: isAuthenticatedRequest(req),
       pollIntervalMs: record.fal?.pollIntervalMs,
       timeoutMs: record.fal?.timeoutMs,
       upstreamTimeoutMs: record.upstreamTimeoutMs,

@@ -20,9 +20,28 @@ import type { Logger } from "./logger.js";
 import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
-import { applyProviderAuth } from "./provider-auth.js";
+import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
+import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
 import { getTestId, slugifyTestId, slugifyContext } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+
+/** True when an SSE frame completes an OpenAI stream. */
+function isTerminalSSEFrame(frame: string): boolean {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n")
+    .trim();
+
+  if (data === "[DONE]") return true;
+
+  try {
+    return (JSON.parse(data) as { type?: unknown }).type === "transcript.text.done";
+  } catch {
+    return false;
+  }
+}
 
 /** Headers to strip when proxying — hop-by-hop (RFC 2616 §13.5.1) + client-set. */
 /**
@@ -124,12 +143,49 @@ export function buildForwardHeaders(req: http.IncomingMessage): Record<string, s
   const out: Record<string, string> = {};
   for (const [name, val] of Object.entries(req.headers)) {
     const lower = name.toLowerCase();
-    if (val === undefined || STRIP_HEADERS.has(lower) || lower.startsWith("x-aimock-chaos-")) {
+    if (
+      val === undefined ||
+      STRIP_HEADERS.has(lower) ||
+      lower.startsWith("x-aimock-chaos-") ||
+      (isAuthenticatedRequest(req) && isRecognizedApiKeyHeader(lower))
+    ) {
       continue;
     }
     out[name] = Array.isArray(val) ? val.join(", ") : val;
   }
   return out;
+}
+
+/** Remove every casing of a header from an egress map. */
+export function removeForwardHeader(headers: Record<string, string>, name: string): void {
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) delete headers[key];
+  }
+}
+
+/**
+ * Construct the only safe egress map when inbound access control is enabled.
+ * Test credentials are always removed; a static configured provider credential
+ * is mandatory so an accepted test credential can never become an upstream one.
+ */
+export function prepareEgressHeaders(
+  req: http.IncomingMessage,
+  target: URL,
+  providerKey: RecordProviderKey,
+  configuredKey: string | undefined,
+): Record<string, string> | undefined {
+  const headers = buildForwardHeaders(req);
+  if (!isAuthenticatedRequest(req)) {
+    applyProviderAuth(headers, target, providerKey, configuredKey);
+    return headers;
+  }
+  for (const name of Object.keys(headers)) {
+    if (isRecognizedApiKeyHeader(name)) delete headers[name];
+  }
+  return configuredKey && applyConfiguredProviderAuth(headers, target, providerKey, configuredKey)
+    ? headers
+    : undefined;
 }
 
 /**
@@ -438,13 +494,22 @@ export async function proxyAndRecord(
   defaults.logger.warn(`NO FIXTURE MATCH — proxying to ${upstreamUrl}${pathname}`);
 
   // Forward all request headers except hop-by-hop and client-set ones.
-  const forwardHeaders = buildForwardHeaders(req);
-
-  // If aimock owns a built-in upstream key for this provider, inject it now
-  // (opt-in, backward-compatible). A real caller credential overrides it; an
-  // absent or dummy-prefixed caller credential is replaced. gemini-interactions
-  // reuses the Gemini key, mirroring the upstream-URL remap above.
-  applyProviderAuth(forwardHeaders, target, providerKey, record.providerKeys?.[lookupKey]);
+  const forwardHeaders = prepareEgressHeaders(
+    req,
+    target,
+    providerKey,
+    record.providerKeys?.[lookupKey],
+  );
+  if (!forwardHeaders) {
+    writeErrorResponse(
+      res,
+      502,
+      JSON.stringify({
+        error: { message: "No configured provider credential", type: "proxy_error" },
+      }),
+    );
+    return "relayed";
+  }
 
   const requestBody = rawBody ?? JSON.stringify(request);
 
@@ -630,7 +695,9 @@ export async function proxyAndRecord(
     // A single Gemini turn can interleave audio with a functionCall and/or
     // text/thought parts; preserve those companion modalities so the tool call
     // / content / reasoning are not silently dropped when audio is present.
-    if (collapsed.audioB64) {
+    if (collapsed.transcription) {
+      fixtureResponse = { transcription: collapsed.transcription };
+    } else if (collapsed.audioB64) {
       const audioToolCallsSpread =
         collapsed.toolCalls && collapsed.toolCalls.length > 0
           ? {
@@ -792,14 +859,19 @@ export async function proxyAndRecord(
       // NOTE: base64 embeddings are decoded unconditionally inside
       // buildFixtureResponse regardless of the request's `encoding_format`, so
       // there is no need to re-parse it here — it was a dead param.
-      fixtureResponse = buildFixtureResponse(parsedResponse, upstreamStatus, defaults.logger);
+      fixtureResponse = buildFixtureResponse(
+        parsedResponse,
+        upstreamStatus,
+        defaults.logger,
+        request,
+      );
     }
   }
 
   // Client may have closed its socket before upstream fired `end`.
-  // Distinguish two cases based on whether the SSE `[DONE]` marker was seen:
-  //   - sawDone=true: client closed after consuming `data: [DONE]` (e.g. the
-  //     OpenAI Python SDK closes the socket the moment it reads `[DONE]`).
+  // Distinguish two cases based on whether an SSE terminal frame was seen:
+  //   - sawDone=true: client closed after consuming `data: [DONE]` or a typed
+  //     `transcript.text.done` event.
   //     Upstream ran to completion; the buffered body is intact. Log and
   //     proceed to persist the full fixture.
   //   - sawDone=false: genuine mid-stream abort. The buffered body is partial;
@@ -1029,12 +1101,13 @@ function makeUpstreamRequest(
    */
   hardCeilingExceeded: boolean;
   /**
-   * True when the SSE terminal marker `data: [DONE]` was observed in the
-   * upstream stream before the client disconnected. When `clientDisconnected`
-   * is true AND `sawDone` is true, the client closed after consuming `[DONE]`
-   * (e.g. the OpenAI Python SDK) — the stream was logically complete, so the
-   * fixture SHOULD be persisted. When `sawDone` is false the disconnect was a
-   * genuine mid-stream abort and the fixture MUST NOT be persisted.
+   * True when a terminal SSE frame was observed in the upstream stream before
+   * the client disconnected. The terminal may be legacy `data: [DONE]` or the
+   * typed OpenAI transcription event `transcript.text.done`. When
+   * `clientDisconnected` is true AND `sawDone` is true, the stream was
+   * logically complete, so the fixture SHOULD be persisted. When `sawDone` is
+   * false the disconnect was a genuine mid-stream abort and the fixture MUST
+   * NOT be persisted.
    */
   sawDone: boolean;
 }> {
@@ -1090,15 +1163,8 @@ function makeUpstreamRequest(
 
         let streamedToClient = false;
         let clientDisconnected = false;
-        // True once the SSE terminal marker `data: [DONE]` has been seen in the
-        // upstream stream. Used to distinguish two client-close scenarios:
-        //   1. Close AT/AFTER `[DONE]`: the stream is logically complete (e.g.
-        //      the OpenAI Python SDK closes the socket the moment it reads
-        //      `[DONE]`, before upstream fires `res.end`). The upstream should
-        //      NOT be torn down — let it finish and persist the full fixture.
-        //   2. Close BEFORE `[DONE]`: genuine mid-stream abort. Restore the
-        //      original teardown so upstream is destroyed and no partial fixture
-        //      is persisted.
+        // A terminal can be legacy `[DONE]` or typed `transcript.text.done`.
+        // Either means a client close before upstream `res.end` is complete.
         let sawDone = false;
         if (isProgressiveStream && clientRes && !clientRes.headersSent) {
           const relayHeaders: Record<string, string> = {
@@ -1132,9 +1198,9 @@ function makeUpstreamRequest(
                 frameBuffer = "";
                 binaryFrameBuffer = Buffer.alloc(0);
               }
-              // If sawDone is true: client closed after consuming `[DONE]`
-              // (e.g. the OpenAI Python SDK). The upstream is logically
-              // complete; let it run to `res.end` so the full body is
+              // If sawDone is true: client closed after consuming a terminal
+              // frame. The upstream is logically complete; let it run to
+              // `res.end` so the full body is
               // buffered and the fixture can be persisted. The
               // `!clientDisconnected` guard inside `onUpstreamData` already
               // prevents further writes to the now-closed client socket.
@@ -1272,9 +1338,9 @@ function makeUpstreamRequest(
               const frame = parts[fi].trim();
               if (frame.length > 0) {
                 frameTimestamps.push(Date.now());
-                // Track the SSE terminal marker so the client-close handler
-                // can distinguish a post-[DONE] close from a mid-stream abort.
-                if (frame === "data: [DONE]") sawDone = true;
+                // Track typed and legacy terminal frames so the client-close
+                // handler can distinguish a complete stream from an abort.
+                if (isTerminalSSEFrame(frame)) sawDone = true;
               }
             }
             // Last part stays in buffer (may be incomplete). Skip when the
@@ -1450,7 +1516,12 @@ function toToolCallArguments(raw: unknown): string {
  * Detect the response format from the parsed upstream JSON and convert
  * it into an aimock FixtureResponse.
  */
-function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger): FixtureResponse {
+function buildFixtureResponse(
+  parsed: unknown,
+  status: number,
+  logger?: Logger,
+  request?: ChatCompletionRequest,
+): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
     return {
@@ -1551,16 +1622,17 @@ function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger):
     return { images };
   }
 
-  // OpenAI transcription: { text: "...", ... }
-  // Tightened: a bare `text` string alongside a single incidental `language` or
-  // `duration` field is too weak — many non-transcription payloads carry a
-  // `text` plus a `duration`-like number. Require an explicit
-  // `task: "transcribe"`, OR BOTH `language` and `duration` (the verbose
-  // transcription shape). Also reject anything carrying clear non-transcription
-  // markers (chat completions, events, etc.) so they route to their own branch.
+  // OpenAI transcription: { text: "...", ... }. Modern gpt-transcribe
+  // responses may be the minimal { text, languages?, usage? } shape, so trust
+  // that shape only on an audio transcription/translation request. Other
+  // endpoints still need the legacy markers to avoid misclassifying text APIs.
+  const isTranscriptionRequest =
+    request?._endpointType === "transcription" || request?._endpointType === "translation";
   const looksLikeTranscription =
     typeof obj.text === "string" &&
-    (obj.task === "transcribe" || (obj.language !== undefined && obj.duration !== undefined)) &&
+    (isTranscriptionRequest ||
+      obj.task === "transcribe" ||
+      (obj.language !== undefined && obj.duration !== undefined)) &&
     !("choices" in obj) &&
     !("candidates" in obj) &&
     !("object" in obj) &&
@@ -1571,7 +1643,22 @@ function buildFixtureResponse(parsed: unknown, status: number, logger?: Logger):
       transcription: {
         text: obj.text as string,
         ...(obj.language ? { language: String(obj.language) } : {}),
+        ...(Array.isArray(obj.languages)
+          ? {
+              languages: obj.languages
+                .filter(
+                  (language): language is Record<string, unknown> =>
+                    typeof language === "object" &&
+                    language !== null &&
+                    typeof language.code === "string",
+                )
+                .map((language) => ({ code: language.code as string })),
+            }
+          : {}),
         ...(obj.duration !== undefined ? { duration: Number(obj.duration) } : {}),
+        ...(obj.usage && typeof obj.usage === "object"
+          ? { usage: obj.usage as Record<string, unknown> }
+          : {}),
         ...(Array.isArray(obj.words) ? { words: obj.words } : {}),
         ...(Array.isArray(obj.segments) ? { segments: obj.segments } : {}),
       },

@@ -127,6 +127,24 @@ Private and link-local addresses (loopback, RFC1918, CGNAT, cloud metadata, ULA,
 
 On replay, `turnIndex` is a non-fatal disambiguator, not a hard reject gate: a content-matching fixture is served even when its scripted `turnIndex` differs from the request's assistant-message count. This kills false "no fixture matched" misses for multi-bubble agent runs (multi-step agents emit several assistant bubbles per logical turn). When a served fixture diverges from its scripted `turnIndex`, the match diagnostic carries `turnIndexRelaxed: true` and aimock logs a one-shot warning (at the `warn` log level — silent by default). To restore the legacy strict behavior where a defined `turnIndex` must equal the assistant count exactly, set `AIMOCK_STRICT_TURN_INDEX=1`. The record path is always strict regardless of this flag.
 
+## API-key validation
+
+By default aimock accepts all requests. Opt into inbound test-client validation with a programmatic option, top-level `aimock.json` field, or environment-only key list:
+
+```ts
+await createServer(fixtures, { auth: { apiKeys: ["test-key"] } });
+```
+
+```json
+{ "auth": { "apiKeys": ["test-key"] } }
+```
+
+```bash
+AIMOCK_API_KEYS=test-key,rotated-key npx @copilotkit/aimock --config aimock.json
+```
+
+Use `Authorization: Bearer <key>`, `Authorization: Key <key>`, `x-api-key`, `x-goog-api-key`, `api-key`, or `xi-api-key`. Every supplied credential must resolve to one configured key; mismatches return `401` with an OpenAI-compatible authentication error. HTTP routes, control APIs, mounts, and WebSocket upgrades are protected. Genuine CORS preflights plus `GET /health`, `GET /ready`, and `GET /metrics` remain public. This is inbound test access control, distinct from `record.providerKeys`; when enabled, proxying strips test credentials and requires a configured static provider credential before egress.
+
 ### aimock-owned upstream keys — `AIMOCK_PROVIDER_*_KEY`
 
 In record or `--proxy-only` mode, aimock forwards the caller's auth header to the real provider unchanged. If your tests can only send a dummy placeholder key (e.g. an SDK that refuses to start without a non-empty API key), aimock can inject its own configured upstream key on a fixture-miss passthrough so the proxied call actually authenticates. Each provider has an independent env var, and the key is applied with the provider-correct wire scheme:

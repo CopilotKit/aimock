@@ -5,7 +5,10 @@ is NOT auto-synced — it is a hard pin to a published npm release. NodeManager
 downloads exactly this version when AIMOCK_CLI_PATH is not set, so it must point
 at a published `@copilotkit/aimock` release and be bumped to the release that
 contains any new server routes/features the client calls (e.g. the reset-split
-control routes ship in the next release). Keep it tracking npm releases.
+control routes ship in the next release). Release npm before publishing the
+corresponding pytest package. The Release workflow runs the PyPI job after
+npm publication and verifies that this pin exists before it builds or uploads
+a wheel. Keep it tracking npm releases.
 """
 
-AIMOCK_VERSION = "1.37.2"
+AIMOCK_VERSION = "1.38.0"

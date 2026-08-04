@@ -28,7 +28,8 @@ import { applyChaos } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
-  buildForwardHeaders,
+  prepareEgressHeaders,
+  removeForwardHeader,
   clampTimeout,
   persistFixture,
   sanitizeHeaderValue,
@@ -928,9 +929,18 @@ async function proxyOpenRouterVideoRecordContent(args: {
       return;
     }
   }
-  const headers = buildForwardHeaders(req);
+  const headers = prepareEgressHeaders(
+    req,
+    contentUrl,
+    "openrouter",
+    record.providerKeys?.openrouter,
+  );
+  if (!headers) {
+    proxyError("No configured provider credential");
+    return;
+  }
   if (contentUrl.origin !== providerOrigin) {
-    delete headers.authorization;
+    removeForwardHeader(headers, "authorization");
     logger.warn(
       `Upstream unsigned_urls[${index}] origin ${contentUrl.origin} differs from the provider origin ${providerOrigin} — fetching content WITHOUT the client's Authorization header`,
     );
@@ -1205,8 +1215,15 @@ export async function handleOpenRouterVideoModels(
     let relay: { text: string; contentType: string } | undefined;
     try {
       const target = resolveUpstreamUrl(upstreamBase, "/api/v1/videos/models");
+      const headers = prepareEgressHeaders(
+        req,
+        target,
+        "openrouter",
+        record.providerKeys?.openrouter,
+      );
+      if (!headers) throw new Error("No configured provider credential");
       const upstreamRes = await fetch(target, {
-        headers: buildForwardHeaders(req),
+        headers,
         signal: upstreamTimeoutSignal(record),
       });
       const text = await readEnvelopeText(upstreamRes, record);
@@ -1750,9 +1767,16 @@ async function proxyOpenRouterVideoSubmit(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
+    const headers = prepareEgressHeaders(
+      req,
+      submitUrl,
+      "openrouter",
+      record.providerKeys?.openrouter,
+    );
+    if (!headers) return proxyError("No configured provider credential");
     const upstreamRes = await fetch(submitUrl, {
       method: "POST",
-      headers: buildForwardHeaders(req),
+      headers,
       body: raw,
       signal: upstreamTimeoutSignal(record),
     });
@@ -1998,8 +2022,19 @@ async function proxyOpenRouterVideoRecordPoll(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
+    const target = new URL(job.upstreamPollingUrl);
+    const headers = prepareEgressHeaders(
+      req,
+      target,
+      "openrouter",
+      record.providerKeys?.openrouter,
+    );
+    if (!headers) {
+      proxyError("No configured provider credential");
+      return;
+    }
     const upstreamRes = await fetch(job.upstreamPollingUrl, {
-      headers: buildForwardHeaders(req),
+      headers,
       // The locally captured `record` — not defaults.record, which is the
       // same object today but would silently diverge if the defaults were
       // ever swapped between the gate above and this fetch.
@@ -2384,9 +2419,20 @@ async function captureOpenRouterVideoRecordFixture(args: {
           return;
         }
       }
-      const headers = buildForwardHeaders(req);
+      const headers = prepareEgressHeaders(
+        req,
+        contentUrl,
+        "openrouter",
+        record.providerKeys?.openrouter,
+      );
+      if (!headers) {
+        logger.error(
+          `OpenRouter video capture for job ${job.upstreamJobId} aborted: no configured provider credential`,
+        );
+        return;
+      }
       if (contentUrl.origin !== providerOrigin) {
-        delete headers.authorization;
+        removeForwardHeader(headers, "authorization");
         logger.warn(
           `Upstream unsigned_urls[0] origin ${contentUrl.origin} differs from the provider origin ${providerOrigin} — fetching content WITHOUT the client's Authorization header`,
         );

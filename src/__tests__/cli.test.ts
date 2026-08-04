@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFile, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
@@ -10,12 +10,16 @@ import { createHash } from "node:crypto";
 const CLI_PATH = resolve(__dirname, "../../dist/cli.js");
 const CLI_AVAILABLE = existsSync(CLI_PATH);
 
+// CLI integration tests use child processes and file watchers. Give healthy
+// children time to be scheduled while the full parallel suite is busy.
+vi.setConfig({ testTimeout: 15_000 });
+
 /** Spawn the CLI and collect stdout/stderr/exit code. */
 function runCli(
   args: string[],
   opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const timeout = opts.timeout ?? 5000;
+  const timeout = opts.timeout ?? 10_000;
   return new Promise((res) => {
     const cp = execFile("node", [CLI_PATH, ...args], { timeout }, (err, stdout, stderr) => {
       const code = cp.exitCode ?? (err && "code" in err ? (err as { code: number }).code : null);
@@ -45,7 +49,7 @@ function spawnCli(args: string[]): {
     err += d;
   });
 
-  const waitForOutput = (match: RegExp, timeoutMs = 5000): Promise<void> =>
+  const waitForOutput = (match: RegExp, timeoutMs = 10_000): Promise<void> =>
     new Promise((resolve, reject) => {
       const deadline = setTimeout(() => {
         reject(new Error(`Timed out waiting for ${match} — stdout: ${out}, stderr: ${err}`));

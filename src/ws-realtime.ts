@@ -21,6 +21,7 @@ import {
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
+  isTranscriptionResponse,
   isErrorResponse,
   resolveFixtureBlocks,
   resolveResponse,
@@ -59,13 +60,13 @@ interface SessionConfig {
   instructions: string;
   tools: unknown[];
   voice: string | null;
-  input_audio_format: string | null;
-  output_audio_format: string | null;
+  input_audio_format: Record<string, unknown> | null;
+  output_audio_format: Record<string, unknown> | null;
   input_audio_noise_reduction: { type: string } | null;
-  input_audio_transcription: { model: string } | null;
+  input_audio_transcription: { model: string; language?: string; prompt?: string } | null;
   turn_detection: unknown | null;
   temperature: number;
-  type: "conversation" | "transcription" | "translation";
+  type: "conversation" | "realtime" | "transcription" | "translation";
   reasoning: { effort: string } | null;
 }
 
@@ -78,6 +79,150 @@ interface RealtimeMessage {
     modalities?: string[];
     instructions?: string;
     [key: string]: unknown;
+  };
+}
+
+/**
+ * Transcription `usage` is MODEL-DEPENDENT on the live API, so the admitted
+ * models are split by the usage shape they actually report rather than kept in
+ * one flat list. Verified against api.openai.com with a single 5s clip on BOTH
+ * the realtime WS (`conversation.item.input_audio_transcription.completed`) and
+ * HTTP (`POST /v1/audio/transcriptions`) surfaces:
+ *
+ *   whisper-1              → {"type":"duration","seconds":5}
+ *   gpt-transcribe         → {"type":"duration","seconds":5}
+ *   gpt-live-transcribe    → {"type":"duration","seconds":5}  (realtime only)
+ *   gpt-4o-transcribe      → {"type":"tokens","total_tokens":66,…}
+ *   gpt-4o-mini-transcribe → {"type":"tokens","total_tokens":66,…}
+ *
+ * Keeping the split here — instead of a second list beside the admission
+ * predicate — means a newly admitted model has to declare its family, and the
+ * two can never disagree about which models exist.
+ */
+function isDurationUsageTranscriptionModel(model: string): boolean {
+  return (
+    model === "whisper-1" ||
+    model === "gpt-transcribe" ||
+    model === "gpt-live-transcribe" ||
+    model.startsWith("gpt-live-transcribe-")
+  );
+}
+
+function isTokenUsageTranscriptionModel(model: string): boolean {
+  return model === "gpt-4o-transcribe" || model.startsWith("gpt-4o-mini-transcribe");
+}
+
+function isLiveTranscriptionModel(model: string): boolean {
+  return isDurationUsageTranscriptionModel(model) || isTokenUsageTranscriptionModel(model);
+}
+
+/**
+ * The synthesized `usage` for a transcription with no fixture-supplied one.
+ * aimock has no real audio to measure, so the magnitudes are zero — but the
+ * DISCRIMINATOR must match the model's live family, otherwise a consumer
+ * branching on `usage.type` reads `undefined` counts and fails silently.
+ */
+function defaultTranscriptionUsage(model: string): Record<string, unknown> {
+  if (isTokenUsageTranscriptionModel(model)) {
+    return {
+      type: "tokens",
+      total_tokens: 0,
+      input_tokens: 0,
+      input_token_details: { text_tokens: 0, audio_tokens: 0 },
+      output_tokens: 0,
+    };
+  }
+  return { type: "duration", seconds: 0 };
+}
+
+function normalizeAudioFormat(value: unknown): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (typeof value === "string") return { type: value };
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).type === "string"
+  ) {
+    return { ...(value as Record<string, unknown>) };
+  }
+  return null;
+}
+
+function transcriptionModel(session: SessionConfig): string {
+  return session.input_audio_transcription?.model ?? session.model;
+}
+
+/**
+ * A live-transcription session is discriminated by the session TYPE, never by
+ * the mere presence of `input_audio_transcription`.
+ *
+ * `input_audio_transcription` is the documented way to configure input
+ * transcription on an ordinary realtime CONVERSATION session, so treating it as
+ * the discriminator made the canonical realtime setup (`{model:"whisper-1"}`)
+ * route `input_audio_buffer.commit` into the transcription path. That silently
+ * corrupted the conversation: it appended a phantom `[audio]` turn and consumed
+ * a fixture match, so the next `response.create` replayed the FOLLOWING turn's
+ * content. The client saw a well-formed — but wrong — response.
+ *
+ * A transcription session is established explicitly, either by connecting with
+ * `?intent=transcription` or via `transcription_session.update` (both set
+ * `session.type`), which is what the OpenAI realtime API requires too.
+ */
+function isLiveTranscriptionSession(session: SessionConfig): boolean {
+  return isLiveTranscriptionModel(transcriptionModel(session)) && session.type === "transcription";
+}
+
+function serializeSession(session: SessionConfig, sessionId?: string): Record<string, unknown> {
+  // A transcription session is a DIFFERENT resource on the wire. Live GA sends:
+  //   {"type":"transcription","object":"realtime.transcription_session",
+  //    "id":"sess_…","expires_at":…,"audio":{"input":{…}},"include":null}
+  // No model (there is no session-level model for a transcription session — the
+  // model lives in audio.input.transcription), and none of the conversation-only
+  // fields: modalities, instructions, tools, tool_choice, temperature,
+  // max_response_output_tokens, reasoning, or audio.output.
+  if (session.type === "transcription") {
+    return {
+      ...(sessionId ? { id: sessionId } : {}),
+      object: "realtime.transcription_session",
+      type: "transcription",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      audio: {
+        input: {
+          format: session.input_audio_format,
+          noise_reduction: session.input_audio_noise_reduction,
+          transcription: session.input_audio_transcription,
+          turn_detection: session.turn_detection,
+        },
+      },
+      include: null,
+    };
+  }
+  return {
+    ...(sessionId ? { id: sessionId } : {}),
+    object: "realtime.session",
+    model: session.model,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    modalities: session.modalities,
+    instructions: session.instructions,
+    tools: session.tools,
+    tool_choice: "auto",
+    temperature: session.temperature,
+    max_response_output_tokens: "inf",
+    audio: {
+      input: {
+        format: session.input_audio_format,
+        noise_reduction: session.input_audio_noise_reduction,
+        transcription: session.input_audio_transcription,
+        turn_detection: session.turn_detection,
+      },
+      output: {
+        format: session.output_audio_format,
+        voice: session.voice,
+      },
+    },
+    type:
+      session.type === "conversation" || session.type === "realtime" ? "realtime" : session.type,
+    reasoning: session.reasoning,
   };
 }
 
@@ -259,10 +404,14 @@ function translateGAToBeta(event: Record<string, unknown>): Record<string, unkno
       const session = { ...(translated.session as Record<string, unknown>) };
       if (session.audio && typeof session.audio === "object") {
         const audio = session.audio as Record<string, unknown>;
-        session.voice = audio.voice;
-        session.input_audio_format = audio.input_audio_format;
-        session.output_audio_format = audio.output_audio_format;
-        session.input_audio_transcription = audio.input_audio_transcription;
+        const input = audio.input as Record<string, unknown> | undefined;
+        const output = audio.output as Record<string, unknown> | undefined;
+        session.voice = output?.voice;
+        session.input_audio_format = (input?.format as Record<string, unknown> | undefined)?.type;
+        session.output_audio_format = (output?.format as Record<string, unknown> | undefined)?.type;
+        session.input_audio_transcription = input?.transcription;
+        session.input_audio_noise_reduction = input?.noise_reduction;
+        session.turn_detection = input?.turn_detection ?? null;
         delete session.audio;
       }
       delete session.type;
@@ -313,6 +462,7 @@ export function handleWebSocketRealtime(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    transcriptionIntent?: boolean;
   },
 ): void {
   const { logger } = defaults;
@@ -334,7 +484,7 @@ export function handleWebSocketRealtime(
     input_audio_transcription: null,
     turn_detection: null,
     temperature: 0.8,
-    type: "conversation",
+    type: defaults.transcriptionIntent ? "transcription" : "conversation",
     reasoning: null,
   };
 
@@ -345,28 +495,7 @@ export function handleWebSocketRealtime(
     ws,
     {
       type: "session.created",
-      session: {
-        id: sessionId,
-        object: "realtime.session",
-        model: session.model,
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        modalities: session.modalities,
-        instructions: session.instructions,
-        tools: session.tools,
-        tool_choice: "auto",
-        temperature: session.temperature,
-        max_response_output_tokens: "inf",
-        audio: {
-          voice: session.voice,
-          input_audio_format: session.input_audio_format,
-          output_audio_format: session.output_audio_format,
-          input_audio_noise_reduction: session.input_audio_noise_reduction,
-          input_audio_transcription: session.input_audio_transcription,
-        },
-        turn_detection: session.turn_detection,
-        type: session.type,
-        reasoning: session.reasoning,
-      },
+      session: serializeSession(session, sessionId),
     },
     isBeta,
   );
@@ -414,6 +543,7 @@ async function processMessage(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    transcriptionIntent?: boolean;
   },
   session: SessionConfig,
   conversationItems: RealtimeItem[],
@@ -436,13 +566,24 @@ async function processMessage(
 
   const msgType = parsed.type;
 
-  // ── session.update ────────────────────────────────────────────────────
-  if (msgType === "session.update") {
+  // ── session.update / transcription_session.update ─────────────────────
+  const isTranscriptionSessionUpdate = msgType === "transcription_session.update";
+  if (msgType === "session.update" || isTranscriptionSessionUpdate) {
+    if (isTranscriptionSessionUpdate && !defaults.transcriptionIntent) {
+      buildErrorRealtimeEvent(
+        ws,
+        "transcription_session.update requires a realtime connection with intent=transcription",
+        isBeta,
+        "invalid_request_error",
+        "invalid_session_config",
+      );
+      return;
+    }
     if (parsed.session) {
       const s = parsed.session;
 
       // Validate session.type value before applying any mutations
-      const validTypes = new Set(["conversation", "transcription", "translation"]);
+      const validTypes = new Set(["conversation", "realtime", "transcription", "translation"]);
       if ((s as Record<string, unknown>).type !== undefined) {
         if (!validTypes.has((s as Record<string, unknown>).type as string)) {
           sendEvent(
@@ -464,10 +605,20 @@ async function processMessage(
       // Capture full pre-mutation snapshot for rollback on validation failure
       const prevSession = { ...session };
 
+      // `model` is deliberately NOT applied and NOT rejected. The session model
+      // is fixed when the connection is established, and live GA silently
+      // ignores the field: a probe that sent model:"gpt-realtime" on a
+      // "gpt-realtime-mini" connection got a normal `session.updated` echoing
+      // the ORIGINAL model with the rest of the update applied. Erroring here
+      // stranded the very common client that echoes back the session object it
+      // received — no `session.updated` ever arrived, so clients awaiting it
+      // hung until their own timeout.
+
+      if (isTranscriptionSessionUpdate) session.type = "transcription";
+
       if (s.instructions !== undefined) session.instructions = s.instructions;
       if (s.tools !== undefined) session.tools = s.tools;
       if (s.modalities !== undefined) session.modalities = s.modalities;
-      if (s.model !== undefined) session.model = s.model;
       if (s.temperature !== undefined) session.temperature = s.temperature;
       if ((s as Record<string, unknown>).type !== undefined)
         session.type = (s as Record<string, unknown>).type as SessionConfig["type"];
@@ -476,9 +627,9 @@ async function processMessage(
         const audio = (s as Record<string, unknown>).audio as Record<string, unknown>;
         if (audio.voice !== undefined) session.voice = audio.voice as string | null;
         if (audio.input_audio_format !== undefined)
-          session.input_audio_format = audio.input_audio_format as string | null;
+          session.input_audio_format = normalizeAudioFormat(audio.input_audio_format);
         if (audio.output_audio_format !== undefined)
-          session.output_audio_format = audio.output_audio_format as string | null;
+          session.output_audio_format = normalizeAudioFormat(audio.output_audio_format);
         if (audio.input_audio_noise_reduction !== undefined)
           session.input_audio_noise_reduction = audio.input_audio_noise_reduction as {
             type: string;
@@ -486,12 +637,38 @@ async function processMessage(
         if (audio.input_audio_transcription !== undefined)
           session.input_audio_transcription = audio.input_audio_transcription as {
             model: string;
+            language?: string;
+            prompt?: string;
           } | null;
+        // Current Realtime session shape nests input transcription under
+        // session.audio.input.transcription.
+        if (audio.input && typeof audio.input === "object") {
+          const input = audio.input as Record<string, unknown>;
+          if (input.transcription !== undefined)
+            session.input_audio_transcription = input.transcription as {
+              model: string;
+              language?: string;
+              prompt?: string;
+            } | null;
+          if (input.noise_reduction !== undefined)
+            session.input_audio_noise_reduction = input.noise_reduction as { type: string } | null;
+          if (input.turn_detection !== undefined) session.turn_detection = input.turn_detection;
+          if (input.format !== undefined)
+            session.input_audio_format = normalizeAudioFormat(input.format);
+        }
+        if (audio.output && typeof audio.output === "object") {
+          const output = audio.output as Record<string, unknown>;
+          if (output.voice !== undefined) session.voice = output.voice as string | null;
+          if (output.format !== undefined)
+            session.output_audio_format = normalizeAudioFormat(output.format);
+        }
       }
       // Beta flat fields (backward compat)
       if (s.voice !== undefined) session.voice = s.voice;
-      if (s.input_audio_format !== undefined) session.input_audio_format = s.input_audio_format;
-      if (s.output_audio_format !== undefined) session.output_audio_format = s.output_audio_format;
+      if (s.input_audio_format !== undefined)
+        session.input_audio_format = normalizeAudioFormat(s.input_audio_format);
+      if (s.output_audio_format !== undefined)
+        session.output_audio_format = normalizeAudioFormat(s.output_audio_format);
       if (s.input_audio_noise_reduction !== undefined)
         session.input_audio_noise_reduction = s.input_audio_noise_reduction;
       if (s.input_audio_transcription !== undefined)
@@ -517,14 +694,19 @@ async function processMessage(
         "gpt-realtime-translate",
       ]);
 
-      if (session.type === "transcription" && !transcriptionModels.has(session.model)) {
+      const candidateTranscriptionModel = transcriptionModel(session);
+      if (
+        session.type === "transcription" &&
+        !transcriptionModels.has(candidateTranscriptionModel) &&
+        !isLiveTranscriptionSession(session)
+      ) {
         Object.assign(session, prevSession);
         sendEvent(
           ws,
           {
             type: "error",
             error: {
-              message: `Model ${s.model ?? prevSession.model} does not support session type transcription`,
+              message: `Model ${candidateTranscriptionModel} does not support session type transcription`,
               type: "invalid_request_error",
               code: "invalid_session_config",
             },
@@ -554,28 +736,8 @@ async function processMessage(
     sendEvent(
       ws,
       {
-        type: "session.updated",
-        session: {
-          object: "realtime.session",
-          model: session.model,
-          expires_at: Math.floor(Date.now() / 1000) + 3600,
-          modalities: session.modalities,
-          instructions: session.instructions,
-          tools: session.tools,
-          tool_choice: "auto",
-          temperature: session.temperature,
-          max_response_output_tokens: "inf",
-          audio: {
-            voice: session.voice,
-            input_audio_format: session.input_audio_format,
-            output_audio_format: session.output_audio_format,
-            input_audio_noise_reduction: session.input_audio_noise_reduction,
-            input_audio_transcription: session.input_audio_transcription,
-          },
-          turn_detection: session.turn_detection,
-          type: session.type,
-          reasoning: session.reasoning,
-        },
+        type: isTranscriptionSessionUpdate ? "transcription_session.updated" : "session.updated",
+        session: serializeSession(session),
       },
       isBeta,
     );
@@ -630,7 +792,9 @@ async function processMessage(
   // ── input_audio_buffer.commit ──────────────────────────────────────
   if (msgType === "input_audio_buffer.commit") {
     sendEvent(ws, { type: "input_audio_buffer.committed" }, isBeta);
-    // In transcription/translation mode, add a placeholder user item
+    // In transcription/translation mode, add a placeholder user item. A plain
+    // conversation session gets only the `committed` ack, even when it
+    // configures `input_audio_transcription` — see isLiveTranscriptionSession.
     if (session.type === "transcription" || session.type === "translation") {
       const audioItem: RealtimeItem = {
         type: "message",
@@ -647,6 +811,17 @@ async function processMessage(
         },
         isBeta,
       );
+      if (isLiveTranscriptionSession(session)) {
+        await emitLiveTranscriptionEvents(
+          ws,
+          fixtures,
+          journal,
+          defaults,
+          session,
+          audioItem,
+          isBeta,
+        );
+      }
     }
     return;
   }
@@ -664,6 +839,222 @@ async function processMessage(
   }
 
   // Unknown message type — ignore silently (matches OpenAI behavior)
+}
+
+async function emitLiveTranscriptionEvents(
+  ws: WebSocketConnection,
+  fixtures: Fixture[],
+  journal: Journal,
+  defaults: {
+    latency: number;
+    chunkSize: number;
+    replaySpeed?: number;
+    model: string;
+    logger: Logger;
+    strict?: boolean;
+    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+    testId?: string;
+    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+  },
+  session: SessionConfig,
+  audioItem: RealtimeItem,
+  isBeta: boolean,
+): Promise<void> {
+  const realtimeContextHeader = defaults.upgradeHeaders?.["x-aimock-context"];
+  const realtimeContext =
+    typeof realtimeContextHeader === "string"
+      ? realtimeContextHeader
+      : Array.isArray(realtimeContextHeader) && realtimeContextHeader.length > 0
+        ? realtimeContextHeader[0]
+        : undefined;
+  const request: ChatCompletionRequest = {
+    model: transcriptionModel(session),
+    messages: realtimeItemsToMessages([audioItem], undefined, defaults.logger),
+    _endpointType: "realtime-transcription",
+    _context: realtimeContext,
+  };
+  const testId = defaults.testId ?? DEFAULT_TEST_ID;
+  const { fixture, skippedBySequenceOrTurn } = matchFixtureDiagnostic(
+    fixtures,
+    request,
+    journal.getFixtureMatchCountsForTest(testId),
+    defaults.requestTransform,
+  );
+  const itemId = audioItem.id ?? realtimeId("item");
+
+  if (!fixture) {
+    if (resolveStrictMode(defaults.strict, defaults.upgradeHeaders)) {
+      const strictMessage = strictNoMatchMessage(skippedBySequenceOrTurn);
+      defaults.logger.error(strictNoMatchLogLine("WS", "/v1/realtime", skippedBySequenceOrTurn));
+      journal.add({
+        method: "WS",
+        path: "/v1/realtime",
+        headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+        body: request,
+        response: {
+          status: 503,
+          fixture: null,
+          ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+        },
+      });
+      ws.close(1008, strictMessage);
+      return;
+    }
+
+    journal.add({
+      method: "WS",
+      path: "/v1/realtime",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: request,
+      response: {
+        status: 404,
+        fixture: null,
+        ...strictOverrideField(defaults.strict, defaults.upgradeHeaders),
+      },
+    });
+    sendLiveTranscriptionFailure(
+      ws,
+      itemId,
+      { message: "No fixture matched", type: "invalid_request_error", code: "no_fixture_match" },
+      isBeta,
+    );
+    return;
+  }
+  // The match count is burned only once the response is confirmed usable for
+  // this endpoint. router.ts exempts `realtime*` requests from the
+  // response-shape gate, so a generic chat fixture still matches this lookup;
+  // counting it here — before the shape check below — silently advanced a
+  // sequenced conversation by one turn. An error fixture IS a deliberate match
+  // and still counts, matching the chat path.
+  const response = await resolveResponse(fixture, request);
+  if (isErrorResponse(response)) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+    journal.add({
+      method: "WS",
+      path: "/v1/realtime",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: request,
+      response: { status: response.status ?? 500, fixture },
+    });
+    sendLiveTranscriptionFailure(
+      ws,
+      itemId,
+      {
+        message: response.error.message,
+        type: response.error.type ?? "server_error",
+        ...(response.error.code !== undefined && { code: response.error.code }),
+      },
+      isBeta,
+    );
+    return;
+  }
+  if (!isTranscriptionResponse(response)) {
+    journal.add({
+      method: "WS",
+      path: "/v1/realtime",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: request,
+      response: { status: 500, fixture },
+    });
+    sendLiveTranscriptionFailure(
+      ws,
+      itemId,
+      { message: "Fixture response is not a transcription type", type: "server_error" },
+      isBeta,
+    );
+    return;
+  }
+  journal.incrementFixtureMatchCount(fixture, fixtures, testId);
+
+  const transcript = response.transcription.text;
+  // The synthesized usage shape is MODEL-AWARE — duration for whisper-1 /
+  // gpt-transcribe / gpt-live-transcribe, a token breakdown for the
+  // gpt-4o-transcribe families (see defaultTranscriptionUsage). A
+  // fixture-supplied usage always wins.
+  const usage = response.transcription.usage ?? defaultTranscriptionUsage(request.model);
+  const journalEntry = journal.add({
+    method: "WS",
+    path: "/v1/realtime",
+    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+    body: request,
+    response: { status: 200, fixture },
+  });
+  const latency = fixture.latency ?? defaults.latency;
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+  const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
+  const interruption = createInterruptionSignal(fixture);
+  let chunkIndex = 0;
+  for (let index = 0; index < transcript.length; index += chunkSize) {
+    const chunkDelay = calculateDelay(
+      chunkIndex,
+      fixture.streamingProfile,
+      latency,
+      fixture.recordedTimings,
+      replaySpeed,
+    );
+    if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+    if (interruption?.signal.aborted || ws.isClosed) {
+      if (interruption?.signal.aborted) {
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption.reason();
+        ws.destroy();
+      }
+      interruption?.cleanup();
+      return;
+    }
+    sendEvent(
+      ws,
+      {
+        type: "conversation.item.input_audio_transcription.delta",
+        item_id: itemId,
+        content_index: 0,
+        delta: transcript.slice(index, index + chunkSize),
+      },
+      isBeta,
+    );
+    interruption?.tick();
+    chunkIndex++;
+  }
+  if (interruption?.signal.aborted) {
+    journalEntry.response.interrupted = true;
+    journalEntry.response.interruptReason = interruption.reason();
+    ws.destroy();
+    interruption.cleanup();
+    return;
+  }
+  sendEvent(
+    ws,
+    {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: itemId,
+      content_index: 0,
+      transcript,
+      usage,
+      ...(response.transcription.languages !== undefined
+        ? { languages: response.transcription.languages }
+        : {}),
+    },
+    isBeta,
+  );
+  interruption?.cleanup();
+}
+
+function sendLiveTranscriptionFailure(
+  ws: WebSocketConnection,
+  itemId: string,
+  error: { message: string; type: string; code?: string },
+  isBeta: boolean,
+): void {
+  sendEvent(
+    ws,
+    {
+      type: "conversation.item.input_audio_transcription.failed",
+      item_id: itemId,
+      content_index: 0,
+      error,
+    },
+    isBeta,
+  );
 }
 
 async function handleResponseCreate(

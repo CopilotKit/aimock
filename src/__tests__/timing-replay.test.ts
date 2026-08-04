@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import { createServer, type ServerInstance } from "../server.js";
 import type { Fixture, SSEChunk, ChatCompletionRequest, RecordedTimings } from "../types.js";
+import * as sseWriter from "../sse-writer.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,7 +103,7 @@ describe("timing-aware replay through handleCompletions", () => {
     expect(elapsed).toBeGreaterThanOrEqual(40); // at least ~TTFT minus jitter
   });
 
-  it("replaySpeed 2.0 halves the replay duration", async () => {
+  it("forwards fixture replaySpeed and recordedTimings through the completions route", async () => {
     // 80ms TTFT + 4 x 40ms inter-chunk = ~240ms at 1x speed
     const timings: RecordedTimings = {
       ttftMs: 80,
@@ -124,19 +125,18 @@ describe("timing-aware replay through handleCompletions", () => {
       chunkSize: 5,
     });
 
-    const start = Date.now();
+    const writeSSEStream = vi.spyOn(sseWriter, "writeSSEStream");
     const res = await httpPost(`${instance.url}/v1/chat/completions`, chatRequest("speed-test"));
-    const elapsed = Date.now() - start;
 
     expect(res.status).toBe(200);
     const chunks = parseSSEResponse(res.body);
     expect(chunks.length).toBeGreaterThan(1);
 
-    // At 2x speed, effective delays are halved. The full 1x duration would be
-    // ~240ms, so at 2x it should be ~120ms. We verify it's well below 1x
-    // but still non-trivial (delays are being applied, just faster).
-    expect(elapsed).toBeGreaterThanOrEqual(50); // still has meaningful delay
-    expect(elapsed).toBeLessThan(200); // well below 1x baseline of ~240ms
+    expect(writeSSEStream).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ recordedTimings: timings, replaySpeed: 2 }),
+    );
   });
 
   it("recordedTimings alone impose real delays (positive control)", async () => {

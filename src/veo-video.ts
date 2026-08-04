@@ -27,7 +27,7 @@ import { applyChaos } from "./chaos.js";
 import { resolveProgression } from "./fal.js";
 import {
   buildFixtureMatch,
-  buildForwardHeaders,
+  prepareEgressHeaders,
   persistFixture,
   sanitizeHeaderValue,
 } from "./recorder.js";
@@ -687,9 +687,11 @@ async function proxyVeoVideoSubmit(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
+    const headers = prepareEgressHeaders(req, submitUrl, "veo", record.providerKeys?.veo);
+    if (!headers) return proxyError("No configured provider credential");
     const upstreamRes = await fetch(submitUrl, {
       method: "POST",
-      headers: buildForwardHeaders(req),
+      headers,
       body: raw,
       signal: upstreamTimeoutSignal(record),
     });
@@ -880,8 +882,14 @@ async function proxyVeoVideoRecordPoll(args: {
 
   let fetched: { status: number; contentType: string | null; text: string };
   try {
+    const target = new URL(job.upstreamPollingUrl);
+    const headers = prepareEgressHeaders(req, target, "veo", record.providerKeys?.veo);
+    if (!headers) {
+      proxyError("No configured provider credential");
+      return;
+    }
     const upstreamRes = await fetch(job.upstreamPollingUrl, {
-      headers: buildForwardHeaders(req),
+      headers,
       signal: upstreamTimeoutSignal(record),
     });
     fetched = {

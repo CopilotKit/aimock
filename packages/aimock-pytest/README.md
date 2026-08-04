@@ -79,8 +79,13 @@ aimock.reset()             # alias for reset_fixtures()
 
 ```
 --aimock-node PATH       Path to node binary
---aimock-version VER     aimock npm version (default: 1.35.1)
+--aimock-version VER     aimock npm version (default: 1.38.0)
+--aimock-api-key KEY     Inbound API key for the aimock child process
 ```
+
+## API-key validation
+
+Pass `pytest --aimock-api-key test-key` to protect the aimock child. The helper sends this key on all control API calls, and the child receives it through `AIMOCK_API_KEYS`, never through process arguments. Direct client calls must use `Authorization: Bearer test-key`. For direct construction, use `AIMockServer(node_manager, api_key="test-key")`.
 
 ## Environment Variables
 
@@ -127,8 +132,10 @@ The `test-pytest.yml` workflow:
 
 Tests run across a matrix of Python 3.10--3.13 and Node 20/22.
 
-The `publish-pytest.yml` workflow publishes to PyPI on pushes to `main` when
-the version in `pyproject.toml` has not already been published.
+The Release workflow publishes `aimock-pytest` to PyPI after its npm publish
+job succeeds. Its PyPI job verifies that the `AIMOCK_VERSION` pin exists on
+npm before building a wheel, so npm publication completes before the
+corresponding `aimock-pytest` release.
 
 ## License
 

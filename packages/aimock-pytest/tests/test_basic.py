@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from unittest import mock
 
 import requests
@@ -36,6 +39,116 @@ def test_server_starts(aimock):
     r = requests.get(f"{aimock.base_url}/__aimock/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_api_key_controls_and_client_requests(_aimock_node_manager):
+    """The helper authenticates control traffic without bypassing client auth."""
+    from aimock_pytest import AIMockServer
+
+    server = AIMockServer(_aimock_node_manager, api_key="pytest-test-key")
+    try:
+        server.start()
+        server.on_message("hello", {"content": "keyed"})
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        assert requests.post(f"{server.base_url}/v1/chat/completions", json=body).status_code == 401
+        response = requests.post(
+            f"{server.base_url}/v1/chat/completions",
+            json=body,
+            headers={"Authorization": "Bearer pytest-test-key"},
+        )
+        assert response.status_code == 200
+        assert requests.post(f"{server.base_url}/__aimock/fixtures", json={"fixtures": []}).status_code == 401
+    finally:
+        server.stop()
+
+
+def test_aimock_api_key_option_authenticates_plugin_fixture_in_a_subprocess(tmp_path):
+    """The pytest option reaches the child and the fixture's control client."""
+    test_file = tmp_path / "test_keyed_fixture.py"
+    test_file.write_text(
+        """
+import requests
+
+
+def test_keyed_fixture(aimock):
+    aimock.on_message("hello", {"content": "keyed fixture"})
+    body = {"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}
+    assert requests.post(f"{aimock.base_url}/v1/chat/completions", json=body).status_code == 401
+    response = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json=body,
+        headers={"Authorization": "Bearer subprocess-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "keyed fixture"
+""",
+        encoding="utf-8",
+    )
+    child_env = os.environ.copy()
+    # The child loads the plugin explicitly so source-tree and installed-package
+    # runs exercise the same fixture path without registering it twice.
+    child_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "aimock_pytest.plugin",
+            "--aimock-api-key",
+            "subprocess-key",
+            str(test_file),
+        ],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_ordinary_plugin_fixture_ignores_inherited_api_key_in_a_subprocess(tmp_path):
+    """Ambient shell auth must not turn an unconfigured fixture into an auth server."""
+    test_file = tmp_path / "test_inherited_key_fixture.py"
+    test_file.write_text(
+        """
+import requests
+
+
+def test_unconfigured_fixture(aimock):
+    aimock.on_message("hello", {"content": "ambient key ignored"})
+    response = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ambient key ignored"
+""",
+        encoding="utf-8",
+    )
+    child_env = os.environ.copy()
+    child_env["AIMOCK_API_KEYS"] = "ambient-shell-key"
+    child_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "aimock_pytest.plugin",
+            str(test_file),
+        ],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_add_fixture_and_match(aimock):

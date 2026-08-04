@@ -410,7 +410,9 @@ export interface TranscriptionResponse {
   transcription: {
     text: string;
     language?: string;
+    languages?: Array<{ code: string }>;
     duration?: number;
+    usage?: Record<string, unknown>;
     words?: Array<{ word: string; start: number; end: number }>;
     segments?: Array<{ id: number; text: string; start: number; end: number }>;
   };
@@ -470,8 +472,8 @@ export type RealtimePhase = "final_answer" | "commentary";
 
 export interface GASessionAudioConfig {
   voice: string | null;
-  input_audio_format: string | null;
-  output_audio_format: string | null;
+  input_audio_format: { type: string; rate?: number; [key: string]: unknown } | null;
+  output_audio_format: { type: string; rate?: number; [key: string]: unknown } | null;
   input_audio_noise_reduction: { type: string } | null;
   input_audio_transcription: { model: string } | null;
 }
@@ -1014,6 +1016,8 @@ export interface FalRecordConfig {
 }
 
 export interface MockServerOptions {
+  /** Optional inbound test-client access keys. Omit to preserve permissive behavior. */
+  auth?: ApiKeyAuthConfig;
   port?: number;
   host?: string;
   latency?: number;
@@ -1096,6 +1100,10 @@ export interface MockServerOptions {
    * poll count.
    */
   grokVideo?: FalQueueConfig;
+}
+
+export interface ApiKeyAuthConfig {
+  apiKeys: readonly string[];
 }
 
 /**

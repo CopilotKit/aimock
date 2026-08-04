@@ -9,6 +9,7 @@ import { watchFixtures } from "./watcher.js";
 import { AGUIMock } from "./agui-mock.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
+import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
 import type { Fixture, ChaosConfig, RecordConfig } from "./types.js";
 
 const HELP = `
@@ -52,6 +53,7 @@ Options:
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
+      AIMOCK_API_KEYS  Comma-separated inbound test API keys (environment only)
       --help                Show this help message
 `.trim();
 
@@ -456,6 +458,7 @@ async function main() {
       strict: values.strict,
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
+      auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,
     },
     mounts,
   );

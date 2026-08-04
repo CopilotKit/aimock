@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { proxyAndRecord } from "../recorder.js";
+import { createServer } from "../server.js";
 import type { Fixture, RecordConfig, ChatCompletionRequest } from "../types.js";
 import { Logger } from "../logger.js";
 
@@ -75,6 +76,21 @@ function createMockReqRes(
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "aimock-mm-record-"));
+}
+
+async function requestStreamingTranscription(url: string, signal?: AbortSignal): Promise<Response> {
+  const formData = new FormData();
+  formData.append("file", new Blob(["audio"], { type: "audio/wav" }), "audio.wav");
+  formData.append("model", "gpt-transcribe");
+  formData.append("stream", "true");
+  return fetch(`${url}/v1/audio/transcriptions`, { method: "POST", body: formData, signal });
+}
+
+async function requestJsonTranscription(url: string): Promise<Response> {
+  const formData = new FormData();
+  formData.append("file", new Blob(["audio"], { type: "audio/wav" }), "audio.wav");
+  formData.append("model", "gpt-transcribe");
+  return fetch(`${url}/v1/audio/transcriptions`, { method: "POST", body: formData });
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +223,220 @@ describe("multimedia record: image response detection", () => {
 });
 
 describe("multimedia record: transcription response detection", () => {
+  it("records upstream gpt-transcribe SSE and replays it through the local handler", async () => {
+    const fixturePath = makeTmpDir();
+    const upstreamBody =
+      'data: {"type":"transcript.text.delta","delta":"Recorded "}\n\n' +
+      'data: {"type":"transcript.text.delta","delta":"stream"}\n\n' +
+      'data: {"type":"transcript.text.done","text":"Recorded stream","languages":[{"code":"en"}],"usage":{"type":"tokens","input_tokens":4,"output_tokens":5,"total_tokens":9}}\n\n';
+    const { server: upstream, url } = await createUpstream((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(upstreamBody);
+    });
+    const fixtures: Fixture[] = [];
+    const recorder = await createServer(fixtures, {
+      port: 0,
+      record: { providers: { openai: url }, fixturePath },
+    });
+
+    try {
+      const recorded = await requestStreamingTranscription(recorder.url);
+      expect(recorded.status).toBe(200);
+      expect(await recorded.text()).toBe(upstreamBody);
+      expect(fixtures).toHaveLength(1);
+      expect(fixtures[0].response).toEqual({
+        transcription: {
+          text: "Recorded stream",
+          languages: [{ code: "en" }],
+          usage: { type: "tokens", input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+        },
+      });
+
+      const savedFixture = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            fixturePath,
+            fs.readdirSync(fixturePath).find((file) => file.endsWith(".json"))!,
+          ),
+          "utf8",
+        ),
+      );
+      expect(savedFixture.fixtures[0].response).toEqual({
+        transcription: {
+          text: "Recorded stream",
+          languages: [{ code: "en" }],
+          usage: { type: "tokens", input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+        },
+      });
+
+      // Replay goes through the local handler, which terminates the stream with
+      // the `[DONE]` sentinel the live API sends. The proxied passthrough above
+      // relays the upstream bytes verbatim, so only replay gains the sentinel.
+      const replay = await requestStreamingTranscription(recorder.url);
+      expect(replay.status).toBe(200);
+      expect(await replay.text()).toBe(
+        'data: {"type":"transcript.text.delta","delta":"Recorded stream"}\n\n' +
+          'data: {"type":"transcript.text.done","text":"Recorded stream","languages":[{"code":"en"}],"usage":{"type":"tokens","input_tokens":4,"output_tokens":5,"total_tokens":9}}\n\n' +
+          "data: [DONE]\n\n",
+      );
+    } finally {
+      await closeServer(recorder.server);
+      await closeServer(upstream);
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a typed terminal stream when the client closes before upstream end", async () => {
+    const fixturePath = makeTmpDir();
+    const terminal =
+      'data: {"type":"transcript.text.done","text":"Typed terminal","languages":[{"code":"en"}],"usage":{"input_tokens":4,"output_tokens":5}}\n\n';
+    const { server: upstream, url } = await createUpstream((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(terminal);
+      setTimeout(() => res.end(), 150);
+    });
+    const fixtures: Fixture[] = [];
+    const recorder = await createServer(fixtures, {
+      port: 0,
+      record: { providers: { openai: url }, fixturePath },
+    });
+
+    try {
+      const controller = new AbortController();
+      const recorded = await requestStreamingTranscription(recorder.url, controller.signal);
+      const reader = recorded.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(first).toContain('"type":"transcript.text.done"');
+      controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      expect(fixtures).toHaveLength(1);
+      expect(fixtures[0].response).toEqual({
+        transcription: {
+          text: "Typed terminal",
+          languages: [{ code: "en" }],
+          usage: { input_tokens: 4, output_tokens: 5 },
+        },
+      });
+      const savedFixture = JSON.parse(
+        fs.readFileSync(
+          path.join(
+            fixturePath,
+            fs.readdirSync(fixturePath).find((file) => file.endsWith(".json"))!,
+          ),
+          "utf8",
+        ),
+      );
+      expect(savedFixture.fixtures[0].response).toEqual(fixtures[0].response);
+      await closeServer(upstream);
+
+      const replay = await requestStreamingTranscription(recorder.url);
+      expect(replay.status).toBe(200);
+      expect(await replay.text()).toContain(
+        '"text":"Typed terminal","languages":[{"code":"en"}],"usage":{"input_tokens":4,"output_tokens":5}',
+      );
+    } finally {
+      await closeServer(recorder.server);
+      if (upstream.listening) await closeServer(upstream);
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("records and replays the modern gpt-transcribe text languages and usage response", async () => {
+    const fixturePath = makeTmpDir();
+    const { server, url } = await createUpstream((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          text: "Modern transcript",
+          languages: [{ code: "en" }, { code: "es" }],
+          usage: { type: "tokens", input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+        }),
+      );
+    });
+
+    try {
+      const fixtures: Fixture[] = [];
+      const record: RecordConfig = { providers: { openai: url }, fixturePath };
+      const logger = new Logger("silent");
+      const request: ChatCompletionRequest = {
+        model: "gpt-transcribe",
+        messages: [],
+        _endpointType: "transcription",
+      };
+
+      const { req, res } = createMockReqRes("/v1/audio/transcriptions");
+      await proxyAndRecord(req, res, request, "openai", "/v1/audio/transcriptions", fixtures, {
+        record,
+        logger,
+      });
+
+      const response = fixtures[0].response as {
+        transcription?: {
+          text: string;
+          languages?: Array<{ code: string }>;
+          usage?: Record<string, unknown>;
+        };
+      };
+      expect(response.transcription).toEqual({
+        text: "Modern transcript",
+        languages: [{ code: "en" }, { code: "es" }],
+        usage: { type: "tokens", input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+      });
+    } finally {
+      await closeServer(server);
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
+  it("records and locally replays JSON transcription languages and usage", async () => {
+    const fixturePath = makeTmpDir();
+    const { server: upstream, url } = await createUpstream((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          text: "Recorded JSON transcript",
+          languages: [{ code: "en" }, { code: "fr" }],
+          usage: { type: "tokens", input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+        }),
+      );
+    });
+    const fixtures: Fixture[] = [];
+    const recorder = await createServer(fixtures, {
+      port: 0,
+      record: { providers: { openai: url }, fixturePath },
+    });
+
+    try {
+      const recorded = await requestJsonTranscription(recorder.url);
+      expect(recorded.status).toBe(200);
+      expect(await recorded.json()).toEqual({
+        text: "Recorded JSON transcript",
+        languages: [{ code: "en" }, { code: "fr" }],
+        usage: { type: "tokens", input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+      });
+      expect(fixtures[0].response).toEqual({
+        transcription: {
+          text: "Recorded JSON transcript",
+          languages: [{ code: "en" }, { code: "fr" }],
+          usage: { type: "tokens", input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+        },
+      });
+
+      const replay = await requestJsonTranscription(recorder.url);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual({
+        text: "Recorded JSON transcript",
+        languages: [{ code: "en" }, { code: "fr" }],
+        usage: { type: "tokens", input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+      });
+    } finally {
+      await closeServer(recorder.server);
+      await closeServer(upstream);
+      fs.rmSync(fixturePath, { recursive: true, force: true });
+    }
+  });
+
   it("detects OpenAI transcription response", async () => {
     const fixturePath = makeTmpDir();
     const { server, url } = await createUpstream((_req, res) => {

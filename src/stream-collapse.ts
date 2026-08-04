@@ -97,6 +97,11 @@ function isCollapseInputTruncated(body: string): boolean {
 
 export interface CollapseResult {
   content?: string;
+  transcription?: {
+    text: string;
+    languages?: Array<{ code: string }>;
+    usage?: Record<string, unknown>;
+  };
   reasoning?: string;
   /**
    * The real cryptographic `signature` value captured from an Anthropic
@@ -361,6 +366,10 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
   let content = "";
+  let transcript = "";
+  let transcriptSeen = false;
+  let transcriptLanguages: Array<{ code: string }> | undefined;
+  let transcriptUsage: Record<string, unknown> | undefined;
   let reasoning = "";
   const webSearchQueries: string[] = [];
   let droppedChunks = 0;
@@ -402,6 +411,29 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     }
 
     // Responses API reasoning events
+    if (parsed.type === "transcript.text.delta" && typeof parsed.delta === "string") {
+      transcript += parsed.delta;
+      transcriptSeen = true;
+      continue;
+    }
+    if (parsed.type === "transcript.text.done" && typeof parsed.text === "string") {
+      transcript = parsed.text;
+      transcriptSeen = true;
+      if (Array.isArray(parsed.languages)) {
+        transcriptLanguages = parsed.languages
+          .filter(
+            (language): language is Record<string, unknown> =>
+              typeof language === "object" &&
+              language !== null &&
+              typeof language.code === "string",
+          )
+          .map((language) => ({ code: language.code as string }));
+      }
+      if (parsed.usage && typeof parsed.usage === "object") {
+        transcriptUsage = parsed.usage as Record<string, unknown>;
+      }
+      continue;
+    }
     if (
       parsed.type === "response.reasoning_summary_text.delta" &&
       typeof parsed.delta === "string"
@@ -553,6 +585,15 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         ...(tc.id ? { id: tc.id } : {}),
       }));
     return {
+      ...(transcriptSeen
+        ? {
+            transcription: {
+              text: transcript,
+              ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
+              ...(transcriptUsage ? { usage: transcriptUsage } : {}),
+            },
+          }
+        : {}),
       ...(blocks ? { blocks } : {}),
       ...(content ? { content } : {}),
       // Fallback-only: harmonyToolCalls are populated ONLY in the
@@ -573,6 +614,15 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   }
 
   return {
+    ...(transcriptSeen
+      ? {
+          transcription: {
+            text: transcript,
+            ...(transcriptLanguages ? { languages: transcriptLanguages } : {}),
+            ...(transcriptUsage ? { usage: transcriptUsage } : {}),
+          },
+        }
+      : {}),
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),

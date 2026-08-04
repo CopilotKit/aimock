@@ -9,12 +9,17 @@ import type { AimockConfig } from "../config-loader.js";
 const CLI_PATH = resolve(__dirname, "../../dist/aimock-cli.js");
 const CLI_AVAILABLE = existsSync(CLI_PATH);
 
+// These integration tests spawn an additional Node process. Under the full
+// parallel suite the default 5s runner deadline can expire before a healthy
+// child gets CPU time to print its immediate startup/error result.
+vi.setConfig({ testTimeout: 15_000 });
+
 /** Spawn the CLI and collect stdout/stderr/exit code. */
 function runCli(
   args: string[],
   opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const timeout = opts.timeout ?? 5000;
+  const timeout = opts.timeout ?? 10_000;
   return new Promise((res) => {
     const cp = execFile("node", [CLI_PATH, ...args], { timeout }, (err, stdout, stderr) => {
       const code = cp.exitCode ?? (err && "code" in err ? (err as { code: number }).code : null);
@@ -27,7 +32,10 @@ function runCli(
  * Spawn the CLI expecting a long-running server.  Returns the child
  * process plus helpers to read accumulated output and send signals.
  */
-function spawnCli(args: string[]): {
+function spawnCli(
+  args: string[],
+  envOverrides: NodeJS.ProcessEnv = {},
+): {
   cp: ChildProcess;
   stdout: () => string;
   stderr: () => string;
@@ -36,7 +44,9 @@ function spawnCli(args: string[]): {
 } {
   let out = "";
   let err = "";
-  const cp = execFile("node", [CLI_PATH, ...args]);
+  const env = { ...process.env, ...envOverrides };
+  if (!("AIMOCK_API_KEYS" in envOverrides)) delete env.AIMOCK_API_KEYS;
+  const cp = execFile("node", [CLI_PATH, ...args], { env });
   cp.stdout?.on("data", (d) => {
     out += d;
   });
@@ -164,6 +174,48 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: server lifecycle", () => {
     await new Promise<void>((resolve) => {
       child.cp.on("close", () => resolve());
     });
+  });
+
+  it("applies config auth and lets AIMOCK_API_KEYS override it", async () => {
+    const fixturePath = writeFixtureFile(tmpDir);
+    const configPath = writeConfig(tmpDir, {
+      llm: { fixtures: fixturePath },
+      auth: { apiKeys: ["config-key"] },
+    });
+    const body = JSON.stringify({
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    const requestWith = (url: string, key: string): Promise<Response> =>
+      fetch(`${url}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body,
+      });
+
+    const configured = spawnCli(["--config", configPath]);
+    await configured.waitForOutput(/listening on/i);
+    const configuredUrl = configured.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+    expect(configuredUrl).toBeTruthy();
+    try {
+      expect((await requestWith(configuredUrl!, "wrong-key")).status).toBe(401);
+      expect((await requestWith(configuredUrl!, "config-key")).status).toBe(200);
+    } finally {
+      configured.kill();
+      await new Promise<void>((resolve) => configured.cp.on("close", () => resolve()));
+    }
+
+    const overridden = spawnCli(["--config", configPath], { AIMOCK_API_KEYS: "environment-key" });
+    await overridden.waitForOutput(/listening on/i);
+    const overriddenUrl = overridden.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+    expect(overriddenUrl).toBeTruthy();
+    try {
+      expect((await requestWith(overriddenUrl!, "config-key")).status).toBe(401);
+      expect((await requestWith(overriddenUrl!, "environment-key")).status).toBe(200);
+    } finally {
+      overridden.kill();
+      await new Promise<void>((resolve) => overridden.cp.on("close", () => resolve()));
+    }
   });
 
   it("applies port override from --port flag", async () => {
