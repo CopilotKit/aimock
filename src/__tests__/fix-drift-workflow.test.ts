@@ -29,10 +29,14 @@
  * text-shape assertions on the committed workflow — an actionlint run in CI
  * covers structural validity separately.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, it, expect } from "vitest";
+
+import { SyncCoreReason } from "../../scripts/drift-sync.js";
 
 const WORKFLOW_PATH = resolve(__dirname, "../../.github/workflows/fix-drift.yml");
 const wf = readFileSync(WORKFLOW_PATH, "utf-8");
@@ -90,6 +94,358 @@ function syncJobIf(src: string): string {
   if (idx === -1) throw new Error("fix-drift.yml: no `sync` job `if:` gate found");
   return src.slice(idx, src.indexOf("runs-on:", idx)).replace(/\s+/g, " ");
 }
+
+// ---------------------------------------------------------------------------
+// STEP SLICER.
+//
+// The two guards at the bottom of this file EXECUTE a step's own `run:` body
+// rather than pattern-matching it, so they need that body byte-for-byte. This
+// slices the `steps:` sequence by indentation and hands back each step's
+// `name`/`id`/`if`, the env keys it declares, and its dedented `run:` block.
+//
+// It is a READER of the artifact, not a model of anything the runner does: the
+// `stepRunBodiesAreVerbatim` guard below re-indents every extracted body and
+// requires it to be a literal substring of the file, so a slicer that
+// paraphrases cannot pass.
+// ---------------------------------------------------------------------------
+interface Step {
+  name?: string;
+  id?: string;
+  if?: string;
+  /** Keys of the step's `env:` mapping (values are `${{ }}` expressions). */
+  envKeys: string[];
+  /** The `run:` block scalar, dedented. Empty for `uses:` steps. */
+  run: string;
+  /** Indent the `run:` block carried in the file, for the verbatim check. */
+  runIndent: number;
+}
+
+const indentOf = (l: string): number => l.length - l.trimStart().length;
+
+function steps(src: string = wf): Step[] {
+  const lines = src.split("\n");
+  const stepsIdx = lines.findIndex((l) => /^\s+steps:\s*$/.test(l));
+  if (stepsIdx === -1) throw new Error("fix-drift.yml: no `steps:` sequence found");
+
+  const firstItem = lines.findIndex((l, i) => i > stepsIdx && /^\s+- \S/.test(l));
+  if (firstItem === -1) throw new Error("fix-drift.yml: `steps:` sequence is empty");
+  const itemIndent = indentOf(lines[firstItem]);
+  const keyIndent = itemIndent + 2;
+
+  // Item boundaries: a `- ` at exactly itemIndent, ending at the next such line
+  // or at the first non-blank line indented LESS than the item.
+  const starts: number[] = [];
+  let end = lines.length;
+  for (let i = firstItem; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim()) continue;
+    if (indentOf(l) < itemIndent) {
+      end = i;
+      break;
+    }
+    if (indentOf(l) === itemIndent && /^\s+- \S/.test(l)) starts.push(i);
+  }
+
+  return starts.map((from, n) => {
+    const to = n + 1 < starts.length ? starts[n + 1] : end;
+    // Normalise `- key: value` to `  key: value` so every key sits at keyIndent.
+    const body = lines.slice(from, to).map((l, i) => (i === 0 ? l.replace(/- /, "  ") : l));
+
+    const step: Step = { envKeys: [], run: "", runIndent: 0 };
+    for (let i = 0; i < body.length; i++) {
+      const l = body[i];
+      if (!l.trim() || indentOf(l) !== keyIndent) continue;
+      const m = /^\s*([A-Za-z_-]+):\s*(.*)$/.exec(l);
+      if (!m) continue;
+      const [, key, inline] = m;
+
+      if (key === "run" || key === "if") {
+        // Block scalar (`|`, `>-`, …) or an inline value.
+        if (!/^[|>]/.test(inline) && inline !== "") {
+          if (key === "if") step.if = inline;
+          continue;
+        }
+        const child: string[] = [];
+        let blockIndent = -1;
+        for (let j = i + 1; j < body.length; j++) {
+          if (!body[j].trim()) {
+            child.push("");
+            continue;
+          }
+          if (blockIndent === -1) blockIndent = indentOf(body[j]);
+          if (indentOf(body[j]) < blockIndent) break;
+          child.push(body[j].slice(blockIndent));
+        }
+        while (child.length && child[child.length - 1] === "") child.pop();
+        if (key === "run") {
+          step.run = child.join("\n") + "\n";
+          step.runIndent = blockIndent;
+        } else {
+          // `>-` folds: lines join with a space.
+          step.if = child.join(" ").replace(/\s+/g, " ").trim();
+        }
+        continue;
+      }
+
+      if (key === "env") {
+        for (let j = i + 1; j < body.length; j++) {
+          if (!body[j].trim()) continue;
+          if (indentOf(body[j]) <= keyIndent) break;
+          const em = /^\s*([A-Za-z_][A-Za-z0-9_]*):/.exec(body[j]);
+          if (em) step.envKeys.push(em[1]);
+        }
+        continue;
+      }
+
+      if (key === "name") step.name = inline.replace(/^["']|["']$/g, "");
+      if (key === "id") step.id = inline.replace(/^["']|["']$/g, "");
+    }
+    return step;
+  });
+}
+
+function stepById(id: string, src: string = wf): Step {
+  const hits = steps(src).filter((s) => s.id === id);
+  if (hits.length !== 1) throw new Error(`fix-drift.yml: ${hits.length} steps with id ${id}`);
+  return hits[0];
+}
+
+const runOf = (s: Step): string => s.run;
+
+/**
+ * EXECUTE the sync step's own `run:` body against a drift-sync that CRASHES
+ * before printing any `reason=` line, and report what the runner would see.
+ *
+ * This is an OBSERVATION, not an assertion about the body's text: the step is
+ * run under bash with `npx` replaced by a stub standing in for drift-sync.ts's
+ * fatal handler (`drift-sync fatal error: …` on stderr, exit 1 — it fires before
+ * the first `console.log`, because runDriftSyncCli awaits every provider's churn
+ * input up front). Whatever the step then does with that exit code — swallow it
+ * or propagate it — is measured, not guessed.
+ */
+function observeSyncStepUnderCrash(src: string = wf): {
+  stepExit: number;
+  outputs: Record<string, string>;
+  stdio: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-crash-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "npx"),
+      "#!/bin/sh\necho 'drift-sync fatal error: fetch failed' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    const outFile = join(dir, "github_output");
+    writeFileSync(outFile, "");
+    const script = join(dir, "step.sh");
+    writeFileSync(script, runOf(stepById("sync", src)));
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SYNC_LOG: join(dir, "drift-sync.log"),
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * ASSEMBLE a Slack alert's message the way bash will, and return the result.
+ *
+ * The raw YAML text cannot answer "does this message contain a newline": the
+ * literal two characters `\n` (which bash does NOT expand inside double quotes)
+ * and a `${NL}` holding a real newline look equally plausible in source. So run
+ * the step's own body up to and including its `MSG=` assignment — with every env
+ * key it declares filled in — and print what `$MSG` actually holds.
+ *
+ * `envOverride` selects which branch of a multi-arm message is taken (an alert
+ * whose text depends on whether `PR_URL`/`SYNC_REASON` is set has more than one
+ * assembled form, and each has to be observed on its own).
+ */
+function assembleSlackMessage(step: Step, envOverride: Record<string, string> = {}): string {
+  const lines = runOf(step).split("\n");
+  const last = lines.reduce((acc, l, i) => (/\bMSG=/.test(l) ? i : acc), -1);
+  if (last === -1) throw new Error(`${step.name}: no MSG= assignment to assemble`);
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-msg-"));
+  try {
+    const outFile = join(dir, "msg.txt");
+    const script = join(dir, "msg.sh");
+    writeFileSync(
+      script,
+      [...lines.slice(0, last + 1), `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`].join("\n"),
+    );
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    // Non-empty placeholders for everything the step declares, so `set -u` is
+    // satisfied and each message takes its content-bearing branch.
+    for (const key of step.envKeys) env[key] = `<${key}>`;
+    Object.assign(env, envOverride);
+    const res = spawnSync("/bin/bash", [script], { cwd: dir, encoding: "utf-8", env });
+    if (res.status !== 0) {
+      throw new Error(`${step.name}: assembling MSG failed (${res.status}): ${res.stderr}`);
+    }
+    return readFileSync(outFile, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("fix-drift.yml — the step slicer reads the artifact verbatim (both guards below depend on it)", () => {
+  it("finds the named steps the guards address, by id and by name", () => {
+    expect(steps().length).toBeGreaterThan(10);
+    for (const id of ["app-token", "gitcfg", "sync", "assert", "pr", "needs_human_pr"]) {
+      expect(() => stepById(id), `no unique step with id: ${id}`).not.toThrow();
+    }
+  });
+
+  it("every extracted `run:` body is a LITERAL substring of the file when re-indented", () => {
+    const withRun = steps().filter((s) => s.run !== "");
+    expect(withRun.length).toBeGreaterThan(5);
+    for (const s of withRun) {
+      const reindented = s.run
+        .split("\n")
+        .map((l) => (l === "" ? "" : " ".repeat(s.runIndent) + l))
+        .join("\n")
+        .replace(/\n+$/, "");
+      expect(
+        wf.includes(reindented),
+        `${s.name}: the sliced run: body is not literally present in the file — the ` +
+          "slicer paraphrased it, so anything executed from it is not the artifact",
+      ).toBe(true);
+    }
+  });
+
+  it("the sync step's shell options are carried across, not normalised away", () => {
+    // The recurring defect in this suite's history was a harness that seeded
+    // shell flags the real step does not run under. Pin the real prefix.
+    expect(runOf(stepById("sync"))).toContain("set -uo pipefail");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M1 (crash window). drift-sync.ts's fatal handler prints
+// `drift-sync fatal error: …` to stderr and exits 1 BEFORE its first
+// `console.log`, so a crash emits NO `reason=` line at all. The sync step wraps
+// the invocation in `set +e` and captures the code into an output rather than
+// re-raising it, so before the fix:
+//
+//   step exit 0 -> step outcome success -> job GREEN
+//   reason ''   -> every reason-keyed alert `if:` false
+//   failure()   -> false, so the end-of-job catch-all stays silent too
+//
+// Net effect on an unattended daily cron: the sync crashes and NOTHING is
+// reported. Not hypothetical — an invalid GOOGLE_API_KEY makes Gemini answer
+// 400, and isInfraSkip() only absorbs 401/402/403/429/5xx, so a 400 throws
+// straight out through that fatal handler.
+//
+// The guard below does not pattern-match a fix. It EXECUTES the step's own run
+// body against a crashing drift-sync (`observeSyncStepUnderCrash`) and takes the
+// step's real exit status and real `$GITHUB_OUTPUT` as the finding; the alert
+// side is then checked against the artifact's OWN `if:` text, so the reason the
+// step publishes must be one an alert step is actually keyed on.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent", () => {
+  /** Steps that exist to tell a human something (Slack + `::error::`). */
+  const alertSteps = () => steps().filter((s) => /^(Alert|Notify)\b/.test(s.name ?? ""));
+
+  it("the crash is observable in the step's captured outputs at all", () => {
+    const obs = observeSyncStepUnderCrash();
+    expect(obs.stdio).toContain("drift-sync fatal error");
+    // drift-sync's real exit code is captured even though the step may swallow it.
+    expect(obs.outputs.exit_code).toBe("1");
+  });
+
+  it("the crash makes the STEP itself fail, so the job cannot conclude green", () => {
+    const obs = observeSyncStepUnderCrash();
+    expect(
+      obs.stepExit,
+      `drift-sync crashed (exit_code=${obs.outputs.exit_code}) but the sync STEP exited 0 ` +
+        `and published reason=${JSON.stringify(obs.outputs.reason ?? "")}. The job then ` +
+        "concludes GREEN, every reason-keyed alert `if:` is false, and the end-of-job " +
+        "catch-all needs failure() — so the daily unattended sync crashes in silence.",
+    ).not.toBe(0);
+  });
+
+  it("the reason the crash publishes is one an alert step is KEYED ON", () => {
+    const obs = observeSyncStepUnderCrash();
+    const reason = obs.outputs.reason ?? "";
+    expect(reason, "a crash published no reason= at all").not.toBe("");
+    const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));
+    expect(
+      keyed.map((s) => s.name),
+      `the sync step publishes reason='${reason}' on a crash, but no alert step's ` +
+        "`if:` mentions it — the reason is published into a void",
+    ).not.toEqual([]);
+  });
+
+  it("the reasons that signal a PROBLEM are keyed on by an alert step", () => {
+    for (const reason of [SyncCoreReason.GATE_FAILED, SyncCoreReason.NEEDS_HUMAN]) {
+      const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));
+      expect(
+        keyed.map((s) => s.name),
+        `reason=${reason} raises no alert`,
+      ).not.toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 (Slack message newlines). Each alert builds its payload as
+// `MSG="…\nRun: …"` and hands it to `jq -n --arg text "$MSG"`. Inside bash
+// double quotes `\n` is a LITERAL backslash followed by `n`; jq then escapes the
+// backslash, so Slack receives `\\n` and renders the two characters `\n` in the
+// middle of the message instead of a line break. The run link is the part that
+// gets mangled, in every alert.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — Slack message bodies use REAL newlines, not a literal backslash-n", () => {
+  /** Every step that POSTs a Slack payload built from a `MSG=` assignment. */
+  const slackSteps = () =>
+    steps().filter((s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)));
+
+  it("all four Slack-posting steps are found (needs-human, gate-failure, success, catch-all)", () => {
+    expect(slackSteps().map((s) => s.name)).toEqual([
+      "Alert on needs-human decision",
+      "Alert on drift-sync-check gate failure",
+      "Notify Slack on sync success",
+      "Alert on early-infra failure (catch-all)",
+    ]);
+  });
+
+  it("each alert's ASSEMBLED message carries a real newline and no literal backslash-n", () => {
+    for (const step of slackSteps()) {
+      const msg = assembleSlackMessage(step);
+      expect(
+        msg,
+        `${step.name}: the assembled message contains the two characters "\\n". Bash does ` +
+          "NOT expand a backslash-n inside double quotes, and jq then escapes the " +
+          "backslash, so Slack renders it literally in the middle of the alert " +
+          "instead of breaking the line before the run link.",
+      ).not.toMatch(/\\n/);
+      expect(
+        msg,
+        `${step.name}: the assembled message has no newline at all — the run link is ` +
+          "jammed onto the end of the prose.",
+      ).toMatch(/\n/);
+    }
+  });
+});
 
 describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE", () => {
   it("never references the deleted invokeClaudeCode / Claude Code CLI spawn", () => {
@@ -322,19 +678,44 @@ describe("fix-drift.yml — early-infra catch-all failure alert", () => {
     expect(wf).toContain("Alert on early-infra failure (catch-all)");
   });
 
-  it("the catch-all is gated on failure() and is UNCONDITIONAL on the sync step's REASON output being unset", () => {
-    const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
-    expect(idx).toBeGreaterThan(-1);
-    const stepBlock = wf.slice(idx, idx + 400);
-    expect(stepBlock).toContain("if: failure() && steps.sync.outputs.reason == ''");
+  const catchAll = () => {
+    const s = steps().find((x) => x.name === "Alert on early-infra failure (catch-all)");
+    expect(s, "no catch-all step").toBeDefined();
+    return s!;
+  };
+
+  it("the catch-all is gated on failure() and NOT on the sync step's reason being unset", () => {
+    const gate = catchAll().if ?? "";
+    expect(gate).toContain("failure()");
+    // A `reason == ''` gate blinds the catch-all to every failure AFTER the sync
+    // published a reason (an artifact upload, a push) — the F#1 window. It must
+    // instead fire exactly when no specific alert did.
+    expect(
+      gate,
+      "the catch-all is gated on an empty reason, so it cannot cover a failure " +
+        "that happens after the sync has already reported one",
+    ).not.toContain("steps.sync.outputs.reason == ''");
+    expect(gate).toContain("steps.alert_needs_human.outcome == 'skipped'");
+    expect(gate).toContain("steps.alert_gate.outcome == 'skipped'");
   });
 
-  it("distinguishes an INFRA/SETUP failure from a sync-gate failure in its message", () => {
-    const idx = wf.indexOf("Alert on early-infra failure (catch-all)");
-    const stepBlock = wf.slice(idx, idx + 1400);
-    expect(stepBlock).toMatch(/INFRA\/SETUP failure/);
-    expect(stepBlock).toContain("SLACK_WEBHOOK is not set");
-    expect(stepBlock).toMatch(/::error::/);
+  it("its ASSEMBLED message names WHICH window failed — infra/setup vs after the sync reported", () => {
+    // Executed, not matched: both arms of the WHERE= branch are observed.
+    const infra = assembleSlackMessage(catchAll(), { SYNC_REASON: "" });
+    expect(infra).toMatch(/INFRA\/SETUP/);
+
+    const after = assembleSlackMessage(catchAll(), { SYNC_REASON: "ok-applied" });
+    expect(
+      after,
+      "a failure after the sync reported ok-applied produces the same message as an " +
+        "infra failure — the catch-all cannot say which window it is describing",
+    ).not.toEqual(infra);
+    expect(after).toContain("ok-applied");
+  });
+
+  it("a missing webhook is still annotated in the run log", () => {
+    expect(runOf(catchAll())).toContain("SLACK_WEBHOOK is not set");
+    expect(runOf(catchAll())).toMatch(/::error::/);
   });
 });
 
