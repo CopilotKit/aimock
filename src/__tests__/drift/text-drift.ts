@@ -27,7 +27,13 @@
 
 import { expect } from "vitest";
 
-import { InfraError, isInfraSkip } from "./providers.js";
+import {
+  InfraError,
+  isInfraSkip,
+  listOpenAIModels,
+  listAnthropicModels,
+  listGeminiModels,
+} from "./providers.js";
 import { normalizeModelFamily } from "./model-family.js";
 import { NON_MODEL_TOKENS, isClassifiedFamily, includeFamilies } from "./model-registry.js";
 import { formatDriftReport } from "./schema.js";
@@ -63,23 +69,17 @@ export function unclassifiedFamilies(modelIds: string[], provider: Provider): st
  * `formatDriftReport` block so the collector routes it to the exit-2 auto-fix
  * lane (provider names match `PROVIDER_MAP` keys in the collector).
  *
- * COVERAGE STATUS — this wrapper is currently UNGUARDED, on purpose, pending
- * PR #349. `unclassifiedFamilies` (above) is behaviourally covered: neutering it
- * to `return []` reddens `text-drift.test.ts`, the drift-sync mirror-equivalence
- * guard, and its co-located regressions under `test:drift`. THIS wrapper is not:
- * replacing its computed `unclassified` with a literal `[]`, or its `report` with
- * an unformatted string, silences the live text-lane canary with every suite
- * still green.
+ * COVERAGE STATUS — GUARDED, behaviourally, by
+ * `src/__tests__/drift/live-canary-silence.test.ts`. That harness stubs the HTTP
+ * layer and drives the whole chain (fetcher → `runUnclassifiedFamilyCanary` →
+ * this wrapper → `formatDriftReport` → the collector's real `parseDriftBlock`),
+ * so neutering this function's computed `unclassified` to `[]`, or replacing its
+ * `report` with an unformatted string, reddens that harness. Text pins on this
+ * function do NOT close that class (see the harness header); observing the
+ * chain's OUTPUT does.
  *
- * That gap is NOT closable by pinning this function's text or asserting that it
- * throws. The canary is a chain — fetcher → gate → call site → formatter →
- * collector — and each text-level pin only moves the silencing edit one frame
- * out (see the TEXT-lane note in `logic-pin.test.ts` for the four surfaces that
- * were tried). #349 replaces the approach with a fetch-stubbed end-to-end
- * harness that drives the real chain and asserts a collector-routable
- * `API DRIFT DETECTED:` report comes out, which catches silencing at any link.
- *
- * Exported because the three live legs of `models.drift.ts` call it.
+ * Exported because the three live legs of `models.drift.ts` reach it through
+ * {@link runUnclassifiedFamilyCanary}.
  */
 export function assertNoUnclassifiedFamilies(
   modelIds: string[],
@@ -105,6 +105,32 @@ export function assertNoUnclassifiedFamilies(
         )
       : `No drift detected: ${context}`;
   expect(unclassified, report).toEqual([]);
+}
+
+/**
+ * The live TEXT-lane canary LEG itself: fetch one provider's live `/models`
+ * listing and assert it carries no unclassified family.
+ *
+ * WHY THIS IS A FUNCTION and not inlined in each `models.drift.ts` leg — the
+ * CALL SITE (which list the fetcher's result is handed to) is one of the frames
+ * a silencing edit can hit, and `models.drift.ts` is a spec file whose top-level
+ * `describe`s are the LIVE canaries, so no offline test may import it to drive
+ * that frame. Hoisting the leg body here makes the call site reachable from the
+ * offline, fetch-stubbed harness in `live-canary-silence.test.ts` while the spec
+ * keeps only the env gate and the `it()`.
+ */
+export async function runUnclassifiedFamilyCanary(
+  provider: Provider,
+  apiKey: string,
+  context: string,
+): Promise<void> {
+  const fetchLiveModels = {
+    openai: listOpenAIModels,
+    anthropic: listAnthropicModels,
+    gemini: listGeminiModels,
+  }[provider];
+  const models = await fetchLiveModels(apiKey);
+  assertNoUnclassifiedFamilies(models, provider, context);
 }
 
 // ---------------------------------------------------------------------------

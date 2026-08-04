@@ -25,26 +25,22 @@
  * (e.g. `gemini-interactions`) can never enter the pipeline as a candidate id —
  * the only inputs are the provider's own `/models` payload.
  *
- * This file is the SPEC. The pipeline itself (`unclassifiedFamilies`), its live
- * assertion wrapper (`assertNoUnclassifiedFamilies`) and the C4 deprecation
- * detector live in `text-drift.ts`, which registers no suites — so another spec
- * can import them without also adopting the LIVE canaries below (see that
- * module's header).
+ * This file is the SPEC — the env gate and the `it()`, nothing more. The
+ * pipeline itself (`unclassifiedFamilies`), its live assertion wrapper
+ * (`assertNoUnclassifiedFamilies`), the leg body the canaries below call
+ * (`runUnclassifiedFamilyCanary`) and the C4 deprecation detector all live in
+ * `text-drift.ts`, which registers no suites — so another spec, or the offline
+ * fetch-stubbed guard in `live-canary-silence.test.ts`, can import and drive
+ * them without also adopting the LIVE canaries below (see that module's header).
  */
 
 import { describe, it, expect } from "vitest";
-import {
-  listOpenAIModels,
-  listAnthropicModels,
-  listGeminiModels,
-  InfraError,
-  isInfraSkip,
-} from "./providers.js";
+import { InfraError, isInfraSkip } from "./providers.js";
 import { includeFamilies } from "./model-registry.js";
 import { isFamilyStillReferenced } from "./deprecation-detector.js";
 import {
   unclassifiedFamilies,
-  assertNoUnclassifiedFamilies,
+  runUnclassifiedFamilyCanary,
   detectDeprecatedFamilies,
   checkDeprecatedFamiliesLive,
 } from "./text-drift.js";
@@ -443,8 +439,11 @@ describe("full live /models wave is fully classified (2026-07-16 drift)", () => 
 
 describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Chat model-family availability", () => {
   it("live /models contains no unclassified family", async () => {
-    const models = await listOpenAIModels(process.env.OPENAI_API_KEY!);
-    assertNoUnclassifiedFamilies(models, "openai", "OpenAI Chat (live /models family canary)");
+    await runUnclassifiedFamilyCanary(
+      "openai",
+      process.env.OPENAI_API_KEY!,
+      "OpenAI Chat (live /models family canary)",
+    );
   });
 });
 
@@ -456,10 +455,9 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
   "Anthropic Claude model-family availability",
   () => {
     it("live /models contains no unclassified family", async () => {
-      const models = await listAnthropicModels(process.env.ANTHROPIC_API_KEY!);
-      assertNoUnclassifiedFamilies(
-        models,
+      await runUnclassifiedFamilyCanary(
         "anthropic",
+        process.env.ANTHROPIC_API_KEY!,
         "Anthropic Claude (live /models family canary)",
       );
     });
@@ -472,7 +470,10 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)(
 
 describe.skipIf(!process.env.GOOGLE_API_KEY)("Google Gemini model-family availability", () => {
   it("live /models contains no unclassified family", async () => {
-    const models = await listGeminiModels(process.env.GOOGLE_API_KEY!);
-    assertNoUnclassifiedFamilies(models, "gemini", "Google Gemini (live /models family canary)");
+    await runUnclassifiedFamilyCanary(
+      "gemini",
+      process.env.GOOGLE_API_KEY!,
+      "Google Gemini (live /models family canary)",
+    );
   });
 });
