@@ -82,15 +82,57 @@ interface RealtimeMessage {
   };
 }
 
-function isLiveTranscriptionModel(model: string): boolean {
+/**
+ * Transcription `usage` is MODEL-DEPENDENT on the live API, so the admitted
+ * models are split by the usage shape they actually report rather than kept in
+ * one flat list. Verified against api.openai.com with a single 5s clip on BOTH
+ * the realtime WS (`conversation.item.input_audio_transcription.completed`) and
+ * HTTP (`POST /v1/audio/transcriptions`) surfaces:
+ *
+ *   whisper-1              → {"type":"duration","seconds":5}
+ *   gpt-transcribe         → {"type":"duration","seconds":5}
+ *   gpt-live-transcribe    → {"type":"duration","seconds":5}  (realtime only)
+ *   gpt-4o-transcribe      → {"type":"tokens","total_tokens":66,…}
+ *   gpt-4o-mini-transcribe → {"type":"tokens","total_tokens":66,…}
+ *
+ * Keeping the split here — instead of a second list beside the admission
+ * predicate — means a newly admitted model has to declare its family, and the
+ * two can never disagree about which models exist.
+ */
+function isDurationUsageTranscriptionModel(model: string): boolean {
   return (
+    model === "whisper-1" ||
     model === "gpt-transcribe" ||
     model === "gpt-live-transcribe" ||
-    model.startsWith("gpt-live-transcribe-") ||
-    model === "gpt-4o-transcribe" ||
-    model.startsWith("gpt-4o-mini-transcribe") ||
-    model === "whisper-1"
+    model.startsWith("gpt-live-transcribe-")
   );
+}
+
+function isTokenUsageTranscriptionModel(model: string): boolean {
+  return model === "gpt-4o-transcribe" || model.startsWith("gpt-4o-mini-transcribe");
+}
+
+function isLiveTranscriptionModel(model: string): boolean {
+  return isDurationUsageTranscriptionModel(model) || isTokenUsageTranscriptionModel(model);
+}
+
+/**
+ * The synthesized `usage` for a transcription with no fixture-supplied one.
+ * aimock has no real audio to measure, so the magnitudes are zero — but the
+ * DISCRIMINATOR must match the model's live family, otherwise a consumer
+ * branching on `usage.type` reads `undefined` counts and fails silently.
+ */
+function defaultTranscriptionUsage(model: string): Record<string, unknown> {
+  if (isTokenUsageTranscriptionModel(model)) {
+    return {
+      type: "tokens",
+      total_tokens: 0,
+      input_tokens: 0,
+      input_token_details: { text_tokens: 0, audio_tokens: 0 },
+      output_tokens: 0,
+    };
+  }
+  return { type: "duration", seconds: 0 };
 }
 
 function normalizeAudioFormat(value: unknown): Record<string, unknown> | null {
@@ -925,11 +967,11 @@ async function emitLiveTranscriptionEvents(
   journal.incrementFixtureMatchCount(fixture, fixtures, testId);
 
   const transcript = response.transcription.text;
-  // Live GA reports transcription usage as a DURATION
-  // ({"type":"duration","seconds":4}), never a token breakdown. aimock has no
-  // real audio to measure, so the synthesized default carries the correct shape
-  // with a zero magnitude; a fixture-supplied usage always wins.
-  const usage = response.transcription.usage ?? { type: "duration", seconds: 0 };
+  // The synthesized usage shape is MODEL-AWARE — duration for whisper-1 /
+  // gpt-transcribe / gpt-live-transcribe, a token breakdown for the
+  // gpt-4o-transcribe families (see defaultTranscriptionUsage). A
+  // fixture-supplied usage always wins.
+  const usage = response.transcription.usage ?? defaultTranscriptionUsage(request.model);
   const journalEntry = journal.add({
     method: "WS",
     path: "/v1/realtime",

@@ -2613,9 +2613,18 @@ describe("realtime wire fidelity", () => {
     ws.close();
   });
 
-  // Live GA capture: the transcription.completed event carries a DURATION usage
-  // ({"type":"duration","seconds":4}), never a token breakdown.
-  it("reports duration-shaped usage on transcription completion", async () => {
+  // Transcription usage is MODEL-DEPENDENT on the live API. Captured from
+  // api.openai.com with one 5s clip, identical on the realtime WS
+  // (conversation.item.input_audio_transcription.completed) and on HTTP
+  // (POST /v1/audio/transcriptions):
+  //   whisper-1              → {"type":"duration","seconds":5}
+  //   gpt-transcribe         → {"type":"duration","seconds":5}
+  //   gpt-live-transcribe    → {"type":"duration","seconds":5}
+  //   gpt-4o-transcribe      → {"type":"tokens","total_tokens":66,…}
+  //   gpt-4o-mini-transcribe → {"type":"tokens","total_tokens":66,…}
+  // A model-BLIND default fails silently in either direction, so each family is
+  // pinned separately — one family alone cannot catch a model-blind default.
+  async function completedTranscriptionUsage(model: string): Promise<Record<string, unknown>> {
     instance = await createServer([
       {
         match: { endpoint: "realtime-transcription" },
@@ -2625,7 +2634,7 @@ describe("realtime wire fidelity", () => {
     const ws = await connectWebSocket(instance.url, "/v1/realtime?intent=transcription");
 
     await ws.waitForMessages(1);
-    ws.send(transcriptionSessionUpdate("gpt-live-transcribe"));
+    ws.send(transcriptionSessionUpdate(model));
     await ws.waitForMessages(2);
     ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
 
@@ -2633,13 +2642,32 @@ describe("realtime wire fidelity", () => {
     const completed = events.find(
       (e) => e.type === "conversation.item.input_audio_transcription.completed",
     );
-    const usage = completed!.usage as Record<string, unknown>;
-    expect(usage.type).toBe("duration");
-    expect(usage).toHaveProperty("seconds");
-    expect(usage).not.toHaveProperty("input_tokens");
-    expect(usage).not.toHaveProperty("total_tokens");
     ws.close();
-  });
+    return completed!.usage as Record<string, unknown>;
+  }
+
+  it.each(["whisper-1", "gpt-transcribe", "gpt-live-transcribe", "gpt-live-transcribe-2026-07-01"])(
+    "reports duration-shaped usage for the duration family (%s)",
+    async (model) => {
+      const usage = await completedTranscriptionUsage(model);
+      expect(usage.type).toBe("duration");
+      expect(usage).toHaveProperty("seconds");
+      expect(usage).not.toHaveProperty("input_tokens");
+      expect(usage).not.toHaveProperty("total_tokens");
+    },
+  );
+
+  it.each(["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-mini-transcribe-2024-12-17"])(
+    "reports token-shaped usage for the token family (%s)",
+    async (model) => {
+      const usage = await completedTranscriptionUsage(model);
+      expect(usage.type).toBe("tokens");
+      expect(usage).toHaveProperty("total_tokens");
+      expect(usage).toHaveProperty("input_tokens");
+      expect(usage).toHaveProperty("output_tokens");
+      expect(usage).not.toHaveProperty("seconds");
+    },
+  );
 
   // A fixture-supplied usage still wins over the synthesized default.
   it("passes through a fixture-supplied transcription usage", async () => {
