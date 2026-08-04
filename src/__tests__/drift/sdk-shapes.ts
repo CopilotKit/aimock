@@ -401,7 +401,19 @@ export function openaiResponsesToolCallEventShapes(): SSEEventShape[] {
   ];
 }
 
-export function openaiResponsesReasoningEventShapes(): SSEEventShape[] {
+/**
+ * Reasoning SSE event shapes, parameterized on the encrypted-reasoning opt-in.
+ *
+ * `emitEncrypted` mirrors `responses.ts`'s own
+ * `buildReasoningOutputItem({ emitEncrypted })` gate: real OpenAI (and aimock)
+ * carry `encrypted_content` on the terminal item ONLY when the request opted in
+ * (`include: ["reasoning.encrypted_content"]` or `store: false`). Pinning it
+ * unconditionally would report critical drift against every opted-OUT leg,
+ * whose absent blob is correct behavior — so the two variants are exposed as
+ * separate shape functions and each drift leg pins the one matching the request
+ * it actually sends.
+ */
+function reasoningEventShapes(emitEncrypted: boolean): SSEEventShape[] {
   return [
     {
       type: "response.output_item.added",
@@ -464,10 +476,35 @@ export function openaiResponsesReasoningEventShapes(): SSEEventShape[] {
           type: "reasoning",
           id: "rs_abc123",
           summary: [{ type: "summary_text", text: "Step by step..." }],
+          // Real OpenAI carries the encrypted reasoning blob on the terminal
+          // item when the request opts in (include / store:false). aimock emits
+          // it there too. Anchored on `done` only — `added` is opportunistic in
+          // real OpenAI and aimock deliberately omits it, so pinning `added`
+          // would flag an intentional, legal shape choice as drift.
+          ...(emitEncrypted ? { encrypted_content: "gAAAAAB..." } : {}),
         },
       }),
     },
   ];
+}
+
+/**
+ * Opted-OUT reasoning shapes: no `include`, no `store: false`. The terminal item
+ * carries NO `encrypted_content` — its absence is correct, not drift.
+ */
+export function openaiResponsesReasoningEventShapes(): SSEEventShape[] {
+  return reasoningEventShapes(false);
+}
+
+/**
+ * Opted-IN reasoning shapes: the request asked for
+ * `include: ["reasoning.encrypted_content"]` (or went stateless with
+ * `store: false`), so the terminal item MUST carry the blob. This is the variant
+ * that gates the emission — drop the blob in `responses.ts` and the opted-in
+ * drift leg reports `item.encrypted_content` critical.
+ */
+export function openaiResponsesEncryptedReasoningEventShapes(): SSEEventShape[] {
+  return reasoningEventShapes(true);
 }
 
 export function openaiResponsesNonStreamingShape(): ShapeNode {

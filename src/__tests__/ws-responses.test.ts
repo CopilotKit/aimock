@@ -50,6 +50,19 @@ const toolReasoningFixture: Fixture = {
   },
 };
 
+// Combined content+toolCalls fixture that also carries reasoning. Distinct match
+// key so it drives the WS dispatch's content+toolCalls branch
+// (buildContentWithToolCallsStreamEvents) — the third streaming builder, which
+// the text-only "think" and tool-only "tool-reason" fixtures never reach.
+const contentToolReasoningFixture: Fixture = {
+  match: { userMessage: "both-reason" },
+  response: {
+    content: "Here you go.",
+    toolCalls: [{ name: "get_weather", arguments: '{"city":"NYC"}' }],
+    reasoning: "Let me reason, then call the tool.",
+  },
+};
+
 // Combined content+toolCalls fixture carrying an ORDERED `blocks` array placing
 // the tool call BEFORE the text. On the WebSocket /v1/responses surface this
 // must yield the function_call output item at a LOWER output_index than the
@@ -74,6 +87,7 @@ const allFixtures: Fixture[] = [
   reasoningFixture,
   capabilityReasoningFixture,
   toolReasoningFixture,
+  contentToolReasoningFixture,
   wsBlocksToolFirstFixture,
 ];
 
@@ -783,4 +797,224 @@ describe("WebSocket /v1/responses reasoning capability gating", () => {
 
     ws.close();
   });
+});
+
+// ─── WS reasoning.encrypted_content (microsoft/agent-framework#7233) ─────────
+//
+// The gate must be honored over the WebSocket Responses transport too — the WS
+// dispatch rebuilds the request field-by-field, so `include` / `store` and the
+// emitted blob need transport-level coverage (deleting the threading otherwise
+// leaves every test green).
+
+describe("WebSocket /v1/responses encrypted reasoning", () => {
+  const expectedBlob = (id: string): string =>
+    Buffer.from(`aimock-encrypted-reasoning:${id}`).toString("base64");
+
+  function createMsg(userContent: string, extra: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: "response.create",
+      model: "gpt-4.1", // non-strict keeps reasoning for non-reasoning models (see above)
+      input: [{ role: "user", content: userContent }],
+      ...extra,
+    });
+  }
+
+  async function collectUntilCompleted(ws: {
+    waitForMessages: (n: number) => Promise<string[]>;
+  }): Promise<WSEvent[]> {
+    const maxEvents = 50;
+    let events: WSEvent[] = [];
+    for (let count = 1; count <= maxEvents; count++) {
+      events = parseEvents(await ws.waitForMessages(count));
+      if (events[events.length - 1].type === "response.completed") return events;
+    }
+    throw new Error(
+      `response.completed never arrived within ${maxEvents} events ` +
+        `(last: ${events[events.length - 1]?.type})`,
+    );
+  }
+
+  const reasoningDone = (events: WSEvent[]) =>
+    events.find(
+      (e) =>
+        e.type === "response.output_item.done" &&
+        (e.item as { type?: string })?.type === "reasoning",
+    )?.item as { id: string; encrypted_content?: string } | undefined;
+
+  it("emits the blob on the done item when opted in via include (content+reasoning)", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    // Also reflected in the terminal completed.output.
+    const completed = events.find((e) => e.type === "response.completed");
+    const output = (
+      completed!.response as { output: { type: string; encrypted_content?: string }[] }
+    ).output;
+    const outReasoning = output.find((o) => o.type === "reasoning");
+    expect(outReasoning!.encrypted_content).toBe(done!.encrypted_content);
+
+    ws.close();
+  });
+
+  it("emits the blob for a tool-only reasoning response when opted in", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("tool-reason", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  // The WS dispatch threads the gate into each streaming builder separately, so
+  // the content+toolCalls branch needs its own case — the text and tool-only
+  // cases above both stay green if that one call site drops the flag.
+  it("emits the blob for a content+toolCalls reasoning response when opted in", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("both-reason", { include: ["reasoning.encrypted_content"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  it("emits the blob for a stateless request (store:false) without include", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { store: false }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+
+    ws.close();
+  });
+
+  // --- LEAK direction: every WS gate call site must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just as
+  // well if a call site hardcodes the flag ON, which silently changes the bytes
+  // every consumer that never opted in receives. The WS dispatch threads the gate
+  // into each streaming builder from a SEPARATE call site, so one negative per
+  // branch is required — with only the text negative present, hardcoding the flag
+  // on in either the content+toolCalls or the tool-only branch left the entire
+  // suite green.
+  const wsLeakCases: [string, string][] = [
+    ["text (buildTextStreamEvents)", "think"],
+    ["tool-only (buildToolCallStreamEvents)", "tool-reason"],
+    ["content+toolCalls (buildContentWithToolCallsStreamEvents)", "both-reason"],
+  ];
+
+  for (const [label, msg] of wsLeakCases) {
+    it(`omits the blob for ${label} when the request does not opt in`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createMsg(msg, {}));
+
+      const events = await collectUntilCompleted(ws);
+      const done = reasoningDone(events);
+      expect(done, "no done reasoning item").toBeDefined();
+      // Pin genuine key ABSENCE, not merely a falsy value.
+      expect(done!).not.toHaveProperty("encrypted_content");
+
+      ws.close();
+    });
+  }
+
+  // `include` SELECTIVITY. The leak cases above send NO `include` at all, so they
+  // pin the predicate's presence/absence but not its selectivity: broadening the
+  // gate from `include.includes("reasoning.encrypted_content")` to any non-empty
+  // `include` left the whole suite green. `file_search_call.results` is a genuine
+  // member of the SDK's `ResponseIncludable` union with nothing to do with
+  // reasoning, so a real client sending it must not receive a blob. The WS
+  // dispatch reads `include` off the parsed frame itself, so this needs its own
+  // transport-level case. No `store` — that is the gate's OTHER branch.
+  it("omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer(allFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/responses");
+    ws.send(createMsg("think", { include: ["file_search_call.results"] }));
+
+    const events = await collectUntilCompleted(ws);
+    const done = reasoningDone(events);
+    expect(done, "no done reasoning item").toBeDefined();
+    expect(done!).not.toHaveProperty("encrypted_content");
+    // NOWHERE in the frames, which also covers completed.output.
+    expect(JSON.stringify(events)).not.toContain("encrypted_content");
+
+    ws.close();
+  });
+
+  // A fixture with NO declared `reasoning` summary — the shape a capture from the
+  // real stateless agent-framework flow has — must still reach an opted-in WS
+  // client with a summary-less reasoning item carrying the blob. Needs a
+  // reasoning-CAPABLE model (the shared `createMsg` above deliberately uses
+  // gpt-4.1, for which no reasoning item is synthesized at all).
+  function createReasoningModelMsg(userContent: string, extra: Record<string, unknown>): string {
+    return JSON.stringify({
+      type: "response.create",
+      model: "gpt-5",
+      input: [{ role: "user", content: userContent }],
+      ...extra,
+    });
+  }
+
+  for (const [label, msg] of [
+    ["text", "hello"],
+    ["tool-only", "weather"],
+  ] as [string, string][]) {
+    it(`${label} fixture with NO declared summary still carries an empty-summary item + blob`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, { include: ["reasoning.encrypted_content"] }));
+
+      const events = await collectUntilCompleted(ws);
+      const done = reasoningDone(events) as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(done!.summary).toEqual([]);
+      expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+      // No summary parts exist on the item, so no summary events describe them.
+      expect(events.some((e) => e.type.startsWith("response.reasoning_summary"))).toBe(false);
+
+      ws.close();
+    });
+
+    it(`${label} fixture with NO declared summary emits NO reasoning item when opted out`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, {}));
+
+      const events = await collectUntilCompleted(ws);
+      expect(reasoningDone(events)).toBeUndefined();
+
+      ws.close();
+    });
+
+    // The narrowing, over WS: `store: false` widens the BLOB gate but not the
+    // SYNTHESIS gate, so a summary-less fixture still yields no reasoning item.
+    // The WS dispatch computes both gates itself, so this needs its own case.
+    it(`${label} fixture with NO declared summary synthesizes NOTHING on store:false`, async () => {
+      instance = await createServer(allFixtures);
+      const ws = await connectWebSocket(instance.url, "/v1/responses");
+      ws.send(createReasoningModelMsg(msg, { store: false }));
+
+      const events = await collectUntilCompleted(ws);
+      expect(reasoningDone(events)).toBeUndefined();
+
+      ws.close();
+    });
+  }
 });

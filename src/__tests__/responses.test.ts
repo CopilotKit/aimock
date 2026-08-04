@@ -1878,6 +1878,549 @@ describe("reasoning_summary_text.done includes item_id", () => {
   });
 });
 
+// ─── reasoning.encrypted_content (microsoft/agent-framework#7233) ────────────
+//
+// Real OpenAI populates an opaque `encrypted_content` blob on the reasoning item
+// when the request opts in via `include: ["reasoning.encrypted_content"]` OR is
+// stateless (`store:false`) — the path used by agent-framework-openai >= 1.11.0.
+// aimock synthesizes a deterministic placeholder so that client can replay the
+// reasoning item instead of hard-failing the reasoning + multi-tool follow-up
+// request.
+//
+// aimock carries the blob on the TERMINAL (`output_item.done`) reasoning item and
+// deliberately omits it from the in-progress `added` item. That is aimock's own
+// CHOICE, not upstream parity — real OpenAI DOES populate `added`, but the field
+// is `anyOf: [string, null]` and non-required, so `done` is where consumers must
+// read it and omitting it on `added` is legal.
+
+describe("reasoning.encrypted_content emission", () => {
+  // Mirror of `syntheticEncryptedReasoning` in responses.ts — pins the id→blob
+  // relationship so a non-deterministic (e.g. Math.random) blob is caught.
+  const expectedBlob = (id: string): string =>
+    Buffer.from(`aimock-encrypted-reasoning:${id}`).toString("base64");
+
+  function reasoningItem(
+    events: SSEEvent[],
+    kind: "added" | "done",
+  ): { id: string; encrypted_content?: string } | undefined {
+    const ev = events.find(
+      (e) =>
+        e.type === `response.output_item.${kind}` &&
+        (e.item as { type?: string })?.type === "reasoning",
+    );
+    return ev?.item as { id: string; encrypted_content?: string } | undefined;
+  }
+
+  // For an OPTED-IN request, grades ONLY what is contractual about the blob on
+  // the in-progress `added` item: if the field is there it must be a well-formed,
+  // id-derived blob — absence and presence are BOTH legal.
+  //
+  // Real OpenAI populates `added` opportunistically (see the section header and
+  // the note on `buildReasoningOutputItem` in responses.ts) and
+  // `encrypted_content` is `anyOf: [string, null]` and non-required, so aimock
+  // omitting it there is aimock's own CHOICE, not the provider contract. The
+  // drift contract in this same tree already draws the line exactly here:
+  // `sdk-shapes.ts` anchors the blob on `done` ONLY, explicitly because "pinning
+  // `added` would flag an intentional, legal shape choice as drift", and
+  // `gradeEncryptedBlob` grades the terminal item alone. Pinning the ABSENCE here
+  // instead made 9 tests fail any future change that moved aimock TOWARD upstream
+  // parity.
+  //
+  // It deliberately does not assert presence either, so aimock's current omission
+  // keeps passing. Nothing real is lost by relaxing it: the property that matters
+  // is the blob reaching the TERMINAL item, which every call site pins directly
+  // via `expect(done.encrypted_content).toBe(expectedBlob(done.id))`, so putting
+  // the blob on `added` INSTEAD of `done` still fails.
+  //
+  // For an OPTED-OUT request, absence on `added` genuinely IS the contract (no
+  // blob may appear anywhere) and stays asserted at those call sites directly.
+  const expectAddedBlobIsContractLegal = (item: {
+    id: string;
+    encrypted_content?: string;
+  }): void => {
+    if (!("encrypted_content" in item)) return;
+    expect(typeof item.encrypted_content, "encrypted_content on `added` must be a string").toBe(
+      "string",
+    );
+    // Present means it must be the SAME id-derived blob — a degenerate or
+    // mismatched value there is as broken as a wrong one on `done`
+    // (cf. `gradeEncryptedBlob` in the drift suite).
+    expect(item.encrypted_content).toBe(expectedBlob(item.id));
+  };
+
+  const reasoningTextFixture: Fixture = {
+    match: { userMessage: "textreason" },
+    response: { content: "AAPL vs MSFT", reasoning: "Look up AAPL, then MSFT." },
+  };
+  const reasoningToolFixture: Fixture = {
+    match: { userMessage: "toolreason" },
+    response: { toolCalls: [{ name: "get_stock", arguments: "{}" }], reasoning: "Call the tool." },
+  };
+  const reasoningContentToolFixture: Fixture = {
+    match: { userMessage: "bothreason" },
+    response: {
+      content: "done",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      reasoning: "Think, then call.",
+    },
+  };
+  // `blocks` forces the positional NEW branch of buildContentWithToolCalls* (both
+  // streaming and non-streaming), which builds its own reasoning item.
+  const reasoningBlocksFixture: Fixture = {
+    match: { userMessage: "blocksreason" },
+    response: {
+      content: "done",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      reasoning: "Think, then call.",
+      blocks: [
+        { type: "toolCall", name: "get_stock", arguments: "{}" },
+        { type: "text", text: "done" },
+      ],
+    },
+  };
+
+  // --- Builder-level: placement + determinism ---
+
+  it("builder omits encrypted_content everywhere when the flag is off", () => {
+    const events = buildTextStreamEvents("result", "gpt-5-test", 100, "thinking...");
+    expect(reasoningItem(events, "added")!.encrypted_content).toBeUndefined();
+    expect(reasoningItem(events, "done")!.encrypted_content).toBeUndefined();
+  });
+
+  it("builder emits the blob on the done item, deterministic by id", () => {
+    // trailing `true` = emitEncryptedReasoning
+    const events = buildTextStreamEvents(
+      "result",
+      "gpt-5-test",
+      100,
+      "thinking...",
+      undefined,
+      undefined,
+      true,
+    );
+    const done = reasoningItem(events, "done")!;
+    expect(done.encrypted_content).toBe(expectedBlob(done.id)); // pins presence + determinism
+    expectAddedBlobIsContractLegal(reasoningItem(events, "added")!);
+  });
+
+  // --- HTTP streaming: every builder + gate triggers + completed.output ---
+
+  async function streamReasoning(
+    fixture: Fixture,
+    userMessage: string,
+    body: Record<string, unknown>,
+  ): Promise<SSEEvent[]> {
+    instance = await createServer([fixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: userMessage }],
+      stream: true,
+      ...body,
+    });
+    expect(res.status).toBe(200);
+    return parseResponsesSSEEvents(res.body);
+  }
+
+  const OPT_IN = { include: ["reasoning.encrypted_content"] };
+
+  // One case per streaming builder: buildTextStreamEvents,
+  // buildToolCallStreamEvents, buildContentWithToolCallsStreamEvents (legacy +
+  // blocks branches). Each must carry the blob on the done reasoning item.
+  const streamingCases: [string, Fixture, string][] = [
+    ["text (buildTextStreamEvents)", reasoningTextFixture, "textreason"],
+    ["tool-only (buildToolCallStreamEvents)", reasoningToolFixture, "toolreason"],
+    [
+      "content+tool legacy (buildContentWithToolCallsStreamEvents)",
+      reasoningContentToolFixture,
+      "bothreason",
+    ],
+    [
+      "content+tool blocks (buildContentWithToolCallsStreamEvents)",
+      reasoningBlocksFixture,
+      "blocksreason",
+    ],
+  ];
+
+  for (const [label, fixture, msg] of streamingCases) {
+    it(`streaming ${label} carries the blob on done when opted in`, async () => {
+      const events = await streamReasoning(fixture, msg, OPT_IN);
+      const done = reasoningItem(events, "done")!;
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(done.encrypted_content).toBe(expectedBlob(done.id));
+      expectAddedBlobIsContractLegal(reasoningItem(events, "added")!);
+    });
+  }
+
+  it("streaming reflects the blob in response.completed.output", async () => {
+    const events = await streamReasoning(reasoningTextFixture, "textreason", OPT_IN);
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string; id: string; encrypted_content?: string }[] };
+    };
+    const outputReasoning = completed.response.output.find((o) => o.type === "reasoning");
+    expect(outputReasoning, "no reasoning item in completed.output").toBeDefined();
+    // Pin the blob INDEPENDENTLY, against the id-derived expectation — NOT against
+    // the `output_item.done` event's item. `buildResponsePreamble` pushes that very
+    // object into `prefixOutputItems`, so the two are the SAME REFERENCE and
+    // comparing them is `undefined === undefined` the moment emission stops: the
+    // assertion passed with the feature entirely off.
+    expect(outputReasoning!.encrypted_content).toBe(expectedBlob(outputReasoning!.id));
+  });
+
+  it("streaming emits the blob for a stateless request (store:false) without include", async () => {
+    const events = await streamReasoning(reasoningTextFixture, "textreason", { store: false });
+    const done = reasoningItem(events, "done")!;
+    expect(done.encrypted_content).toBe(expectedBlob(done.id));
+  });
+
+  // --- HTTP streaming LEAK direction: the same builders must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just as
+  // well if a call site hardcodes the flag ON. A leak is the worse failure for a
+  // mock: it silently changes response bytes for every consumer that never opted
+  // in (no `include`, no `store:false`), so the stored / opted-out replay is no
+  // longer byte-identical.
+  //
+  // `handleResponses` threads the gate into each streaming builder from a SEPARATE
+  // call site (buildTextStreamEvents, buildToolCallStreamEvents and
+  // buildContentWithToolCallsStreamEvents), so one negative per case is required —
+  // with only the text negative present, hardcoding the flag on at either of the
+  // other two sites left the whole suite green.
+  for (const [label, fixture, msg] of streamingCases) {
+    it(`streaming ${label} omits the blob when the request did not opt in`, async () => {
+      const events = await streamReasoning(fixture, msg, {});
+      const done = reasoningItem(events, "done");
+      expect(done, "no done reasoning item").toBeDefined();
+      // Pin genuine key ABSENCE, not merely a falsy value.
+      expect(done!).not.toHaveProperty("encrypted_content");
+      expect(reasoningItem(events, "added")!).not.toHaveProperty("encrypted_content");
+    });
+  }
+
+  // --- Non-streaming: every builder path (incl. the positional blocks branch) ---
+
+  async function nonStreamReasoning(
+    fixture: Fixture,
+    userMessage: string,
+    extra: Record<string, unknown> = OPT_IN,
+  ): Promise<{ type: string; encrypted_content?: string; id: string }[]> {
+    instance = await createServer([fixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: userMessage }],
+      stream: false,
+      ...extra,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as {
+      output: { type: string; encrypted_content?: string; id: string }[];
+    };
+    return body.output;
+  }
+
+  const nonStreamingCases: [string, Fixture, string][] = [
+    ["text (buildOutputPrefix)", reasoningTextFixture, "textreason"],
+    ["tool-only (buildToolCallResponse)", reasoningToolFixture, "toolreason"],
+    ["content+tool legacy (buildOutputPrefix)", reasoningContentToolFixture, "bothreason"],
+    [
+      "content+tool blocks (buildContentWithToolCallsResponse)",
+      reasoningBlocksFixture,
+      "blocksreason",
+    ],
+  ];
+
+  for (const [label, fixture, msg] of nonStreamingCases) {
+    it(`non-streaming ${label} carries the blob when opted in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg);
+      const r = output.find((o) => o.type === "reasoning")!;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r.encrypted_content).toBe(expectedBlob(r.id));
+    });
+  }
+
+  // --- Non-streaming LEAK direction: the same builders must stay silent ---
+  //
+  // The positive cases above only prove the blob CAN be emitted; they pass just
+  // as well if a builder emits it unconditionally. A leak is the worse failure
+  // for a mock: it silently changes response bytes for every consumer that never
+  // opted in (no `include`, no `store:false`), so the stored/opted-out replay is
+  // no longer byte-identical. One negative per builder site — buildOutputPrefix
+  // (text + content+tool legacy), buildToolCallResponse, and the `blocks` branch
+  // of buildContentWithToolCallsResponse — each pinning genuine key ABSENCE, not
+  // merely a falsy value.
+  for (const [label, fixture, msg] of nonStreamingCases) {
+    it(`non-streaming ${label} omits the blob when the request did not opt in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg, {});
+      const r = output.find((o) => o.type === "reasoning")!;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r).not.toHaveProperty("encrypted_content");
+    });
+  }
+
+  // --- Summary-LESS fixtures: the blob must still reach an opted-in client ----
+  //
+  // The cases above all declare a `reasoning` summary in the fixture, which is
+  // what makes the reasoning item exist in the first place. A fixture RECORDED
+  // from the real stateless agent-framework flow typically has NO summary
+  // (OpenAI returns `summary: []` unless summaries are explicitly requested), so
+  // gating the item on a declared summary means the very flow this feature
+  // exists to serve gets no item and therefore no blob. Real OpenAI, for a
+  // reasoning-capable model, still returns a reasoning item carrying the blob.
+  //
+  // Emission stays gated on the SAME opt-in predicate, so a stored / opted-out
+  // replay of a summary-less fixture is byte-identical to before (no reasoning
+  // item at all), and on the requested model's reasoning capability, so a
+  // gpt-4o replay does not grow an item the real provider would never send.
+
+  const noSummaryTextFixture: Fixture = {
+    match: { userMessage: "nosumtext" },
+    response: { content: "AAPL is up" },
+  };
+  const noSummaryToolFixture: Fixture = {
+    match: { userMessage: "nosumtool" },
+    response: { toolCalls: [{ name: "get_stock", arguments: "{}" }] },
+  };
+  const noSummaryContentToolFixture: Fixture = {
+    match: { userMessage: "nosumboth" },
+    response: { content: "checking", toolCalls: [{ name: "get_stock", arguments: "{}" }] },
+  };
+  const noSummaryBlocksFixture: Fixture = {
+    match: { userMessage: "nosumblocks" },
+    response: {
+      content: "checking",
+      toolCalls: [{ name: "get_stock", arguments: "{}" }],
+      blocks: [
+        { type: "toolCall", name: "get_stock", arguments: "{}" },
+        { type: "text", text: "checking" },
+      ],
+    },
+  };
+
+  const noSummaryCases: [string, Fixture, string][] = [
+    ["text", noSummaryTextFixture, "nosumtext"],
+    ["tool-only", noSummaryToolFixture, "nosumtool"],
+    ["content+tool legacy", noSummaryContentToolFixture, "nosumboth"],
+    ["content+tool blocks", noSummaryBlocksFixture, "nosumblocks"],
+  ];
+
+  for (const [label, fixture, msg] of noSummaryCases) {
+    it(`non-streaming ${label} with NO declared summary carries an empty-summary item + blob when opted in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg);
+      const r = output.find((o) => o.type === "reasoning") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(r, "no reasoning output item").toBeDefined();
+      expect(r!.summary).toEqual([]);
+      expect(r!.encrypted_content).toBe(expectedBlob(r!.id));
+      // Real OpenAI leads the output array with the reasoning item.
+      expect(output[0].type).toBe("reasoning");
+    });
+
+    it(`streaming ${label} with NO declared summary carries an empty-summary item + blob when opted in`, async () => {
+      const events = await streamReasoning(fixture, msg, OPT_IN);
+      const added = reasoningItem(events, "added") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      const done = reasoningItem(events, "done") as
+        | { id: string; summary: unknown[]; encrypted_content?: string }
+        | undefined;
+      expect(added, "no added reasoning item").toBeDefined();
+      expect(done, "no done reasoning item").toBeDefined();
+      expect(added!.summary).toEqual([]);
+      expect(done!.summary).toEqual([]);
+      expect(done!.encrypted_content).toBe(expectedBlob(done!.id));
+      expectAddedBlobIsContractLegal(added!);
+    });
+
+    // The whole blast-radius argument: nothing changes for a client that did not
+    // opt in. Pins the ABSENCE of any reasoning item, streaming and not.
+    it(`${label} with NO declared summary emits NO reasoning item when the request did not opt in`, async () => {
+      const output = await nonStreamReasoning(fixture, msg, {});
+      expect(output.some((o) => o.type === "reasoning")).toBe(false);
+
+      const events = await streamReasoning(fixture, msg, {});
+      expect(reasoningItem(events, "added")).toBeUndefined();
+      expect(reasoningItem(events, "done")).toBeUndefined();
+      expect(events.some((e) => e.type.startsWith("response.reasoning_summary"))).toBe(false);
+    });
+  }
+
+  it("streaming a summary-less item emits added → done with NO summary-text events between", async () => {
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", OPT_IN);
+    // An empty summary has no parts and no deltas: emitting a
+    // reasoning_summary_part/text event for it would describe a part that does
+    // not exist in the item's `summary: []`.
+    expect(events.filter((e) => e.type.startsWith("response.reasoning_summary"))).toEqual([]);
+    const seq = events
+      .filter((e) => (e.item as { type?: string })?.type === "reasoning")
+      .map((e) => e.type);
+    expect(seq).toEqual(["response.output_item.added", "response.output_item.done"]);
+  });
+
+  it("streaming a synthesized reasoning item keeps output_index aligned with completed.output", async () => {
+    const events = await streamReasoning(noSummaryContentToolFixture, "nosumboth", OPT_IN);
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string; id: string }[] };
+    };
+    // Reasoning must LEAD the output array and every other item shifts by one.
+    expect(completed.response.output.map((o) => o.type)).toEqual([
+      "reasoning",
+      "message",
+      "function_call",
+    ]);
+    // Every output_item.done event's output_index must equal that item's slot in
+    // the final output array — an inserted leading item that failed to shift the
+    // sequencing would desync here.
+    const dones = events.filter((e) => e.type === "response.output_item.done");
+    for (const d of dones) {
+      const id = (d.item as { id: string }).id;
+      expect(d.output_index).toBe(completed.response.output.findIndex((o) => o.id === id));
+    }
+  });
+
+  it("does NOT synthesize a reasoning item for a non-reasoning model", async () => {
+    // gpt-4o never emits a reasoning channel, so an opted-in replay against it
+    // must not grow an item the real provider would never send (aimock#254).
+    instance = await createServer([noSummaryTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-4o",
+      input: [{ role: "user", content: "nosumtext" }],
+      stream: false,
+      ...OPT_IN,
+    });
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body) as { output: { type: string }[] };
+    expect(body.output.some((o) => o.type === "reasoning")).toBe(false);
+  });
+
+  // --- The 2x2 matrix: which trigger may CREATE an item vs only decorate one ---
+  //
+  // Two gates, deliberately different widths:
+  //   blob on an item being emitted anyway → `include` OR `store: false`
+  //   SYNTHESIZING an item the fixture never declared → `include` ONLY
+  //
+  // Creating an output item that did not previously exist is a bigger behavior
+  // change than adding a field to one already on the wire, so it takes the gate
+  // that is directly observable in the request rather than the inferred
+  // `store: false` one. `agent-framework-openai` >= 1.11.0 sends `include` and
+  // never `store`, so the motivating client is unaffected by the narrowing.
+
+  it("row 3: store:false + a DECLARED summary still carries the blob (non-streaming, unchanged)", async () => {
+    const output = await nonStreamReasoning(reasoningTextFixture, "textreason", { store: false });
+    const r = output.find((o) => o.type === "reasoning")!;
+    expect(r, "no reasoning output item").toBeDefined();
+    expect(r.encrypted_content).toBe(expectedBlob(r.id));
+  });
+
+  // ROW 4 — the whole point of the narrowing, and the row that must never
+  // silently regress: `store: false` must NOT conjure a reasoning item for a
+  // fixture that declares no summary. Asserted on both transports' HTTP paths and
+  // for a reasoning-CAPABLE model, so the model gate cannot be what makes it pass.
+  it("row 4: store:false + NO declared summary synthesizes NOTHING (non-streaming)", async () => {
+    const output = await nonStreamReasoning(noSummaryTextFixture, "nosumtext", { store: false });
+    expect(output.some((o) => o.type === "reasoning")).toBe(false);
+    // Guard against the model gate being the reason this passes: the SAME
+    // fixture and model DO produce the item under the explicit `include` opt-in.
+    const optedIn = await nonStreamReasoning(noSummaryTextFixture, "nosumtext");
+    expect(optedIn.some((o) => o.type === "reasoning")).toBe(true);
+  });
+
+  it("row 4: store:false + NO declared summary synthesizes NOTHING (streaming)", async () => {
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", { store: false });
+    expect(reasoningItem(events, "added")).toBeUndefined();
+    expect(reasoningItem(events, "done")).toBeUndefined();
+    const completed = events.find((e) => e.type === "response.completed") as SSEEvent & {
+      response: { output: { type: string }[] };
+    };
+    expect(completed.response.output.some((o) => o.type === "reasoning")).toBe(false);
+  });
+
+  it("row 4 holds for every builder path (tool-only, content+tool legacy, blocks)", async () => {
+    for (const [, fixture, msg] of noSummaryCases) {
+      const output = await nonStreamReasoning(fixture, msg, { store: false });
+      expect(
+        output.some((o) => o.type === "reasoning"),
+        `${msg} synthesized on store:false`,
+      ).toBe(false);
+      const events = await streamReasoning(fixture, msg, { store: false });
+      expect(
+        reasoningItem(events, "done"),
+        `${msg} synthesized on store:false (stream)`,
+      ).toBeUndefined();
+    }
+  });
+
+  // --- `include` SELECTIVITY: an UNRELATED include value is not an opt-in -----
+  //
+  // Every leak negative above sends NO `include` at all, so together they pin the
+  // predicate's presence/absence but NOT its selectivity. Broadening
+  // `requestIncludesEncryptedReasoning` from
+  // `include.includes("reasoning.encrypted_content")` to any non-empty `include`
+  // left the ENTIRE suite green (verified by mutation), and a real client sending
+  // `include: ["file_search_call.results"]` then received a blob it never asked
+  // for — the same byte-level over-emission the per-call-site negatives close,
+  // but per include VALUE rather than per call site.
+  //
+  // `file_search_call.results` is a genuine member of the SDK's
+  // `ResponseIncludable` union (openai/resources/responses/responses.d.ts:
+  // `'file_search_call.results' | 'message.input_image.image_url' |
+  // 'computer_call_output.output.image_url' | 'reasoning.encrypted_content'`)
+  // with nothing to do with reasoning, so this exercises a request a client
+  // actually sends rather than a fabricated string.
+  //
+  // `store` is deliberately absent: `requestWantsEncryptedReasoning`'s other
+  // branch fires on `store: false`, so sending it would make the assertion pass
+  // for the wrong reason.
+  const UNRELATED_INCLUDE = { include: ["file_search_call.results"] };
+
+  it("streaming omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer([reasoningTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "textreason" }],
+      stream: true,
+      ...UNRELATED_INCLUDE,
+    });
+    expect(res.status).toBe(200);
+    // NOWHERE in the raw bytes — stronger than an item-level check, and it also
+    // covers `response.completed.output` and any future carrier of the field.
+    expect(res.body).not.toContain("encrypted_content");
+    const events = parseResponsesSSEEvents(res.body);
+    expect(reasoningItem(events, "done"), "no done reasoning item").toBeDefined();
+    expect(reasoningItem(events, "done")!).not.toHaveProperty("encrypted_content");
+    expect(reasoningItem(events, "added")!).not.toHaveProperty("encrypted_content");
+  });
+
+  it("non-streaming omits the blob for a non-empty include that lacks the reasoning value", async () => {
+    instance = await createServer([reasoningTextFixture]);
+    const res = await post(`${instance!.url}/v1/responses`, {
+      model: "gpt-5-test",
+      input: [{ role: "user", content: "textreason" }],
+      stream: false,
+      ...UNRELATED_INCLUDE,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).not.toContain("encrypted_content");
+    const body = JSON.parse(res.body) as { output: { type: string }[] };
+    expect(
+      body.output.some((o) => o.type === "reasoning"),
+      "no reasoning output item",
+    ).toBe(true);
+  });
+
+  // The SYNTHESIS gate is the same predicate, so its selectivity needs the same
+  // negative: an unrelated include value must not conjure an item either.
+  it("a non-empty include that lacks the reasoning value synthesizes NOTHING", async () => {
+    const output = await nonStreamReasoning(noSummaryTextFixture, "nosumtext", UNRELATED_INCLUDE);
+    expect(output.some((o) => o.type === "reasoning")).toBe(false);
+    const events = await streamReasoning(noSummaryTextFixture, "nosumtext", UNRELATED_INCLUDE);
+    expect(reasoningItem(events, "done")).toBeUndefined();
+    // Guard against the model gate being the reason this passes: the SAME fixture
+    // and model DO produce the item under the explicit opt-in.
+    const optedIn = await nonStreamReasoning(noSummaryTextFixture, "nosumtext");
+    expect(optedIn.some((o) => o.type === "reasoning")).toBe(true);
+  });
+});
+
 // ─── Bug fix: multi-fco after single item_reference ─────────────────────────
 
 describe("multi-fco after single item_reference", () => {
