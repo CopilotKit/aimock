@@ -2158,18 +2158,426 @@ describe("fix-drift.yml — PR-body dedup markers are SELF-HEALED, so a human bo
     // proposes a note this run also carries; stamping this run's changeset key
     // onto it would assert it proposes a changeset it does not carry (in a mixed
     // run, the registry-edit half) and suppress that half forever.
+    //
+    // Both anchors are decided by the SINGLE selection program and travel with
+    // the candidate (`keyAnchored`, `wantMarkers`); this guard pins the scoping
+    // to those, because a second locally-recomputed copy is the defect.
     const code = shellCode(runOf(stepById("needs_human_pr")));
     expect(code, "the repair does not scope the marker set per candidate").toContain("WANT=()");
-    expect(code).toMatch(/\*"-\$\{CHANGESET_KEY\}"\)\s*WANT=\("\$\{MARKERS\[@\]\}"\)/);
+    expect(code, "the anchor-(a) branch is not keyed on the selection's own verdict").toMatch(
+      /ANCHOR_A="\$\(printf '%s' "\$pr" \| jq -r '\.keyAnchored'\)"/,
+    );
+    expect(code).toMatch(
+      /if \[ "\$ANCHOR_A" = "true" \]; then\s*\n\s*WANT=\("\$\{MARKERS\[@\]\}"\)/,
+    );
     expect(
       code,
-      "the note-anchored branch restores something other than the note's own marker",
-    ).toContain('WANT+=("${NOTE_MARKERS[$i]}")');
+      "the note-anchored branch restores something other than the marker set the selection resolved",
+    ).toMatch(/jq -r '\.wantMarkers\[\]'/);
     expect(code, "the missing-marker scan must read the per-candidate WANT set").toMatch(
       /for m in "\$\{WANT\[@\]\}"; do/,
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// H-F1 / H-F3: the CANDIDATE SELECTION around the marker repair.
+//
+// The repair itself is covered above. What was NOT covered is which PRs it gets
+// pointed at, and that is where two fail-silent defects lived:
+//
+//   H-F1  Anchor (b) — "this PR's changed files include one of THIS run's note
+//         paths" — had NO guard at all. It could be killed three ways with the
+//         whole suite GREEN, and it is the ONLY thing standing between a re-fire
+//         with a different changeset key but the same note path and a duplicate
+//         PR. On top of that, the note-in-files question was answered by TWO
+//         independently written jq expressions that had to agree, the second
+//         ending `jq -e … >/dev/null 2>&1` — so a jq fault, a malformed payload,
+//         or gh's `first: 100` file-list truncation ALL silently read as "note
+//         not present", which is the answer that opens the duplicate.
+//
+//   H-F3  `^fix/drift-` is not a bot marker. Humans use `fix/drift-<slug>` for
+//         drift work (#348 `fix/drift-alert-signal`, #351, #352 — the very
+//         hand-off the needs-human PR body asks for), so anchor (b) selected
+//         HUMAN PRs: the workflow appended machine markers to prose it does not
+//         own, and folded that human PR into the bot's dedup set, suppressing a
+//         genuine needs-human PR indefinitely.
+//
+// These guards are OBSERVATIONS, not assertions about the text: the step's own
+// single-quoted jq programs are extracted from the `run:` block and EXECUTED
+// with the real jq against fixture PR payloads. Whatever they select is
+// measured. That is what makes them mutation-bind — forcing the note-in-files
+// index check false, or the notes argjson to `[]`, changes what jq returns.
+// ---------------------------------------------------------------------------
+
+/** The body of a single-quoted `NAME='…'` shell assignment in a `run:` block. */
+function shellSingleQuoted(run: string, name: string): string {
+  const m = new RegExp(`^[ \\t]*${name}='([^']*)'`, "m").exec(run);
+  if (m === null) throw new Error(`no single-quoted ${name}= assignment in this run: block`);
+  return m[1];
+}
+
+const JQ_AVAILABLE = spawnSync("jq", ["--version"], { encoding: "utf-8" }).status === 0;
+
+/** Run a jq program against `input`, reporting status/stdout/stderr verbatim. */
+function runJq(
+  program: string,
+  input: unknown,
+  args: Record<string, string> = {},
+  jsonArgs: Record<string, unknown> = {},
+): { status: number; out: string; err: string } {
+  const argv = ["-c"];
+  for (const [k, v] of Object.entries(args)) argv.push("--arg", k, v);
+  for (const [k, v] of Object.entries(jsonArgs)) argv.push("--argjson", k, JSON.stringify(v));
+  argv.push(program);
+  const res = spawnSync("jq", argv, { input: JSON.stringify(input), encoding: "utf-8" });
+  return { status: res.status ?? -1, out: (res.stdout ?? "").trim(), err: res.stderr ?? "" };
+}
+
+/**
+ * The marker text the step builds per note, taken from the step itself so this
+ * suite never carries a second copy of it (a second copy is exactly the class of
+ * bug these guards exist for).
+ */
+function noteMarkerFor(note: string): string {
+  const code = shellCode(runOf(stepById("needs_human_pr")));
+  const m = /NOTE_MARKERS\+=\("([a-z][a-z-]*: )\$\{note\}"\)/.exec(code);
+  if (m === null) throw new Error("the step no longer builds NOTE_MARKERS from a literal prefix");
+  return `${m[1]}${note}`;
+}
+
+interface FixturePR {
+  number: number;
+  headRefName: string;
+  body?: string;
+  state?: string;
+  files?: unknown;
+}
+
+/** Run the step's OWN candidate-selection program over `prs`. */
+function selectCandidates(
+  prs: FixturePR[],
+  key: string,
+  notes: string[],
+): { status: number; err: string; selected: { number: number; wantMarkers: string[] }[] } {
+  const run = runOf(stepById("needs_human_pr"));
+  const program = shellSingleQuoted(run, "JQ_LIB") + shellSingleQuoted(run, "JQ_CANDIDATES");
+  const res = runJq(program, prs, { k: key }, { notes, noteMarkers: notes.map(noteMarkerFor) });
+  return {
+    status: res.status,
+    err: res.err,
+    selected: res.status === 0 && res.out !== "" ? JSON.parse(res.out) : [],
+  };
+}
+
+/** Run the step's OWN "cannot prove absence" audit over `prs`. */
+function unprovableCandidates(prs: FixturePR[], key: string): number[] {
+  const run = runOf(stepById("needs_human_pr"));
+  const program = shellSingleQuoted(run, "JQ_LIB") + shellSingleQuoted(run, "JQ_UNPROVEN");
+  const res = runJq(program, prs, { k: key });
+  if (res.status !== 0) throw new Error(`the audit program failed: ${res.err}`);
+  return JSON.parse(res.out);
+}
+
+/**
+ * EXECUTE the step's own candidate-selection SECTION — verbatim, from the
+ * `NOTES_JSON=` line through the `REASSERTED=` line — under bash with only its
+ * inputs seeded (`CHANGESET_KEY`, the `NOTES`/`NOTE_MARKERS` arrays, the
+ * `MANAGED` PR payload).
+ *
+ * `selectCandidates` runs the jq programs in isolation, which proves what they
+ * select but NOT that the step hands them the right arguments. This closes that
+ * gap: rewiring `--argjson notes "$NOTES_JSON"` to a literal `[]` is invisible
+ * to the jq-level guards and was proven so by mutation. No `mapfile` here, so
+ * this runs on bash 3.2 as well.
+ */
+function observeCandidateSection(
+  prs: FixturePR[],
+  key: string,
+  notes: string[],
+): { exit: number; mine: { number: number; wantMarkers: string[] }[]; stdio: string } {
+  const lines = runOf(stepById("needs_human_pr")).split("\n");
+  const from = lines.findIndex((l) => /^\s*NOTES_JSON=/.test(l));
+  const to = lines.findIndex((l) => /^\s*REASSERTED=/.test(l));
+  if (from === -1 || to === -1 || to < from) {
+    throw new Error("the step no longer has a NOTES_JSON…REASSERTED candidate-selection section");
+  }
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-cand-"));
+  try {
+    const q = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+    const script = [
+      "set -uo pipefail",
+      `RUNNER_TEMP=${q(dir)}`,
+      `CHANGESET_KEY=${q(key)}`,
+      `NOTES=(${notes.map(q).join(" ")})`,
+      `NOTE_MARKERS=(${notes.map((n) => q(noteMarkerFor(n))).join(" ")})`,
+      `MANAGED=${q(JSON.stringify(prs))}`,
+      ...lines.slice(from, to + 1),
+      'printf "%s" "$MINE" > "$RUNNER_TEMP/mine.json"',
+    ].join("\n");
+    const file = join(dir, "section.sh");
+    writeFileSync(file, script);
+    const res = spawnSync("/bin/bash", [file], { cwd: dir, encoding: "utf-8" });
+    let mine: { number: number; wantMarkers: string[] }[] = [];
+    try {
+      mine = JSON.parse(readFileSync(join(dir, "mine.json"), "utf-8"));
+    } catch {
+      mine = [];
+    }
+    return {
+      exit: res.status ?? -1,
+      mine,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const THIS_KEY = "0123456789abcdef";
+const OTHER_KEY = "fedcba9876543210";
+const NOTE = "drift-proposals/2026-08-04-new-family-acme.md";
+const REGISTRY_FILE = [{ path: "src/model-registry.ts" }];
+const TOUCHES_NOTE = [{ path: NOTE }, ...REGISTRY_FILE];
+
+/** A bot branch of the shape the needs-human step pushes, carrying `key`. */
+const botNeedsHumanBranch = (key: string): string => `drift-needs-human/2026-07-01-111111-${key}`;
+/** A bot branch of the shape the ok-applied step pushes, carrying `key`. */
+const botOkAppliedBranch = (key: string): string => `fix/drift-2026-07-02-222222-${key}`;
+
+describe("fix-drift.yml — jq is available (every executable guard below needs it)", () => {
+  it("CI must have jq, so the executable selection guards can never silently skip", () => {
+    if (process.env.CI === undefined) return;
+    expect(JQ_AVAILABLE, "jq is missing in CI, so the selection guards did not actually run").toBe(
+      true,
+    );
+  });
+});
+
+describe.skipIf(!JQ_AVAILABLE)(
+  "fix-drift.yml — H-F1: the note-path anchor (b) actually SELECTS, and an unreadable file list is not read as 'note absent'",
+  () => {
+    it("a BOT PR carrying a DIFFERENT changeset key IS selected because its changed files include one of THIS run's note paths", () => {
+      // The half anchor (a) cannot cover: a re-fire whose outcome set changed, so
+      // it hashes to a different key. The changeset guard legitimately does not
+      // fire and the per-note marker is all that prevents a duplicate PR.
+      const { status, err, selected } = selectCandidates(
+        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(status, `the selection program failed: ${err}`).toBe(0);
+      expect(selected.map((p) => p.number)).toEqual([900]);
+      expect(
+        selected[0].wantMarkers,
+        "selected by the note anchor but entitled to the wrong marker set",
+      ).toEqual([noteMarkerFor(NOTE)]);
+    });
+
+    it("the SAME bot PR is NOT selected once this run carries no note paths (the note anchor is what selected it, nothing else)", () => {
+      const { status, selected } = selectCandidates(
+        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        THIS_KEY,
+        [],
+      );
+      expect(status).toBe(0);
+      expect(selected).toEqual([]);
+    });
+
+    it("a bot PR whose changed files do NOT include a note path is not selected by the note anchor", () => {
+      const { status, selected } = selectCandidates(
+        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: REGISTRY_FILE }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(status).toBe(0);
+      expect(selected).toEqual([]);
+    });
+
+    it("anchor (a) still selects a bot PR whose branch ends in THIS run's key, and it owns EVERY marker (keyAnchored)", () => {
+      const { status, selected } = selectCandidates(
+        [{ number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: REGISTRY_FILE }],
+        THIS_KEY,
+        [],
+      );
+      expect(status).toBe(0);
+      expect(selected.map((p) => p.number)).toEqual([905]);
+      expect((selected[0] as unknown as { keyAnchored: boolean }).keyAnchored).toBe(true);
+    });
+
+    it("the step WIRES this run's real note paths into the selection (a literal `[]` argjson would silently select nothing)", () => {
+      // Executes the step's own NOTES_JSON…REASSERTED section, so the argument
+      // wiring is observed and not merely the jq program.
+      const ok = observeCandidateSection(
+        [{ number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(ok.exit, `the section failed: ${ok.stdio}`).toBe(0);
+      expect(ok.mine.map((p) => p.number)).toEqual([900]);
+      expect(ok.mine[0].wantMarkers).toEqual([noteMarkerFor(NOTE)]);
+    });
+
+    it("KNOWN NEGATIVE: the same section, on a MIXED run with no note paths, selects only the key-anchored PR and stays green", () => {
+      const ok = observeCandidateSection(
+        [
+          { number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE },
+          { number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: REGISTRY_FILE },
+        ],
+        THIS_KEY,
+        [],
+      );
+      expect(ok.exit, `the section failed: ${ok.stdio}`).toBe(0);
+      expect(ok.mine.map((p) => p.number)).toEqual([905]);
+    });
+
+    it("the section EXITS NON-ZERO with an ::error:: when a bot candidate's file list cannot be read", () => {
+      const bad = observeCandidateSection(
+        [{ number: 902, headRefName: botNeedsHumanBranch(OTHER_KEY), files: "unavailable" }],
+        THIS_KEY,
+        [NOTE],
+      );
+      expect(bad.exit, "an unreadable file list was treated as 'note absent'").toBe(1);
+      expect(bad.stdio).toContain("::error::");
+      expect(bad.stdio).toContain("902");
+    });
+
+    it("the note-in-files question is answered in ONE place: no `.files` expression survives outside JQ_LIB", () => {
+      // Two independently written copies that MUST agree is one edit away from
+      // disagreeing, and the second copy is the one that swallowed jq faults.
+      const run = runOf(stepById("needs_human_pr"));
+      const lib = shellSingleQuoted(run, "JQ_LIB");
+      const outside = shellCode(run).split(lib).join("");
+      // `del(.files)` (dropping selection scratch) is a field removal, not a
+      // question about the file list. Any ITERATION or piping of `.files` is.
+      const reads = outside.match(/\.files\s*[[|]/g) ?? [];
+      expect(
+        reads,
+        "a second expression reads `.files` outside the single JQ_LIB definition",
+      ).toEqual([]);
+    });
+
+    it("an UNREADABLE `.files` payload on a bot PR is reported as UNPROVEN, not as 'note absent'", () => {
+      // `[.files[]?.path]` collapsed a non-array payload to an empty list with no
+      // signal, and "no files" is the answer that opens the duplicate.
+      expect(
+        unprovableCandidates(
+          [{ number: 902, headRefName: botNeedsHumanBranch(OTHER_KEY), files: "unavailable" }],
+          THIS_KEY,
+        ),
+      ).toEqual([902]);
+    });
+
+    it("a file list TRUNCATED at gh's `first: 100` ceiling is reported as UNPROVEN, not as 'note absent'", () => {
+      const truncated = Array.from({ length: 100 }, (_, i) => ({ path: `src/gen/f${i}.ts` }));
+      expect(
+        unprovableCandidates(
+          [{ number: 903, headRefName: botNeedsHumanBranch(OTHER_KEY), files: truncated }],
+          THIS_KEY,
+        ),
+      ).toEqual([903]);
+    });
+
+    it("KNOWN NEGATIVE: a readable, untruncated file list is NOT flagged, and neither is a key-anchored PR (which needs no file list)", () => {
+      expect(
+        unprovableCandidates(
+          [
+            { number: 900, headRefName: botNeedsHumanBranch(OTHER_KEY), files: TOUCHES_NOTE },
+            { number: 905, headRefName: botNeedsHumanBranch(THIS_KEY), files: "unavailable" },
+            { number: 348, headRefName: "fix/drift-alert-signal", files: "unavailable" },
+          ],
+          THIS_KEY,
+        ),
+        "a healthy or key-anchored PR must not fire the audit",
+      ).toEqual([]);
+    });
+
+    it("both fail-closed decisions are wired to `exit 1` (an unprovable candidate, and the audit itself failing)", () => {
+      const code = shellCode(runOf(stepById("needs_human_pr")));
+      const lines = code.split("\n");
+      for (const needle of ["jq -r 'length')\" -gt 0 ]", 'UNPROVEN="$(printf']) {
+        const at = lines.findIndex((l) => l.includes(needle));
+        expect(at, `no guard around ${needle}`).toBeGreaterThan(-1);
+        const block = lines.slice(at, at + 6).join("\n");
+        expect(block, `the guard at ${needle} does not fail closed`).toMatch(/exit 1/);
+        expect(block, `the guard at ${needle} fails silently`).toMatch(/::error::/);
+      }
+    });
+  },
+);
+
+describe.skipIf(!JQ_AVAILABLE)(
+  "fix-drift.yml — H-F3: candidate selection distinguishes BOT-managed PRs from HUMAN ones",
+  () => {
+    it("a HUMAN `fix/drift-<slug>` PR touching one of this run's note paths is NOT selected (so its body is never rewritten and it cannot suppress a genuine needs-human PR)", () => {
+      // The real shapes in this repo: #348 fix/drift-alert-signal, #351, #352.
+      for (const branch of [
+        "fix/drift-alert-signal",
+        "fix/drift-needs-human-note",
+        "fix/drift-x",
+      ]) {
+        const { status, selected } = selectCandidates(
+          [{ number: 348, headRefName: branch, files: TOUCHES_NOTE }],
+          THIS_KEY,
+          [NOTE],
+        );
+        expect(status).toBe(0);
+        expect(selected, `human branch ${branch} was selected as bot-managed`).toEqual([]);
+      }
+    });
+
+    it("KNOWN NEGATIVE: a genuine BOT PR of EITHER branch shape, carrying a DIFFERENT key, IS still selected and repaired", () => {
+      // Excluding the bot's own PRs would be worse than the bug it fixes.
+      for (const branch of [botOkAppliedBranch(OTHER_KEY), botNeedsHumanBranch(OTHER_KEY)]) {
+        const { status, selected } = selectCandidates(
+          [{ number: 901, headRefName: branch, files: TOUCHES_NOTE }],
+          THIS_KEY,
+          [NOTE],
+        );
+        expect(status).toBe(0);
+        expect(
+          selected.map((p) => p.number),
+          `bot branch ${branch} stopped being selected`,
+        ).toEqual([901]);
+      }
+    });
+
+    it("the bot-branch pattern is PINNED to BOTH branch-construction sites, so changing either branch shape reds instead of silently selecting nothing", () => {
+      const lib = shellSingleQuoted(runOf(stepById("needs_human_pr")), "JQ_LIB");
+      const rx = /def bot_managed:[\s\S]*?test\("([^"]+)"\)/.exec(lib);
+      expect(rx, "JQ_LIB no longer defines bot_managed via a single test() pattern").not.toBeNull();
+      const botManaged = new RegExp(rx![1]);
+
+      // Materialise each branch the workflow actually pushes, from its OWN
+      // assignment text — never from a name transcribed into this suite.
+      const concrete = (expr: string): string =>
+        expr
+          .replace(/\$\(date \+%Y-%m-%d\)/g, "2026-08-04")
+          .replace(/\$\{RUN_ID\}/g, "1234567890")
+          .replace(/\$\{CHANGESET_KEY\}/g, THIS_KEY);
+      const gitcfg = /git checkout -B "([^"]+)"/.exec(shellCode(runOf(stepById("gitcfg"))));
+      expect(gitcfg, "the gitcfg step no longer creates the base fix/drift branch").not.toBeNull();
+      const okBase = concrete(gitcfg![1]);
+      const nhBranch = /BRANCH="(drift-needs-human[^"]+)"/.exec(
+        shellCode(runOf(stepById("needs_human_pr"))),
+      );
+      expect(nhBranch, "the needs-human step no longer builds its branch inline").not.toBeNull();
+      const okBranch = /BRANCH="\$\(git rev-parse --abbrev-ref HEAD\)-\$\{CHANGESET_KEY\}"/.test(
+        shellCode(runOf(stepById("pr"))),
+      );
+      expect(okBranch, "the ok-applied step no longer appends the key to its branch").toBe(true);
+
+      for (const branch of [concrete(nhBranch![1]), `${okBase}-${THIS_KEY}`]) {
+        expect(botManaged.test(branch), `bot_managed does not match this run's own ${branch}`).toBe(
+          true,
+        );
+      }
+      for (const human of ["fix/drift-alert-signal", "fix/drift-2026-08-04-nope", okBase]) {
+        expect(botManaged.test(human), `bot_managed matches the human branch ${human}`).toBe(false);
+      }
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // F#2 / G#2 (should-fix): DRIFT.md (and the workflow's own PR-body fallback

@@ -679,14 +679,107 @@ jobs:
             exit 1
           fi
           NOTES_JSON="$(printf '%s\n' "${NOTES[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')"
-          MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" --argjson notes "$NOTES_JSON" '
-            map(select(
-              (.headRefName | test("^(fix/drift-|drift-needs-human/)"))
-              and ((.headRefName | endswith("-" + $k))
-                   or ([.files[]?.path] as $p
-                       | ($notes | map(select(. as $n | $p | index($n))) | length) > 0))
-            ))')"
-          REASSERTED="$MINE"
+          # Index-parallel with NOTES_JSON (both are built from arrays the loop
+          # above keeps index-parallel), so the selection below can hand back the
+          # exact marker STRINGS a candidate is entitled to. The marker text
+          # therefore still has ONE source — NOTE_MARKERS — and never gets a second
+          # copy inside a jq program.
+          NOTE_MARKERS_JSON="$(printf '%s\n' "${NOTE_MARKERS[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')"
+
+          # ---- ONE DEFINITION OF EVERY CANDIDATE-SELECTION PREDICATE ------------
+          # "Is one of THIS run's note paths among this PR's changed files?" used to
+          # be written TWICE — once in the candidate filter, once again, entirely
+          # independently, in the per-candidate marker scoping below. Two
+          # hand-written expressions that MUST agree are one edit away from
+          # disagreeing, and the second copy ended `jq -e … >/dev/null 2>&1`, so a
+          # jq fault, a malformed payload, or a missing `.files` ALL silently meant
+          # "note not present" — exit 0, no warning, duplicate PR. Every such fact
+          # is now derived here, once, and the selection carries its answer
+          # (`keyAnchored`, `wantMarkers`) forward with each candidate, so nothing
+          # downstream re-derives it.
+          #
+          # bot_managed: candidacy is restricted to branches THIS WORKFLOW created.
+          # `^fix/drift-` alone is NOT a bot marker — humans use `fix/drift-<slug>`
+          # for drift work (that hand-off is exactly what the needs-human PR body
+          # asks a human to do), and matching one lets this step append machine
+          # markers to a HUMAN's PR body and fold that human PR into the bot's dedup
+          # set, suppressing a genuine needs-human PR indefinitely. The real bot
+          # marker is the one the ok-applied dedup already relies on: the trailing
+          # changeset key. Generalised here from "this run's key" to "a changeset
+          # key" (16 lowercase hex — computeChangesetKey's sha256 slice) plus the
+          # date-and-run-id segments both branch builders emit, so a bot PR carrying
+          # a DIFFERENT key still qualifies (that is precisely what the note-path
+          # anchor exists for) while `fix/drift-alert-signal` does not. A test pins
+          # this pattern against BOTH branch-construction sites, so changing either
+          # branch shape reds instead of silently selecting nothing.
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_LIB='
+            def bot_managed:
+              (.headRefName // "")
+              | test("^(fix/drift-|drift-needs-human/)[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+-[0-9a-f]{16}$");
+            def key_anchored($k): (.headRefName // "") | endswith("-" + $k);
+            def files_usable: (.files | type) == "array";
+            def file_paths: [.files[] | .path];
+            def files_truncated: (file_paths | length) >= 100;
+            def matched_note_idx($notes):
+              file_paths as $p
+              | [ range(0; ($notes | length)) as $i
+                  | select(($p | index($notes[$i])) != null)
+                  | $i ];
+          '
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_CANDIDATES='
+            map(select(bot_managed))
+            | map(. + {
+                keyAnchored: key_anchored($k),
+                wantMarkers: (if files_usable
+                              then [ matched_note_idx($notes)[] | $noteMarkers[.] ]
+                              else [] end)
+              })
+            | map(select(.keyAnchored or ((.wantMarkers | length) > 0)))
+          '
+          # A bot-managed PR whose changed-file list this run CANNOT READ is not
+          # evidence that the note is absent from it — and "absent" is the answer
+          # that opens the duplicate. Two ways to be unreadable, both of which the
+          # old `[.files[]?.path]` collapsed to an empty list with no signal:
+          #   - the payload is not an array at all (a gh/API fault), and
+          #   - gh's GraphQL files connection truncated at its `first: 100` ceiling,
+          #     so the note may sit in a tail nobody fetched.
+          # Only load-bearing for a PR the branch-key anchor did NOT already select
+          # (anchor (a) needs no file list), so a bot PR of this run's own changeset
+          # is unaffected.
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_UNPROVEN='
+            [ .[]
+              | select(bot_managed
+                       and ((key_anchored($k)) | not)
+                       and ((files_usable | not) or files_truncated))
+              | .number ]
+          '
+          UNPROVEN_ERR="${RUNNER_TEMP}/drift-candidate-audit.err"
+          if ! UNPROVEN="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" \
+            "${JQ_LIB}${JQ_UNPROVEN}" 2>"$UNPROVEN_ERR")"; then
+            echo "::error::the candidate-PR changed-file audit itself FAILED, so this run cannot tell whether an open bot PR already proposes one of this run's notes — refusing to risk a duplicate: $(cat "$UNPROVEN_ERR" 2>/dev/null)"
+            exit 1
+          fi
+          if [ "$(printf '%s' "$UNPROVEN" | jq -r 'length')" -gt 0 ]; then
+            echo "::error::open bot-managed PR(s) #$(printf '%s' "$UNPROVEN" | jq -r 'map(tostring) | join(", #")') came back with an UNREADABLE or 100-file-TRUNCATED changed-file list, so this run cannot prove they do not already propose note(s) [${NOTES[*]:-}]. Reading that as 'note not present' is exactly how a duplicate PR gets opened. Refusing."
+            exit 1
+          fi
+          MINE_ERR="${RUNNER_TEMP}/drift-candidate-select.err"
+          if ! MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" \
+            --argjson notes "$NOTES_JSON" --argjson noteMarkers "$NOTE_MARKERS_JSON" \
+            "${JQ_LIB}${JQ_CANDIDATES}" 2>"$MINE_ERR")"; then
+            echo "::error::selecting the PRs whose dedup markers this run owns FAILED, so it cannot prove those markers are still intact — refusing to risk a duplicate: $(cat "$MINE_ERR" 2>/dev/null)"
+            exit 1
+          fi
+          if ! printf '%s' "$MINE" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::the candidate-PR selection did not return an array — refusing to self-heal markers against it: ${MINE}"
+            exit 1
+          fi
+          # keyAnchored/wantMarkers/files are SELECTION SCRATCH, not PR state: strip
+          # them before this list is folded into the dedup view further down.
+          REASSERTED="$(printf '%s' "$MINE" | jq -c 'map(del(.keyAnchored, .wantMarkers, .files))')"
           while IFS= read -r pr; do
             [ -n "$pr" ] || continue
             HEAL_N="$(printf '%s' "$pr" | jq -r '.number')"
@@ -699,18 +792,29 @@ jobs:
             # run's changeset key onto a PR that merely shares a note would
             # assert it proposes a changeset it does not carry — in a mixed run,
             # the registry-edit half — and would then suppress that half forever.
+            #
+            # BOTH facts come from the single selection program above — the branch
+            # anchor as `keyAnchored`, the note-path match as the `wantMarkers` it
+            # already resolved through NOTE_MARKERS. Re-deriving either here is what
+            # produced two `.files` expressions that had to agree, the second of
+            # which swallowed every jq/payload fault into "note not present".
             WANT=()
-            case "$(printf '%s' "$pr" | jq -r '.headRefName')" in
-              *"-${CHANGESET_KEY}") WANT=("${MARKERS[@]}") ;;
-              *)
-                for i in "${!NOTES[@]}"; do
-                  if printf '%s' "$pr" | jq -e --arg n "${NOTES[$i]}" \
-                    '[.files[]?.path] | index($n) != null' >/dev/null 2>&1; then
-                    WANT+=("${NOTE_MARKERS[$i]}")
-                  fi
-                done
-                ;;
-            esac
+            if ! ANCHOR_A="$(printf '%s' "$pr" | jq -r '.keyAnchored')"; then
+              echo "::error::candidate PR entry carries no keyAnchored flag — the selection program did not produce it, so this run cannot tell which markers PR #${HEAL_N} owns. Refusing."
+              exit 1
+            fi
+            if [ "$ANCHOR_A" = "true" ]; then
+              WANT=("${MARKERS[@]}")
+            else
+              if ! WANT_LINES="$(printf '%s' "$pr" | jq -r '.wantMarkers[]' 2>&1)"; then
+                echo "::error::candidate PR #${HEAL_N} carries no readable wantMarkers list, so this run cannot tell which note marker it is entitled to — refusing to guess: ${WANT_LINES}"
+                exit 1
+              fi
+              while IFS= read -r m; do
+                [ -n "$m" ] || continue
+                WANT+=("$m")
+              done <<< "$WANT_LINES"
+            fi
             MISSING=()
             for m in "${WANT[@]}"; do
               case "$HEAL_BODY" in *"<!-- ${m} -->"*) ;; *) MISSING+=("$m") ;; esac
