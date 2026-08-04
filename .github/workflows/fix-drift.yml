@@ -1306,11 +1306,27 @@ jobs:
       # left reason == 'ok-no-churn', so this guard was false, no specific alert
       # matched either, and the job died RED with ZERO Slack.
       #
-      # So it is now keyed on the thing it actually means: the job failed and
-      # NEITHER specific alert ran. Both of those steps end in a deliberate
-      # `exit 1`, so their outcome is 'failure' whenever they fire and
-      # 'skipped' only when they did not run — which makes 'skipped' the exact
-      # discriminator for "nothing else alerted".
+      # So it is now keyed on the thing it actually means: the job did not
+      # succeed and NO specific alert PROVABLY DELIVERED one.
+      #
+      # `outcome != 'failure'`, NOT `outcome == 'skipped'`: both specific alerts
+      # end in a deliberate `exit 1` and have no other exit path, so 'failure' is
+      # exactly "this alert ran to completion and posted to Slack". Everything
+      # else — 'skipped' (never selected), 'cancelled' (selected, then cut short
+      # by the job's cancellation, its `curl` killed mid-flight), and '' (the
+      # runner never got as far as evaluating it) — means nobody was told, and
+      # each must reach this catch-all. `== 'skipped'` covered only the first of
+      # the three, and so stood down in exactly the cancellation window the
+      # `failure() || cancelled()` clause below was added to cover: the 30-minute
+      # `timeout-minutes` firing WHILE an alert step is POSTing left that step
+      # 'cancelled', which is neither 'skipped' nor 'failure', and the job ended
+      # with ZERO Slack. Same defect family, one level in: 'skipped' is not the
+      # same predicate as "did not alert".
+      #
+      # This cannot double-fire. The only outcome that silences this step is the
+      # one that proves a specific alert completed, and a completed alert always
+      # `exit 1`s, so `failure()` below is true for the same runs — the two are
+      # mutually exclusive by construction, not by luck.
       # `failure() || cancelled()`, NOT `failure()`: a CANCELLED job — a manual
       # cancel, or this job's own `timeout-minutes: 30` firing — is a THIRD
       # outcome, and GitHub's `failure()` is FALSE for it. So a run killed by the
@@ -1323,8 +1339,8 @@ jobs:
       - name: Alert on early-infra failure (catch-all)
         if: >-
           (failure() || cancelled()) &&
-          steps.alert_needs_human.outcome == 'skipped' &&
-          steps.alert_gate.outcome == 'skipped'
+          steps.alert_needs_human.outcome != 'failure' &&
+          steps.alert_gate.outcome != 'failure'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}

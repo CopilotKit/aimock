@@ -3360,6 +3360,83 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     expect(gate, "the catch-all no longer names cancelled()").toMatch(/cancelled\(\)/);
   });
 
+  // -------------------------------------------------------------------------
+  // N1: `cancelled` is a fourth outcome for the ALERT STEPS TOO, not only for
+  // the job. The catch-all's job-level predicate was widened to
+  // `failure() || cancelled()`, but its two step-level clauses stayed keyed on
+  // `outcome == 'skipped'` — and a cancelled step is neither 'skipped' nor
+  // 'failure'. So in the very window this PR added coverage for, the job
+  // cancels DURING an alert step: that step's curl is killed (nothing reaches
+  // Slack), its outcome is 'cancelled', the `== 'skipped'` clause is false, and
+  // the catch-all — the only alert left — stands down. Silence.
+  //
+  // The correct discriminator is "did an alert PROVABLY complete", and both
+  // alert steps have NO exit path except `exit 1` (pinned separately above), so
+  // that is exactly `outcome == 'failure'`. Hence `!= 'failure'`: skipped,
+  // cancelled and not-yet-evaluated all reach the catch-all; only a completed
+  // alert silences it.
+  // -------------------------------------------------------------------------
+  const CATCH_ALL_NAME = "Alert on early-infra failure (catch-all)";
+
+  it("the catch-all stands down ONLY for an alert that provably COMPLETED — over the whole step-outcome domain, not just 'skipped'", () => {
+    // Every value GitHub can report for a step, asked of the real `if:`.
+    const answers = (["skipped", "cancelled", "", "success", "failure"] as const).map(
+      (outcome) => ({
+        outcome,
+        selected: evaluateIf(stepByName(CATCH_ALL_NAME).if!, {
+          event_name: "schedule",
+          jobFailed: false,
+          jobCancelled: true,
+          steps: {
+            sync: { outcome: "cancelled", outputs: {} },
+            alert_needs_human: { outcome, outputs: {} },
+            alert_gate: { outcome, outputs: {} },
+          },
+        }),
+      }),
+    );
+    expect(
+      answers.filter((a) => !a.selected).map((a) => a.outcome),
+      "the catch-all stands down for an alert outcome that does NOT prove the alert " +
+        "was delivered — a cancelled alert step's curl was killed, so nobody was told",
+    ).toEqual(["failure"]);
+  });
+
+  const CANCELLED_ALERT_SCENARIOS: Array<{ label: string; scenario: Scenario }> = [
+    {
+      label: "the 30-minute timeout fires while the needs-human alert is POSTing to Slack",
+      scenario: {
+        cancelledAt: "alert_needs_human",
+        outputs: {
+          sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+          needs_human_pr: { url: "https://example.test/pr/1", number: "1" },
+        },
+      },
+    },
+    {
+      label: "the timeout fires while the gate-failure alert is POSTing to Slack",
+      scenario: {
+        cancelledAt: "alert_gate",
+        outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } },
+      },
+    },
+  ];
+
+  for (const { label, scenario } of CANCELLED_ALERT_SCENARIOS) {
+    it(`CANCELLED MID-ALERT: ${label} -> the catch-all covers it, exactly once`, () => {
+      const res = simulateJob(scenario);
+      expect(res.jobCancelled, "the scenario did not actually cancel the job").toBe(true);
+      // The cut-short alert step delivered NOTHING, so it is not an alert.
+      expect(
+        res.alerts,
+        "a job cancelled mid-alert ended with ZERO delivered Slack — the alert step's " +
+          "curl was killed and the catch-all stood down because 'cancelled' is not 'skipped'",
+      ).toEqual([CATCH_ALL_NAME]);
+      // ...and still EXACTLY one: the widening must not double-fire.
+      expect(res.alerts.length, `more than one alert fired: ${res.alerts.join(", ")}`).toBe(1);
+    });
+  }
+
   it("the job HAS a timeout that can produce the cancelled outcome this covers", () => {
     // If the timeout were removed the cancellation window would still exist (a
     // human can cancel), but this pins the documented 30-minute trigger.
