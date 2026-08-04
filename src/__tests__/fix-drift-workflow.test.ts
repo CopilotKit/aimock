@@ -1657,15 +1657,18 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
     const pr = stepById("pr");
     expect(pr.name).toBe("Push branch + create PR");
     expect(runOf(pr)).toContain("gh pr create");
-    const select = (reason: string, jobFailed: boolean) =>
+    const select = (reason: string, jobFailed: boolean, jobCancelled = false) =>
       evaluateIf(pr.if!, {
         event_name: "schedule",
         jobFailed,
+        jobCancelled,
         steps: { sync: { outcome: jobFailed ? "failure" : "success", outputs: { reason } } },
       });
     expect(select(SyncCoreReason.OK_APPLIED, false)).toBe(true);
     // An earlier failure (e.g. the assert step refusing) must NOT open a PR.
     expect(select(SyncCoreReason.OK_APPLIED, true)).toBe(false);
+    // Nor may a CANCELLING job still push a branch and open a PR.
+    expect(select(SyncCoreReason.OK_APPLIED, false, true)).toBe(false);
     for (const reason of [SyncCoreReason.NEEDS_HUMAN, SyncCoreReason.GATE_FAILED, ""]) {
       expect(select(reason, false), `PR opened for reason=${reason}`).toBe(false);
     }
@@ -1851,10 +1854,8 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     ).toContain(GATE_ALERT);
   });
 
-  it("the gate-failure alert message names which step actually failed", () => {
+  it("the gate-failure alert WIRES IN every outcome its message branches on", () => {
     const step = stepByName(GATE_ALERT);
-    // Every outcome the message branches on must be wired in as env, and the
-    // body must actually branch on it — otherwise the alert is generic.
     const env = step.env ?? {};
     const run = runOf(step);
     for (const [envKey, stepId] of [
@@ -1869,6 +1870,151 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     }
     expect(run).toContain("FAILING_STEP=");
     expect(run).toContain("failing step: ${FAILING_STEP}");
+  });
+
+  // -------------------------------------------------------------------------
+  // H-F4: the guard above pins that the outcomes are WIRED IN and MENTIONED —
+  // it never pins what the message RESOLVES TO for a given outcome. Proven
+  // vacuous by mutation: every one of the four outcome-value comparisons in the
+  // message branching could be broken to a value no outcome ever takes
+  // (`= "zzz-never"`) and the whole suite stayed GREEN. The alert would then
+  // report the generic fallback for every real failure — the contentless-alert
+  // class this branch fixes elsewhere. So EXECUTE the step and read what it
+  // actually names.
+  // -------------------------------------------------------------------------
+
+  /** The generic `else` fallback the step falls through to, read from the step. */
+  const fallbackNaming = (): string => {
+    const m = /else\s*\n\s*FAILING_STEP="([^"]+)"/.exec(runOf(stepByName(GATE_ALERT)));
+    if (m === null) throw new Error("the gate alert has no generic FAILING_STEP fallback");
+    return m[1];
+  };
+
+  /** EXECUTE the gate-failure alert with these outcomes; return what it names. */
+  function observeGateNaming(over: Record<string, string>): { named: string; exit: number } {
+    const step = stepByName(GATE_ALERT);
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-gate-"));
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const payload = join(dir, "payload.json");
+      // Stub only the network call; bash and jq are real, so the message this
+      // observes is the bytes the step would POST.
+      writeFileSync(
+        join(bin, "curl"),
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -d) printf "%s" "$2" > "$PAYLOAD_OUT"; shift 2 ;; *) shift ;; esac; done\n',
+        { mode: 0o755 },
+      );
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const res = spawnSync("/bin/bash", [script], {
+        cwd: dir,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          PAYLOAD_OUT: payload,
+          SLACK_WEBHOOK: "https://slack.test/hook",
+          REPO: "CopilotKit/aimock",
+          RUN_ID: "1",
+          // Every outcome the step reads, defaulted to the benign value so each
+          // case below turns exactly one of them on.
+          SYNC_REASON: "",
+          SYNC_EXIT_CODE: "0",
+          ASSERT_OUTCOME: "success",
+          PR_OUTCOME: "success",
+          NEEDS_HUMAN_PR_OUTCOME: "success",
+          ...over,
+        },
+      });
+      const text = JSON.parse(readFileSync(payload, "utf-8")).text as string;
+      const m = /failing step: (.*?)\. This needs/s.exec(text);
+      if (m === null) throw new Error(`the alert named no failing step: ${text}`);
+      return { named: m[1], exit: res.status ?? -1 };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * A reason the SYNC step synthesises (SyncCoreReason cannot produce it), read
+   * from that step's own `REASON="…"` assignments — an INDEPENDENT source from
+   * the alert branching under test, so mutating the alert cannot also move the
+   * expectation.
+   */
+  const synthesisedReason = (want: string): string => {
+    const assigned = [...shellCode(runOf(stepById("sync"))).matchAll(/REASON="([a-z-]+)"/g)].map(
+      (m) => m[1],
+    );
+    if (!assigned.includes(want)) {
+      throw new Error(`the sync step no longer synthesises the reason '${want}': ${assigned}`);
+    }
+    return want;
+  };
+
+  const NAMING_CASES: Array<{
+    label: string;
+    env: Record<string, string>;
+    mustName: () => string;
+  }> = [
+    {
+      label: "drift-sync CRASHED",
+      env: { SYNC_REASON: synthesisedReason("sync-crashed"), SYNC_EXIT_CODE: "3" },
+      mustName: () => stepById("sync").name!,
+    },
+    {
+      label: "a provider was never CHECKED",
+      env: { SYNC_REASON: synthesisedReason("provider-unchecked") },
+      mustName: () => stepById("sync").name!,
+    },
+    {
+      label: "drift-sync's own internal gate reverted the edit",
+      env: { SYNC_REASON: SyncCoreReason.GATE_FAILED },
+      mustName: () => stepById("sync").name!,
+    },
+    {
+      label: "the needs-human persist step FAILED",
+      env: { SYNC_REASON: SyncCoreReason.NEEDS_HUMAN, NEEDS_HUMAN_PR_OUTCOME: "failure" },
+      mustName: () => stepById("needs_human_pr").name!,
+    },
+    {
+      label: "the needs-human persist step was SKIPPED",
+      env: { SYNC_REASON: SyncCoreReason.NEEDS_HUMAN, NEEDS_HUMAN_PR_OUTCOME: "skipped" },
+      mustName: () => stepById("needs_human_pr").name!,
+    },
+    {
+      label: "the defense-in-depth assert REFUSED",
+      env: { SYNC_REASON: SyncCoreReason.OK_APPLIED, ASSERT_OUTCOME: "failure" },
+      mustName: () => stepById("assert").name!,
+    },
+    {
+      label: "Push/PR-create failed after the assert PASSED",
+      env: { SYNC_REASON: SyncCoreReason.OK_APPLIED, PR_OUTCOME: "failure" },
+      mustName: () => stepById("pr").name!,
+    },
+  ];
+
+  for (const { label, env, mustName } of NAMING_CASES) {
+    it(`the gate alert's ASSEMBLED message names the real failing step when ${label}`, () => {
+      const { named, exit } = observeGateNaming(env);
+      // The step's OWN name, taken from the workflow — never a copy in this file.
+      expect(named, `named "${named}" instead of the step that failed`).toContain(mustName());
+      expect(named, "fell through to the generic fallback").not.toContain(fallbackNaming());
+      expect(exit, "the gate alert must fail the job so CI status shows it").toBe(1);
+    });
+  }
+
+  it("KNOWN NEGATIVE: with every outcome healthy the alert falls through to the generic naming (the cases above are what make it specific)", () => {
+    expect(observeGateNaming({ SYNC_REASON: SyncCoreReason.OK_APPLIED }).named).toBe(
+      fallbackNaming(),
+    );
+  });
+
+  it("each failure window names a DISTINCT thing, so no two of them collapse into one message", () => {
+    const named = NAMING_CASES.map(({ env }) => observeGateNaming(env).named);
+    expect(new Set(named).size, `two windows produced the same naming: ${named.join(" | ")}`).toBe(
+      NAMING_CASES.length,
+    );
   });
 });
 
