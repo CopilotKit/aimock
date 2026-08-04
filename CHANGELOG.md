@@ -18,6 +18,10 @@
 - **Opt-in `: OPENROUTER PROCESSING` SSE keepalive** (fixture option `openRouterProcessing`, default off): one comment line emitted before the first data frame, matching real OpenRouter streams.
 - OpenRouter request extensions (`provider`, `models`, `route`, `reasoning`, `plugins`, `prediction`, `usage`) and attribution headers (`HTTP-Referer`, `X-OpenRouter-Title`, legacy `X-Title`) are accepted and journaled, never required or rejected.
 
+### Fixed
+
+- **`GET /__aimock/journal` no longer leaks accepted inbound credentials.** Journal header redaction is now derived from the same registry that decides which headers are accepted as credentials, so the two can no longer drift apart. Previously only `authorization`, `x-api-key` and `api-key` were redacted while `x-goog-api-key` and `xi-api-key` were accepted as credentials and journaled **in plaintext** — so a real Gemini / Veo / ElevenLabs key sent on those headers appeared verbatim in the journal, which is unauthenticated unless inbound API-key validation is enabled. Affects 1.37.4 and earlier. A test asserts every accepted header redacts, so adding a new accepted header without redacting it now fails.
+
 ## [1.37.4] - 2026-07-20
 
 ### Fixed
