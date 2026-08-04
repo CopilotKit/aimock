@@ -354,6 +354,13 @@ describe("fix-drift.yml — the step slicer reads the artifact verbatim (both gu
     for (const id of ["app-token", "gitcfg", "sync", "assert", "pr", "needs_human_pr"]) {
       expect(() => stepById(id), `no unique step with id: ${id}`).not.toThrow();
     }
+    // The bare `- uses:` steps (checkout, pnpm, setup-node) have no `name:`. A
+    // slicer that only breaks on `- name:` silently MERGES them into the step
+    // above, which would hand a neighbouring step's body to the executors.
+    expect(
+      steps().filter((s) => s.name === undefined).length,
+      "the slicer sees no unnamed `- uses:` step — it is merging steps together",
+    ).toBeGreaterThan(0);
   });
 
   it("every extracted `run:` body is a LITERAL substring of the file when re-indented", () => {
