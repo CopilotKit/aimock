@@ -179,7 +179,10 @@ jobs:
 
       - name: Verify pinned npm release is published
         run: |
-          VERSION=$(python -c "import sys; sys.path.insert(0, 'packages/aimock-pytest/src'); from aimock_pytest._version import AIMOCK_VERSION; print(AIMOCK_VERSION)")
+          # Read the pin WITHOUT importing the package: aimock_pytest/__init__.py
+          # imports _server, which imports `requests`, and no Python deps are
+          # installed at this point in the job. runpy executes _version.py alone.
+          VERSION=$(python -c "import runpy; print(runpy.run_path('packages/aimock-pytest/src/aimock_pytest/_version.py')['AIMOCK_VERSION'])")
           npm view "@copilotkit/aimock@${VERSION}" version
 
       - name: Install build tools
