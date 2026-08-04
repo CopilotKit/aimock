@@ -9,7 +9,7 @@ rules:
   # `secrets.SLACK_WEBHOOK` to fire on PRs from forks. It does NOT check out
   # PR HEAD, runs nothing from the PR, and the top-level `permissions: {}`
   # zero-scopes `GITHUB_TOKEN`. Only `pull_request.{title,html_url,user.login,number}`
-  # is exposed, and all three are passed via `env:` so shell interpolation is
+  # is exposed, and all four are passed via `env:` so shell interpolation is
   # not possible.
   dangerous-triggers:
     ignore:

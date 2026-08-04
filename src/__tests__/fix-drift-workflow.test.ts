@@ -1,5 +1,5 @@
 /**
- * Static (text-level) assertions on .github/workflows/fix-drift.yml.
+ * Assertions on .github/workflows/fix-drift.yml.
  *
  * C3 (delete-freewriter-predicate-rewire): this workflow used to invoke an
  * autonomous coding-agent subprocess to freewrite a fix for whatever drift the
@@ -24,10 +24,15 @@
  *     0/1 — auto-merge is an explicit, opt-in Phase-4 exception, out of scope
  *     here).
  *   - there is NO remaining reference to the deleted predicate/LLM machinery.
+ *   - a drift-sync CRASH is audible, and every Slack alert renders a real line
+ *     break rather than the two characters `\n`.
  *
- * No YAML dependency is added; the repo ships none. These are deliberately
- * text-shape assertions on the committed workflow — an actionlint run in CI
- * covers structural validity separately.
+ * Most guards here are text-shape assertions on the committed workflow. The two
+ * behavioural ones EXECUTE the step's own `run:` body under bash and read the
+ * result, because no amount of pattern-matching can distinguish a literal `\n`
+ * from a `${NL}` holding a newline, or tell whether a crashing sync leaves the
+ * step green. The repo ships no YAML dependency and this suite adds none; an
+ * actionlint run in CI covers structural validity separately.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

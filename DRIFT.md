@@ -185,10 +185,9 @@ is **not** auto-fixed by anything — it is caught by the daily drift test (whic
 alerts on its own; see above) and fixed by a human like any other bug. The only
 automated remediation is the deterministic, zero-LLM **model-family sync**,
 which handles exactly one class of drift: a provider adding or retiring a
-model family. The `fix-drift.yml` workflow runs it on `workflow_dispatch`, a
+model family. The `fix-drift.yml` workflow runs it on `workflow_dispatch` and a
 daily **scheduled cron** (independent of drift-test failure — a retired model
-family does not, by itself, fail the drift tests), and on a failed `Drift
-Tests` run (an opportunistic attempt in case the failure was model churn):
+family does not, by itself, fail the drift tests):
 
 1. **Sync** — `scripts/drift-sync.ts` fetches each provider's live `/models` listing directly and diffs it against the frozen classification in `src/__tests__/drift/model-registry.ts`:
    - a classified family absent from live listings with **zero remaining aimock references** → a mechanical, comment-marked removal
