@@ -925,6 +925,46 @@ function enclosingGuardBody(lines: string[], idx: number): string {
   return lines.slice(start, idx).join("\n");
 }
 
+/**
+ * `run` with shell COMMENT-ONLY lines dropped — a comment is prose, not
+ * behaviour. Load-bearing for the marker guards below: this workflow documents
+ * its markers (`<!-- drift-* -->`, `"drift-changeset: <key>"`) in the comments
+ * right above the code that writes them, so a guard that scanned the raw `run:`
+ * would happily pass on the DOCUMENTATION of a marker it had deleted.
+ */
+function shellCode(run: string): string {
+  return run
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+}
+
+/**
+ * Every CODE line of `run` that mentions a `drift-<word>: ` marker token.
+ *
+ * Deliberately NOT an enumeration of the markers this guard happens to know
+ * about — that is the exact shape of the bug being fixed (a repair covering
+ * `drift-changeset:` but not `drift-proposal-note:` still leaves the second
+ * marker's dedup path defeatable by a body edit). It finds whatever marker
+ * tokens the step actually mentions, so the guard below can require each of
+ * them to be declared in the one array the body writer, the self-heal and the
+ * dedup guards all consume.
+ */
+function markerTokenLines(run: string): string[] {
+  return shellCode(run)
+    .split("\n")
+    .filter((l) => /\bdrift-[a-z][a-z-]*: /.test(l));
+}
+
+/** The `if ! VAR="$(cmd …)"; then … fi` block guarding `cmd`, or `null`. */
+function failClosedBlock(run: string, cmd: string): string | null {
+  const lines = shellCode(run).split("\n");
+  const at = lines.findIndex((l) => /^\s*if ! [A-Z_]+="\$\(/.test(l) && l.includes(cmd));
+  if (at === -1) return null;
+  const end = lines.findIndex((l, i) => i > at && /^\s*fi\s*$/.test(l));
+  return lines.slice(at, end === -1 ? lines.length : end + 1).join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // JOB SIMULATION. `evaluateIf` answers "would THIS step run"; several claims
 // here are about the job as a whole ("this failure reaches a human", "exactly
@@ -1926,13 +1966,208 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
     expect(runOf(stepById("needs_human_pr"))).toContain("drift-proposal-note: ${note}");
   });
 
-  it("BOTH PR bodies embed the stable drift-changeset marker the dedup guards match on", () => {
+  it("BOTH PR bodies embed the stable drift-changeset marker the dedup guards match on — emitted from the step's MARKERS array so the set WRITTEN cannot diverge from the set repaired and matched", () => {
     for (const id of ["pr", "needs_human_pr"]) {
-      expect(
-        runOf(stepById(id)),
-        `step ${id}'s PR body omits the drift-changeset dedup marker`,
-      ).toContain("<!-- drift-changeset: ${CHANGESET_KEY} -->");
+      const code = shellCode(runOf(stepById(id)));
+      // Declared once…
+      expect(code, `step ${id} does not declare the drift-changeset marker token`).toContain(
+        'MARKER="drift-changeset: ${CHANGESET_KEY}"',
+      );
+      // …seeded into the single marker array…
+      expect(code, `step ${id} does not seed MARKERS from MARKER`).toMatch(
+        /^\s*MARKERS=\("\$MARKER"\)\s*$/m,
+      );
+      // …and the PR body emits every entry of that array as an HTML comment.
+      // The old form of this guard asserted the LITERAL
+      // `<!-- drift-changeset: ${CHANGESET_KEY} -->` appeared in the run block,
+      // which a hand-enumerated second marker satisfied just as well; what has
+      // to hold is that the body writer emits the ARRAY, whatever is in it.
+      expect(code, `step ${id}'s PR body does not emit its MARKERS array`).toMatch(
+        /for m in "\$\{MARKERS\[@\]\}"; do\s*\n\s*echo "<!-- \$\{m\} -->"/,
+      );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MARKER SELF-HEAL (mandatory). Every dedup guard above matches an HTML comment
+// the workflow itself wrote into a PR BODY — i.e. machine state parked inside
+// prose a HUMAN owns and edits. On 2026-08-03 a human rewrote PR #343's body
+// wholesale, deleting its markers; ~14h later the scheduled run could no longer
+// find the changeset key on any open PR and opened duplicate PR #350 for the
+// same changeset — precisely the spam those guards exist to prevent.
+//
+// Validate-and-FAIL is NOT sufficient: it would have surfaced the breakage a run
+// sooner and still left a human to repair prose that a human will keep editing.
+// So each PR-open step must RE-ASSERT its own markers before dedup — recognise
+// the PRs it manages by state a human CANNOT edit, restore whichever markers
+// went missing, log loudly, then dedup unchanged.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — PR-body dedup markers are SELF-HEALED, so a human body edit cannot resurrect duplicate-PR spam", () => {
+  const PR_OPEN_STEPS = ["pr", "needs_human_pr"] as const;
+
+  it("every marker token a PR-open step mentions is DECLARED in the marker arrays it emits AND repairs (so a THIRD marker cannot slip past the self-heal)", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const lines = markerTokenLines(runOf(stepById(id)));
+      expect(lines.length, `step ${id} mentions no marker token at all`).toBeGreaterThan(0);
+      for (const l of lines) {
+        expect(
+          l.trim(),
+          `step ${id} mentions a marker token OUTSIDE its MARKER/MARKERS/NOTE_MARKERS ` +
+            "declarations — the body writer, the self-heal and the dedup guards can then " +
+            "disagree about the marker set, which is how ONE forgotten marker becomes a " +
+            `duplicate PR: ${l.trim()}`,
+        ).toMatch(/^(MARKER=|MARKERS\+?=|NOTE_MARKERS\+?=)/);
+      }
+    }
+  });
+
+  it("the needs-human step's per-note guard matches NOTE_MARKERS[i], not a second copy of the marker text", () => {
+    // The per-note dedup used to build its own `drift-proposal-note: ${note}`
+    // string, so the emitted set and the matched set were two sources that could
+    // drift apart — and the self-heal would then repair a marker no guard reads
+    // (or read one it never repairs).
+    const code = shellCode(runOf(stepById("needs_human_pr")));
+    expect(code).toMatch(/^\s*NOTE_MARKERS\+=\("drift-proposal-note: \$\{note\}"\)\s*$/m);
+    expect(code, "the per-note dedup no longer matches on NOTE_MARKERS").toContain(
+      '--arg m "${NOTE_MARKERS[$i]}"',
+    );
+  });
+
+  it("BOTH PR-open steps re-assert markers from a body-INDEPENDENT open-PR listing (a body-keyed lookup cannot find a PR whose body lost the key)", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const run = runOf(stepById(id));
+      const lists = shellInvocations(run, "gh pr list");
+      // The dedup listing narrows server-side with `--search "<key> in:body"`,
+      // which BY CONSTRUCTION cannot return the PR whose body lost that key. So
+      // a second, search-free listing has to exist for the repair to key off.
+      // A search-free listing that reads headRefName: the branch name is the one
+      // piece of the PR's identity a human cannot edit. (The post-create lookup
+      // is also search-free but keys on headRefOid, so this is a filter for the
+      // anchor, not for the absence of `--search` alone.)
+      const anchored = lists.filter(
+        (c) => !/--search/.test(c) && /--json [^ ]*headRefName/.test(c),
+      );
+      expect(
+        anchored.length,
+        `step ${id} has no search-free, headRefName-reading open-PR listing, so its repair ` +
+          "could only ever find PRs whose markers are already intact",
+      ).toBeGreaterThan(0);
+      for (const c of anchored) {
+        expect(
+          c,
+          `step ${id}'s self-heal listing must also read the body it repairs: ${c}`,
+        ).toMatch(/--json [^ ]*body/);
+      }
+    }
+  });
+
+  it("BOTH PR-open steps actually REPAIR the body (gh pr edit --body-file), not merely detect the loss", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const edits = shellInvocations(runOf(stepById(id)), "gh pr edit");
+      expect(
+        edits.length,
+        `step ${id} never repairs a PR body — detecting the loss still leaves a human to fix ` +
+          "prose a human will keep editing",
+      ).toBeGreaterThan(0);
+      for (const c of edits) {
+        // `--body-file`, never `--body`: the repaired body is the human's own
+        // prose plus the missing markers, which does not survive as an argv.
+        expect(c, `step ${id} rewrites a PR body without --body-file: ${c}`).toMatch(/--body-file/);
+      }
+    }
+  });
+
+  it("the repair runs BEFORE the dedup decision, so the restored marker is what the guards match", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const lines = runOf(stepById(id)).split("\n");
+      const editIdx = lines.findIndex((l) => /gh pr edit/.test(l));
+      const skipIdx = lines.findIndex((l) => /not opening a duplicate/.test(l));
+      expect(editIdx, `step ${id} never repairs a body`).toBeGreaterThan(-1);
+      expect(skipIdx, `step ${id} has no dedup skip`).toBeGreaterThan(-1);
+      expect(
+        editIdx,
+        `step ${id} repairs its markers only AFTER deciding whether to open a PR — too late`,
+      ).toBeLessThan(skipIdx);
+    }
+  });
+
+  it("the repair is APPEND-ONLY (human prose preserved) and IDEMPOTENT (an intact body is never rewritten)", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const code = shellCode(runOf(stepById(id)));
+      expect(
+        code,
+        `step ${id}'s repair does not carry the existing body through — it would clobber the ` +
+          "human-written prose it exists to coexist with",
+      ).toMatch(/printf '%s\\n\\n' "\$HEAL_BODY"/);
+      expect(
+        code,
+        `step ${id}'s repair is unconditional — it would rewrite healthy bodies and append a ` +
+          "duplicate marker on every run",
+      ).toContain('[ "${#MISSING[@]}" -gt 0 ] || continue');
+    }
+  });
+
+  it("the repair FAILS CLOSED: neither an unreadable PR list nor a failed edit is treated as 'markers are intact'", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const run = runOf(stepById(id));
+      for (const cmd of ["gh pr list", "gh pr edit"]) {
+        const block = failClosedBlock(run, cmd);
+        expect(
+          block,
+          `step ${id} does not guard \`${cmd}\` with an if-! fail-closed block`,
+        ).not.toBeNull();
+        expect(
+          block!,
+          `step ${id}'s \`${cmd}\` failure path does not exit non-zero — "could not look" would ` +
+            'then be encoded as "nothing to repair", which is how the guard silently disables itself',
+        ).toMatch(/exit 1/);
+      }
+    }
+  });
+
+  it("the self-heal's anchor is UNFORGEABLE: both steps push a branch ENDING in the changeset key", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const code = shellCode(runOf(stepById(id)));
+      const m = code.match(/^\s*BRANCH="([^"]*)"/m);
+      expect(m, `step ${id} does not assign BRANCH`).not.toBeNull();
+      expect(
+        m![1].endsWith("${CHANGESET_KEY}"),
+        `step ${id}'s branch name must END with the changeset key — it is the one piece of this ` +
+          `PR's identity a human cannot edit, and the self-heal matches it as a suffix: ${m![1]}`,
+      ).toBe(true);
+      expect(code, `step ${id}'s self-heal does not match the branch key as a suffix`).toContain(
+        'endswith("-" + $k)',
+      );
+    }
+  });
+
+  it("repaired PRs are folded into the dedup candidate set (GitHub's `--search` index lags a body edit, so repairing alone would still open the duplicate)", () => {
+    for (const id of PR_OPEN_STEPS) {
+      const code = shellCode(runOf(stepById(id)));
+      expect(
+        code,
+        `step ${id} repairs bodies but then dedups only against the stale --search result`,
+      ).toMatch(/ALL_PRS="\$\(jq -cn --argjson a "\$ALL_PRS" --argjson b "\$REASSERTED"/);
+    }
+  });
+
+  it("the needs-human repair is ANCHOR-SCOPED: a PR matched only by a shared note never gets this run's changeset key stamped into it", () => {
+    // Anchor (a) — branch ends in this run's key — proves the PR IS this
+    // changeset's PR, so it owns every marker. Anchor (b) only proves it
+    // proposes a note this run also carries; stamping this run's changeset key
+    // onto it would assert it proposes a changeset it does not carry (in a mixed
+    // run, the registry-edit half) and suppress that half forever.
+    const code = shellCode(runOf(stepById("needs_human_pr")));
+    expect(code, "the repair does not scope the marker set per candidate").toContain("WANT=()");
+    expect(code).toMatch(/\*"-\$\{CHANGESET_KEY\}"\)\s*WANT=\("\$\{MARKERS\[@\]\}"\)/);
+    expect(
+      code,
+      "the note-anchored branch restores something other than the note's own marker",
+    ).toContain('WANT+=("${NOTE_MARKERS[$i]}")');
+    expect(code, "the missing-marker scan must read the per-candidate WANT set").toMatch(
+      /for m in "\$\{WANT\[@\]\}"; do/,
+    );
   });
 });
 
