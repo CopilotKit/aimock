@@ -131,6 +131,30 @@ function isLiveTranscriptionSession(session: SessionConfig): boolean {
 }
 
 function serializeSession(session: SessionConfig, sessionId?: string): Record<string, unknown> {
+  // A transcription session is a DIFFERENT resource on the wire. Live GA sends:
+  //   {"type":"transcription","object":"realtime.transcription_session",
+  //    "id":"sess_…","expires_at":…,"audio":{"input":{…}},"include":null}
+  // No model (there is no session-level model for a transcription session — the
+  // model lives in audio.input.transcription), and none of the conversation-only
+  // fields: modalities, instructions, tools, tool_choice, temperature,
+  // max_response_output_tokens, reasoning, or audio.output.
+  if (session.type === "transcription") {
+    return {
+      ...(sessionId ? { id: sessionId } : {}),
+      object: "realtime.transcription_session",
+      type: "transcription",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      audio: {
+        input: {
+          format: session.input_audio_format,
+          noise_reduction: session.input_audio_noise_reduction,
+          transcription: session.input_audio_transcription,
+          turn_detection: session.turn_detection,
+        },
+      },
+      include: null,
+    };
+  }
   return {
     ...(sessionId ? { id: sessionId } : {}),
     object: "realtime.session",
@@ -539,16 +563,14 @@ async function processMessage(
       // Capture full pre-mutation snapshot for rollback on validation failure
       const prevSession = { ...session };
 
-      if (s.model !== undefined && s.model !== session.model) {
-        buildErrorRealtimeEvent(
-          ws,
-          "The session model is selected when the connection is established and cannot be changed",
-          isBeta,
-          "invalid_request_error",
-          "invalid_session_config",
-        );
-        return;
-      }
+      // `model` is deliberately NOT applied and NOT rejected. The session model
+      // is fixed when the connection is established, and live GA silently
+      // ignores the field: a probe that sent model:"gpt-realtime" on a
+      // "gpt-realtime-mini" connection got a normal `session.updated` echoing
+      // the ORIGINAL model with the rest of the update applied. Erroring here
+      // stranded the very common client that echoes back the session object it
+      // received — no `session.updated` ever arrived, so clients awaiting it
+      // hung until their own timeout.
 
       if (isTranscriptionSessionUpdate) session.type = "transcription";
 
@@ -856,10 +878,15 @@ async function emitLiveTranscriptionEvents(
     );
     return;
   }
-  journal.incrementFixtureMatchCount(fixture, fixtures, testId);
-
+  // The match count is burned only once the response is confirmed usable for
+  // this endpoint. router.ts exempts `realtime*` requests from the
+  // response-shape gate, so a generic chat fixture still matches this lookup;
+  // counting it here — before the shape check below — silently advanced a
+  // sequenced conversation by one turn. An error fixture IS a deliberate match
+  // and still counts, matching the chat path.
   const response = await resolveResponse(fixture, request);
   if (isErrorResponse(response)) {
+    journal.incrementFixtureMatchCount(fixture, fixtures, testId);
     journal.add({
       method: "WS",
       path: "/v1/realtime",
@@ -895,14 +922,14 @@ async function emitLiveTranscriptionEvents(
     );
     return;
   }
+  journal.incrementFixtureMatchCount(fixture, fixtures, testId);
 
   const transcript = response.transcription.text;
-  const usage = response.transcription.usage ?? {
-    type: "tokens",
-    input_tokens: 0,
-    output_tokens: 0,
-    total_tokens: 0,
-  };
+  // Live GA reports transcription usage as a DURATION
+  // ({"type":"duration","seconds":4}), never a token breakdown. aimock has no
+  // real audio to measure, so the synthesized default carries the correct shape
+  // with a zero magnitude; a fixture-supplied usage always wins.
+  const usage = response.transcription.usage ?? { type: "duration", seconds: 0 };
   const journalEntry = journal.add({
     method: "WS",
     path: "/v1/realtime",
