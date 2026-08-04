@@ -16,7 +16,7 @@ import type { DriftReport, ParsedDiff } from "../../scripts/drift-types.js";
 
 function diff(overrides: Partial<ParsedDiff> = {}): ParsedDiff {
   return {
-    path: "knownModels",
+    path: "knownVoiceModelFamilies",
     severity: "critical",
     issue: "model drift",
     expected: "x",
@@ -132,9 +132,9 @@ describe("computeDelta routing by key presence", () => {
   it("keys by provider+id (path bucket must NOT collapse N distinct ids into one)", () => {
     const base = report("anthropic", []);
     const head = report("anthropic", [
-      diff({ path: "knownModels", id: "a" }),
-      diff({ path: "knownModels", id: "b" }),
-      diff({ path: "knownModels", id: "c" }),
+      diff({ path: "knownVoiceModelFamilies", id: "a" }),
+      diff({ path: "knownVoiceModelFamilies", id: "b" }),
+      diff({ path: "knownVoiceModelFamilies", id: "c" }),
     ]);
     const { block } = computeDelta(base, head);
     expect(keys(block)).toEqual(["anthropic:a", "anthropic:b", "anthropic:c"]);

@@ -26,9 +26,9 @@ import type { DriftClass, DriftReport } from "./drift-types.js";
  * A single failure identified by the delta layer.
  *
  * A failure is keyed by `provider` + per-item `id` (NOT `path`, which is a
- * generic bucket like `"knownModels"` that would collapse N distinct model
- * drifts into one key). `class` is carried through purely for annotation and
- * never participates in routing.
+ * generic bucket like `"knownVoiceModelFamilies"` that would collapse N
+ * distinct model drifts into one key). `class` is carried through purely for
+ * annotation and never participates in routing.
  */
 export interface DeltaKey {
   /** Provider the failing entry belongs to (e.g. "anthropic"). */
@@ -69,6 +69,8 @@ function indexReport(report: DriftReport): Map<string, DeltaKey> {
   for (const entry of report.entries) {
     for (const diff of entry.diffs) {
       // `id` is the stable per-item key; `path` is the legacy fallback bucket.
+      // Changing how a diff keys re-keys it against the origin/main base while the
+      // change is unmerged — see the transition note on isBaseReportReusable.
       const id = diff.id ?? diff.path;
       const key = keyOf(entry.provider, id);
       index.set(key, { provider: entry.provider, id, class: diff.class });
@@ -130,6 +132,15 @@ const REUSABLE_CONCLUSIONS: ReadonlySet<string> = new Set(["clean", "success"]);
  *      would misattribute a day's worth of environmental drift to the PR.
  *
  * Anything else → not reusable → caller should run a fresh live base.
+ *
+ * There is deliberately NO check that the base report was produced by the SAME
+ * collector code as the head report — the base comes from `origin/main`. So while
+ * a PR that changes how a diff is keyed is unmerged, base and head key the same
+ * drift differently: the base key shows up as `fixed` and the head key as `block`,
+ * and a non-empty `block` exits 1 (a hard required-check failure). That is
+ * EXPECTED during such a transition, it only fires if real drift appears while the
+ * PR is open, and it clears the moment the change reaches main and the next base is
+ * collected by the new code.
  */
 export function isBaseReportReusable(
   report: DriftReport | null | undefined,
