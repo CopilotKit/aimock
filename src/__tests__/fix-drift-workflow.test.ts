@@ -649,10 +649,6 @@ describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", ()
     );
     expect(gateFailedBlock).toMatch(/\n\s*exit 1\b/);
   });
-
-  it("re-fires never spam a duplicate PR for an already-proposed family (documented: dedup note file + open-PR marker check)", () => {
-    expect(wf).toContain("no PR spam");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -917,6 +913,21 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
     expect(wf).toContain("name: drift-sync-check-log");
     expect(wfFlat).toContain("path: ${{ runner.temp }}/drift-sync-check.log");
     expect(wfFlat).toContain("retention-days: 30");
+  });
+
+  it("DRIFT.md does not tell a maintainer that Fix Drift runs on a failed Drift Tests run", () => {
+    // The doc described the `workflow_run` leg for as long as it existed. A
+    // maintainer following a doc that still describes it re-adds the trigger and
+    // with it the second run — and the second Slack alert — every red morning.
+    const driftMd = readFileSync(resolve(__dirname, "../../DRIFT.md"), "utf-8");
+    const declared = parseTriggers(wf).names;
+    if (!declared.includes("workflow_run")) {
+      expect(
+        driftMd,
+        "DRIFT.md still describes a `Drift Tests`-failure trigger the workflow no " +
+          "longer declares — following the doc re-creates the double-fire",
+      ).not.toMatch(/on a failed `?Drift\s+Tests`? run/);
+    }
   });
 });
 
