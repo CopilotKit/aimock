@@ -82,11 +82,27 @@ function parseTriggers(src: string): {
       continue;
     }
     if (inWorkflowRun) {
-      const wfs = /^ {4}workflows:\s*\[(.*)\]\s*$/.exec(line);
-      if (wfs) {
+      // FLOW sequence: `workflows: ["Drift Tests"]`.
+      const flow = /^ {4}workflows:\s*\[(.*)\]\s*$/.exec(line);
+      if (flow) {
         workflowRunWorkflows.push(
-          ...wfs[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")),
+          ...flow[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")),
         );
+        continue;
+      }
+      // BLOCK sequence, the equally-valid spelling this guard used to be blind
+      // to (re-adding the double-fire trigger as `workflows:` + `- Drift Tests`
+      // kept the double-fire guard GREEN):
+      //
+      //   workflow_run:
+      //     workflows:
+      //       - Drift Tests
+      if (/^ {4}workflows:\s*$/.test(line)) {
+        for (let j = i + 1; j < lines.length; j++) {
+          const item = /^ {6,}- (.*)$/.exec(lines[j]);
+          if (!item) break;
+          workflowRunWorkflows.push(item[1].trim().replace(/^["']|["']$/g, ""));
+        }
       }
     }
   }
@@ -117,8 +133,8 @@ interface Step {
   name?: string;
   id?: string;
   if?: string;
-  /** Keys of the step's `env:` mapping (values are `${{ }}` expressions). */
-  envKeys: string[];
+  /** The step's `env:` mapping, values unexpanded (`${{ … }}` as written). */
+  env: Record<string, string>;
   /** The `run:` block scalar, dedented. Empty for `uses:` steps. */
   run: string;
   /** Indent the `run:` block carried in the file, for the verbatim check. */
@@ -156,7 +172,7 @@ function steps(src: string = wf): Step[] {
     // Normalise `- key: value` to `  key: value` so every key sits at keyIndent.
     const body = lines.slice(from, to).map((l, i) => (i === 0 ? l.replace(/- /, "  ") : l));
 
-    const step: Step = { envKeys: [], run: "", runIndent: 0 };
+    const step: Step = { env: {}, run: "", runIndent: 0 };
     for (let i = 0; i < body.length; i++) {
       const l = body[i];
       if (!l.trim() || indentOf(l) !== keyIndent) continue;
@@ -196,8 +212,8 @@ function steps(src: string = wf): Step[] {
         for (let j = i + 1; j < body.length; j++) {
           if (!body[j].trim()) continue;
           if (indentOf(body[j]) <= keyIndent) break;
-          const em = /^\s*([A-Za-z_][A-Za-z0-9_]*):/.exec(body[j]);
-          if (em) step.envKeys.push(em[1]);
+          const em = /^\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(body[j]);
+          if (em) step.env[em[1]] = em[2];
         }
         continue;
       }
@@ -216,6 +232,26 @@ function stepById(id: string, src: string = wf): Step {
 }
 
 const runOf = (s: Step): string => s.run;
+
+/**
+ * A step's run body with shell COMMENT lines removed.
+ *
+ * Every "does this step do X" question has to be asked of the code, not the
+ * prose: the persist step's rationale comment mentions `gh pr create`, so a
+ * guard that greps the whole body stays green with the actual call deleted.
+ */
+const codeOf = (s: Step): string =>
+  runOf(s)
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+
+/** The named step, or a failed expectation naming what was looked for. */
+function stepByName(name: string, src: string = wf): Step {
+  const hits = steps(src).filter((s) => s.name === name);
+  if (hits.length !== 1) throw new Error(`fix-drift.yml: ${hits.length} steps named ${name}`);
+  return hits[0];
+}
 
 /**
  * EXECUTE the sync step's own `run:` body against a drift-sync that CRASHES
@@ -300,7 +336,7 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
     // Non-empty placeholders for everything the step declares, so `set -u` is
     // satisfied and each message takes its content-bearing branch.
-    for (const key of step.envKeys) env[key] = `<${key}>`;
+    for (const key of Object.keys(step.env)) env[key] = `<${key}>`;
     Object.assign(env, envOverride);
     const res = spawnSync("/bin/bash", [script], { cwd: dir, encoding: "utf-8", env });
     if (res.status !== 0) {
@@ -566,9 +602,17 @@ describe("fix-drift.yml — at most ONE trigger can fire per Drift Tests failure
     //   - schedule                     — the 6:10 cron fires that morning anyway.
     //   - workflow_run(["Drift Tests"]) — fires on that very run's completion.
     // workflow_dispatch is manual and never self-fires, so it does not count.
+    // An `on.workflow_run` with NO `workflows:` list keys off EVERY workflow, so
+    // an unreadable or absent list counts as covering Drift Tests. Fail closed:
+    // the only way this leg does NOT count is a list that names other workflows
+    // and not this one.
+    const workflowRunFires =
+      names.includes("workflow_run") &&
+      (workflowRunWorkflows.length === 0 || workflowRunWorkflows.includes("Drift Tests"));
+
     const firesOnDriftFailure = [
       names.includes("schedule") ? "schedule" : null,
-      workflowRunWorkflows.includes("Drift Tests") ? 'workflow_run(["Drift Tests"])' : null,
+      workflowRunFires ? `workflow_run(${JSON.stringify(workflowRunWorkflows)})` : null,
     ].filter((t): t is string => t !== null);
 
     expect(
@@ -608,9 +652,14 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
   });
 
   it("runs scripts/drift-sync-check.ts as a defense-in-depth re-assertion, gated on reason == 'ok-applied'", () => {
-    expect(wf).toContain("name: Assert drift-sync-check (defense-in-depth)");
-    expect(wf).toContain("if: steps.sync.outputs.reason == 'ok-applied'");
-    expect(wfFlat).toContain("npx tsx scripts/drift-sync-check.ts");
+    const assertStep = stepById("assert");
+    expect(assertStep.name).toBe("Assert drift-sync-check (defense-in-depth)");
+    expect(
+      assertStep.if,
+      "the defense-in-depth re-assert is not gated on an ok-applied sync, so it " +
+        "runs (and can fail the job) on runs that applied nothing",
+    ).toBe("steps.sync.outputs.reason == 'ok-applied'");
+    expect(codeOf(assertStep)).toContain("npx tsx scripts/drift-sync-check.ts");
   });
 
   it("the PR-open step is gated on reason == 'ok-applied', not on a verdict function", () => {
@@ -625,29 +674,37 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
 
 describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", () => {
   it("alerts distinctly when the sync routes to a human decision (new family / still-referenced deprecation)", () => {
-    expect(wf).toContain("name: Alert on needs-human decision");
-    expect(wf).toContain("steps.sync.outputs.reason == 'needs-human'");
+    expect(
+      stepByName("Alert on needs-human decision").if,
+      "the needs-human alert is not keyed on the needs-human reason",
+    ).toContain("steps.sync.outputs.reason == 'needs-human'");
   });
 
   it("alerts distinctly (and separately) when drift-sync-check refuses the gate — a tooling fault, not a product decision", () => {
-    expect(wf).toContain("name: Alert on drift-sync-check gate failure");
-    expect(wf).toContain("steps.sync.outputs.reason == 'gate-failed'");
+    expect(
+      stepByName("Alert on drift-sync-check gate failure").if,
+      "the gate-failure alert is not keyed on the gate-failed reason",
+    ).toContain("steps.sync.outputs.reason == 'gate-failed'");
   });
 
   it("both needs-human and gate-failure alerts fail the job (non-green), so a human sees it in CI status too", () => {
-    const needsHumanIdx = wf.indexOf("name: Alert on needs-human decision");
-    const needsHumanBlock = wf.slice(
-      needsHumanIdx,
-      wf.indexOf("\n      - name:", needsHumanIdx + 1),
-    );
-    expect(needsHumanBlock).toMatch(/\n\s*exit 1\b/);
-
-    const gateFailedIdx = wf.indexOf("name: Alert on drift-sync-check gate failure");
-    const gateFailedBlock = wf.slice(
-      gateFailedIdx,
-      wf.indexOf("\n      - name:", gateFailedIdx + 1),
-    );
-    expect(gateFailedBlock).toMatch(/\n\s*exit 1\b/);
+    // The LAST statement, not merely an `exit 1` somewhere: both bodies already
+    // carry a conditional `exit 1` in their missing-webhook branch, so a guard
+    // that only looks for one stays green on a step that posts and then exits 0.
+    for (const name of [
+      "Alert on needs-human decision",
+      "Alert on drift-sync-check gate failure",
+    ]) {
+      const last = codeOf(stepByName(name))
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .pop();
+      expect(
+        last,
+        `${name}: does not END in \`exit 1\`, so the alert posts to Slack and the job ` +
+          "still concludes green — the decision is invisible in CI status",
+      ).toBe("exit 1");
+    }
   });
 });
 
@@ -744,14 +801,22 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
   });
 
   it("the gate-failure alert message names which step actually failed", () => {
-    const idx = wf.indexOf("name: Alert on drift-sync-check gate failure");
-    const nextStep = wf.indexOf("\n      - name:", idx + 1);
-    const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
-    // The step must reference the outcomes of both the assert step and the PR
-    // step so its message can distinguish "assert refused" from "push/PR
-    // creation failed" rather than a single generic message.
-    expect(stepBlock).toContain("steps.assert.outcome");
-    expect(stepBlock).toContain("steps.pr.outcome");
+    // The step must import the outcomes of both the assert step and the PR step
+    // so its message can distinguish "assert refused" from "push/PR creation
+    // failed" rather than sending a single generic message.
+    const gate = stepByName("Alert on drift-sync-check gate failure");
+    const env = Object.values(gate.env);
+    expect(env, "the gate alert cannot see the assert step's outcome").toContain(
+      "${{ steps.assert.outcome }}",
+    );
+    expect(env, "the gate alert cannot see the PR step's outcome").toContain(
+      "${{ steps.pr.outcome }}",
+    );
+    // …and it must NAME the failing one rather than reporting them all.
+    const body = codeOf(gate);
+    for (const v of ["ASSERT_OUTCOME", "PR_OUTCOME", "FAILING_STEP"]) {
+      expect(body, `the gate alert never reads ${v}`).toContain(v);
+    }
   });
 });
 
@@ -767,9 +832,16 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
 // never auto-merged) PR.
 // ---------------------------------------------------------------------------
 /** Split the workflow into per-step blocks (text after each `- name:` header). */
-function stepBlocks(): string[] {
-  return wf.split(/\n {6}- name: /).slice(1);
-}
+/**
+ * The needs-human persist step and the ok-applied push+PR step, addressed by id
+ * and read on their CODE surface.
+ *
+ * These used to be found by grepping every step's whole text for `gh pr create`.
+ * The persist step's rationale comment says `gh pr create`, so replacing the
+ * actual call with `true` left every one of those guards green.
+ */
+const persistStep = () => stepById("needs_human_pr");
+const okAppliedStep = () => stepById("pr");
 
 describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not discarded", () => {
   it("has a step gated on reason == 'needs-human' that pushes a branch AND opens a PR (so the note reaches the repo)", () => {
@@ -777,49 +849,63 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
     // outcome and perform a git push + `gh pr create`. Pre-fix, the only
     // `gh pr create` lives in the ok-applied "Push branch + create PR" step,
     // so this finds nothing and FAILS (RED).
-    const persistSteps = stepBlocks().filter(
-      (b) =>
-        b.includes("steps.sync.outputs.reason == 'needs-human'") &&
-        /git push\b/.test(b) &&
-        b.includes("gh pr create"),
+    const persistSteps = steps().filter(
+      (st) =>
+        (st.if ?? "").includes("steps.sync.outputs.reason == 'needs-human'") &&
+        /^\s*git push\b/m.test(codeOf(st)) &&
+        /^\s*gh pr create\b/m.test(codeOf(st)),
     );
-    expect(persistSteps.length).toBeGreaterThan(0);
+    expect(
+      persistSteps.map((st) => st.name),
+      "no step both keys off the needs-human reason and actually pushes a branch " +
+        "and opens a PR — the note never reaches the repo",
+    ).not.toEqual([]);
   });
 
   it("the needs-human persist step uses a DISTINCT branch (not colliding with the ok-applied fix/drift-* branch)", () => {
-    const persist = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
-    );
-    expect(persist).toBeDefined();
-    // A dedicated needs-human branch prefix keeps the two PR classes separate.
-    expect(persist!).toMatch(/drift-needs-human/);
+    // The BRANCH= assignment itself, not "the string appears somewhere in the
+    // step": the temp PR-body filename also contains `drift-needs-human`, so a
+    // whole-block match stayed green with the branch renamed to `fix/drift-*`.
+    const assigns = codeOf(persistStep())
+      .split("\n")
+      .filter((l) => /^\s*BRANCH=/.test(l));
+    expect(assigns, "the persist step assigns no BRANCH").not.toEqual([]);
+    for (const a of assigns) {
+      expect(
+        a,
+        `the needs-human branch is ${a.trim()} — it must not share the ok-applied ` +
+          "step's `fix/drift-*` namespace, or the two PR classes collide",
+      ).toMatch(/BRANCH="drift-needs-human\//);
+    }
   });
 
   it("the needs-human persist step de-dups: it skips opening a second PR when one is already open for the same note", () => {
-    const persist = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
+    const body = codeOf(persistStep());
+    // Must consult already-open PRs before creating a new one…
+    expect(body).toMatch(/^\s*if ! OPEN_PRS="\$\(gh pr list /m);
+    // …and the per-note scan must iterate the notes this run committed, not an
+    // empty list. `for note in ""` kept the marker string in place and every
+    // string-shaped guard green while the loop matched nothing.
+    expect(body).toMatch(/^\s*mapfile -t COMMITTED < <\(git diff --name-only /m);
+    expect(body, "the per-note dedup loop does not iterate the committed notes").toMatch(
+      /^\s*for note in "\$\{NOTES\[@\]:-\}"; do/m,
     );
-    expect(persist).toBeDefined();
-    // Must consult already-open PRs before creating a new one.
-    expect(persist!).toContain("gh pr list");
   });
 
   it("the needs-human persist step's PR body tells a human to set Decision: include and merge (closing the two-run loop), never auto-merged", () => {
-    const persist = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
-    );
-    expect(persist).toBeDefined();
-    expect(persist!).toContain("Decision: include");
+    const body = codeOf(persistStep());
+    expect(body).toContain("Decision: include");
     // No `gh pr merge` anywhere (asserted globally too) — human merges.
-    expect(persist!).not.toMatch(/gh pr merge/);
+    expect(body).not.toMatch(/gh pr merge/);
   });
 
   it("the needs-human persist step's OWN failure is alerted (gate-failure alert references its outcome)", () => {
-    const gateAlert = stepBlocks().find((b) =>
-      b.startsWith("Alert on drift-sync-check gate failure"),
-    );
-    expect(gateAlert).toBeDefined();
-    expect(gateAlert!).toContain("steps.needs_human_pr.outcome");
+    // In the `if:`, not merely somewhere in the step: the step also imports that
+    // outcome as env, so a whole-block grep stays green with the gate removed.
+    expect(
+      stepByName("Alert on drift-sync-check gate failure").if,
+      "a failure of the needs-human persist step is not covered by any alert",
+    ).toContain("steps.needs_human_pr.outcome == 'failure'");
   });
 });
 
@@ -853,48 +939,53 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
   });
 
   it("the needs-human persist step's PRIMARY de-dup is keyed on the changeset key and runs BEFORE the note-file scan (so it fires even when the committed diff carries NO drift-proposals/* note)", () => {
-    const persist = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
-    );
-    expect(persist).toBeDefined();
+    const persist = persistStep();
     // Keyed on the changeset key wired from the sync step.
-    expect(persist!).toContain("CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}");
-    expect(persist!).toContain("drift-changeset: ${CHANGESET_KEY}");
+    expect(persist.env.CHANGESET_KEY).toBe("${{ steps.sync.outputs.changeset_key }}");
+    const body = codeOf(persist);
+    expect(body).toContain("drift-changeset: ${CHANGESET_KEY}");
     // CRITICAL: the changeset-key dedup guard must appear BEFORE the
     // `mapfile ... NOTES` scan. Pre-fix, the ONLY dedup lived inside the
     // per-note for-loop, reachable only when a note file was in the diff —
     // exactly what the empty-NOTES mixed run bypasses.
-    const guardIdx = persist!.indexOf("drift-changeset: ${CHANGESET_KEY}");
-    const mapfileIdx = persist!.indexOf("mapfile -t COMMITTED");
+    const guardIdx = body.indexOf("drift-changeset: ${CHANGESET_KEY}");
+    const mapfileIdx = body.indexOf("mapfile -t COMMITTED");
     expect(guardIdx).toBeGreaterThan(-1);
     expect(mapfileIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(mapfileIdx);
   });
 
   it("the ok-applied Push+PR step ALSO de-dups on the changeset key (a never-auto-merged applied edit deserves exactly ONE open PR, re-findable across daily re-fires)", () => {
-    const okApplied = stepBlocks().find(
-      (b) =>
-        b.includes("steps.sync.outputs.reason == 'ok-applied' && success()") &&
-        b.includes("gh pr create"),
+    const okApplied = okAppliedStep();
+    expect(okApplied.if).toContain("steps.sync.outputs.reason == 'ok-applied'");
+    expect(okApplied.env.CHANGESET_KEY).toBe("${{ steps.sync.outputs.changeset_key }}");
+    const body = codeOf(okApplied);
+    // The DUP candidate has to be computed from the open-PR payload. `DUP=""`
+    // left the skip branch standing but permanently dead, and every
+    // string-shaped guard here stayed green.
+    expect(body, "the ok-applied dedup does not query open PRs").toMatch(
+      /^\s*if ! OPEN_PRS="\$\(gh pr list /m,
     );
-    expect(okApplied).toBeDefined();
-    expect(okApplied!).toContain("CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}");
-    expect(okApplied!).toContain("drift-changeset: ${CHANGESET_KEY}");
-    expect(okApplied!).toContain("gh pr list");
+    expect(body, "the ok-applied dedup never derives a duplicate from them").toMatch(
+      /DUP="\$\(printf '%s' "\$OPEN_PRS"[\s\S]*drift-changeset: \$\{CHANGESET_KEY\}/,
+    );
     // The dedup skip must precede the push (skip a duplicate BEFORE pushing).
-    const guardIdx = okApplied!.indexOf("not opening a duplicate");
-    const pushIdx = okApplied!.indexOf("git push -u origin");
+    const guardIdx = body.indexOf("not opening a duplicate");
+    const pushIdx = body.indexOf("git push -u origin");
     expect(guardIdx).toBeGreaterThan(-1);
     expect(pushIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(pushIdx);
   });
 
   it("the needs-human persist step RETAINS the per-note body marker as a secondary guard (note-path de-dup not regressed)", () => {
-    const persist = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
-    );
-    expect(persist).toBeDefined();
-    expect(persist!).toContain("drift-proposal-note: ${note}");
+    const body = codeOf(persistStep());
+    // Twice: once as the marker the dedup query matches on, once as the marker
+    // the PR body writes. Gutting the dedup loop leaves only the second.
+    expect(
+      body.split("drift-proposal-note: ${note}").length - 1,
+      "the per-note marker is written but never matched (or vice versa) — the " +
+        "secondary note-path dedup has regressed",
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it("BOTH PR bodies embed the stable drift-changeset marker the dedup guards match on", () => {
@@ -947,23 +1038,17 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
 // after it took a dedup path and went contentless.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — the needs-human alert always names a PR", () => {
-  const persistStep = () => {
-    const s = stepBlocks().find(
-      (b) => b.includes("steps.sync.outputs.reason == 'needs-human'") && b.includes("gh pr create"),
-    );
-    expect(s).toBeDefined();
-    return s!;
-  };
+  const alertStep = () => stepByName("Alert on needs-human decision");
 
   it("EVERY early return in the persist step emits the PR immediately before exiting", () => {
-    const lines = persistStep().split("\n");
+    const lines = codeOf(persistStep()).split("\n");
     const exits = lines.flatMap((l, i) => (/^\s*exit 0\s*$/.test(l) ? [i] : []));
     expect(exits.length, "expected the documented early-return paths").toBeGreaterThanOrEqual(3);
 
     for (const i of exits) {
       // Look back over the guard body (skipping the echo that explains the
       // skip) for the emit_pr that hands the PR to the Slack alert.
-      const window = lines.slice(Math.max(0, i - 3), i).join("\n");
+      const window = lines.slice(Math.max(0, i - 2), i).join("\n");
       expect(
         window,
         `\`exit 0\` at line ${i + 1} of the persist step returns without emit_pr — ` +
@@ -973,39 +1058,64 @@ describe("fix-drift.yml — the needs-human alert always names a PR", () => {
   });
 
   it("the PR lookup is hoisted ABOVE the no-new-commit guard, so that path can name a PR too", () => {
-    const persist = persistStep();
-    const lookupIdx = persist.indexOf("gh pr list");
-    const noNewCommitIdx = persist.indexOf('if [ "$HEAD_SHA" = "$BASE_SHA" ]');
-    expect(lookupIdx).toBeGreaterThan(-1);
-    expect(noNewCommitIdx).toBeGreaterThan(-1);
-    expect(lookupIdx).toBeLessThan(noNewCommitIdx);
+    const body = codeOf(persistStep());
+    const lookupIdx = body.indexOf("gh pr list");
+    const noNewCommitIdx = body.indexOf('if [ "$HEAD_SHA" = "$BASE_SHA" ]');
+    expect(lookupIdx, "the persist step never queries open PRs").toBeGreaterThan(-1);
+    expect(noNewCommitIdx, "the no-new-commit guard is gone").toBeGreaterThan(-1);
+    expect(
+      lookupIdx,
+      "the open-PR lookup happens AFTER the no-new-commit early return, so the " +
+        "daily re-fire of an already-persisted note exits with no PR to name and " +
+        "the Slack alert goes out contentless",
+    ).toBeLessThan(noNewCommitIdx);
   });
 
   it("the persist step exports a PR number alongside the url so the alert can say #N", () => {
-    expect(persistStep()).toMatch(/echo "number=/);
+    expect(codeOf(persistStep()), "the persist step publishes no PR number").toMatch(
+      /^\s*echo "number=/m,
+    );
   });
 
   it("the alert step renders the PR number and url when it has them", () => {
-    const alert = stepBlocks().find((b) => b.startsWith("Alert on needs-human decision"));
-    expect(alert).toBeDefined();
-    expect(alert!).toContain("PR_NUMBER: ${{ steps.needs_human_pr.outputs.number }}");
-    expect(alert!).toMatch(/#\$\{PR_NUMBER/);
+    const alert = alertStep();
+    expect(alert.env.PR_NUMBER).toBe("${{ steps.needs_human_pr.outputs.number }}");
+    expect(alert.env.PR_URL).toBe("${{ steps.needs_human_pr.outputs.url }}");
+    expect(codeOf(alert)).toMatch(/#\$\{PR_NUMBER/);
   });
 
   it("the alert's no-PR fallback no longer claims the note is 'already proposed in an open PR'", () => {
     // With the lookup hoisted, an already-proposed note ALWAYS yields a url —
     // so reaching the fallback means the opposite of what it used to claim.
-    const alert = stepBlocks().find((b) => b.startsWith("Alert on needs-human decision"));
-    expect(alert).toBeDefined();
-    expect(alert!).not.toContain("already proposed in an open PR");
+    expect(codeOf(alertStep())).not.toContain("already proposed in an open PR");
   });
 
   it("every `gh pr list` used for de-dup or PR matching passes an explicit --limit", () => {
     // `gh pr list` defaults to 30. Once 30 newer PRs exist, an older
     // already-proposed PR falls out of the window, the dedup guards miss it,
     // and the workflow opens a duplicate.
-    const calls = wfFlat.match(/gh pr list[^|]*?--json [a-zA-Z,]+/g) || [];
-    expect(calls.length).toBeGreaterThan(0);
-    for (const call of calls) expect(call).toMatch(/--limit \d+/);
+    // Per invocation, from each step's own code surface with backslash line
+    // continuations joined. The old form matched `gh pr list[^|]*?--json …`
+    // against the whole flattened file, so an invocation whose `--json` came
+    // after a `|` — or that had none — was never examined at all.
+    const calls = steps().flatMap((st) =>
+      (
+        codeOf(st)
+          .replace(/\\\n\s*/g, " ")
+          // An INVOCATION: command substitution, or the first word of a line.
+          // `gh pr list` also appears inside `::error::` prose, which is not a
+          // call and must not be examined as one.
+          .match(/(?:\$\(|^\s*)gh pr list[^\n|;)]*/gm) || []
+      ).map((c) => ({ step: st.name, call: c.replace(/^\$\(/, "").trim() })),
+    );
+    expect(calls.length, "no `gh pr list` invocation found at all").toBeGreaterThan(0);
+    for (const { step, call } of calls) {
+      expect(
+        call,
+        `${step}: \`${call}\` has no --limit. gh pr list defaults to 30, so once 30 ` +
+          "newer PRs exist an already-proposed PR falls out of the window, the dedup " +
+          "misses it, and the workflow opens a duplicate",
+      ).toMatch(/--limit \d+/);
+    }
   });
 });
