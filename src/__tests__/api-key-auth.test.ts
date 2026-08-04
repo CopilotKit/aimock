@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as http from "node:http";
 import * as net from "node:net";
 import { createServer, type ServerInstance } from "../server.js";
-import { resolveInboundAuth } from "../api-key-auth.js";
+import { isRecognizedApiKeyHeader, resolveInboundAuth } from "../api-key-auth.js";
+import { flattenHeaders } from "../helpers.js";
 import type { RecordConfig } from "../types.js";
 import { LLMock } from "../llmock.js";
 import { AGUIMock } from "../agui-mock.js";
@@ -149,6 +150,52 @@ describe("API key HTTP boundary", () => {
       ).status,
     ).toBe(204);
     expect((await request(`${instance.url}/v1/chat/completions`, {}, "OPTIONS")).status).toBe(401);
+  });
+
+  it("redacts every accepted inbound credential header through the shared registry", () => {
+    const acceptedHeaders = [
+      "authorization",
+      "x-api-key",
+      "x-goog-api-key",
+      "api-key",
+      "xi-api-key",
+    ];
+    const credentials = Object.fromEntries(
+      acceptedHeaders.map((name) => [name, `credential-for-${name}`]),
+    );
+
+    expect(acceptedHeaders.every(isRecognizedApiKeyHeader)).toBe(true);
+    expect(flattenHeaders(credentials)).toEqual(
+      Object.fromEntries(acceptedHeaders.map((name) => [name, "[REDACTED]"])),
+    );
+  });
+
+  it("redacts accepted credential headers in a real journal entry", async () => {
+    instance = await createServer(
+      [{ match: { userMessage: "hello" }, response: { content: "ok" } }],
+      { auth: { apiKeys: ["primary"] } },
+    );
+
+    const completion = await request(`${instance.url}/v1/chat/completions`, {
+      "X-Goog-Api-Key": "primary",
+      "Xi-Api-Key": "primary",
+    });
+    expect(completion.status).toBe(200);
+
+    const journal = await request(
+      `${instance.url}/__aimock/journal`,
+      {
+        Authorization: "Bearer primary",
+      },
+      "GET",
+    );
+    expect(journal.status).toBe(200);
+    const entry = JSON.parse(journal.body).at(-1) as { headers: Record<string, string> };
+    expect(entry.headers).toMatchObject({
+      "x-goog-api-key": "[REDACTED]",
+      "xi-api-key": "[REDACTED]",
+    });
+    expect(JSON.stringify(entry)).not.toContain("primary");
   });
 });
 

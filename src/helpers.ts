@@ -4,6 +4,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { DEFAULT_TEST_ID } from "./constants.js";
 import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
+import { isRecognizedApiKeyHeader } from "./api-key-auth.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -26,8 +27,6 @@ import type {
   ChatCompletion,
   ResponseOverrides,
 } from "./types.js";
-
-const REDACTED_HEADERS = new Set(["authorization", "x-api-key", "api-key"]);
 
 /**
  * Resolve effective strict mode from per-request header and server default.
@@ -196,7 +195,7 @@ export function flattenHeaders(headers: http.IncomingHttpHeaders): Record<string
   const flat: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue;
-    if (REDACTED_HEADERS.has(key.toLowerCase())) {
+    if (isRecognizedApiKeyHeader(key)) {
       flat[key] = "[REDACTED]";
     } else {
       flat[key] = Array.isArray(value) ? value.join(", ") : value;

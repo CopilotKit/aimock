@@ -111,6 +111,46 @@ def test_keyed_fixture(aimock):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_ordinary_plugin_fixture_ignores_inherited_api_key_in_a_subprocess(tmp_path):
+    """Ambient shell auth must not turn an unconfigured fixture into an auth server."""
+    test_file = tmp_path / "test_inherited_key_fixture.py"
+    test_file.write_text(
+        """
+import requests
+
+
+def test_unconfigured_fixture(aimock):
+    aimock.on_message("hello", {"content": "ambient key ignored"})
+    response = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ambient key ignored"
+""",
+        encoding="utf-8",
+    )
+    child_env = os.environ.copy()
+    child_env["AIMOCK_API_KEYS"] = "ambient-shell-key"
+    child_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "aimock_pytest.plugin",
+            str(test_file),
+        ],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_add_fixture_and_match(aimock):
     """Add a fixture via control API, then hit it."""
     aimock.on_message("hello", {"content": "Hi there!"})

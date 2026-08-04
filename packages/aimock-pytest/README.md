@@ -132,10 +132,10 @@ The `test-pytest.yml` workflow:
 
 Tests run across a matrix of Python 3.10--3.13 and Node 20/22.
 
-The `publish-pytest.yml` workflow publishes to PyPI on pushes to `main` when
-the version in `pyproject.toml` has not already been published. It first
-verifies that the `AIMOCK_VERSION` pin exists on npm, so publish
-`@copilotkit/aimock` before the corresponding `aimock-pytest` release.
+The Release workflow publishes `aimock-pytest` to PyPI after its npm publish
+job succeeds. Its PyPI job verifies that the `AIMOCK_VERSION` pin exists on
+npm before building a wheel, so npm publication completes before the
+corresponding `aimock-pytest` release.
 
 ## License
 

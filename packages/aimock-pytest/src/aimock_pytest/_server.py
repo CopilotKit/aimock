@@ -84,6 +84,9 @@ class AIMockServer:
         ]
 
         child_env = os.environ.copy()
+        # The plugin option owns child auth. Do not inherit a developer's or
+        # CI runner's ambient key into ordinary unconfigured fixtures.
+        child_env.pop("AIMOCK_API_KEYS", None)
         if self.api_key is not None:
             child_env["AIMOCK_API_KEYS"] = self.api_key
         self._proc = subprocess.Popen(

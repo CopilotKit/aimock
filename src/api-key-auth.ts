@@ -3,13 +3,15 @@ import type * as http from "node:http";
 import type * as net from "node:net";
 import type { ApiKeyAuthConfig } from "./types.js";
 
-const RECOGNIZED_HEADERS = new Set([
+export const INBOUND_API_KEY_HEADERS = [
   "authorization",
   "x-api-key",
   "x-goog-api-key",
   "api-key",
   "xi-api-key",
-]);
+] as const;
+
+const RECOGNIZED_HEADERS = new Set<string>(INBOUND_API_KEY_HEADERS);
 
 export const API_KEY_ERROR_BODY = JSON.stringify({
   error: {
