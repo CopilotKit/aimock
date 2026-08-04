@@ -1010,10 +1010,37 @@ interface Scenario {
   cancelledAt?: string;
 }
 
+/**
+ * Does this step END in a deliberate non-zero exit, so that COMPLETING it always
+ * means `outcome == 'failure'`?
+ *
+ * Read off the step's OWN `run:` body — its last code line — rather than from a
+ * list of step names kept here: both alert steps deliberately `exit 1` so a human
+ * sees the run RED in CI too (pinned separately), while the success notification
+ * deliberately does not, and which is which must not be transcribed into this
+ * suite. `simulateJob` modelled every selected step it was not TOLD to fail as
+ * 'success', so it modelled a workflow in which the alert steps exit 0 — nothing
+ * that exists. That fiction is what made the real `outcome == 'skipped'` clauses
+ * look like they were holding an `alerts.length === 1` invariant together.
+ */
+function completesNonZero(s: Step): boolean {
+  const code = shellCode(s.run ?? "")
+    .split("\n")
+    .filter((l) => l.trim() !== "");
+  return /^\s*exit [1-9][0-9]*\s*$/.test(code[code.length - 1] ?? "");
+}
+
 function simulateJob(
   sc: Scenario,
   src: string = wf,
-): { selected: Step[]; alerts: string[]; jobFailed: boolean; jobCancelled: boolean } {
+): {
+  selected: Step[];
+  alerts: string[];
+  jobFailed: boolean;
+  jobCancelled: boolean;
+  /** Per-step outcome, so a guard can name the outcome it means. */
+  outcomes: Record<string, StepOutcome>;
+} {
   const ctx: EvalCtx = {
     event_name: sc.event_name ?? "schedule",
     jobFailed: false,
@@ -1022,15 +1049,22 @@ function simulateJob(
   };
   const failing = new Set(sc.failing ?? []);
   const selected: Step[] = [];
+  /** Steps the cancellation cut short: they ran, but they did not DO their job. */
+  const cutShort = new Set<Step>();
   for (const s of steps(src)) {
     const runs = s.if === undefined ? !ctx.jobFailed && !ctx.jobCancelled : evaluateIf(s.if, ctx);
-    const fails =
-      runs &&
-      ((s.id !== undefined && failing.has(s.id)) || (s.name !== undefined && failing.has(s.name)));
     const cancels =
       runs &&
       sc.cancelledAt !== undefined &&
       (s.id === sc.cancelledAt || s.name === sc.cancelledAt);
+    const fails =
+      runs &&
+      !cancels &&
+      ((s.id !== undefined && failing.has(s.id)) ||
+        (s.name !== undefined && failing.has(s.name)) ||
+        // A step that RAN TO COMPLETION and whose only exit path is `exit 1`
+        // reports 'failure' — the scenario does not get to say otherwise.
+        completesNonZero(s));
     if (s.id) {
       ctx.steps[s.id] = {
         outcome: runs ? (cancels ? "cancelled" : fails ? "failure" : "success") : "skipped",
@@ -1041,14 +1075,22 @@ function simulateJob(
       };
     }
     if (runs) selected.push(s);
+    if (cancels) cutShort.add(s);
     if (fails) ctx.jobFailed = true;
     if (cancels) ctx.jobCancelled = true;
   }
   return {
     selected,
-    alerts: selected.filter(isAlertStep).map((s) => s.name!),
+    // DELIVERED alerts. A step the cancellation killed mid-`curl` told nobody
+    // anything, so counting it as an alert is the same class of fiction as
+    // modelling `exit 1` as success — and it is the fiction that would make a
+    // genuinely silent cancellation window look like it "alerted once".
+    alerts: selected.filter((s) => isAlertStep(s) && !cutShort.has(s)).map((s) => s.name!),
     jobFailed: ctx.jobFailed,
     jobCancelled: ctx.jobCancelled,
+    outcomes: Object.fromEntries(
+      Object.entries(ctx.steps).map(([id, st]) => [id, st.outcome] as const),
+    ),
   };
 }
 
@@ -3298,7 +3340,12 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     it(`CANCELLED: ${label} -> at least one alert fires (never silence)`, () => {
       const res = simulateJob(scenario);
       expect(res.jobCancelled, "the scenario did not actually cancel the job").toBe(true);
-      expect(res.jobFailed, "a cancellation must not be modelled as a failure").toBe(false);
+      // A cancellation is not a flavour of failure — stated where it is actually
+      // load-bearing: the CUT-SHORT STEP reports 'cancelled', never 'failure'.
+      // (Job-level `jobFailed` is the wrong place to say it: an `always()` alert
+      // that then runs to completion legitimately `exit 1`s, which is the runner
+      // reporting a real failed step, not the cancellation being mis-modelled.)
+      expect(res.outcomes[scenario.cancelledAt!] ?? "cancelled").toBe("cancelled");
       expect(
         res.alerts.length,
         "a cancelled/timed-out job ended with ZERO Slack — nobody is told anything",
@@ -3317,6 +3364,46 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     // If the timeout were removed the cancellation window would still exist (a
     // human can cancel), but this pins the documented 30-minute trigger.
     expect(syncJob()["timeout-minutes"]).toBe(30);
+  });
+
+  // -------------------------------------------------------------------------
+  // The MODEL, not the workflow. `simulateJob` used to report a selected alert
+  // step's outcome as 'success', while both alert steps have NO exit path except
+  // `exit 1`. That single modelling error made the whole alert-reachability
+  // table answer a question about a workflow that does not exist: a gate-failed
+  // run came out modelled GREEN, and every consumer keyed on the alert steps'
+  // outcomes was fed 'success' where the runner would report 'failure'. It is
+  // what hid N1 — the `== 'skipped'` catch-all clause — behind an apparent
+  // double-fire, so the workflow bug was deferred to protect an invariant the
+  // model, not the workflow, was breaking.
+  // -------------------------------------------------------------------------
+  it("MODEL: an alert step whose only exit path is `exit 1` is modelled as FAILING, so an alerting run is modelled RED", () => {
+    const sim = simulateJob({
+      outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } },
+    });
+    expect(sim.alerts, "the gate alert did not fire on a gate-failed run").toEqual([
+      "Alert on drift-sync-check gate failure",
+    ]);
+    expect(
+      sim.jobFailed,
+      "the gate alert fired and ends in `exit 1`, yet the run is modelled GREEN — " +
+        "every claim this table makes about alert-step outcomes is then fiction",
+    ).toBe(true);
+  });
+
+  it("MODEL: the notification that does NOT end in `exit 1` is still modelled as SUCCEEDING", () => {
+    // Known-negative for the rule above: it must key on the step's own exit
+    // path, not on "is this an alert step".
+    const sim = simulateJob({
+      outputs: {
+        sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" },
+        pr: { url: "https://example.test/pr/1", number: "1" },
+      },
+    });
+    expect(sim.alerts).toEqual(["Notify Slack on sync success"]);
+    expect(sim.jobFailed, "a successful run was modelled RED by the success notification").toBe(
+      false,
+    );
   });
 
   it("no churn at all is silent (nothing happened; nothing to report)", () => {
