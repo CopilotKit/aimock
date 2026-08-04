@@ -1408,7 +1408,14 @@ describe("WebSocket /v1/realtime", () => {
       response: { transcription: { text: "Nested config caption" } },
     };
     instance = await createServer([transcriptionFixture]);
-    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime");
+    // The transcription session is established by intent; this test covers
+    // resolving its MODEL from the nested `audio.input.transcription` config.
+    // Configuring that field alone must not turn a conversation session into a
+    // transcription session — see the input_audio_transcription regressions.
+    const ws = await connectWebSocket(
+      instance.url,
+      "/v1/realtime?intent=transcription&model=gpt-realtime",
+    );
 
     await ws.waitForMessages(1); // session.created
     ws.send(
@@ -2412,5 +2419,115 @@ describe("realtimeItemsToMessages", () => {
     ];
     const messages = realtimeItemsToMessages(items);
     expect(messages[0].content).toBe("");
+  });
+});
+
+// ─── Regression: input transcription config must not hijack a conversation ──
+//
+// `input_audio_transcription` is the DOCUMENTED way to ask a normal realtime
+// conversation session for input-transcription side events. It must never be
+// read as "this is a transcription session": doing so routes
+// `input_audio_buffer.commit` into the live-transcription path, which pushes a
+// phantom `[audio]` turn and consumes a fixture match. Both corruptions are
+// silent — the client still gets a well-formed response, just the WRONG one.
+describe("realtime conversation with input_audio_transcription configured", () => {
+  // Two sequenced siblings: whoever asks first gets FIRST, the next gets SECOND.
+  // A stolen match in between is therefore observable as wrong-turn delivery.
+  const sequencedFixtures: Fixture[] = [
+    { match: { sequenceIndex: 0 }, response: { content: "FIRST" } },
+    { match: { sequenceIndex: 1 }, response: { content: "SECOND" } },
+  ];
+
+  async function textOf(ws: Awaited<ReturnType<typeof connectWebSocket>>): Promise<string> {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const events = parseEvents(ws.getMessages());
+      if (events.some((e) => e.type === "response.done")) {
+        return events
+          .filter((e) => e.type === "response.output_text.delta")
+          .map((e) => e.delta as string)
+          .join("");
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`timeout waiting for response.done; saw ${events.map((e) => e.type)}`);
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it("delivers the FIRST sequenced turn after a commit (no match is stolen)", async () => {
+    instance = await createServer(sequencedFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime");
+    await ws.waitForMessages(1); // session.created
+
+    // The canonical realtime setup: ask for input transcription on a plain
+    // conversation session. This is NOT a transcription session.
+    ws.send(sessionUpdate({ audio: { input: { transcription: { model: "whisper-1" } } } }));
+    await ws.waitForMessages(2); // session.updated
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    ws.send(conversationItemCreate("user", "hello"));
+    ws.send(responseCreate());
+
+    expect(await textOf(ws)).toBe("FIRST");
+    ws.close();
+  });
+
+  it("delivers the FIRST sequenced turn after a commit without input transcription", async () => {
+    // Control: identical flow with no input_audio_transcription configured.
+    instance = await createServer(sequencedFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime");
+    await ws.waitForMessages(1);
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    ws.send(conversationItemCreate("user", "hello"));
+    ws.send(responseCreate());
+
+    expect(await textOf(ws)).toBe("FIRST");
+    ws.close();
+  });
+
+  it("does not burn a fixture match on commit", async () => {
+    instance = await createServer(sequencedFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime");
+    await ws.waitForMessages(1);
+
+    ws.send(sessionUpdate({ audio: { input: { transcription: { model: "whisper-1" } } } }));
+    await ws.waitForMessages(2);
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    // Give the (incorrect) transcription path time to run and consume a match.
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(instance.journal.getFixtureMatchCount(sequencedFixtures[0])).toBe(0);
+    expect(instance.journal.getFixtureMatchCount(sequencedFixtures[1])).toBe(0);
+    expect(
+      instance.journal
+        .getAll()
+        .filter(
+          (e) =>
+            (e.body as Record<string, unknown> | undefined)?._endpointType ===
+            "realtime-transcription",
+        ),
+    ).toHaveLength(0);
+    ws.close();
+  });
+
+  it("does not add a phantom audio item on commit", async () => {
+    instance = await createServer(sequencedFixtures);
+    const ws = await connectWebSocket(instance.url, "/v1/realtime?model=gpt-realtime");
+    await ws.waitForMessages(1);
+
+    ws.send(sessionUpdate({ audio: { input: { transcription: { model: "whisper-1" } } } }));
+    await ws.waitForMessages(2);
+
+    ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    await new Promise((r) => setTimeout(r, 200));
+
+    const types = parseEvents(ws.getMessages()).map((e) => e.type);
+    expect(types).toContain("input_audio_buffer.committed");
+    expect(types).not.toContain("conversation.item.added");
+    expect(types).not.toContain("conversation.item.input_audio_transcription.delta");
+    ws.close();
   });
 });

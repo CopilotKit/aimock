@@ -110,11 +110,24 @@ function transcriptionModel(session: SessionConfig): string {
   return session.input_audio_transcription?.model ?? session.model;
 }
 
+/**
+ * A live-transcription session is discriminated by the session TYPE, never by
+ * the mere presence of `input_audio_transcription`.
+ *
+ * `input_audio_transcription` is the documented way to configure input
+ * transcription on an ordinary realtime CONVERSATION session, so treating it as
+ * the discriminator made the canonical realtime setup (`{model:"whisper-1"}`)
+ * route `input_audio_buffer.commit` into the transcription path. That silently
+ * corrupted the conversation: it appended a phantom `[audio]` turn and consumed
+ * a fixture match, so the next `response.create` replayed the FOLLOWING turn's
+ * content. The client saw a well-formed — but wrong — response.
+ *
+ * A transcription session is established explicitly, either by connecting with
+ * `?intent=transcription` or via `transcription_session.update` (both set
+ * `session.type`), which is what the OpenAI realtime API requires too.
+ */
 function isLiveTranscriptionSession(session: SessionConfig): boolean {
-  return (
-    isLiveTranscriptionModel(transcriptionModel(session)) &&
-    (session.type === "transcription" || session.input_audio_transcription !== null)
-  );
+  return isLiveTranscriptionModel(transcriptionModel(session)) && session.type === "transcription";
 }
 
 function serializeSession(session: SessionConfig, sessionId?: string): Record<string, unknown> {
@@ -715,13 +728,10 @@ async function processMessage(
   // ── input_audio_buffer.commit ──────────────────────────────────────
   if (msgType === "input_audio_buffer.commit") {
     sendEvent(ws, { type: "input_audio_buffer.committed" }, isBeta);
-    // Transcription sessions can be configured through the documented input
-    // transcription field even when the connection model itself is realtime.
-    if (
-      session.type === "transcription" ||
-      session.type === "translation" ||
-      isLiveTranscriptionSession(session)
-    ) {
+    // In transcription/translation mode, add a placeholder user item. A plain
+    // conversation session gets only the `committed` ack, even when it
+    // configures `input_audio_transcription` — see isLiveTranscriptionSession.
+    if (session.type === "transcription" || session.type === "translation") {
       const audioItem: RealtimeItem = {
         type: "message",
         id: realtimeId("item"),
