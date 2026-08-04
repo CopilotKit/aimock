@@ -812,11 +812,33 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     expect(env, "the gate alert cannot see the PR step's outcome").toContain(
       "${{ steps.pr.outcome }}",
     );
-    // …and it must NAME the failing one rather than reporting them all.
-    const body = codeOf(gate);
-    for (const v of ["ASSERT_OUTCOME", "PR_OUTCOME", "FAILING_STEP"]) {
-      expect(body, `the gate alert never reads ${v}`).toContain(v);
-    }
+    // …and its ASSEMBLED message must NAME the failing one. Executed, because a
+    // substring check on `FAILING_STEP` passes on a body where every arm sets the
+    // same text (or where one arm has been renamed out of use).
+    const windows = {
+      "drift-sync crashed": { SYNC_REASON: "sync-crashed", ASSERT_OUTCOME: "", PR_OUTCOME: "" },
+      "assert refused": {
+        SYNC_REASON: "ok-applied",
+        ASSERT_OUTCOME: "failure",
+        PR_OUTCOME: "",
+        NEEDS_HUMAN_PR_OUTCOME: "",
+      },
+      "push/PR-create failed": {
+        SYNC_REASON: "ok-applied",
+        ASSERT_OUTCOME: "success",
+        PR_OUTCOME: "failure",
+        NEEDS_HUMAN_PR_OUTCOME: "",
+      },
+    };
+    const assembled = Object.fromEntries(
+      Object.entries(windows).map(([label, env]) => [label, assembleSlackMessage(gate, env)]),
+    );
+    const distinct = new Set(Object.values(assembled));
+    expect(
+      distinct.size,
+      "the gate-failure alert sends the same message for a sync crash, a refused " +
+        `assert and a failed push:\n${JSON.stringify(assembled, null, 2)}`,
+    ).toBe(Object.keys(windows).length);
   });
 });
 
@@ -884,11 +906,23 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
     // Must consult already-open PRs before creating a new one…
     expect(body).toMatch(/^\s*if ! OPEN_PRS="\$\(gh pr list /m);
     // …and the per-note scan must iterate the notes this run committed, not an
-    // empty list. `for note in ""` kept the marker string in place and every
-    // string-shaped guard green while the loop matched nothing.
-    expect(body).toMatch(/^\s*mapfile -t COMMITTED < <\(git diff --name-only /m);
-    expect(body, "the per-note dedup loop does not iterate the committed notes").toMatch(
-      /^\s*for note in "\$\{NOTES\[@\]:-\}"; do/m,
+    // empty list. Scoped to the DEDUP region (between the git-diff scan and the
+    // branch it pushes): the PR-body writer further down loops over the same
+    // variable, so a whole-body match stayed green with the dedup loop gutted.
+    const scanIdx = body.search(/^\s*mapfile -t COMMITTED < <\(git diff --name-only /m);
+    const branchIdx = body.search(/^\s*BRANCH="/m);
+    expect(scanIdx, "the persist step never lists the notes this run committed").toBeGreaterThan(
+      -1,
+    );
+    expect(branchIdx, "the persist step pushes no branch").toBeGreaterThan(scanIdx);
+    const dedupRegion = body.slice(scanIdx, branchIdx);
+    expect(
+      dedupRegion,
+      "the per-note dedup loop does not iterate the committed notes, so a note a " +
+        "still-open PR already proposes gets a second PR",
+    ).toMatch(/for note in "\$\{NOTES\[@\]:-\}"; do/);
+    expect(dedupRegion, "the per-note dedup does not match on the note-path marker").toContain(
+      "drift-proposal-note: ${note}",
     );
   });
 
