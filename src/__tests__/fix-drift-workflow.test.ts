@@ -653,9 +653,16 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
   });
 
   it("captures drift-sync's reason= output as a step output", () => {
-    expect(wfFlat).toContain("id: sync");
-    expect(wfFlat).toMatch(/grep '\^reason=' "\$\{SYNC_LOG\}"/);
-    expect(wfFlat).toContain('echo "reason=${REASON}" >> "$GITHUB_OUTPUT"');
+    // The SYNC step's own body. This used to be matched against the whole
+    // flattened file, where the ASSERT step's `echo "reason=…" >> $GITHUB_OUTPUT`
+    // satisfied it — so the sync step could stop publishing a reason entirely and
+    // the guard stayed green.
+    const body = codeOf(stepById("sync"));
+    expect(body).toMatch(/grep '\^reason=' "\$\{SYNC_LOG\}"/);
+    expect(body, "the sync step publishes no reason= output").toMatch(/echo "reason=\$\{REASON\}"/);
+    expect(body, "the sync step's outputs never reach $GITHUB_OUTPUT").toContain(
+      '>> "$GITHUB_OUTPUT"',
+    );
   });
 
   it("runs scripts/drift-sync-check.ts as a defense-in-depth re-assertion, gated on reason == 'ok-applied'", () => {
@@ -670,12 +677,9 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
   });
 
   it("the PR-open step is gated on reason == 'ok-applied', not on a verdict function", () => {
-    const idx = wf.indexOf("name: Push branch + create PR");
-    expect(idx).toBeGreaterThan(-1);
-    const nextStep = wf.indexOf("\n      - name:", idx + 1);
-    const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
-    expect(stepBlock).toContain("if: steps.sync.outputs.reason == 'ok-applied' && success()");
-    expect(stepBlock).toContain("gh pr create");
+    const pr = stepByName("Push branch + create PR");
+    expect(pr.if).toBe("steps.sync.outputs.reason == 'ok-applied' && success()");
+    expect(codeOf(pr), "the PR-open step does not open a PR").toMatch(/^\s*gh pr create\b/m);
   });
 });
 
