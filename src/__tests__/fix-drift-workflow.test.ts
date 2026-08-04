@@ -554,8 +554,20 @@ function codeSurface(src: string): string {
 // `github.*` / `steps.*` contexts, `==`/`!=`, `&&`/`||`/`!`, parentheses) so
 // the guards can OBSERVE which steps a given scenario selects.
 // ---------------------------------------------------------------------------
+/**
+ * GitHub's real step-outcome domain, plus the one state the runner has not
+ * produced yet.
+ *
+ * `cancelled` is a FOURTH outcome, not a spelling of failure — a step the job's
+ * cancellation cut short reports it, and a condition keyed on `== 'skipped'` or
+ * `== 'failure'` is false for it. Modelling it explicitly is what lets the
+ * guards below ask "is any consumer treating a cancelled step as some OTHER
+ * outcome", which is the H-F2 defect one layer out.
+ */
+type StepOutcome = "success" | "failure" | "cancelled" | "skipped" | "";
+
 interface StepState {
-  outcome: "success" | "failure" | "skipped" | "";
+  outcome: StepOutcome;
   outputs: Record<string, string>;
 }
 interface EvalCtx {
