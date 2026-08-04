@@ -562,6 +562,16 @@ interface EvalCtx {
   event_name: string;
   /** Has any earlier step failed? Drives failure()/success(). */
   jobFailed: boolean;
+  /**
+   * Has the job been CANCELLED (manual cancel, or the job's `timeout-minutes`
+   * firing)? Drives cancelled(), and suppresses success().
+   *
+   * This is a THIRD job state, not a flavour of failure: GitHub's `failure()` is
+   * false for a cancelled job, so an alert keyed on `failure()` alone stays
+   * silent through a timeout. Modelling it as `jobFailed` would have hidden
+   * exactly the defect this exists to catch.
+   */
+  jobCancelled: boolean;
   steps: Record<string, StepState>;
 }
 
@@ -685,11 +695,13 @@ function evaluateIf(exprIn: string, ctx: EvalCtx): boolean {
           case "always":
             return true;
           case "success":
-            return !ctx.jobFailed;
+            return !ctx.jobFailed && !ctx.jobCancelled;
           case "failure":
+            // Deliberately NOT `|| jobCancelled`: on the runner a cancelled job
+            // does NOT satisfy failure(). That asymmetry is the whole point.
             return ctx.jobFailed;
           case "cancelled":
-            return false;
+            return ctx.jobCancelled;
           default:
             throw new Error(`if-expression: unmodelled function ${t.v}()`);
         }
@@ -978,35 +990,53 @@ interface Scenario {
   failing?: string[];
   /** Step outputs, by step id, published when that step is selected. */
   outputs?: Record<string, Record<string, string>>;
+  /**
+   * Step id or name DURING which the job is cancelled — a manual cancel, or the
+   * job's `timeout-minutes` firing. That step's outcome becomes 'cancelled' and
+   * every later step is skipped unless its `if:` names always() or cancelled().
+   */
+  cancelledAt?: string;
 }
 
 function simulateJob(
   sc: Scenario,
   src: string = wf,
-): { selected: Step[]; alerts: string[]; jobFailed: boolean } {
-  const ctx: EvalCtx = { event_name: sc.event_name ?? "schedule", jobFailed: false, steps: {} };
+): { selected: Step[]; alerts: string[]; jobFailed: boolean; jobCancelled: boolean } {
+  const ctx: EvalCtx = {
+    event_name: sc.event_name ?? "schedule",
+    jobFailed: false,
+    jobCancelled: false,
+    steps: {},
+  };
   const failing = new Set(sc.failing ?? []);
   const selected: Step[] = [];
   for (const s of steps(src)) {
-    const runs = s.if === undefined ? !ctx.jobFailed : evaluateIf(s.if, ctx);
+    const runs = s.if === undefined ? !ctx.jobFailed && !ctx.jobCancelled : evaluateIf(s.if, ctx);
     const fails =
       runs &&
       ((s.id !== undefined && failing.has(s.id)) || (s.name !== undefined && failing.has(s.name)));
+    const cancels =
+      runs &&
+      sc.cancelledAt !== undefined &&
+      (s.id === sc.cancelledAt || s.name === sc.cancelledAt);
     if (s.id) {
       ctx.steps[s.id] = {
-        outcome: runs ? (fails ? "failure" : "success") : "skipped",
+        outcome: runs ? (cancels ? "cancelled" : fails ? "failure" : "success") : "skipped",
         // Outputs are published by a step that RAN, even if it then failed
-        // (the sync step writes $GITHUB_OUTPUT before exiting non-zero).
-        outputs: runs ? (sc.outputs?.[s.id] ?? {}) : {},
+        // (the sync step writes $GITHUB_OUTPUT before exiting non-zero). A
+        // step cut short by a cancellation published nothing.
+        outputs: runs && !cancels ? (sc.outputs?.[s.id] ?? {}) : {},
       };
     }
     if (runs) selected.push(s);
     if (fails) ctx.jobFailed = true;
+    if (cancels) ctx.jobCancelled = true;
   }
   return {
     selected,
     alerts: selected.filter(isAlertStep).map((s) => s.name!),
     jobFailed: ctx.jobFailed,
+    jobCancelled: ctx.jobCancelled,
   };
 }
 
@@ -1407,12 +1437,14 @@ describe("fix-drift.yml — triggers on workflow_dispatch and a SCHEDULED cron",
     const gate = String(syncJob().if);
     for (const ev of ["workflow_dispatch", "schedule"]) {
       expect(
-        evaluateIf(gate, { event_name: ev, jobFailed: false, steps: {} }),
+        evaluateIf(gate, { event_name: ev, jobFailed: false, jobCancelled: false, steps: {} }),
         `the sync job's \`if:\` does not admit github.event_name == '${ev}'`,
       ).toBe(true);
     }
     // ...and NOT on some unrelated event that happens to be declared later.
-    expect(evaluateIf(gate, { event_name: "push", jobFailed: false, steps: {} })).toBe(false);
+    expect(
+      evaluateIf(gate, { event_name: "push", jobFailed: false, jobCancelled: false, steps: {} }),
+    ).toBe(false);
   });
 });
 
@@ -1612,6 +1644,7 @@ describe("fix-drift.yml — deterministic sync + sync-check replace the fixer + 
       const runs = evaluateIf(assert.if!, {
         event_name: "schedule",
         jobFailed: false,
+        jobCancelled: false,
         steps: { sync: { outcome: "success", outputs: { reason } } },
       });
       expect(runs, `assert step selection is wrong for reason=${reason}`).toBe(
@@ -1649,6 +1682,7 @@ describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", ()
       evaluateIf(alert.if!, {
         event_name: "schedule",
         jobFailed: false,
+        jobCancelled: false,
         steps: {
           sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
           needs_human_pr: { outcome: "success", outputs: { url: "u", number: "1" } },
@@ -1663,6 +1697,7 @@ describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", ()
       evaluateIf(alert.if!, {
         event_name: "schedule",
         jobFailed: true,
+        jobCancelled: false,
         steps: { sync: { outcome: "success", outputs: { reason: SyncCoreReason.GATE_FAILED } } },
       }),
     ).toBe(true);
@@ -1674,6 +1709,7 @@ describe("fix-drift.yml — needs-human vs gate-failure are DISTINCT alerts", ()
     const ctx: EvalCtx = {
       event_name: "schedule",
       jobFailed: true,
+      jobCancelled: false,
       steps: {
         sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
         needs_human_pr: { outcome: "failure", outputs: {} },
@@ -1800,6 +1836,7 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     const ctx: EvalCtx = {
       event_name: "schedule",
       jobFailed: true,
+      jobCancelled: false,
       steps: {
         sync: { outcome: "success", outputs: { reason: SyncCoreReason.OK_APPLIED } },
         assert: { outcome: "success", outputs: {} },
@@ -1868,6 +1905,7 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
         evaluateIf(step.if!, {
           event_name: "schedule",
           jobFailed: false,
+          jobCancelled: false,
           steps: { sync: { outcome: "success", outputs: { reason } } },
         }),
         `persist step selection is wrong for reason=${reason}`,
@@ -1899,6 +1937,7 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
       evaluateIf(gateAlert.if!, {
         event_name: "schedule",
         jobFailed: true,
+        jobCancelled: false,
         steps: {
           sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
           needs_human_pr: { outcome: "failure", outputs: {} },
@@ -2796,6 +2835,64 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       expect(simulateJob(scenario).alerts).toEqual(wanted);
     });
   }
+
+  // -------------------------------------------------------------------------
+  // H-F2: a CANCELLED job (manual cancel, or the job's `timeout-minutes: 30`
+  // firing) is a THIRD outcome, not a flavour of failure. GitHub's `failure()`
+  // is FALSE for it, so the catch-all — the only alert that covers a window no
+  // reason-keyed alert owns — stood down and the job ended with ZERO Slack.
+  // Same defect family as the crash window: `failure()` is not the same
+  // predicate as "did not succeed".
+  // -------------------------------------------------------------------------
+  const CANCEL_SCENARIOS: Array<{ label: string; scenario: Scenario }> = [
+    {
+      label: "the 30-minute job timeout fires while drift-sync is still running",
+      scenario: { cancelledAt: "sync" },
+    },
+    {
+      label: "a human cancels the run during infra/setup, before drift-sync starts",
+      scenario: { cancelledAt: "Provision Ollama daemon (drift-sync-check re-collect gate)" },
+    },
+    {
+      label: "the timeout fires during the ok-applied Push/PR step, after a reason was published",
+      scenario: {
+        cancelledAt: "pr",
+        outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" } },
+      },
+    },
+    {
+      label: "the timeout fires during the needs-human persist step",
+      scenario: {
+        cancelledAt: "needs_human_pr",
+        outputs: { sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" } },
+      },
+    },
+  ];
+
+  for (const { label, scenario } of CANCEL_SCENARIOS) {
+    it(`CANCELLED: ${label} -> at least one alert fires (never silence)`, () => {
+      const res = simulateJob(scenario);
+      expect(res.jobCancelled, "the scenario did not actually cancel the job").toBe(true);
+      expect(res.jobFailed, "a cancellation must not be modelled as a failure").toBe(false);
+      expect(
+        res.alerts.length,
+        "a cancelled/timed-out job ended with ZERO Slack — nobody is told anything",
+      ).toBeGreaterThan(0);
+      // Still exactly one: widening the catch-all must not double-fire.
+      expect(res.alerts.length, `more than one alert fired: ${res.alerts.join(", ")}`).toBe(1);
+    });
+  }
+
+  it("the catch-all's predicate covers cancellation as well as failure (failure() alone is silent through a timeout)", () => {
+    const gate = stepByName("Alert on early-infra failure (catch-all)").if ?? "";
+    expect(gate, "the catch-all no longer names cancelled()").toMatch(/cancelled\(\)/);
+  });
+
+  it("the job HAS a timeout that can produce the cancelled outcome this covers", () => {
+    // If the timeout were removed the cancellation window would still exist (a
+    // human can cancel), but this pins the documented 30-minute trigger.
+    expect(syncJob()["timeout-minutes"]).toBe(30);
+  });
 
   it("no churn at all is silent (nothing happened; nothing to report)", () => {
     const sim = simulateJob({
