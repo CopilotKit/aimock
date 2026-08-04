@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { computeDelta, isBaseReportReusable } from "../../scripts/drift-delta.js";
 import type { DeltaKey } from "../../scripts/drift-delta.js";
 import { DriftClass } from "../../scripts/drift-types.js";
-import type { DriftReport, ParsedDiff } from "../../scripts/drift-types.js";
+import type { DriftEntry, DriftReport, ParsedDiff } from "../../scripts/drift-types.js";
 
 // ---------------------------------------------------------------------------
 // drift-delta: the delta-gating core.
@@ -51,6 +51,31 @@ function keys(list: DeltaKey[]): string[] {
   return list.map((k) => `${k.provider}:${k.id}`).sort();
 }
 
+/** A single entry with an explicit scenario, for multi-scenario reports. */
+function entryOf(provider: string, scenario: string, diffs: ParsedDiff[]): DriftEntry {
+  return {
+    provider,
+    scenario,
+    builderFile: "b.ts",
+    builderFunctions: ["f"],
+    typesFile: null,
+    sdkShapesFile: "shapes.ts",
+    diffs,
+  };
+}
+
+function reportOfEntries(
+  entries: DriftEntry[],
+  timestamp = "2026-08-04T00:00:00.000Z",
+): DriftReport {
+  return { timestamp, entries };
+}
+
+/** `provider:scenario:id` — the full identity the delta layer must key on. */
+function scopedKeys(list: DeltaKey[]): string[] {
+  return list.map((k) => `${k.provider}:${k.scenario}:${k.id}`).sort();
+}
+
 // ---------------------------------------------------------------------------
 // The M-1 golden regression (#292).
 //
@@ -75,7 +100,12 @@ describe("M-1 golden: new-in-head critical MUST block regardless of class", () =
     const advisory: DeltaKey[] = [];
     for (const entry of r.entries) {
       for (const d of entry.diffs) {
-        const dk: DeltaKey = { provider: entry.provider, id: d.id ?? d.path, class: d.class };
+        const dk: DeltaKey = {
+          provider: entry.provider,
+          scenario: entry.scenario,
+          id: d.id ?? d.path,
+          class: d.class,
+        };
         if (d.class === DriftClass.Critical) advisory.push(dk);
         else block.push(dk);
       }
@@ -156,6 +186,119 @@ describe("computeDelta routing by key presence", () => {
     const head = report("cohere", [diff({ path: "legacyBucket" })]); // no id
     const { block } = computeDelta(base, head);
     expect(keys(block)).toEqual(["cohere:legacyBucket"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SCENARIO must be part of the delta key.
+//
+// `keyOf` used to be `provider::id`, with `id` defaulting to the diff's `path`.
+// A `path` is a wire path (`usage.prompt_tokens`), and the SAME wire path is
+// asserted by MANY scenarios of the same provider — `openaiChatCompletionShape`
+// (non-streaming text) and the tool-call shape both carry `usage.prompt_tokens`
+// (src/__tests__/drift/sdk-shapes.ts). So a drift already present on main in
+// scenario A absorbed a genuinely NEW drift on the same field in scenario B:
+// both collapsed to one key, the key was base-present, and the new finding was
+// routed to `advisory` — a FAIL-SILENT pass of the required check on drift the
+// diff introduced.
+// ---------------------------------------------------------------------------
+describe("delta key includes scenario (fail-silent collapse)", () => {
+  const driftedField = () =>
+    diff({ path: "usage.prompt_tokens", id: "usage.prompt_tokens", class: DriftClass.Advisory });
+  const newCritical = () =>
+    diff({ path: "usage.prompt_tokens", id: "usage.prompt_tokens", class: DriftClass.Critical });
+
+  const base = reportOfEntries([entryOf("OpenAI Chat", "non-streaming text", [driftedField()])]);
+  const head = reportOfEntries([
+    entryOf("OpenAI Chat", "non-streaming text", [driftedField()]),
+    entryOf("OpenAI Chat", "non-streaming tool call", [newCritical()]),
+  ]);
+
+  it("a new critical drift on the same path in a DIFFERENT scenario BLOCKS", () => {
+    const { block, advisory, fixed } = computeDelta(base, head);
+    expect(scopedKeys(block)).toEqual(["OpenAI Chat:non-streaming tool call:usage.prompt_tokens"]);
+    expect(block[0].class).toBe(DriftClass.Critical);
+    expect(scopedKeys(advisory)).toEqual(["OpenAI Chat:non-streaming text:usage.prompt_tokens"]);
+    expect(fixed).toEqual([]);
+  });
+
+  it("KNOWN-NEGATIVE control: an unchanged base/head pair still blocks nothing", () => {
+    const { block, advisory, fixed } = computeDelta(head, head);
+    expect(block).toEqual([]);
+    expect(fixed).toEqual([]);
+    // Both scenarios survive as DISTINCT advisory keys — pre-existing drift
+    // stays pre-existing; the scenario scoping must not manufacture a block.
+    expect(scopedKeys(advisory)).toEqual([
+      "OpenAI Chat:non-streaming text:usage.prompt_tokens",
+      "OpenAI Chat:non-streaming tool call:usage.prompt_tokens",
+    ]);
+  });
+
+  it("a scenario disappearing from head is `fixed`, not silently absorbed", () => {
+    const { block, advisory, fixed } = computeDelta(head, base);
+    expect(block).toEqual([]);
+    expect(scopedKeys(advisory)).toEqual(["OpenAI Chat:non-streaming text:usage.prompt_tokens"]);
+    expect(scopedKeys(fixed)).toEqual(["OpenAI Chat:non-streaming tool call:usage.prompt_tokens"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A residual collision (same provider + scenario + id, e.g. two assertions in
+// one scenario reporting the same path) used to be resolved LAST-WINS, which
+// made the annotated `class` depend on report order: [Critical, Advisory]
+// annotated the key `advisory`, and the reversed order annotated it `critical`.
+// Routing never depended on it, but the human-facing annotation on a blocking
+// key did. The more severe class must win, deterministically.
+// ---------------------------------------------------------------------------
+describe("colliding keys resolve to the MOST SEVERE class, order-independently", () => {
+  const empty = reportOfEntries([entryOf("OpenAI Chat", "non-streaming text", [])]);
+
+  function collision(classes: DriftClass[]): DriftReport {
+    return reportOfEntries([
+      entryOf(
+        "OpenAI Chat",
+        "non-streaming text",
+        classes.map((c) =>
+          diff({ path: "usage.prompt_tokens", id: "usage.prompt_tokens", class: c }),
+        ),
+      ),
+    ]);
+  }
+
+  it("critical wins whether it is seen first or last", () => {
+    const first = computeDelta(empty, collision([DriftClass.Critical, DriftClass.Advisory]));
+    const last = computeDelta(empty, collision([DriftClass.Advisory, DriftClass.Critical]));
+    expect(first.block).toHaveLength(1);
+    expect(last.block).toHaveLength(1);
+    expect(first.block[0].class).toBe(DriftClass.Critical);
+    expect(last.block[0].class).toBe(DriftClass.Critical);
+  });
+
+  it("quarantine outranks advisory and none, in both orders", () => {
+    const first = computeDelta(empty, collision([DriftClass.Quarantine, DriftClass.None]));
+    const last = computeDelta(empty, collision([DriftClass.None, DriftClass.Quarantine]));
+    expect(first.block[0].class).toBe(DriftClass.Quarantine);
+    expect(last.block[0].class).toBe(DriftClass.Quarantine);
+  });
+
+  it("a classified diff outranks an unclassified (legacy) one, in both orders", () => {
+    const classed = () =>
+      diff({ path: "usage.prompt_tokens", id: "usage.prompt_tokens", class: DriftClass.Critical });
+    const legacy = () => {
+      const d = diff({ path: "usage.prompt_tokens", id: "usage.prompt_tokens" });
+      delete d.class;
+      return d;
+    };
+    const first = computeDelta(
+      empty,
+      reportOfEntries([entryOf("OpenAI Chat", "non-streaming text", [classed(), legacy()])]),
+    );
+    const last = computeDelta(
+      empty,
+      reportOfEntries([entryOf("OpenAI Chat", "non-streaming text", [legacy(), classed()])]),
+    );
+    expect(first.block[0].class).toBe(DriftClass.Critical);
+    expect(last.block[0].class).toBe(DriftClass.Critical);
   });
 });
 
