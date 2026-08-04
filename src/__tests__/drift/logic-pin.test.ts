@@ -28,8 +28,9 @@
  *                       detectVoiceModelDrift
  *
  * Frozen surfaces — DATA, membership-pinned in `DATA_FROZEN`:
- *   model-registry.ts — includeFamilies and excludeFamilies, per provider
- *   voice-models.ts   — knownVoiceModelFamilies, gaRealtimeModels
+ *   model-registry.ts      — includeFamilies and excludeFamilies, per provider
+ *   voice-models.ts        — knownVoiceModelFamilies, gaRealtimeModels
+ *   deprecation-detector.ts — FORWARD_LOOKING_FAMILIES, per provider
  *
  * Keep both lists exact. A guard whose own inventory is wrong is a false
  * record: it invites the reader to assume a surface is covered when it is not.
@@ -48,6 +49,7 @@ import {
   excludeFamilies,
 } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
+import { FORWARD_LOOKING_FAMILIES } from "./deprecation-detector.js";
 import {
   isVoiceModelId,
   knownVoiceModelFamilies,
@@ -392,30 +394,38 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
  * DO NOT "fix" a red pin by blindly pasting the new hash. A red pin means the
  * classified-family DATA moved — confirm the move is intended and reviewed
  * BEFORE updating the pin.
+ *
+ * `members` is a THUNK, for exactly the reason `FROZEN.source` is one: every
+ * entry here reads an imported binding, and vitest resolves a renamed export to
+ * `undefined` rather than failing the import, so a module-scope `[...binding]`
+ * threw during COLLECTION and took the whole FILE down — all twelve source pins,
+ * every behavioural anchor, and every other data pin reported as zero tests.
+ * Reading the set inside the `it` keeps the blast radius to the one entry whose
+ * data actually moved.
  */
-const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
+const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "includeFamilies.openai": {
-    members: [...includeFamilies.openai].sort(),
+    members: () => [...includeFamilies.openai].sort(),
     pin: "802989cfefe27838cf7303ac905dbb5fb6641e9fb859924834422b86cce8fb9c",
   },
   "includeFamilies.anthropic": {
-    members: [...includeFamilies.anthropic].sort(),
+    members: () => [...includeFamilies.anthropic].sort(),
     pin: "ab79ff332fadeff93c2678ebe3e0af7a6280ce6f0deb4694228e316944dfeb74",
   },
   "includeFamilies.gemini": {
-    members: [...includeFamilies.gemini].sort(),
+    members: () => [...includeFamilies.gemini].sort(),
     pin: "c2e2c56b8f8d5fc56152b4633e7d3782e95b7eeb9bc123da71f00e884a54a743",
   },
   "excludeFamilies.openai": {
-    members: [...excludeFamilies.openai].sort(),
+    members: () => [...excludeFamilies.openai].sort(),
     pin: "e4484f780a6a64928a54004a52420969c28d92c861272b10fffbbc7f96625f76",
   },
   "excludeFamilies.anthropic": {
-    members: [...excludeFamilies.anthropic].sort(),
+    members: () => [...excludeFamilies.anthropic].sort(),
     pin: "03ccd17333fe45b1fc01d2dc79c4337930204e178205b896aef7000d4378d79f",
   },
   "excludeFamilies.gemini": {
-    members: [...excludeFamilies.gemini].sort(),
+    members: () => [...excludeFamilies.gemini].sort(),
     pin: "c95dedab7588212bbba0bf9ab6434bfd43a449adbe7b35f81f48271ee849a9c2",
   },
   // The realtime canary's seed sets, previously pinned NOWHERE. An edit to
@@ -426,21 +436,41 @@ const DATA_FROZEN: Record<string, { members: string[]; pin: string }> = {
   // Both are one-line silencing edits, which is exactly what this file exists
   // to make impossible.
   knownVoiceModelFamilies: {
-    members: [...knownVoiceModelFamilies].sort(),
+    members: () => [...knownVoiceModelFamilies].sort(),
     pin: "3897b6bd6fc370ef14f080f4717dde653f2ae6029501d55c4cbda89523f9f3c6",
   },
   gaRealtimeModels: {
-    members: [...gaRealtimeModels].sort(),
+    members: () => [...gaRealtimeModels].sort(),
     pin: "deea068b1a4498d811f0b5399fd18db0f4d20561a63325f4daaddccf1e4e9410",
+  },
+  // The forward-looking allowlist. A family listed here is dropped from the sync
+  // mirror's deprecation candidates ENTIRELY — no removal proposal, no
+  // needs-human note (see `isForwardLookingFamily` in deprecation-detector.ts).
+  // So adding an id here is a one-line way to make a genuinely retired family
+  // stop being reported, and nothing pinned it. Pinned per provider (including
+  // the two EMPTY sets) so quietly opening a lane for openai or gemini is a
+  // reviewed re-pin too.
+  "FORWARD_LOOKING_FAMILIES.openai": {
+    members: () => [...FORWARD_LOOKING_FAMILIES.openai].sort(),
+    pin: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  },
+  "FORWARD_LOOKING_FAMILIES.anthropic": {
+    members: () => [...FORWARD_LOOKING_FAMILIES.anthropic].sort(),
+    pin: "cd52fbaa5591c6e37db66ff915493fbda50450b254666a47b2c6f9102bdc169b",
+  },
+  "FORWARD_LOOKING_FAMILIES.gemini": {
+    members: () => [...FORWARD_LOOKING_FAMILIES.gemini].sort(),
+    pin: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
   },
 };
 
 describe("classification-data membership freeze (include/exclude families + voice seed sets)", () => {
   for (const [name, { members, pin }] of Object.entries(DATA_FROZEN)) {
     it(`freezes ${name} membership`, () => {
+      const frozen = members();
       expect(
-        sha256(JSON.stringify(members)),
-        `Frozen data set "${name}" membership changed (now: ${JSON.stringify(members)}). If ` +
+        sha256(JSON.stringify(frozen)),
+        `Frozen data set "${name}" membership changed (now: ${JSON.stringify(frozen)}). If ` +
           `this is a deliberate, reviewed addition/removal of a classified family, update its ` +
           `pin here; if not, it is a silent canary-silencing edit and must be reverted.`,
       ).toBe(pin);
