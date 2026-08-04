@@ -6,6 +6,12 @@ coverage/
 .remember/
 docs/pixels.js
 
+# Drift-sync needs-human notes: a machine-generated, human-annotated audit
+# trail. Prettier's markdown formatter rewrites `__tests__` in prose to
+# `**tests**` (emphasis), so every cited test path in a note silently became a
+# file that does not exist. These notes are records, not prose we style.
+drift-proposals/
+
 # Example projects: build output and locally generated fixtures
 examples/**/.next/
 examples/**/fixtures/agui-recorded/*.json

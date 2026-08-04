@@ -185,19 +185,37 @@ export function extractSurfaceKey(text: string): string | null {
 
 /**
  * LEGACY provider-name fallback for a drift block that carries NO `Surface:`
- * marker (predates the slug marker, or a path not yet migrated). Matches the
- * text against the registry's human `provider` labels (longest first to avoid
- * partial matches). Newer blocks resolve structurally via `extractSurfaceKey`;
- * this exists only as a defensive back-compat net.
+ * marker (predates the slug marker, or a path not yet migrated). Newer blocks
+ * resolve structurally via `extractSurfaceKey`; this exists only as a defensive
+ * back-compat net.
+ *
+ * ANCHORED AT THE START, longest label first. It used to accept a label found
+ * ANYWHERE in the text and rank candidates by length alone, so a qualifier later
+ * in the title could outrank the surface the title is about: "Gemini Live
+ * Transcription session" resolved to `Transcription` (13 chars) over `Gemini
+ * Live` (11) and routed a Gemini Live drift at `src/transcription.ts`. That
+ * failed OPEN — a confident wrong owner, no error, and the entry then drives
+ * remediation. Both inputs this is called with lead with the provider label:
+ * `parsed.context` is `formatDriftReport`'s "<Provider> (<scenario>)", and a drift
+ * describe title reads "<Provider> <rest>". So an unanchored occurrence is not
+ * evidence of ownership, and a text that does not START with a known label is
+ * unattributable → null → the caller quarantines it for human review (exit 5)
+ * rather than inventing an owner.
+ *
+ * Longest-first still resolves genuinely nested labels at the same anchor
+ * ("Google Gemini" over "Gemini", "Bedrock ConverseStream" over "Bedrock
+ * Converse", "OpenAI Responses WS" over "OpenAI Responses").
  *
  * Examples:
- *   "OpenAI Chat Completions drift" → "OpenAI Chat"
- *   "Anthropic Claude drift" → "Anthropic Claude"
+ *   "OpenAI Chat Completions drift"      → "OpenAI Chat"
+ *   "Anthropic Claude drift"             → "Anthropic Claude"
+ *   "Gemini Live Transcription session"  → "Gemini Live"  (not "Transcription")
+ *   "drift detected in OpenAI Chat"      → null           (not anchored)
  */
 export function extractProviderName(text: string): string | null {
   const sorted = Object.keys(PROVIDER_LABEL_MAP).sort((a, b) => b.length - a.length);
   for (const key of sorted) {
-    if (text.includes(key)) return key;
+    if (text.startsWith(key)) return key;
   }
   return null;
 }
@@ -685,6 +703,29 @@ export interface CollectResult {
   quarantine: QuarantineEntry[];
 }
 
+/**
+ * Stable delta keys for the two realtime-canary diffs that have no per-model id.
+ *
+ * drift-delta keys a failure by `provider + (diff.id ?? diff.path)`. Both diffs
+ * below used to carry no `id`, so their delta key WAS their `path` — which is
+ * also the human-facing "Path:" line of the alert. That coupling means renaming
+ * the alert prose silently MOVES the key: drift already recorded in the cached
+ * same-UTC-day BASE report is re-classified as new-in-head (BLOCK) and the base
+ * key is reported as spuriously "fixed". It bit us once already, when these two
+ * `path` values were corrected to name the symbols that actually exist
+ * (`gaRealtimeModels` / `knownVoiceModelFamilies`) instead of the retired ones.
+ *
+ * Freezing the display string is the wrong fix — a `Path:` naming a nonexistent
+ * symbol is exactly what drift-remediation-strings.test.ts exists to prevent. So
+ * the key is instead an explicit SEMANTIC id that never appears in prose: the
+ * display text is now free to change without moving any key.
+ *
+ * These values are the wire contract of the delta layer. Renaming one shifts the
+ * key exactly as the old path rename did — don't, unless that is the intent.
+ */
+export const NO_GA_DELTA_ID = "openai-realtime:no-ga-family";
+export const TRUNCATED_DELTA_ID = "openai-realtime:unknown-models-truncated";
+
 export function collectDriftEntries(results: VitestJsonResult): CollectResult {
   const entries: DriftEntry[] = [];
   const quarantine: QuarantineEntry[] = [];
@@ -722,14 +763,19 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   issue:
                     "GA realtime family unavailable — no known GA model in the OpenAI realtime list. " +
                     "OpenAI may have renamed/removed the GA family, or the realtime credential cannot see it. " +
-                    "Update the gaModels list in ws-realtime.drift.ts.",
-                  path: "gaModels",
+                    "Update gaRealtimeModels in src/__tests__/drift/voice-models.ts.",
+                  path: "gaRealtimeModels",
                   expected: "(at least one GA realtime model present)",
                   real:
                     canary.ids.length > 0
                       ? `observed realtime models: ${canary.ids.join(", ")}`
                       : "no realtime models observed",
                   mock: NO_MOCK_LEG,
+                  // There is no per-model id for this diff (it reports the
+                  // ABSENCE of a family), so without an explicit id the delta
+                  // layer would key it by `path` — coupling the key to the alert
+                  // prose. See NO_GA_DELTA_ID.
+                  id: NO_GA_DELTA_ID,
                 },
                 // The hasGA assertion short-circuits the later unknown-models
                 // assertion, so surface any unknown models observed in the SAME
@@ -741,14 +787,14 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                   severity: "critical" as const,
                   issue:
                     "Unknown realtime model detected (observed in the same run as the missing GA " +
-                    "family) — add to knownModels in ws-realtime.drift.ts",
-                  path: "knownModels",
-                  expected: "(not in knownModels set)",
+                    "family) — add to knownVoiceModelFamilies in src/__tests__/drift/voice-models.ts",
+                  path: "knownVoiceModelFamilies",
+                  expected: "(not in knownVoiceModelFamilies)",
                   real: id,
                   mock: NO_MOCK_LEG,
                   // D6.2: set `id` to the model id so the delta layer (D6.1)
                   // can key by provider+id, yielding one distinct key per model
-                  // rather than collapsing all entries under path:"knownModels".
+                  // rather than collapsing all entries under one path bucket.
                   id,
                 })),
               ]
@@ -759,14 +805,15 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                 ...canary.ids.map((id) => ({
                   severity: "critical" as const,
                   issue:
-                    "Unknown realtime model detected — add to knownModels in ws-realtime.drift.ts",
-                  path: "knownModels",
-                  expected: "(not in knownModels set)",
+                    "Unknown realtime model detected — add to knownVoiceModelFamilies in " +
+                    "src/__tests__/drift/voice-models.ts",
+                  path: "knownVoiceModelFamilies",
+                  expected: "(not in knownVoiceModelFamilies)",
                   real: id,
                   mock: NO_MOCK_LEG,
                   // D6.2: set `id` to the model id so the delta layer (D6.1)
                   // can key by provider+id, yielding one distinct key per model
-                  // rather than collapsing all entries under path:"knownModels".
+                  // rather than collapsing all entries under one path bucket.
                   id,
                 })),
                 ...(canary.truncated
@@ -777,13 +824,17 @@ export function collectDriftEntries(results: VitestJsonResult): CollectResult {
                           "Additional unknown realtime models were truncated in CI output — " +
                           "the full list is unrecoverable without the UNKNOWN_REALTIME_MODELS= marker. " +
                           "Re-run with the marker to enumerate them.",
-                        path: "knownModels[truncated]",
+                        path: "knownVoiceModelFamilies[truncated]",
                         // CLASS 3: `real`/`expected` NEVER carry a prose sentinel.
                         // The truncation fact lives entirely in `issue`/`path`;
                         // there is no observed model value to report here.
                         expected: "<unavailable>",
                         real: "<unavailable>",
                         mock: NO_MOCK_LEG,
+                        // No per-model id exists here either (the ids are the
+                        // thing that was truncated away), so the key must be
+                        // explicit. See TRUNCATED_DELTA_ID.
+                        id: TRUNCATED_DELTA_ID,
                       },
                     ]
                   : []),
