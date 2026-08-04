@@ -2,13 +2,15 @@
  * Mirror-equivalence guard for the sync core's hand-maintained classification
  * mirrors.
  *
- * `scripts/drift-sync.ts` cannot import `src/__tests__/drift/models.drift.ts`
- * directly (see its own "NOTE ON WHY THIS DOES NOT IMPORT `models.drift.ts`
- * DIRECTLY" comment): merely evaluating that module's `import { describe, it,
- * expect } from "vitest"` throws outside an active vitest worker, and
- * `drift-sync.ts` also runs as a plain `npx tsx` CI step. So it instead
- * MIRRORS `models.drift.ts`'s `detectDeprecatedFamilies` / `unclassifiedFamilies`
- * byte-for-byte as `detectDeprecatedFamiliesForSync` / `unclassifiedFamiliesForSync`,
+ * `scripts/drift-sync.ts` cannot import the canonical detectors directly (see
+ * its own "NOTE ON WHY THIS DOES NOT IMPORT `models.drift.ts` DIRECTLY"
+ * comment): merely evaluating a module that imports from `"vitest"` throws
+ * outside an active vitest worker, and `drift-sync.ts` also runs as a plain
+ * `npx tsx` CI step. That still holds for their present home,
+ * `src/__tests__/drift/text-drift.ts`, which imports vitest's `expect` for
+ * `assertNoUnclassifiedFamilies`. So `drift-sync.ts` instead MIRRORS
+ * `detectDeprecatedFamilies` / `unclassifiedFamilies` byte-for-byte as
+ * `detectDeprecatedFamiliesForSync` / `unclassifiedFamiliesForSync`,
  * composed from the SAME underlying data/logic modules (`model-registry.ts`,
  * `model-family.ts`, `deprecation-detector.ts`).
  *
@@ -24,6 +26,16 @@
  * inputs, asserting identical classification results. A future edit that
  * widens/narrows one copy without mirroring the change into the other now
  * fails CI here.
+ *
+ * THE FIXTURES ARE LOAD-BEARING, not illustrative. Each of the three
+ * divergences named above is only actually caught if some fixture DISTINGUISHES
+ * the two behaviours, and originally only the fail-closed floor did: no fixture
+ * contained a `NON_MODEL_TOKENS` member, and every fixture's output happened to
+ * already be in insertion order, so dropping the mirror's token check or its
+ * `.sort()` left all of these tests green. Both are now covered by dedicated
+ * fixtures (see the comments inline). Do not "simplify" the fixture list by
+ * removing cases that look like near-duplicates of each other — verify first
+ * that the mutation each one exists to catch still reddens without it.
  */
 import { describe, it, expect } from "vitest";
 
@@ -31,12 +43,12 @@ import {
   detectDeprecatedFamiliesForSync,
   unclassifiedFamiliesForSync,
 } from "../../scripts/drift-sync.js";
-import { detectDeprecatedFamilies, unclassifiedFamilies } from "./drift/models.drift.js";
+import { detectDeprecatedFamilies, unclassifiedFamilies } from "./drift/text-drift.js";
 import { includeFamilies } from "./drift/model-registry.js";
 
 type Provider = "openai" | "anthropic" | "gemini";
 
-describe("drift-sync mirror ≡ models.drift.ts source (classification equivalence)", () => {
+describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence)", () => {
   const provider: Provider = "openai";
 
   it("unclassifiedFamilies: retired/new/empty/mixed live-listing fixtures classify identically", () => {
@@ -49,6 +61,21 @@ describe("drift-sync mirror ≡ models.drift.ts source (classification equivalen
       [],
       // A mixed listing: every known family plus two brand-new ones.
       [...includeFamilies.openai, "gpt-live", "gpt-super-new-2077"],
+      // Exercises the NON_MODEL_TOKENS suppression specifically. Every fixture
+      // above is token-free, so dropping the mirror's
+      // `NON_MODEL_TOKENS.has(...)` line left this whole guard green even though
+      // its docstring claims to protect that check. `gemini-interactions` is the
+      // sole token and is NOT otherwise classified for openai, so with the check
+      // this listing yields [] and without it yields ["gemini-interactions"].
+      ["gpt-4o", "gemini-interactions"],
+      // Exercises the `.sort()` specifically. Every fixture above happens to
+      // produce output that is ALREADY in insertion order, so dropping the
+      // mirror's `.sort()` was likewise invisible. These two unclassified
+      // families are supplied in reverse-alphabetical order, so insertion order
+      // (["gpt-omega", "gpt-alpha"]) and sorted order (["gpt-alpha",
+      // "gpt-omega"]) differ — and `toEqual` on arrays is order-sensitive, so
+      // only one copy sorting is a mismatch.
+      ["gpt-omega", "gpt-alpha"],
     ];
     for (const modelIds of fixtures) {
       expect(unclassifiedFamiliesForSync(modelIds, provider)).toEqual(
@@ -108,7 +135,7 @@ describe("drift-sync mirror ≡ models.drift.ts source (classification equivalen
     // `scripts/drift-sync.ts`'s `detectDeprecatedFamiliesForSync` applies an
     // extra `.filter((family) => !isForwardLookingFamily(family, provider))`
     // that the canonical `detectDeprecatedFamilies` (this file's import from
-    // `./drift/models.drift.js`) does NOT apply. This is DELIBERATE layering,
+    // `./drift/text-drift.js`) does NOT apply. This is DELIBERATE layering,
     // not drift to reconcile: the canonical detector's job is DETECTION —
     // report every classified family missing from the live listing. The sync
     // mirror's job additionally applies a removal POLICY on top of that

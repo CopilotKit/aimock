@@ -132,7 +132,8 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     "claude-opus-5",
     "claude-sonnet-5",
     // claude-fable-5 is included ahead of a recorded fixture (intended — mirrors
-    // the forward-looking rationale for the exclude-by-rule patterns above).
+    // the forward-looking rationale for the exclude-by-rule patterns below,
+    // PREVIEW_FAMILY / GEMMA_FAMILY).
     "claude-fable-5",
   ]),
   gemini: familySet("gemini", [
@@ -202,6 +203,23 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "gpt-4o-transcribe-diarize",
+    // Transcription line OpenAI shipped on 2026-07-28 and the daily drift run
+    // first observed on 2026-07-29 (that later date is the `Detected:` stamp in
+    // the notes under drift-proposals/ — two dates for two different events, not
+    // a disagreement).
+    //
+    // On OpenAI's API both are audio→text transcription surfaces and neither
+    // answers on /v1/chat/completions, so neither can ever be text-generation
+    // drift. Membership here is a CLASSIFICATION for the `/models` listing check
+    // in models.drift.ts and nothing more: it says the family is accounted for,
+    // not which endpoints aimock implements for it. What aimock serves is
+    // ws-realtime.ts's and the audio handlers' business and moves independently.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/openai-gpt-transcribe-new-family.md and
+    // drift-proposals/openai-gpt-live-transcribe-new-family.md (PR #343).
+    "gpt-transcribe",
+    "gpt-live-transcribe",
     "gpt-realtime",
     "gpt-realtime-mini",
     "gpt-realtime-2",
@@ -230,7 +248,8 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // `isReasoningModel()` must keep answering false for it (model-utils.ts's
     // NONREASONING_FAMILIES). Same treatment as gemini-pro above: still
     // referenced + still mocked, just not counted as text-generation drift.
-    // See drift-proposals/gemini-gemini-1.5-{pro,flash}-deprecated-referenced.md.
+    // Decision + rationale: commit a3dc250 (the drift-proposals/ notes it
+    // resolved are gone — they carried no content beyond that commit message).
     "gemini-1.5-pro",
     "gemini-1.5-flash",
     // Embeddings (non-text-generation)
