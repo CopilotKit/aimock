@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 
 import { isClassifiedFamily, excludeFamilies } from "./model-registry.js";
+import { normalizeModelFamily } from "./model-family.js";
 import { unclassifiedFamilies } from "./text-drift.js";
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,41 @@ describe("openai transcription line is classified as EXCLUDED (PR #343)", () => 
     // nothing proved a DATED snapshot of them (the form the live listing
     // actually carries) collapses back onto the excluded key instead of
     // false-positiving as a new family.
+    //
+    // Only the DATED ids are fed in. Including the bare keys added nothing: they
+    // ARE `excludeFamilies.openai`, so `isClassifiedFamily` returns true for them
+    // by definition and that half of the payload could never contribute a
+    // result.
     const bare = [...excludeFamilies.openai];
     const dated = bare.map((family) => `${family}-2026-07-28`);
-    expect(unclassifiedFamilies([...bare, ...dated], "openai")).toEqual([]);
+    expect(unclassifiedFamilies(dated, "openai")).toEqual([]);
+
+    // NEGATIVE CONTROL, in the same test. `toEqual([])` on its own is exactly
+    // what a neutered `unclassifiedFamilies` (`return []`) also produces, so the
+    // assertion above is only meaningful alongside a payload of the same shape
+    // that MUST report. A dated id on an unclassified family reports its family.
+    expect(unclassifiedFamilies(["gpt-nonexistent-family-2026-07-28"], "openai")).toEqual([
+      "gpt-nonexistent-family",
+    ]);
+  });
+
+  it("the real text-embedding-ada-002 id form is excluded, bare and dated", () => {
+    // The loop above derives its ids from the REGISTRY KEYS, which are seeded
+    // through `normalizeModelFamily` — so the `text-embedding-ada-002` entry is
+    // stored as `text-embedding-ada` (the `-002` reads as a build tag) and the id
+    // the loop generates for it is `text-embedding-ada-2026-07-28`, a string
+    // OpenAI never lists. The real id, and its dated form, were exercised
+    // nowhere: the two normalization steps (`-002` build tag, then the date) have
+    // to compose for the live listing's actual shape to classify.
+    expect(normalizeModelFamily("text-embedding-ada-002", "openai")).toBe("text-embedding-ada");
+    expect(normalizeModelFamily("text-embedding-ada-002-2026-07-28", "openai")).toBe(
+      "text-embedding-ada",
+    );
+    expect(
+      unclassifiedFamilies(
+        ["text-embedding-ada-002", "text-embedding-ada-002-2026-07-28"],
+        "openai",
+      ),
+    ).toEqual([]);
   });
 });
