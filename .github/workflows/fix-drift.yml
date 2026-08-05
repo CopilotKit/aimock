@@ -549,14 +549,22 @@ jobs:
           # A STILL-OPEN PR carrying this marker is a PENDING proposal, and it is
           # tested BEFORE the closed-rejection test below. The ORDER is
           # load-bearing, not stylistic: `--search "<key> in:body"` is a
-          # state-BLIND query, so one changeset routinely matches several PRs at
-          # once. On 2026-08-04 the live query for changeset eaa8db65f5647493
-          # returned [#350 CLOSED, #343 MERGED] — because a human closed the spam
-          # DUPLICATE #350, the single most natural response to duplicate-PR spam.
-          # With the rejection test first, that closure read as "a human rejected
-          # this changeset" and suppressed it permanently, with no PR and no
-          # Slack. A closure is only a rejection when NO open PR still carries the
+          # state-BLIND query, so one changeset routinely matches SEVERAL PRs at
+          # once, and closing the spam DUPLICATE is the single most natural
+          # response to duplicate-PR spam (that is how #350 was closed while #343
+          # carried the same changeset marker). Whenever such a closure coexists
+          # with a still-OPEN PR for the same changeset — the [CLOSED, OPEN] shape
+          # — testing the rejection first read the closure as "a human rejected
+          # this changeset" and suppressed a decision still PENDING in the open PR.
+          # A closure is only a rejection when NO open PR still carries the
           # changeset, so the pending proposal must be resolved first.
+          #
+          # It is exactly that shape the order changes. Where the survivor is
+          # MERGED rather than open — the live query for changeset
+          # eaa8db65f5647493 on 2026-08-04 returned [#350 CLOSED, #343 MERGED] —
+          # BOTH orders reach the same verdict (REJECTED, #350), because a MERGED
+          # PR is an accepted decision and never a pending proposal. What makes
+          # that state recoverable is the suppression notice below, not this order.
           DUP="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
             'map(select(((.body // "") | contains($m)) and .state == "OPEN")) | .[0] // empty')"
           if [ -n "$DUP" ]; then
@@ -1087,13 +1095,6 @@ jobs:
             DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
           fi
 
-          # Re-fire of an already-persisted note: no new commit -> already reachable.
-          if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
-            emit_pr "$DUP_NUMBER" "$DUP_URL"
-            echo "needs-human: no new commit (note already persisted in the repo) — nothing to push${DUP_NUMBER:+ (decision pending in open PR #${DUP_NUMBER})}"
-            exit 0
-          fi
-
           # PRIMARY de-dup (idempotent across daily re-fires in EVERY shape,
           # INCLUDING the mixed run whose committed diff is a registry edit with
           # NO new drift-proposals/* note). Keyed on the stable, date-independent
@@ -1102,8 +1103,9 @@ jobs:
           # Without it, a mixed run re-detects the same un-merged registry edit
           # every daily cron run and opens a brand-new near-identical PR each
           # time (unbounded PR-spam). Matched by the "drift-changeset: <key>"
-          # body marker this step writes below. Resolved above (DUP_NUMBER /
-          # DUP_URL) so the no-new-commit path can cite the same PR.
+          # body marker this step writes below, and resolved just above so this
+          # decision comes FIRST — ahead of the closed-rejection test and ahead
+          # of the no-new-commit return.
           if [ -n "$DUP_NUMBER" ]; then
             emit_pr "$DUP_NUMBER" "$DUP_URL"
             echo "needs-human: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP_NUMBER} — not opening a duplicate"
@@ -1119,13 +1121,28 @@ jobs:
           #
           # Tested AFTER the changeset dedup above, and the ORDER is load-bearing.
           # `--search "<key> in:body"` is state-BLIND, so one changeset routinely
-          # matches several PRs: on 2026-08-04 the live query for changeset
-          # eaa8db65f5647493 returned [#350 CLOSED, #343 MERGED], because a human
-          # closed the spam DUPLICATE #350 — the most natural response to
-          # duplicate-PR spam there is. Tested FIRST, that closure read as "a human
-          # rejected this changeset" and suppressed it permanently while a decision
-          # was still pending in an open PR. A closure is only a rejection once no
-          # open PR carries the changeset any more.
+          # matches SEVERAL PRs, and closing the spam DUPLICATE is the most natural
+          # response to duplicate-PR spam there is (that is how #350 was closed
+          # while #343 carried the same changeset marker). Whenever such a closure
+          # coexists with a still-OPEN PR for the same changeset — the [CLOSED,
+          # OPEN] shape — testing the rejection FIRST read the closure as "a human
+          # rejected this changeset" and suppressed a decision that was still
+          # PENDING in the open PR. A closure is only a rejection once NO open PR
+          # carries the changeset any more.
+          #
+          # It is exactly that shape the order changes. Where the survivor is
+          # MERGED rather than open — the live query for changeset
+          # eaa8db65f5647493 on 2026-08-04 returned [#350 CLOSED, #343 MERGED] —
+          # BOTH orders reach the same verdict (REJECTED, #350), because a MERGED
+          # PR is an accepted decision and never a pending proposal. What makes
+          # that state recoverable is the suppression notice below, not this order.
+          #
+          # Tested BEFORE the no-new-commit return further down, too, and for the
+          # same reason: that gate says nothing about OPEN-vs-CLOSED precedence,
+          # and with the rejection behind it a re-fire whose note is already in the
+          # repo published no `rejected` at all — so the suppression notice could
+          # not fire and the needs-human alert reds the job with its contentless
+          # body every morning instead.
           #
           # `.state == "CLOSED"` and NEVER "MERGED": gh reports a merged PR as
           # MERGED, so a decision a human ACCEPTED can never read as one they
@@ -1151,6 +1168,18 @@ jobs:
             # Emit it like every other early return, so the rejected PR is
             # still nameable (and the "every exit names a PR" invariant holds).
             emit_pr "$REJECTED" "$REJECTED_URL"
+            exit 0
+          fi
+
+          # Re-fire of an already-persisted note: no new commit -> nothing to push.
+          # LAST of the three changeset-keyed decisions on purpose. Both decisions
+          # above have declined by the time this is reached (no OPEN PR pending, no
+          # CLOSED PR rejecting), so DUP_NUMBER is empty here and the emit is a
+          # no-op — it stays because "every early return hands the alert whatever PR
+          # it has" is the invariant, not because this path has one to hand over.
+          if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
+            emit_pr "$DUP_NUMBER" "$DUP_URL"
+            echo "needs-human: no new commit (note already persisted in the repo) — nothing to push"
             exit 0
           fi
 

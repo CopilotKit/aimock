@@ -354,6 +354,44 @@ function ifBlock(code: string, needle: string, label: string): string {
   return lines.slice(0, end + 1).join("\n");
 }
 
+/**
+ * Every `exit 0` in `code` that PRECEDES `needle`, paired with the `if …; then`
+ * line that guards it.
+ *
+ * The ordering guard this feeds used to compare the text positions of two
+ * selectors and nothing else. That is not the property it was asserting:
+ * relocating the closed-rejection test below an UNRELATED early return (the
+ * no-new-commit gate) kept the two selectors in the demanded order while making
+ * the rejection UNREACHABLE on that path — no `rejected` output, so the
+ * suppression notice cannot fire and the needs-human alert takes its contentless
+ * branch and reds the job every morning. Reachability is a property of every
+ * gate in between, not of two selectors' relative order.
+ */
+function earlyReturnsBefore(
+  code: string,
+  needle: string,
+  label: string,
+): Array<{ guard: string; line: number }> {
+  // Through `locate`: a -1 bound here would slice nothing and report NO early
+  // returns, i.e. the guard would pass by failing to look.
+  const lines = code.slice(0, locate(code, needle, label)).split("\n");
+  return lines.flatMap((l, i) => {
+    if (!/^\s*exit 0\s*$/.test(l)) return [];
+    // The nearest enclosing `if …; then`: the `exit 0` sits inside it, so its
+    // opener is the closest LESS-indented `if`/`elif` above it.
+    for (let j = i - 1; j >= 0; j--) {
+      if (!lines[j].trim()) continue;
+      if (indentOf(lines[j]) < indentOf(l) && /^\s*(if|elif)\b.*;\s*then\s*$/.test(lines[j])) {
+        return [{ guard: lines[j].trim(), line: i }];
+      }
+    }
+    throw new Error(
+      `${label}: the \`exit 0\` on line ${i} has no enclosing \`if …; then\` — refusing to ` +
+        "report an unguarded early return as if it were guarded",
+    );
+  });
+}
+
 /** The `while … done < <(…)` loop opened by `needle`, up to its process-substitution `done`. */
 function whileLoop(code: string, needle: string, label: string): string {
   const at = code.indexOf(needle);
@@ -2283,6 +2321,24 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         code.slice(dupAt, rejAt),
         `${st.name}: the open-duplicate path does not exit before the rejection test`,
       ).toMatch(/^\s*exit 0$/m);
+
+      // …and the open-duplicate dedup is the ONLY early return allowed to
+      // outrank the rejection test. Every OTHER gate reaching `exit 0` first
+      // makes the rejection unreachable on that path — which is how the
+      // `HEAD_SHA == BASE_SHA` no-new-commit return (a gate with nothing to say
+      // about OPEN-vs-CLOSED precedence) came to sit in front of it: the state
+      // then published no `rejected`, the suppression notice could not fire, and
+      // the needs-human alert reds the job with its contentless body every
+      // morning. Asked of EVERY early return, so a third gate cannot be
+      // interposed later either.
+      for (const { guard, line } of earlyReturnsBefore(code, 'REJECTED_PR="', st.name!)) {
+        expect(
+          guard,
+          `${st.name}: the early return at body line ${line} (\`${guard}\`) reaches ` +
+            "`exit 0` BEFORE the closed-rejection test, so a human rejection is never " +
+            "detected on that path — only the OPEN-duplicate dedup may outrank it",
+        ).toMatch(/^if \[ -n "\$DUP[A-Z_]*" \]; then$/);
+      }
 
       // …and the selectors, RUN for real, behave that way on the live payload.
       expect(
