@@ -1190,23 +1190,38 @@ jobs:
             exit 0
           fi
 
-          # SECONDARY de-dup: never open a SECOND PR for a note a still-open PR
-          # already proposes, matched by the per-note "drift-proposal-note: <path>"
-          # body marker this step writes below — NOTE_MARKERS[i], the same string the
-          # self-heal re-asserts, so the emitted set and the matched set cannot drift
-          # apart. (NOTES / NOTE_MARKERS are computed at the top of this step because
-          # the marker self-heal needs them, and it runs before every guard here.)
+          # A PER-NOTE OVERLAP IS REPORTED. IT DOES NOT DECIDE THE RUN.
+          #
+          # This loop used to `exit 0` the whole step on the FIRST note that some
+          # open PR already proposed, and that lost work. The mixed run is the case:
+          # drift-sync mechanically applied a registry edit AND deferred a different
+          # family to a human. If the deferred note is already proposed by a PR from
+          # an EARLIER run — whose outcome set was different, so it hashes to a
+          # different changeset key and the primary guard legitimately does not fire
+          # — this loop matched that note and abandoned the run. The registry edit
+          # was committed locally, never pushed, proposed to nobody, and re-detected
+          # and re-abandoned identically every morning. A note-set that merely GREW
+          # since the last run (notes {B} then {B,C}) loses C the same way.
+          #
+          # A stand-down here can never be right, which is why the remedy is to
+          # remove it rather than narrow it: control only reaches this point after
+          # the primary changeset guard has declined, so by construction NO open PR
+          # carries this run's changeset key, so this run's content is un-proposed.
+          #
+          # Reporting it still earns its place: two open PRs carrying one note looks
+          # exactly like the duplicate-PR spam this workflow exists to prevent, and
+          # a human reading the second PR deserves to know why it exists. The
+          # `emit_pr` also goes — this run is about to open its OWN PR, and naming
+          # someone else's would make the alert cite a PR that does not carry the
+          # decision. NOTES / NOTE_MARKERS are computed at the top of this step; the
+          # marker self-heal needs them and must run before every guard here.
           for i in "${!NOTES[@]}"; do
             note="${NOTES[$i]}"
             [ -n "$note" ] || continue
             DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "${NOTE_MARKERS[$i]}" \
               'map(select((.body // "") | contains($m))) | .[0] // empty')"
             if [ -n "$DUP" ]; then
-              DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
-              DUP_URL="$(printf '%s' "$DUP" | jq -r '.url')"
-              emit_pr "$DUP_NUMBER" "$DUP_URL"
-              echo "needs-human: note ${note} already proposed in open PR #${DUP_NUMBER} — not opening a duplicate"
-              exit 0
+              echo "::warning::note ${note} is ALSO proposed by open PR #$(printf '%s' "$DUP" | jq -r '.number'), but THIS run's changeset ${CHANGESET_KEY} is not proposed anywhere — so it still gets its own PR rather than being dropped. Both PRs carry that note's marker; merging or closing either leaves the other intact."
             fi
           done
 
