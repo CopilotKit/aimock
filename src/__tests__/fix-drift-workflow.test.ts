@@ -109,6 +109,30 @@ function parseTriggers(src: string): {
   return { names, workflowRunWorkflows };
 }
 
+/**
+ * The `sync` JOB's own `permissions:` mapping, scope -> level.
+ *
+ * Read from the JOB's node (a `permissions:` at four-space indent), NOT from the
+ * first `indexOf("permissions:")` — that one is the WORKFLOW-level block, and a
+ * guard that slices from it reports the workflow's grants while claiming to
+ * describe the job's. Comments are skipped so a hand-re-widening under one
+ * cannot hide.
+ */
+function jobPermissions(src: string = wf): Record<string, string> {
+  const lines = src.split("\n");
+  const at = lines.findIndex((l) => /^ {4}permissions:/.test(l));
+  if (at === -1) throw new Error("fix-drift.yml: the sync job declares no `permissions:`");
+  const out: Record<string, string> = {};
+  for (let i = at + 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    if (indentOf(lines[i]) <= 4) break;
+    if (/^\s*#/.test(lines[i])) continue;
+    const m = /^\s*["']?([A-Za-z-]+)["']?:\s*["']?([A-Za-z-]+)["']?\s*$/.exec(lines[i]);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
 /** The `sync` job's `if:` gate, as a single flattened expression string. */
 function syncJobIf(src: string): string {
   const idx = src.indexOf("    if: >-");
@@ -184,6 +208,11 @@ function steps(src: string = wf): Step[] {
         // Block scalar (`|`, `>-`, …) or an inline value.
         if (!/^[|>]/.test(inline) && inline !== "") {
           if (key === "if") step.if = inline;
+          // An INLINE `run:` is a run body too. Dropping it made the git-push
+          // credential injection (a one-liner) invisible to every guard that
+          // reads step bodies — including the one asserting no push depends on
+          // the ambient GITHUB_TOKEN.
+          if (key === "run") step.run = inline + "\n";
           continue;
         }
         const child: string[] = [];
@@ -890,6 +919,96 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
     expect(wf).not.toMatch(/check-runs/);
     expect(wf).not.toMatch(/gh pr checks/);
     expect(wf).not.toMatch(/\bstatuses\b/);
+  });
+
+  // -------------------------------------------------------------------------
+  // The same trim, one scope further in. `permissions:` governs the AMBIENT
+  // GITHUB_TOKEN, and this job never uses it: `persist-credentials: false`
+  // keeps GITHUB_TOKEN out of the git config, every `gh` call reads a GH_TOKEN
+  // set from the minted app token, and the push goes through an `insteadOf`
+  // credential built from that same token. So `contents: write` +
+  // `pull-requests: write` granted nothing to anything — they only widened the
+  // token handed to every `run:` block in a job that clones a third-party repo
+  // and shells out to provider SDKs.
+  //
+  // The premise is checked BEFORE the ceiling, and from the artifact rather
+  // than from a list kept here: narrowing to `contents: read` is only safe
+  // while no write actually depends on the ambient token, so the guard that
+  // says "no write depends on it" is the load-bearing one.
+  // -------------------------------------------------------------------------
+  const APP_TOKEN = "${{ steps.app-token.outputs.token }}";
+
+  it("PREMISE: no step anywhere consumes the ambient GITHUB_TOKEN", () => {
+    expect(
+      wf,
+      "a step reads secrets.GITHUB_TOKEN, so the job's `permissions:` are live and " +
+        "narrowing them breaks that step",
+    ).not.toMatch(/secrets\.GITHUB_TOKEN/);
+    expect(wf).not.toMatch(/github\.token/);
+    // …and checkout must not leave it behind in the git config either, which is
+    // the non-obvious way a `git push` can depend on GITHUB_TOKEN without ever
+    // naming it.
+    expect(wf).toMatch(/uses: actions\/checkout@[^\n]*\n\s*with:\n\s*persist-credentials: false/);
+  });
+
+  it("PREMISE: every `gh` call is authenticated by the MINTED APP TOKEN, not the ambient one", () => {
+    // `gh` at a COMMAND position (line start, or inside `$(…)`). A looser match
+    // also hits the gate alert's `FAILING_STEP="… gh pr create error …"` prose,
+    // which would demand a token on a step that calls nothing.
+    const ghSteps = steps().filter((s) => /(^\s*|\$\()gh\s/m.test(codeOf(s)));
+    expect(
+      ghSteps.map((s) => s.id).sort(),
+      "the `gh`-calling steps are not the two PR-open steps — the guard is looking at " +
+        "the wrong steps, or a new step started calling `gh`",
+    ).toEqual(["needs_human_pr", "pr"]);
+    for (const s of ghSteps) {
+      expect(
+        s.env.GH_TOKEN,
+        `${s.name}: calls \`gh\` without GH_TOKEN set from the minted app token, so it ` +
+          "falls back to the ambient GITHUB_TOKEN and the narrowed permissions break it",
+      ).toBe(APP_TOKEN);
+    }
+  });
+
+  it("PREMISE: every `git push` runs behind the app-token `insteadOf` credential", () => {
+    const inject = steps().find((s) => /insteadOf/.test(codeOf(s)));
+    expect(inject, "no step injects a git push credential at all").toBeDefined();
+    expect(codeOf(inject!)).toContain("x-access-token:${TOKEN}");
+    expect(inject!.env.TOKEN).toBe(APP_TOKEN);
+    const order = steps();
+    const injectAt = order.indexOf(inject!);
+    for (const s of order.filter((x) => /git push/.test(codeOf(x)))) {
+      expect(
+        order.indexOf(s),
+        `${s.name}: pushes BEFORE the app-token credential is injected, so it would ` +
+          "push with whatever ambient credential checkout left behind",
+      ).toBeGreaterThan(injectAt);
+    }
+  });
+
+  it("the sync JOB declares its own per-scope permissions mapping, not a blanket scalar", () => {
+    const line = wf.split("\n").find((l) => /^ {4}permissions:/.test(l));
+    expect(line, "the sync job declares no `permissions:` of its own").toBeDefined();
+    expect(
+      line!.slice(line!.indexOf(":") + 1).trim(),
+      "`permissions:` carries an inline value (`read-all`, `write-all`, or a flow " +
+        "mapping) — a blanket grant, not a per-scope mapping",
+    ).toBe("");
+    expect(Object.keys(jobPermissions()).length).toBeGreaterThan(0);
+  });
+
+  it("the sync JOB grants NO write scope — `contents: read` is the whole ceiling", () => {
+    const perms = jobPermissions();
+    const widenings = Object.entries(perms).filter(
+      ([scope, level]) => !(level === "none" || (scope === "contents" && level === "read")),
+    );
+    expect(
+      widenings,
+      "the sync job's `permissions:` grant more than `contents: read`, yet no step " +
+        "consumes the ambient GITHUB_TOKEN at all (see the PREMISE guards above) — " +
+        "the extra grants widen the token every `run:` block in the job receives " +
+        "while buying nothing",
+    ).toEqual([]);
   });
 });
 
