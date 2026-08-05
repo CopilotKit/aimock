@@ -1056,6 +1056,59 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
     ).not.toEqual([]);
   });
 
+  /**
+   * A drift-sync that printed a CLEAN, classifiable, quiet-day log and then
+   * exited non-zero. Reachable from any Node-level failure after the log lines —
+   * an unhandled rejection on a dangling promise, an OOM on the way out.
+   */
+  const quietThenDied = (exit: number): string =>
+    [
+      "#!/bin/sh",
+      "echo 'unchecked-providers='",
+      "echo 'changeset-key='",
+      "echo 'reason=ok-no-churn'",
+      `exit ${exit}`,
+      "",
+    ].join("\n");
+
+  it("a clean reason followed by a NON-ZERO exit is not a quiet day either", () => {
+    // `exit_code` was captured, published, and gated on by NOTHING: the step's
+    // only exit test read `REASON`, so "the process said it was fine and then
+    // died" exited 0, concluded green, and selected none of the six Slack posts.
+    // The same fail-open encoding as the `provider-unchecked` window one layer
+    // down — an UNKNOWN collapsing into the answer that passes.
+    const obs = observeSyncStep(wf, quietThenDied(1));
+    expect(
+      obs.outputs.exit_code,
+      "the scenario did not actually make drift-sync exit non-zero",
+    ).toBe("1");
+    expect(
+      obs.stepExit,
+      `drift-sync printed reason=ok-no-churn and then exited ${obs.outputs.exit_code}, but ` +
+        `the sync STEP exited 0 and published reason=${JSON.stringify(obs.outputs.reason ?? "")}` +
+        " — the job concludes GREEN, every reason-keyed alert `if:` is false, and the " +
+        "catch-all needs failure(), so a dying sync is byte-identical to a quiet day",
+    ).not.toBe(0);
+    const reason = obs.outputs.reason ?? "";
+    const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));
+    expect(
+      keyed.map((s) => s.name),
+      `the step publishes reason='${reason}' for a sync that died after reporting, but no ` +
+        "alert step's `if:` mentions it — the fault is published into a void",
+    ).not.toEqual([]);
+  });
+
+  it("KNOWN-NEGATIVE: the same clean log with a ZERO exit is still a quiet day", () => {
+    // Without this the guard above is satisfied by a step that reds on every
+    // ok-no-churn run, which would alert 364 days a year and teach a human to
+    // ignore the channel — silence by another route.
+    const obs = observeSyncStep(wf, quietThenDied(0));
+    expect(obs.outputs.reason, "a genuinely quiet day was reclassified as a fault").toBe(
+      SyncCoreReason.OK_NO_CHURN,
+    );
+    expect(obs.stepExit, "a genuinely quiet day fails the step").toBe(0);
+  });
+
   it("the reasons that signal a PROBLEM are keyed on by an alert step", () => {
     for (const reason of [SyncCoreReason.GATE_FAILED, SyncCoreReason.NEEDS_HUMAN]) {
       const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));

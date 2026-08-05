@@ -261,6 +261,31 @@ jobs:
               fi
             fi
           fi
+          # A PROCESS THAT SAID IT WAS FINE AND THEN DIED IS NOT A QUIET DAY.
+          #
+          # `exit_code` was captured, published — and gated on by NOTHING: the
+          # step's only exit test below reads `REASON` alone. So
+          # `reason=ok-no-churn` plus a non-zero drift-sync exit left the STEP
+          # exiting 0, the job GREEN, every reason-keyed alert `if:` false and the
+          # catch-all (which needs `failure()`) silent: zero Slack, byte-identical
+          # to a genuinely quiet day. Reachable from any Node-level failure after
+          # the log lines are printed — an unhandled rejection on a dangling
+          # promise, an OOM on the way out.
+          #
+          # Scoped to the `ok-*` reasons: those are the ones that claim the run was
+          # FINE, and they are the window where the death is invisible.
+          # `needs-human` and `gate-failed` both exit non-zero BY DESIGN
+          # (`return outcome.ok ? 0 : 1`), and both already raise their own alert.
+          # Reclassified into the existing `sync-crashed` bucket rather than a new
+          # reason, so no alert `if:` has to learn a new value.
+          case "${REASON}" in
+            ok-*)
+              if [ "${SYNC_EXIT}" -ne 0 ]; then
+                echo "::error::drift-sync printed reason=${REASON} and then exited ${SYNC_EXIT} — a process that reports a clean run and then dies is not a quiet day; classifying as sync-crashed"
+                REASON="sync-crashed"
+              fi
+              ;;
+          esac
           {
             echo "exit_code=${SYNC_EXIT}"
             echo "reason=${REASON}"
@@ -1478,7 +1503,7 @@ jobs:
           # what jq encodes into a line break. Same idiom as test-drift.yml.
           NL=$'\n'
           if [ "${SYNC_REASON}" = "sync-crashed" ]; then
-            FAILING_STEP="Run deterministic drift sync (drift-sync.ts CRASHED — exited ${SYNC_EXIT_CODE:-?} without printing a classifiable reason= line; see the drift-sync-log artifact)"
+            FAILING_STEP="Run deterministic drift sync (drift-sync.ts exited ${SYNC_EXIT_CODE:-?} and the run is UNCLASSIFIABLE — it printed no usable reason= line, or it reported a clean one and then died anyway; see the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "provider-unchecked" ]; then
             FAILING_STEP="Run deterministic drift sync (a provider was never actually CHECKED — a missing, revoked or expired API key made it skip, so 'no churn' meant 'could not look'; rotate the credential. See the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "gate-failed" ]; then
