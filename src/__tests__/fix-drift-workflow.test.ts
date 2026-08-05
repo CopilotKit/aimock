@@ -788,9 +788,11 @@ const MAPFILE_SHIM = [
  *
  * So run the decision rather than reading it. `git` answers `rev-parse` and
  * `diff --name-only` from `headSha`/`diffFiles`; `gh pr list` answers the
- * `--state open` self-heal listing and the `--state all --search` dedup listing
- * separately, because pointing one selector at the other listing is itself a
- * defect this file guards.
+ * self-heal candidate listing and the body-keyed dedup listing separately,
+ * because pointing one selector at the other listing is itself a defect this
+ * file guards. The two are told apart by `--search`, NOT by `--state`: both are
+ * `--state all` now that the marker repair has to reach the CLOSED PR that
+ * records a rejection, and only the dedup listing is body-keyed.
  */
 function observePersistStep(
   step: Step,
@@ -835,8 +837,8 @@ function observePersistStep(
       [
         `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
         'case "$*" in',
-        '  "pr list --state open"*) cat "$GH_OPEN_JSON" ;;',
-        '  "pr list --state all"*) cat "$GH_ALL_JSON" ;;',
+        '  *"--search"*) cat "$GH_ALL_JSON" ;;',
+        '  "pr list --state open"*|"pr list --state all"*) cat "$GH_OPEN_JSON" ;;',
         "esac",
         "exit 0",
       ].join("\n"),
@@ -3114,13 +3116,21 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       const listing = ghListFor(code, "MANAGED", st.name!);
       expect(
         listing,
-        `${st.name}: the marker-repair candidate listing is not a plain --state open query`,
-      ).toContain("--state open");
-      expect(
-        listing,
         `${st.name}: the candidate listing for the marker repair uses --search, whose ` +
           "body-keyed index cannot see the very body being repaired",
       ).not.toContain("--search");
+      // …and it must reach CLOSED PRs. A closed PR's body is where a human's
+      // REJECTION of a changeset is recorded, and that is the body most likely to be
+      // edited (writing down why you declined). `--state open` here meant the one
+      // marker whose loss is PERMANENT — the dedup listing is body-keyed and cannot
+      // find it either — was the one marker the repair could never reach, so the
+      // workflow re-proposed the rejected changeset every morning. The state
+      // NARROWING that keeps this safe lives in the selection below, not in the query.
+      expect(
+        listing,
+        `${st.name}: the marker-repair candidate listing cannot see CLOSED PRs, so a human ` +
+          "editing the closed PR that records a rejection destroys that rejection for good",
+      ).toContain("--state all");
 
       // (b) The repair LOOP must iterate the selected candidates. Redirecting its
       // `done` from anything else (`printf ''`) leaves the self-healer entirely
@@ -4855,5 +4865,155 @@ describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not whe
     expect(r.pushed).toBe(false);
     expect(r.outputs.number).toBe("42");
     expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // A REJECTION lives in a closed PR's body, so a human editing that body loses it.
+  //
+  // Closing a drift PR rejects its changeset, and the record of that decision is
+  // the `<!-- drift-changeset: <key> -->` marker in the CLOSED PR's body. Two
+  // things then conspire: the dedup listing finds closed PRs with
+  // `--search "<key> in:body"`, which cannot match a body the key was deleted
+  // from; and the marker self-heal that exists precisely to repair deleted markers
+  // listed `--state open`, so it never saw the closed PR either. The rejection was
+  // gone for good and the bot re-proposed the same changeset every morning.
+  //
+  // The head branch ends in "-<changeset key>" and a PR's head branch cannot be
+  // renamed, so the closed PR is still identifiable body-independently. The
+  // candidacy filter is UNCHANGED — the population widens from OPEN to
+  // OPEN-or-CLOSED, and every candidate still has to carry this run's key in its
+  // branch, which is what keeps a human's `fix/drift-<slug>` branch out.
+  // -------------------------------------------------------------------------
+  const humanEditedTheRejection = (stepId: "pr" | "needs_human_pr"): PrStepRun => {
+    const branch =
+      stepId === "pr"
+        ? `fix/drift-2026-07-01-8888-${KEY}`
+        : `drift-needs-human/2026-07-01-8888-${KEY}`;
+    const closed: PrFixture = {
+      number: 77,
+      url: "https://x/pr/77",
+      state: "CLOSED",
+      headRefName: branch,
+      // A human rewrote the body and the machine marker went with it.
+      body: "Rejecting this — we are keeping the family.\n",
+      files: [{ path: NOTE }],
+      author: BOT,
+    };
+    return observePrStep(stepId, {
+      changesetKey: KEY,
+      committed: stepId === "pr" ? { [REGISTRY]: "// edited\n" } : { [NOTE]: "note\n" },
+      // ONE population. The self-heal only sees this closed PR once it asks for
+      // closed PRs, and the body-keyed dedup search cannot find a body the key was
+      // deleted from — both facts are derived, not asserted here.
+      prs: [closed],
+      matchOut: '{"url":"https://x/pr/52","number":52}',
+    });
+  };
+
+  for (const stepId of ["pr", "needs_human_pr"] as const) {
+    it(`${stepId}: a human editing the CLOSED PR's body does not resurrect the rejected changeset`, () => {
+      const r = humanEditedTheRejection(stepId);
+      expect(
+        r.created,
+        "the human REJECTED this changeset by closing its PR, then edited that PR's body — " +
+          "and the workflow re-proposed the identical changeset, as it would again every " +
+          `morning. stdio: ${r.stdio}`,
+      ).toBe(false);
+      expect(r.outputs.rejected, "the run published no rejection at all").toBe("77");
+      // …the repair is REAL: the marker went back onto the closed PR, appended to
+      // the human's prose rather than replacing it.
+      expect(Object.keys(r.edits)).toContain("77");
+      expect(r.edits["77"]).toContain(`<!-- drift-changeset: ${KEY} -->`);
+      expect(
+        r.edits["77"],
+        "the repair overwrote the human's own prose instead of appending to it",
+      ).toContain("Rejecting this — we are keeping the family.");
+      expect(r.stepExit, r.stdio).toBe(0);
+    });
+  }
+
+  it("needs_human_pr: the widened self-heal does NOT touch a MERGED PR either", () => {
+    // The needs-human step admits CLOSED through its own `select_state`, and that
+    // predicate is the only thing keeping MERGED out. Without this, relaxing it to
+    // `true` — admitting every state — changes nothing observable.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 88,
+          url: "https://x/pr/88",
+          state: "MERGED",
+          headRefName: `drift-needs-human/2026-07-01-8888-${KEY}`,
+          body: "merged, body since rewritten\n",
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/54","number":54}',
+    });
+    expect(Object.keys(r.edits), "a MERGED PR's body was rewritten").toEqual([]);
+    expect(r.outputs.rejected ?? "", "a MERGED PR was read as a human rejection").toBe("");
+    expect(r.created, r.stdio).toBe(true);
+  });
+
+  it("needs_human_pr: admitting CLOSED does not let the closed BACKLOG wedge the daily cron", () => {
+    // The narrowing that matters: CLOSED is admitted through the branch-key anchor
+    // ONLY. The note-path anchor is the one that runs the fail-closed changed-file
+    // audit — a bot PR whose file list came back TRUNCATED at gh's 100-file ceiling
+    // is treated as "cannot prove the note is absent" and hard-fails the step. That
+    // is right for an OPEN PR (it might really be proposing this note) and wrong for
+    // the accumulated closed backlog, where a single fat closed PR would red the cron
+    // every morning for ever.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 66,
+          url: "https://x/pr/66",
+          state: "CLOSED",
+          // A bot drift branch, but NOT this run's key — so anchor (a) misses and
+          // only the note-path anchor could select it.
+          headRefName: `drift-needs-human/2026-01-09-4242-${OLD_KEY}`,
+          body: "closed long ago\n",
+          files: Array.from({ length: 100 }, (_, i) => ({ path: `f${i}.ts` })),
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/55","number":55}',
+    });
+    expect(
+      r.stepExit,
+      "a CLOSED bot PR with a truncated file list wedged the step, so the daily cron reds " +
+        `on the closed backlog and no drift is ever proposed again. stdio: ${r.stdio}`,
+    ).toBe(0);
+    expect(r.created, r.stdio).toBe(true);
+    expect(Object.keys(r.edits)).toEqual([]);
+  });
+
+  it("the widened self-heal does NOT touch a MERGED PR (an accepted decision is not a rejection)", () => {
+    // Widening OPEN to OPEN-or-CLOSED must not reach a merged PR: gh reports one
+    // as MERGED, it is an ACCEPTED decision, and appending machine markers to it
+    // would be a write to a PR no guard here consults.
+    const r = observePrStep("pr", {
+      changesetKey: KEY,
+      committed: { [REGISTRY]: "// edited\n" },
+      prs: [
+        {
+          number: 88,
+          url: "https://x/pr/88",
+          state: "MERGED",
+          headRefName: `fix/drift-2026-07-01-8888-${KEY}`,
+          body: "merged, body since rewritten\n",
+          files: [],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/53","number":53}',
+    });
+    expect(Object.keys(r.edits), "a MERGED PR's body was rewritten").toEqual([]);
+    expect(r.outputs.rejected ?? "", "a MERGED PR was read as a human rejection").toBe("");
+    expect(r.created, r.stdio).toBe(true);
   });
 });
