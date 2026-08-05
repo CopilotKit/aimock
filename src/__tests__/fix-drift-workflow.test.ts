@@ -348,6 +348,337 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
   }
 }
 
+// ---------------------------------------------------------------------------
+// GitHub-Actions `if:` EXPRESSION EVALUATOR.
+//
+// Several claims in this suite are about REACHABILITY — "on this failure the
+// job cannot end green with no alert". That is a question about how the runner
+// SELECTS steps, and no substring match can answer it. This evaluates the
+// subset of the expression language the workflow uses (status functions,
+// `github.*` / `steps.*` contexts, `==`/`!=`, `&&`/`||`/`!`, parentheses) so
+// the guards can OBSERVE which steps a given scenario selects.
+// ---------------------------------------------------------------------------
+/**
+ * GitHub's real step-outcome domain, plus the one state the runner has not
+ * produced yet.
+ *
+ * `cancelled` is a FOURTH outcome, not a spelling of failure — a step the job's
+ * cancellation cut short reports it, and a condition keyed on `== 'skipped'` or
+ * `== 'failure'` is false for it. Modelling it explicitly is what lets the
+ * guards below ask "is any consumer treating a cancelled step as some OTHER
+ * outcome".
+ */
+type StepOutcome = "success" | "failure" | "cancelled" | "skipped" | "";
+
+interface StepState {
+  outcome: StepOutcome;
+  outputs: Record<string, string>;
+}
+interface EvalCtx {
+  event_name: string;
+  /** Has any earlier step failed? Drives failure()/success(). */
+  jobFailed: boolean;
+  /**
+   * Has the job been CANCELLED (manual cancel, or the job's `timeout-minutes`
+   * firing)? Drives cancelled(), and suppresses success().
+   *
+   * This is a THIRD job state, not a flavour of failure: GitHub's `failure()` is
+   * false for a cancelled job, so an alert keyed on `failure()` alone stays
+   * silent through a timeout. Modelling it as `jobFailed` would hide exactly the
+   * defect this exists to catch.
+   */
+  jobCancelled: boolean;
+  steps: Record<string, StepState>;
+}
+
+type Tok = { t: "op" | "str" | "num" | "id" | "lparen" | "rparen"; v: string };
+
+function lexExpr(src: string): Tok[] {
+  const out: Tok[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (/\s/.test(c)) {
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      let j = i + 1;
+      let v = "";
+      while (j < src.length) {
+        if (src[j] === "'" && src[j + 1] === "'") {
+          v += "'";
+          j += 2;
+          continue;
+        }
+        if (src[j] === "'") break;
+        v += src[j++];
+      }
+      out.push({ t: "str", v });
+      i = j + 1;
+      continue;
+    }
+    if (["==", "!=", "&&", "||"].includes(src.slice(i, i + 2))) {
+      out.push({ t: "op", v: src.slice(i, i + 2) });
+      i += 2;
+      continue;
+    }
+    if (c === "(") {
+      out.push({ t: "lparen", v: c });
+      i++;
+      continue;
+    }
+    if (c === ")") {
+      out.push({ t: "rparen", v: c });
+      i++;
+      continue;
+    }
+    if (c === "!") {
+      out.push({ t: "op", v: "!" });
+      i++;
+      continue;
+    }
+    const id = /^[A-Za-z_][A-Za-z0-9_.\-*]*/.exec(src.slice(i));
+    if (id) {
+      out.push({ t: "id", v: id[0] });
+      i += id[0].length;
+      continue;
+    }
+    const num = /^-?\d+/.exec(src.slice(i));
+    if (num) {
+      out.push({ t: "num", v: num[0] });
+      i += num[0].length;
+      continue;
+    }
+    throw new Error(`if-expression: cannot lex ${JSON.stringify(src.slice(i, i + 20))}`);
+  }
+  return out;
+}
+
+const STATUS_FN = /\b(success|failure|cancelled|always)\s*\(\s*\)/;
+
+function evaluateIf(exprIn: string, ctx: EvalCtx): boolean {
+  let src = exprIn.trim();
+  if (src.startsWith("${{") && src.endsWith("}}")) src = src.slice(3, -2).trim();
+  // A step `if:` with NO status-check function carries an implicit `success()`:
+  // the runner skips it once an earlier step has failed. Modelling that is
+  // load-bearing — the `assert` step relies on exactly this.
+  if (!STATUS_FN.test(src)) src = `success() && (${src})`;
+
+  const toks = lexExpr(src);
+  let p = 0;
+  const peek = (): Tok | undefined => toks[p];
+
+  const truthy = (v: string | boolean): boolean => (typeof v === "boolean" ? v : v !== "");
+
+  const resolve = (path: string): string => {
+    if (path === "github.event_name") return ctx.event_name;
+    const st = /^steps\.([A-Za-z0-9_-]+)\.(.+)$/.exec(path);
+    if (st) {
+      const state = ctx.steps[st[1]] ?? { outcome: "" as const, outputs: {} };
+      if (st[2] === "outcome" || st[2] === "conclusion") return state.outcome;
+      const out = /^outputs\.(.+)$/.exec(st[2]);
+      if (out) return state.outputs[out[1]] ?? "";
+      return "";
+    }
+    // Any other context resolves to the empty string, exactly as an absent
+    // context does on the runner.
+    return "";
+  };
+
+  function primary(): string | boolean {
+    const t = peek();
+    if (!t) throw new Error(`if-expression: unexpected end of input in ${JSON.stringify(src)}`);
+    if (t.t === "lparen") {
+      p++;
+      const v = or();
+      if (peek()?.t !== "rparen") throw new Error("if-expression: missing `)`");
+      p++;
+      return v;
+    }
+    if (t.t === "str" || t.t === "num") {
+      p++;
+      return t.v;
+    }
+    if (t.t === "id") {
+      p++;
+      if (peek()?.t === "lparen") {
+        p++;
+        if (peek()?.t !== "rparen") throw new Error(`if-expression: ${t.v}() takes no arguments`);
+        p++;
+        switch (t.v) {
+          case "always":
+            return true;
+          case "success":
+            return !ctx.jobFailed && !ctx.jobCancelled;
+          case "failure":
+            // Deliberately NOT `|| jobCancelled`: on the runner a cancelled job
+            // does NOT satisfy failure(). That asymmetry is the whole point.
+            return ctx.jobFailed;
+          case "cancelled":
+            return ctx.jobCancelled;
+          default:
+            throw new Error(`if-expression: unmodelled function ${t.v}()`);
+        }
+      }
+      if (t.v === "true" || t.v === "false") return t.v === "true";
+      return resolve(t.v);
+    }
+    throw new Error(`if-expression: unexpected token ${t.v}`);
+  }
+
+  function unary(): string | boolean {
+    if (peek()?.t === "op" && peek()!.v === "!") {
+      p++;
+      return !truthy(unary());
+    }
+    return primary();
+  }
+
+  function cmp(): string | boolean {
+    const a = unary();
+    const t = peek();
+    if (t?.t === "op" && (t.v === "==" || t.v === "!=")) {
+      p++;
+      const b = unary();
+      const eq = String(a) === String(b);
+      return t.v === "==" ? eq : !eq;
+    }
+    return a;
+  }
+
+  function and(): boolean {
+    let v = truthy(cmp());
+    while (peek()?.t === "op" && peek()!.v === "&&") {
+      p++;
+      v = truthy(cmp()) && v;
+    }
+    return v;
+  }
+
+  function or(): boolean {
+    let v = and();
+    while (peek()?.t === "op" && peek()!.v === "||") {
+      p++;
+      v = and() || v;
+    }
+    return v;
+  }
+
+  const result = truthy(or());
+  if (p !== toks.length)
+    throw new Error(`if-expression: trailing tokens in ${JSON.stringify(src)}`);
+  return result;
+}
+
+/** Steps that exist to tell a human something (Slack + `::error::`). */
+const isAlertStep = (s: Step): boolean => /^(Alert|Notify)\b/.test(s.name ?? "");
+
+// ---------------------------------------------------------------------------
+// JOB SIMULATION. `evaluateIf` answers "would THIS step run"; several claims
+// here are about the job as a whole ("this failure reaches a human", "exactly
+// one alert fires"), and those depend on step ORDER: a step's `outcome` is
+// `skipped` once the runner has evaluated it, and empty before that. So walk the
+// steps in order, carrying the accumulated state forward.
+// ---------------------------------------------------------------------------
+interface Scenario {
+  event_name?: string;
+  /** Step ids or names that FAIL when the runner selects them. */
+  failing?: string[];
+  /** Step outputs, by step id, published when that step is selected. */
+  outputs?: Record<string, Record<string, string>>;
+  /**
+   * Step id or name DURING which the job is cancelled — a manual cancel, or the
+   * job's `timeout-minutes` firing. That step's outcome becomes 'cancelled' and
+   * every later step is skipped unless its `if:` names always() or cancelled().
+   */
+  cancelledAt?: string;
+}
+
+/**
+ * Does this step END in a deliberate non-zero exit, so that COMPLETING it always
+ * means `outcome == 'failure'`?
+ *
+ * Read off the step's OWN `run:` body — its last code line — rather than from a
+ * list of step names kept here: both alert steps deliberately `exit 1` so a
+ * human sees the run RED in CI too (pinned separately), while the success
+ * notification deliberately does not, and which is which must not be transcribed
+ * into this suite. A simulation that modelled every selected step it was not
+ * TOLD to fail as 'success' would model a workflow in which the alert steps exit
+ * 0 — nothing that exists — and that fiction is what makes an `outcome ==
+ * 'skipped'` clause look like it is holding an "exactly one alert" invariant.
+ */
+function completesNonZero(s: Step): boolean {
+  const code = codeOf(s)
+    .split("\n")
+    .filter((l) => l.trim() !== "");
+  return /^\s*exit [1-9][0-9]*\s*$/.test(code[code.length - 1] ?? "");
+}
+
+function simulateJob(
+  sc: Scenario,
+  src: string = wf,
+): {
+  selected: Step[];
+  alerts: string[];
+  jobFailed: boolean;
+  jobCancelled: boolean;
+  /** Per-step outcome, so a guard can name the outcome it means. */
+  outcomes: Record<string, StepOutcome>;
+} {
+  const ctx: EvalCtx = {
+    event_name: sc.event_name ?? "schedule",
+    jobFailed: false,
+    jobCancelled: false,
+    steps: {},
+  };
+  const failing = new Set(sc.failing ?? []);
+  const selected: Step[] = [];
+  /** Steps the cancellation cut short: they ran, but they did not DO their job. */
+  const cutShort = new Set<Step>();
+  for (const s of steps(src)) {
+    const runs = s.if === undefined ? !ctx.jobFailed && !ctx.jobCancelled : evaluateIf(s.if, ctx);
+    const cancels =
+      runs &&
+      sc.cancelledAt !== undefined &&
+      (s.id === sc.cancelledAt || s.name === sc.cancelledAt);
+    const fails =
+      runs &&
+      !cancels &&
+      ((s.id !== undefined && failing.has(s.id)) ||
+        (s.name !== undefined && failing.has(s.name)) ||
+        // A step that RAN TO COMPLETION and whose only exit path is `exit 1`
+        // reports 'failure' — the scenario does not get to say otherwise.
+        completesNonZero(s));
+    if (s.id) {
+      ctx.steps[s.id] = {
+        outcome: runs ? (cancels ? "cancelled" : fails ? "failure" : "success") : "skipped",
+        // Outputs are published by a step that RAN, even if it then failed (the
+        // sync step writes $GITHUB_OUTPUT before exiting non-zero). A step cut
+        // short by a cancellation published nothing.
+        outputs: runs && !cancels ? (sc.outputs?.[s.id] ?? {}) : {},
+      };
+    }
+    if (runs) selected.push(s);
+    if (cancels) cutShort.add(s);
+    if (fails) ctx.jobFailed = true;
+    if (cancels) ctx.jobCancelled = true;
+  }
+  return {
+    selected,
+    // DELIVERED alerts. A step the cancellation killed mid-`curl` told nobody
+    // anything, so counting it as an alert is the same class of fiction as
+    // modelling `exit 1` as success — and it is the fiction that would make a
+    // genuinely silent cancellation window look like it "alerted once".
+    alerts: selected.filter((s) => isAlertStep(s) && !cutShort.has(s)).map((s) => s.name!),
+    jobFailed: ctx.jobFailed,
+    jobCancelled: ctx.jobCancelled,
+    outcomes: Object.fromEntries(
+      Object.entries(ctx.steps).map(([id, st]) => [id, st.outcome] as const),
+    ),
+  };
+}
+
 describe("fix-drift.yml — the step slicer reads the artifact verbatim (both guards below depend on it)", () => {
   it("finds the named steps the guards address, by id and by name", () => {
     expect(steps().length).toBeGreaterThan(10);
@@ -1348,5 +1679,132 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
         ).toBeLessThan(c);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EVERY OUTCOME REACHES A HUMAN EXACTLY ONCE.
+//
+// The reachability question the text-shape guards above cannot answer: walk the
+// step list in order under a named scenario and read off which alerts the runner
+// would actually SELECT (and, for a cancellation, which of them were cut short
+// before their `curl` could deliver anything).
+//
+// The two MODEL guards come first: an alert step whose only exit path is
+// `exit 1` must be modelled as FAILING. A simulation that models it as
+// succeeding answers questions about a workflow that does not exist, and is
+// exactly what makes an `outcome == 'skipped'` clause look load-bearing.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
+  const CATCH_ALL = "Alert on early-infra failure (catch-all)";
+  const GATE_ALERT = "Alert on drift-sync-check gate failure";
+  const NEEDS_HUMAN_ALERT = "Alert on needs-human decision";
+  const OK = { url: "https://example.test/pr/1", number: "1" };
+
+  it("MODEL: an alert step whose only exit path is `exit 1` is modelled as FAILING, so an alerting run is modelled RED", () => {
+    const sim = simulateJob({
+      outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } },
+    });
+    expect(sim.alerts, "the gate alert did not fire on a gate-failed run").toEqual([GATE_ALERT]);
+    expect(
+      sim.jobFailed,
+      "the gate alert fired and ends in `exit 1`, yet the run is modelled GREEN — " +
+        "every claim this table makes about alert-step outcomes is then fiction",
+    ).toBe(true);
+  });
+
+  it("MODEL: the notification that does NOT end in `exit 1` is still modelled as SUCCEEDING", () => {
+    // Known-negative for the rule above: it must key on the step's own exit
+    // path, not on "is this an alert step".
+    const sim = simulateJob({
+      outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" }, pr: OK },
+    });
+    expect(sim.alerts).toEqual(["Notify Slack on sync success"]);
+    expect(sim.jobFailed, "a successful run was modelled RED by the success notification").toBe(
+      false,
+    );
+  });
+
+  const SCENARIOS: Array<{ label: string; scenario: Scenario; expect: string[] }> = [
+    {
+      label: "infra/setup failure before the sync step ever runs",
+      scenario: { failing: ["Clone ag-ui repo"] },
+      expect: [CATCH_ALL],
+    },
+    {
+      label: "drift-sync's own internal gate reverted the edit (gate-failed)",
+      scenario: { outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } } },
+      expect: [GATE_ALERT],
+    },
+    {
+      label: "ok-applied, then the defense-in-depth assert REFUSES",
+      scenario: {
+        failing: ["assert"],
+        outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" } },
+      },
+      expect: [GATE_ALERT],
+    },
+    {
+      // F#1: the window that used to be silent — assert SUCCEEDED, a later step
+      // failed, reason is non-empty so the catch-all stands down.
+      label: "ok-applied, assert PASSES, then Push/PR-create fails (F#1)",
+      scenario: {
+        failing: ["pr"],
+        outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" } },
+      },
+      expect: [GATE_ALERT],
+    },
+    {
+      label: "needs-human, note persisted fine",
+      scenario: {
+        outputs: {
+          sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+          needs_human_pr: OK,
+        },
+      },
+      expect: [NEEDS_HUMAN_ALERT],
+    },
+    {
+      // G#2: a persist failure is a TOOLING fault, so the gate alert owns it and
+      // the needs-human alert must stand down — otherwise both fire at once.
+      label: "needs-human, but the persist step itself FAILS",
+      scenario: {
+        failing: ["needs_human_pr"],
+        outputs: { sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" } },
+      },
+      expect: [GATE_ALERT],
+    },
+    {
+      // The window a `reason == ''` catch-all leaves open. Nothing drifted, so
+      // no reason-keyed alert exists — but the job can still fail (an artifact
+      // upload, a runner hiccup) with a NON-empty reason.
+      label: "ok-no-churn, then a later step fails (non-empty reason, no reason-keyed alert)",
+      scenario: {
+        failing: ["Upload drift-sync-check log"],
+        outputs: { sync: { reason: SyncCoreReason.OK_NO_CHURN, exit_code: "0" } },
+      },
+      expect: [CATCH_ALL],
+    },
+    {
+      label: "ok-applied all the way through — the success notification, not an alert",
+      scenario: {
+        outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" }, pr: OK },
+      },
+      expect: ["Notify Slack on sync success"],
+    },
+  ];
+
+  for (const { label, scenario, expect: wanted } of SCENARIOS) {
+    it(`${label} -> exactly: ${wanted.join(", ")}`, () => {
+      expect(simulateJob(scenario).alerts).toEqual(wanted);
+    });
+  }
+
+  it("no churn at all is silent (nothing happened; nothing to report)", () => {
+    const sim = simulateJob({
+      outputs: { sync: { reason: SyncCoreReason.OK_NO_CHURN, exit_code: "0" } },
+    });
+    expect(sim.jobFailed).toBe(false);
+    expect(sim.alerts).toEqual([]);
   });
 });
