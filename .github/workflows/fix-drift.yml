@@ -426,6 +426,9 @@ jobs:
       # false above). BOTH push paths need it: the ok-applied mechanical-edit PR
       # AND the needs-human note-persist PR below.
       - name: Configure git for push
+        # Named so the gate-failure alert can say THIS step is what broke. Without
+        # an id its failure window fell through to "an unidentified step".
+        id: gitcfg_push
         if: >-
           success() &&
           (steps.sync.outputs.reason == 'ok-applied' ||
@@ -1493,6 +1496,7 @@ jobs:
           SYNC_REASON: ${{ steps.sync.outputs.reason }}
           SYNC_EXIT_CODE: ${{ steps.sync.outputs.exit_code }}
           ASSERT_OUTCOME: ${{ steps.assert.outcome }}
+          GIT_PUSH_CFG_OUTCOME: ${{ steps.gitcfg_push.outcome }}
           PR_OUTCOME: ${{ steps.pr.outcome }}
           NEEDS_HUMAN_PR_OUTCOME: ${{ steps.needs_human_pr.outcome }}
         run: |
@@ -1508,16 +1512,32 @@ jobs:
             FAILING_STEP="Run deterministic drift sync (a provider was never actually CHECKED — a missing, revoked or expired API key made it skip, so 'no churn' meant 'could not look'; rotate the credential. See the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "gate-failed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts's own internal drift-sync-check gate reverted the mechanical edit before commit)"
-          elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
+          # The needs-human arms are gated on the RUN SHAPE, not on the persist
+          # step's outcome alone. On an ok-applied run that step is gated
+          # `reason == 'needs-human' && success()`, so the runner ALWAYS evaluates
+          # and skips it and `NEEDS_HUMAN_PR_OUTCOME` is ALWAYS 'skipped' — and
+          # with that arm tested first, EVERY ok-applied failure (a refused
+          # assert, a rejected push, a `gh pr create` error, an artifact upload)
+          # reported "the needs-human note was NOT persisted". False on a run that
+          # has no needs-human note, it sent a human hunting for a file that does
+          # not exist, and it left the three arms below dead: they can only be
+          # reached with the persist step neither 'failure' nor 'skipped', i.e.
+          # 'success', and this alert never fires in that state.
+          elif [ "${SYNC_REASON}" = "needs-human" ] && [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Persist needs-human note + open PR (push rejected, gh pr create error, or PR-match polling exhausted — the needs-human note may not have been persisted)"
-          elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "skipped" ]; then
+          elif [ "${SYNC_REASON}" = "needs-human" ] && [ "${NEEDS_HUMAN_PR_OUTCOME}" = "skipped" ]; then
             FAILING_STEP="Persist needs-human note + open PR was SKIPPED because an EARLIER step failed (it is gated on success()) — the needs-human note was NOT persisted, so the decision is not reachable in the repo"
           elif [ "${ASSERT_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Assert drift-sync-check (defense-in-depth)"
+          elif [ "${GIT_PUSH_CFG_OUTCOME}" = "failure" ]; then
+            FAILING_STEP="Configure git for push (the push credential could not be injected, so neither PR path could push)"
           elif [ "${PR_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Push branch + create PR"
           else
-            FAILING_STEP="an unidentified step after the ok-applied sync"
+            # Never contentless: the steps with no `id:` (both artifact uploads)
+            # cannot be named, so report the state this alert actually observed
+            # instead of asserting a step that did not fail.
+            FAILING_STEP="an unidentified step after drift-sync reported reason='${SYNC_REASON}' (observed outcomes: assert=${ASSERT_OUTCOME:-none}, gitcfg_push=${GIT_PUSH_CFG_OUTCOME:-none}, pr=${PR_OUTCOME:-none}, needs_human_pr=${NEEDS_HUMAN_PR_OUTCOME:-none} — most plausibly one of the artifact uploads, which have no id to name)"
           fi
           echo "::error::drift-sync-check gate failure window — failing step: ${FAILING_STEP} — this is a tooling fault, not a product decision"
           if [ -z "${SLACK_WEBHOOK:-}" ]; then

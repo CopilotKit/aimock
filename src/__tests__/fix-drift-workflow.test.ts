@@ -961,6 +961,44 @@ function simulateJob(
   };
 }
 
+/**
+ * An alert step's `env:`, filled from a SIMULATED run instead of from
+ * hand-written outcome strings.
+ *
+ * `NEEDS_HUMAN_PR_OUTCOME: ""` is a state the runner cannot produce: it
+ * evaluates every step's `if:`, so a step it did not select reports 'skipped',
+ * never ''. A fixture in that impossible class is what made three arms of the
+ * gate alert's `FAILING_STEP` ladder look reachable — on a real ok-applied run
+ * the persist step is ALWAYS 'skipped', the arm testing that sat first, and so
+ * every ok-applied failure got the needs-human wording while no arm ever named
+ * the step that actually broke.
+ *
+ * Derived from the step's OWN `env:` declarations, so an outcome the step starts
+ * reading is filled from the simulation rather than defaulting to an unreachable
+ * empty string, and an env pointing at a step id that does not exist THROWS.
+ */
+function alertEnvFrom(step: Step, sc: Scenario): Record<string, string> {
+  const res = simulateJob(sc);
+  const env: Record<string, string> = {};
+  for (const [key, expr] of Object.entries(step.env)) {
+    const outcome = /^\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.(?:outcome|conclusion)\s*\}\}$/.exec(expr);
+    if (outcome) {
+      if (!(outcome[1] in res.outcomes))
+        throw new Error(
+          `${step.name}: \`${key}\` reads steps.${outcome[1]}.outcome, and no step has that ` +
+            "id — the alert can never see it",
+        );
+      env[key] = res.outcomes[outcome[1]];
+      continue;
+    }
+    const output = /^\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\s*\}\}$/.exec(
+      expr,
+    );
+    if (output) env[key] = sc.outputs?.[output[1]]?.[output[2]] ?? "";
+  }
+  return env;
+}
+
 describe("fix-drift.yml — the step slicer reads the artifact verbatim (both guards below depend on it)", () => {
   it("finds the named steps the guards address, by id and by name", () => {
     expect(steps().length).toBeGreaterThan(10);
@@ -1590,32 +1628,65 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     expect(env, "the gate alert cannot see the PR step's outcome").toContain(
       "${{ steps.pr.outcome }}",
     );
-    // …and its ASSEMBLED message must NAME the failing one. Executed, because a
-    // substring check on `FAILING_STEP` passes on a body where every arm sets the
-    // same text (or where one arm has been renamed out of use).
-    const windows = {
-      "drift-sync crashed": { SYNC_REASON: "sync-crashed", ASSERT_OUTCOME: "", PR_OUTCOME: "" },
+    // …and its ASSEMBLED message must NAME the failing one, over the windows the
+    // RUNNER can actually produce (each is a scenario; the outcomes are read back
+    // out of the simulation, never hand-written). Executed, because a substring
+    // check on `FAILING_STEP` passes on a body where every arm sets the same text.
+    const OK_APPLIED = { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" };
+    const windows: Record<string, { scenario: Scenario; names: RegExp }> = {
+      "drift-sync crashed": {
+        scenario: {
+          failing: ["sync"],
+          // A WORKFLOW-level reason: the sync step synthesises it, so there is no
+          // SyncCoreReason member to name it by.
+          outputs: { sync: { reason: "sync-crashed", exit_code: "1" } },
+        },
+        names: /Run deterministic drift sync/,
+      },
       "assert refused": {
-        SYNC_REASON: "ok-applied",
-        ASSERT_OUTCOME: "failure",
-        PR_OUTCOME: "",
-        NEEDS_HUMAN_PR_OUTCOME: "",
+        scenario: { failing: ["assert"], outputs: { sync: OK_APPLIED } },
+        names: /Assert drift-sync-check/,
+      },
+      "the git config for the push failed": {
+        scenario: { failing: ["Configure git for push"], outputs: { sync: OK_APPLIED } },
+        names: /Configure git for push/,
       },
       "push/PR-create failed": {
-        SYNC_REASON: "ok-applied",
-        ASSERT_OUTCOME: "success",
-        PR_OUTCOME: "failure",
-        NEEDS_HUMAN_PR_OUTCOME: "",
+        scenario: { failing: ["pr"], outputs: { sync: OK_APPLIED } },
+        names: /Push branch \+ create PR/,
+      },
+      "an artifact upload failed after the sync": {
+        scenario: { failing: ["Upload drift-sync log"], outputs: { sync: OK_APPLIED } },
+        // No `id:`, so it cannot be named — but the message must at least report
+        // the state it observed instead of inventing a different one.
+        names: /assert=skipped/,
       },
     };
     const assembled = Object.fromEntries(
-      Object.entries(windows).map(([label, env]) => [label, assembleSlackMessage(gate, env)]),
+      Object.entries(windows).map(([label, { scenario }]) => [
+        label,
+        assembleSlackMessage(gate, alertEnvFrom(gate, scenario)),
+      ]),
     );
+    for (const [label, { names }] of Object.entries(windows)) {
+      expect(
+        assembled[label],
+        `the gate alert does not name what failed when ${label}: ${JSON.stringify(assembled[label])}`,
+      ).toMatch(names);
+      // The ladder's needs-human arms must not claim an ok-applied run lost a
+      // needs-human note. That run has no note; the claim sends a human hunting
+      // for a file that does not exist and never names the step that broke.
+      expect(
+        assembled[label],
+        `when ${label}, the gate alert blames the needs-human note instead of the step ` +
+          "that actually failed",
+      ).not.toMatch(/needs-human note/);
+    }
     const distinct = new Set(Object.values(assembled));
     expect(
       distinct.size,
-      "the gate-failure alert sends the same message for a sync crash, a refused " +
-        `assert and a failed push:\n${JSON.stringify(assembled, null, 2)}`,
+      "the gate-failure alert sends the same message for different failing steps:\n" +
+        JSON.stringify(assembled, null, 2),
     ).toBe(Object.keys(windows).length);
   });
 });
@@ -3127,13 +3198,18 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
 
   it("the gate-failure alert's message NAMES the skipped persist, not just the failed one", () => {
     const gate = stepByName(GATE_ALERT);
-    const base = {
-      SYNC_REASON: SyncCoreReason.NEEDS_HUMAN,
-      ASSERT_OUTCOME: "",
-      PR_OUTCOME: "",
-    };
-    const failed = assembleSlackMessage(gate, { ...base, NEEDS_HUMAN_PR_OUTCOME: "failure" });
-    const skipped = assembleSlackMessage(gate, { ...base, NEEDS_HUMAN_PR_OUTCOME: "skipped" });
+    // Both windows come from the SIMULATION, so every outcome in the assembled
+    // message is one the runner can actually produce (a hand-written `""` is not:
+    // an unselected step reports 'skipped').
+    const nh = { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" };
+    const failed = assembleSlackMessage(
+      gate,
+      alertEnvFrom(gate, { failing: ["needs_human_pr"], outputs: { sync: nh } }),
+    );
+    const skipped = assembleSlackMessage(
+      gate,
+      alertEnvFrom(gate, { failing: ["Configure git for push"], outputs: { sync: nh } }),
+    );
     expect(
       skipped,
       "a SKIPPED persist gets the same wording as a FAILED one, so the message blames " +
