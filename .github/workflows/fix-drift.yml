@@ -648,25 +648,18 @@ jobs:
             # needs-human alert suppressed, and that must hold as long as the
             # rejection does. Only the POSTING is one-shot.
             #
-            # FAIL OPEN: an ack that cannot be written is not recorded, so the
-            # suppression is reported again next run — a repeat ping, never a
-            # suppression nobody was told about. (If the POST itself then fails the
-            # run goes red and the end-of-job catch-all reports the day, so the
-            # window is noisy rather than silent.)
+            # The ack is only READ here, never WRITTEN. This step runs BEFORE the
+            # notice, so a write here recorded "already told" for a telling that
+            # had not happened yet: the marker landed, the POST then failed, and
+            # every later run read `rejected_ack=true`, stood the notice down and
+            # exited GREEN and silent — the suppression permanently un-narrated.
+            # The write is a RECEIPT and lives in "Record the suppression ack"
+            # below, gated on that POST's own positive proof of delivery.
             ACK_MARKER="drift-suppression-reported: ${CHANGESET_KEY}"
             if printf '%s' "$REJECTED_PR" | jq -e --arg a "<!-- ${ACK_MARKER} -->" \
               '(.body // "") | contains($a)' >/dev/null; then
               echo "rejected_ack=true" >> "$GITHUB_OUTPUT"
               echo "ok-applied: this suppression was already reported (PR #${REJECTED} carries the ack marker) — not re-posting it"
-            else
-              ACK_FILE="${RUNNER_TEMP}/drift-suppression-ack-${REJECTED}.md"
-              {
-                printf '%s\n\n' "$(printf '%s' "$REJECTED_PR" | jq -r '.body // ""')"
-                printf '<!-- %s -->\n' "${ACK_MARKER}"
-              } > "$ACK_FILE"
-              if ! ACK_ERR="$(gh pr edit "$REJECTED" --body-file "$ACK_FILE" 2>&1)"; then
-                echo "::warning::could not record the suppression ack on PR #${REJECTED} (${ACK_ERR}) — reporting the suppression anyway; the next run tries again"
-              fi
             fi
             exit 0
           fi
@@ -1230,22 +1223,14 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
             # TOLD ONCE, NOT TOLD EVERY MORNING — see the identical block on the
-            # ok-applied path above for why the ack lives in the closed PR's body
-            # and why `rejected` is still published on every run.
+            # ok-applied path above for why the ack lives in the closed PR's body,
+            # why `rejected` is still published on every run, and why the ack is
+            # only READ here (the write is a receipt and follows the delivery).
             ACK_MARKER="drift-suppression-reported: ${CHANGESET_KEY}"
             if printf '%s' "$REJECTED_PR" | jq -e --arg a "<!-- ${ACK_MARKER} -->" \
               '(.body // "") | contains($a)' >/dev/null; then
               echo "rejected_ack=true" >> "$GITHUB_OUTPUT"
               echo "needs-human: this suppression was already reported (PR #${REJECTED} carries the ack marker) — not re-posting it"
-            else
-              ACK_FILE="${RUNNER_TEMP}/drift-suppression-ack-${REJECTED}.md"
-              {
-                printf '%s\n\n' "$(printf '%s' "$REJECTED_PR" | jq -r '.body // ""')"
-                printf '<!-- %s -->\n' "${ACK_MARKER}"
-              } > "$ACK_FILE"
-              if ! ACK_ERR="$(gh pr edit "$REJECTED" --body-file "$ACK_FILE" 2>&1)"; then
-                echo "::warning::could not record the suppression ack on PR #${REJECTED} (${ACK_ERR}) — reporting the suppression anyway; the next run tries again"
-              fi
             fi
             # Emit it like every other early return, so the rejected PR is
             # still nameable (and the "every exit names a PR" invariant holds).
@@ -1450,6 +1435,95 @@ jobs:
             -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
             echo "posted=true" >> "$GITHUB_OUTPUT"
+
+      # THE RECEIPT FOLLOWS THE DELIVERY.
+      #
+      # `rejected_ack` means "a human has already been told", and the only thing
+      # that makes that true is the POST above returning 2xx. Written inside the
+      # persist step — which runs BEFORE the notice — the marker recorded the
+      # telling in advance: the ack landed, the POST then failed, and every run
+      # after it read `rejected_ack=true`, stood the notice down and exited GREEN
+      # and silent, leaving the suppression permanently un-narrated. Not a chance
+      # window: the likeliest way for this alerting to break is the webhook being
+      # rotated, which fails that POST with CERTAINTY — and kills the catch-all's
+      # POST the same day, so the run leaves behind only a red cron job, the one
+      # signal this workflow refuses to rely on. Gated on `posted` — the same
+      # positive proof the catch-all stands down for — the marker can only exist
+      # because the telling was delivered.
+      #
+      # FAIL OPEN ON EVERY PATH, so this step can silence nothing itself: an
+      # unrecordable ack costs one repeated ping tomorrow, so every giving-up path
+      # warns and exits 0. It posts nothing, so it is deliberately NOT in the
+      # catch-all's stand-down set.
+      - name: Record the suppression ack (the notice was DELIVERED)
+        id: rejected_ack
+        if: >-
+          always() &&
+          steps.alert_rejected.outputs.posted == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
+          PR_REJECTED: ${{ steps.pr.outputs.rejected }}
+          NH_REJECTED: ${{ steps.needs_human_pr.outputs.rejected }}
+        run: |
+          # No `-e`: a run whose telling was DELIVERED must not go red because the
+          # receipt could not be filed. Every failure below is handled explicitly
+          # and ends `exit 0`.
+          set -uo pipefail
+          # The same precedence the notice above uses to choose which closure it
+          # named, so the receipt lands on the PR the human was told about.
+          CLOSED_PR="${PR_REJECTED:-}"
+          [ -n "$CLOSED_PR" ] || CLOSED_PR="${NH_REJECTED:-}"
+          if [ -z "$CLOSED_PR" ] || [ -z "${CHANGESET_KEY:-}" ]; then
+            echo "::warning::the suppression notice was delivered, but the closing PR (#${CLOSED_PR:-none}) or the changeset key (${CHANGESET_KEY:-none}) is missing here, so no ack can be recorded — the notice reports the suppression again next run"
+            exit 0
+          fi
+          # Read the closed PR live rather than reusing the persist step's copy: the
+          # branch and author the scoping below needs are not in that payload, and
+          # that payload came from the index-backed `--search` listing this file
+          # elsewhere treats as lagging a body edit by minutes — so rewriting the
+          # body from it could silently revert a human's recent edit.
+          if ! PR_JSON="$(gh pr view "$CLOSED_PR" --json body,headRefName,author 2>&1)"; then
+            echo "::warning::could not read PR #${CLOSED_PR} to record the suppression ack (${PR_JSON}) — the notice reports the suppression again next run"
+            exit 0
+          fi
+          # SCOPED like the marker self-healer, because this is a WRITE into a body
+          # a human may own: rejection detection is body-keyed and state-blind, so a
+          # human PR that quotes or inherits the changeset marker is a candidate —
+          # and DRIFT.md asks humans to do drift work on `fix/drift-<slug>` branches.
+          # Bot author AND a drift branch, the same conjunction `bot_managed` uses.
+          # Its other arm (branch ends in a changeset key) is deliberately not
+          # reproduced: for a WRITE the fail-open direction is to decline any PR this
+          # workflow cannot prove it opened, and declining costs a repeated ping.
+          BRANCH="$(printf '%s' "$PR_JSON" | jq -r '.headRefName // ""')"
+          AUTHOR="$(printf '%s' "$PR_JSON" | jq -r '(.author.login // "") | ascii_downcase')"
+          DRIFT_BRANCH=no
+          case "$BRANCH" in fix/drift-*|drift-needs-human/*) DRIFT_BRANCH=yes ;; esac
+          if [ "$DRIFT_BRANCH" != yes ] || [ "$AUTHOR" != "app/copilotkit-devops-bot" ]; then
+            echo "::warning::PR #${CLOSED_PR} is not a PR this workflow opened (branch '${BRANCH}', author '${AUTHOR}'), so its body is not machine state to append to — no ack recorded, and the notice reports the suppression again next run"
+            exit 0
+          fi
+          ACK_MARKER="drift-suppression-reported: ${CHANGESET_KEY}"
+          # An intact ack is left BYTE-IDENTICAL — no edit, no API write, no
+          # appending ratchet. Reachable whenever the persist step's `--search`
+          # copy of the body was the stale one.
+          if printf '%s' "$PR_JSON" | jq -e --arg a "<!-- ${ACK_MARKER} -->" \
+            '(.body // "") | contains($a)' >/dev/null 2>&1; then
+            echo "PR #${CLOSED_PR} already carries the suppression ack — nothing to record"
+            exit 0
+          fi
+          ACK_FILE="${RUNNER_TEMP}/drift-suppression-ack-${CLOSED_PR}.md"
+          # APPEND-ONLY: the existing body, human prose and changeset marker alike,
+          # is copied through verbatim and only the ack line is added after it.
+          {
+            printf '%s\n\n' "$(printf '%s' "$PR_JSON" | jq -r '.body // ""')"
+            printf '<!-- %s -->\n' "${ACK_MARKER}"
+          } > "$ACK_FILE"
+          if ! ACK_ERR="$(gh pr edit "$CLOSED_PR" --body-file "$ACK_FILE" 2>&1)"; then
+            echo "::warning::could not record the suppression ack on PR #${CLOSED_PR} (${ACK_ERR}) — the notice reports the suppression again next run and tries again"
+            exit 0
+          fi
+          echo "recorded the suppression ack on PR #${CLOSED_PR} — the delivered notice is not re-posted"
 
       # Alert: the sync found a genuinely-new family or a still-referenced
       # deprecation — the two irreducible human decisions (see

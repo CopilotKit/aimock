@@ -1425,9 +1425,9 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
     const ghSteps = steps().filter((s) => /(^\s*|\$\()gh\s/m.test(codeOf(s)));
     expect(
       ghSteps.map((s) => s.id).sort(),
-      "the `gh`-calling steps are not the two PR-open steps — the guard is looking at " +
-        "the wrong steps, or a new step started calling `gh`",
-    ).toEqual(["needs_human_pr", "pr"]);
+      "the `gh`-calling steps are not the two PR-open steps plus the suppression-ack " +
+        "receipt — the guard is looking at the wrong steps, or a new step started calling `gh`",
+    ).toEqual(["needs_human_pr", "pr", "rejected_ack"]);
     for (const s of ghSteps) {
       expect(
         s.env.GH_TOKEN,
@@ -2745,11 +2745,16 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         `${st.name}: the suppression publishes no ack state, so the notice cannot tell the ` +
           "first run after the closure from the four hundredth",
       ).toMatch(/rejected_ack=true/);
+      // …and it only READS that state. Writing the ack here is the defect below:
+      // this step runs BEFORE the notice, so the marker recorded a telling that
+      // had not happened yet. That the ack outlives the run is pinned on the step
+      // that now performs the write, gated on the notice's proof of delivery.
       expect(
         block,
-        `${st.name}: the ack is not recorded anywhere that outlives the run, so every run ` +
-          "is the first run",
-      ).toMatch(/gh pr edit "\$REJECTED" --body-file/);
+        `${st.name}: the persist step WRITES the ack marker, and it runs BEFORE the ` +
+          "suppression notice POSTs — so one dropped POST on the first run after the closure " +
+          "leaves `rejected_ack` recorded for ever and the suppression permanently un-narrated",
+      ).not.toMatch(/ACK_FILE/);
       // `rejected` itself must STILL be published every run: it is what keeps the
       // needs-human alert suppressed, and that suppression must last as long as
       // the rejection does.
@@ -2793,6 +2798,373 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         noticeFires({ rejected: "350" }, { failed }),
         `a suppressed changeset goes unreported when the job ${failed ? "FAILS" : "is GREEN"}`,
       ).toBe(true);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // THE RECEIPT MUST FOLLOW THE DELIVERY.
+  //
+  // `rejected_ack` is the state that silences the notice for ever, so the only
+  // thing entitled to write it is a DELIVERED notice. Written inside the persist
+  // step — which runs several steps BEFORE the POST — it recorded the telling in
+  // advance: the marker landed, the POST then failed, and every run after it read
+  // `rejected_ack=true`, stood the notice down and exited GREEN and silent, with
+  // the suppression permanently un-narrated. Reached with CERTAINTY, not by
+  // chance, whenever the webhook has been rotated — which kills the catch-all's
+  // POST the same day, so nothing is delivered at all and the run leaves behind
+  // only a red cron job.
+  //
+  // These guards are about ORDER and GATING, not about a string having moved. The
+  // writer is located from the artifact (whichever step builds the ack body file),
+  // its position is compared against the notice's, and whether it can run without
+  // a delivered POST is settled by SIMULATING the job with that POST failing.
+  // -------------------------------------------------------------------------
+
+  const NOTICE = "Notify Slack on a SUPPRESSED (human-rejected) changeset";
+  const ACK_KEY = "eaa8db65f5647493";
+
+  /** Every step that WRITES the ack into a PR body, i.e. builds the ack body file. */
+  const ackWriters = (): Step[] => steps().filter((s) => /\bACK_FILE=/.test(codeOf(s)));
+
+  /**
+   * The one step that writes it — a receipt with two issuers is not a receipt —
+   * together with its position in the job.
+   *
+   * Both come out of a SINGLE `steps()` call: that function re-parses on every
+   * invocation, so `steps().indexOf(otherCall()[n])` compares objects from two
+   * different arrays and yields -1, which every real step index beats. That is the
+   * shape that made an earlier ordering claim in this file trivially true.
+   */
+  const ackWriter = (): { step: Step; at: number; order: Step[] } => {
+    const order = steps();
+    const found = order
+      .map((s, at) => ({ s, at }))
+      .filter(({ s }) => /\bACK_FILE=/.test(codeOf(s)));
+    expect(
+      found.map(({ s }) => s.id ?? s.name),
+      "the suppression ack is written by a number of steps other than one, so `rejected_ack` " +
+        "cannot mean 'the telling was delivered' — exactly one step may issue the receipt",
+    ).toHaveLength(1);
+    return { step: found[0].s, at: found[0].at, order };
+  };
+
+  /** A closed bot PR as `gh pr view --json body,headRefName,author` returns it. */
+  const closedBotPr = (body: string): unknown => ({
+    body,
+    headRefName: `drift-needs-human/2026-08-04-9876543210`,
+    author: { login: "app/copilotkit-devops-bot" },
+  });
+
+  /**
+   * EXECUTE the ack step's own `run:` body against a stubbed `gh`, and report what
+   * it did to the closed PR.
+   *
+   * An OBSERVATION, not a text assertion: "does the receipt land on the PR the
+   * human was told about, append-only, once, and never on a body this workflow
+   * does not own" are questions about control flow. `gh pr view` answers with
+   * `prJson`; `gh pr edit` records its argv and the body file it was handed.
+   */
+  const observeAckWrite = (
+    step: Step,
+    {
+      prJson,
+      viewExit = 0,
+      editExit = 0,
+      env: envOverride = {},
+    }: {
+      prJson: unknown;
+      viewExit?: number;
+      editExit?: number;
+      env?: Record<string, string>;
+    },
+  ): { stepExit: number; ghLog: string; written: string; stdio: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-ack-"));
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const prFile = join(dir, "pr.json");
+      const logFile = join(dir, "gh.log");
+      const bodyFile = join(dir, "written");
+      writeFileSync(prFile, JSON.stringify(prJson));
+      writeFileSync(logFile, "");
+      writeFileSync(bodyFile, "");
+      writeFileSync(
+        join(bin, "gh"),
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
+          'if [ "$1 $2" = "pr view" ]; then',
+          `  cat ${JSON.stringify(prFile)}`,
+          `  exit ${viewExit}`,
+          "fi",
+          'if [ "$1 $2" = "pr edit" ]; then',
+          "  while [ $# -gt 0 ]; do",
+          `    [ "$1" = "--body-file" ] && cp "$2" ${JSON.stringify(bodyFile)}`,
+          "    shift",
+          "  done",
+          `  exit ${editExit}`,
+          "fi",
+          "exit 0",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      // Every declared `env:` key gets a value, so `set -u` is never what stops
+      // the body — the same discipline as ALERT_ENV_STUB.
+      const env: Record<string, string> = {};
+      for (const key of Object.keys(step.env)) env[key] = "";
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const res = spawnSync("/bin/bash", [script], {
+        cwd: dir,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          ...env,
+          ...envOverride,
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          GITHUB_OUTPUT: join(dir, "github_output"),
+          RUNNER_TEMP: dir,
+        },
+      });
+      return {
+        stepExit: res.status ?? -1,
+        ghLog: readFileSync(logFile, "utf-8"),
+        written: readFileSync(bodyFile, "utf-8"),
+        stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("the ack that silences the notice is written AFTER it, by exactly one step, gated on delivery", () => {
+    const { step: writer, at: writeAt, order } = ackWriter();
+    const noticeAt = order.findIndex((s) => s.id === "alert_rejected");
+    expect(
+      noticeAt,
+      "there is no `alert_rejected` step for the ack to acknowledge",
+    ).toBeGreaterThan(-1);
+    expect(
+      writeAt,
+      `${writer.name}: records the "already told" ack at step ${writeAt + 1}, BEFORE the notice ` +
+        `that does the telling at step ${noticeAt + 1}. A dropped POST then leaves the receipt ` +
+        "filed for a telling that never happened, and every later run is green and silent",
+    ).toBeGreaterThan(noticeAt);
+    expect(
+      writer.if ?? "",
+      `${writer.name}: is not gated on the notice's POSITIVE proof of delivery, so the receipt ` +
+        "can be filed for an undelivered telling — a step OUTCOME will not do, a dead webhook " +
+        "produces the same one a delivered POST does",
+    ).toContain("steps.alert_rejected.outputs.posted == 'true'");
+    // …and it is `always()`, or the receipt is skipped on exactly the runs where
+    // a later step failed — re-posting the line every morning after one bad day.
+    expect(
+      writer.if ?? "",
+      `${writer.name}: carries no always(), so the implicit success() drops the receipt ` +
+        "whenever anything later in the job fails",
+    ).toContain("always()");
+  });
+
+  it("a DROPPED suppression POST records NO ack — the next run tells someone again", () => {
+    const rejection = (failing: string[] = []): Scenario => ({
+      failing,
+      outputs: {
+        sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+        needs_human_pr: { rejected: "350", rejected_url: "https://github.test/pr/350" },
+      },
+    });
+    const delivered = simulateJob(rejection());
+    expect(
+      delivered.alerts,
+      "the suppression notice was never delivered in this scenario, so it proves nothing",
+    ).toContain(NOTICE);
+    expect(
+      delivered.selected.map((s) => s.name),
+      "the notice was DELIVERED and no step recorded the ack, so the identical line re-posts " +
+        "every morning for ever",
+    ).toContain(ackWriter().step.name);
+
+    const dropped = simulateJob(rejection(["alert_rejected"]));
+    expect(dropped.alerts, "the scenario did not actually drop the suppression POST").not.toContain(
+      NOTICE,
+    );
+    expect(
+      dropped.selected.map((s) => s.name),
+      "the suppression notice was never even selected on the dropped-POST run",
+    ).toContain(NOTICE);
+    for (const w of ackWriters()) {
+      expect(
+        dropped.selected.map((s) => s.name),
+        `${w.name}: records the "already told" ack on a run whose POST was REJECTED and which ` +
+          "reached Slack with NOTHING. `rejected_ack` then stands the notice down on every " +
+          "subsequent run, so the suppression is never narrated to anyone — the fail-silent " +
+          "shape this workflow exists to eliminate, and a rotated webhook reaches it with " +
+          "certainty rather than by chance",
+      ).not.toContain(w.name);
+    }
+  });
+
+  it("the ack lands on the closing PR the notice named, append-only, and never twice", () => {
+    const { step } = ackWriter();
+    const body = `human prose a maintainer owns\n<!-- drift-changeset: ${ACK_KEY} -->`;
+    const marker = `<!-- drift-suppression-reported: ${ACK_KEY} -->`;
+
+    const nh = observeAckWrite(step, {
+      prJson: closedBotPr(body),
+      env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "350" },
+    });
+    expect(nh.stepExit, `${step.name}: a successful ack write fails the step`).toBe(0);
+    expect(
+      nh.ghLog,
+      "the ack was not written to the closing PR the needs-human path named",
+    ).toContain("pr edit 350");
+    expect(nh.written, "the body written carries no ack marker at all").toContain(marker);
+    expect(
+      nh.written,
+      "the human's prose was not copied through — the ack REWROTE the body instead of " +
+        "appending to it",
+    ).toContain("human prose a maintainer owns");
+    expect(
+      nh.written,
+      "the changeset marker was dropped from the body, so the suppression itself stops " +
+        "holding and the changeset is re-proposed tomorrow",
+    ).toContain(`drift-changeset: ${ACK_KEY}`);
+
+    // The ok-applied path's closure must be acknowledged too, and it WINS, so the
+    // receipt lands on the same PR the notice named.
+    const both = observeAckWrite(step, {
+      prJson: closedBotPr(body),
+      env: { CHANGESET_KEY: ACK_KEY, PR_REJECTED: "351", NH_REJECTED: "350" },
+    });
+    expect(
+      both.ghLog,
+      "the receipt does not follow the notice's own precedence (ok-applied closure first), so " +
+        "it is filed against a PR other than the one the human was told about",
+    ).toContain("pr edit 351");
+
+    // Idempotent: an intact ack is left BYTE-IDENTICAL — no API write, no
+    // appending ratchet on a body a human owns.
+    const already = observeAckWrite(step, {
+      prJson: closedBotPr(`${body}\n${marker}`),
+      env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "350" },
+    });
+    expect(
+      already.ghLog,
+      "a PR that already carries the ack is edited again — an appending ratchet on a human's " +
+        "PR body, and the same marker duplicated every run",
+    ).not.toContain("pr edit");
+    expect(already.stepExit, "an already-acked PR fails the step").toBe(0);
+  });
+
+  it("the ack WRITE is scoped to PRs this workflow opened — a human's body is never rewritten", () => {
+    // Unlike the marker self-healer, this write had NO ownership filter. Rejection
+    // detection is body-keyed and state-blind, so a human PR that quotes or
+    // inherits the changeset marker is a candidate — and DRIFT.md asks humans to
+    // do drift work on `fix/drift-<slug>` branches, which is exactly the shape
+    // that becomes a write target.
+    const { step } = ackWriter();
+    const unowned: Array<{ label: string; pr: unknown }> = [
+      {
+        label: "a HUMAN's drift PR (the branch shape DRIFT.md asks humans to use)",
+        pr: { body: "my notes", headRefName: "fix/drift-typo", author: { login: "jpr5" } },
+      },
+      {
+        label: "a bot PR from some other workflow entirely",
+        pr: {
+          body: "chore(deps)",
+          headRefName: "renovate/vitest",
+          author: { login: "app/copilotkit-devops-bot" },
+        },
+      },
+      {
+        label: "a PR whose author gh could not report",
+        pr: { body: "x", headRefName: "fix/drift-2026-08-04-1-eaa8db65f5647493", author: null },
+      },
+    ];
+    for (const { label, pr } of unowned) {
+      const res = observeAckWrite(step, {
+        prJson: pr,
+        env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "350" },
+      });
+      expect(
+        res.ghLog,
+        `${step.name}: rewrites the whole body of ${label} — machine markers appended to prose ` +
+          "this workflow does not own, from a copy of the body it read moments earlier",
+      ).not.toContain("pr edit");
+      expect(res.stepExit, `${step.name}: declining an unowned PR fails the step`).toBe(0);
+    }
+    // …and the ownership predicate is the SELF-HEALER's, not a second hand-written
+    // one that can drift away from it.
+    const botLogin = /ascii_downcase\) == "(app\/[a-z0-9-]+)"/.exec(wf)?.[1];
+    expect(
+      botLogin,
+      "the self-healer no longer pins a bot-author login, so nothing anchors the ack write's " +
+        "ownership test to it",
+    ).toBeTruthy();
+    expect(
+      codeOf(step),
+      "the ack write tests a DIFFERENT bot author than the self-healer's `bot_author`, so one " +
+        "of the two is looking for a login that does not exist",
+    ).toContain(botLogin!);
+    for (const prefix of ["fix/drift-", "drift-needs-human/"]) {
+      expect(
+        codeOf(step),
+        `the ack write does not recognise the \`${prefix}\` branch prefix this workflow opens ` +
+          "PRs on, so every suppression on that path re-posts its notice every morning",
+      ).toContain(prefix);
+    }
+  });
+
+  it("every way the ack write can fail costs a REPEATED ping, never the telling", () => {
+    // FAIL OPEN, on every path. A receipt that cannot be filed must leave
+    // `rejected_ack` unset so tomorrow's run tells someone again — and must not
+    // red a run whose telling was DELIVERED, which would report a working alert
+    // as a fault and hand the catch-all a cause it would misname.
+    const { step } = ackWriter();
+    const cases: Array<{ label: string; opts: Parameters<typeof observeAckWrite>[1] }> = [
+      {
+        label: "`gh pr edit` is rejected (a 403, a locked PR, a token hiccup)",
+        opts: {
+          prJson: closedBotPr("prose"),
+          editExit: 1,
+          env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "350" },
+        },
+      },
+      {
+        label: "`gh pr view` cannot read the closed PR back",
+        opts: {
+          prJson: { message: "Not Found" },
+          viewExit: 1,
+          env: { CHANGESET_KEY: ACK_KEY, NH_REJECTED: "350" },
+        },
+      },
+      {
+        label: "the changeset key did not reach this step, so no marker can be composed",
+        opts: {
+          prJson: closedBotPr("prose"),
+          env: { CHANGESET_KEY: "", NH_REJECTED: "350" },
+        },
+      },
+      {
+        label: "neither path published a closing PR number",
+        opts: {
+          prJson: closedBotPr("prose"),
+          env: { CHANGESET_KEY: ACK_KEY, PR_REJECTED: "", NH_REJECTED: "" },
+        },
+      },
+    ];
+    for (const { label, opts } of cases) {
+      const res = observeAckWrite(step, opts);
+      expect(
+        res.stepExit,
+        `${step.name}: ${label} — the step exits non-zero, so a run whose suppression notice ` +
+          "WAS delivered still reds and the catch-all reports it as an uncovered failure it " +
+          "cannot name",
+      ).toBe(0);
+      expect(
+        res.stdio,
+        `${step.name}: ${label} — nothing is logged, so the ack silently went unrecorded`,
+      ).toContain("::warning::");
     }
   });
 });
