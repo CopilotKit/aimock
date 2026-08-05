@@ -2042,6 +2042,14 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
       "DRIFT.md documents no way to un-suppress a rejected changeset, so the registry " +
         "stays drifted with no discoverable recovery",
     ).toMatch(/REOPEN/);
+    // The notice is ONE-SHOT (an ack marker on the closed PR), so a doc promising a
+    // line every morning teaches a maintainer to read the silence as the
+    // suppression having broken — and to go closing PRs again to re-arm it.
+    expect(
+      driftMd,
+      "DRIFT.md still says EVERY suppressed run posts a Slack line, which it does not — " +
+        "the suppression is reported once, on the first run after the closure",
+    ).not.toMatch(/every suppressed run posts/i);
   });
 
   it("the workflow actually uploads a drift-sync-check-log artifact (matching the drift-sync-log sibling's retention)", () => {
