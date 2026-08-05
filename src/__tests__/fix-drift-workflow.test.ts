@@ -323,8 +323,8 @@ function observeSyncStep(
  */
 function assembleSlackMessage(step: Step, envOverride: Record<string, string> = {}): string {
   const lines = runOf(step).split("\n");
-  const last = lines.reduce((acc, l, i) => (/\bMSG=/.test(l) ? i : acc), -1);
-  if (last === -1) throw new Error(`${step.name}: no MSG= assignment to assemble`);
+  const last = lines.findIndex((l) => /\bPAYLOAD=/.test(l)) - 1;
+  if (last < 0) throw new Error(`${step.name}: no PAYLOAD= assembly to slice at`);
   const dir = mkdtempSync(join(tmpdir(), "fix-drift-msg-"));
   try {
     const outFile = join(dir, "msg.txt");
@@ -915,7 +915,7 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
   it("the needs-human persist step de-dups: it skips opening a second PR when one is already open for the same note", () => {
     const body = codeOf(persistStep());
     // Must consult already-open PRs before creating a new one…
-    expect(body).toMatch(/^\s*if ! OPEN_PRS="\$\(gh pr list /m);
+    expect(body).toMatch(/^\s*if ! ALL_PRS="\$\(gh pr list --state all /m);
     // …and the per-note scan must iterate the notes this run committed, not an
     // empty list. Scoped to the DEDUP region (between the git-diff scan and the
     // branch it pushes): the PR-body writer further down loops over the same
@@ -931,9 +931,9 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
       dedupRegion,
       "the per-note dedup loop does not iterate the committed notes, so a note a " +
         "still-open PR already proposes gets a second PR",
-    ).toMatch(/for note in "\$\{NOTES\[@\]:-\}"; do/);
+    ).toMatch(/for i in "\$\{!NOTES\[@\]\}"; do/);
     expect(dedupRegion, "the per-note dedup does not match on the note-path marker").toContain(
-      "drift-proposal-note: ${note}",
+      "${NOTE_MARKERS[$i]}",
     );
     // …and the jq filter must match on that marker, not on some other literal.
     expect(dedupRegion, "the per-note dedup query does not test the marker it was given").toContain(
@@ -1012,11 +1012,11 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
     // The DUP candidate has to be computed from the open-PR payload. `DUP=""`
     // left the skip branch standing but permanently dead, and every
     // string-shaped guard here stayed green.
-    expect(body, "the ok-applied dedup does not query open PRs").toMatch(
-      /^\s*if ! OPEN_PRS="\$\(gh pr list /m,
+    expect(body, "the ok-applied dedup does not query PRs").toMatch(
+      /^\s*if ! ALL_PRS="\$\(gh pr list --state all /m,
     );
     expect(body, "the ok-applied dedup never derives a duplicate from them").toMatch(
-      /DUP="\$\(printf '%s' "\$OPEN_PRS"[\s\S]*drift-changeset: \$\{CHANGESET_KEY\}/,
+      /DUP="\$\(printf '%s' "\$ALL_PRS"[\s\S]*--arg m "\$MARKER"/,
     );
     // The dedup skip must precede the push (skip a duplicate BEFORE pushing).
     const guardIdx = body.indexOf("not opening a duplicate");
@@ -1028,18 +1028,23 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
 
   it("the needs-human persist step RETAINS the per-note body marker as a secondary guard (note-path de-dup not regressed)", () => {
     const body = codeOf(persistStep());
-    // Twice: once as the marker the dedup query matches on, once as the marker
-    // the PR body writes. Gutting the dedup loop leaves only the second.
+    // The marker text has ONE source (NOTE_MARKERS), so the guard is that the
+    // dedup query still reads it. Gutting the dedup loop leaves only the source.
+    expect(body, "the per-note marker is no longer built from the committed notes").toContain(
+      'NOTE_MARKERS+=("drift-proposal-note: ${note}")',
+    );
     expect(
-      body.split("drift-proposal-note: ${note}").length - 1,
-      "the per-note marker is written but never matched (or vice versa) — the " +
-        "secondary note-path dedup has regressed",
-    ).toBeGreaterThanOrEqual(2);
+      body,
+      "the per-note marker is built but never matched — the secondary note-path " +
+        "dedup has regressed",
+    ).toContain('--arg m "${NOTE_MARKERS[$i]}"');
   });
 
   it("BOTH PR bodies embed the stable drift-changeset marker the dedup guards match on", () => {
-    const markerCount = (wf.match(/<!-- drift-changeset: \$\{CHANGESET_KEY\} -->/g) || []).length;
-    expect(markerCount).toBeGreaterThanOrEqual(2);
+    // Each step builds the marker once and emits its MARKERS array into the body,
+    // so both halves have to be present in both steps.
+    expect((wf.match(/MARKER="drift-changeset: \$\{CHANGESET_KEY\}"/g) || []).length).toBe(2);
+    expect((wf.match(/echo "<!-- \$\{m\} -->"/g) || []).length).toBe(2);
   });
 });
 

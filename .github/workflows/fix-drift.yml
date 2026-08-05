@@ -333,6 +333,77 @@ jobs:
             echo "::error::changeset_key is empty on an ok-applied run — the PRIMARY dedup guard cannot run, and opening a PR anyway is how daily duplicate PRs start. Refusing."
             exit 1
           fi
+          # SINGLE SOURCE OF TRUTH for every `<!-- drift-* -->` marker this step
+          # writes into a PR body. The body writer below emits exactly this array,
+          # the marker self-heal below re-asserts exactly this array, and the
+          # dedup guard matches an entry of it — so a marker added here is wired
+          # into all three at once and cannot slip through one of them.
+          MARKER="drift-changeset: ${CHANGESET_KEY}"
+          MARKERS=("$MARKER")
+
+          # ---- RE-ASSERT THIS STEP'S OWN MARKERS --------------------------------
+          # The dedup guard below matches an HTML comment this step wrote into a PR
+          # BODY — machine state parked inside prose a HUMAN owns and edits. On
+          # 2026-08-03 a human rewrote the sibling needs-human PR #343's body
+          # wholesale, deleting its markers; ~14h later the scheduled run could no
+          # longer find the changeset key and opened duplicate PR #350 for the same
+          # changeset. This step's marker has the identical exposure.
+          #
+          # Validate-and-FAIL would have surfaced that a run sooner but still left
+          # a human to repair it, and "a human rewrote the prose" recurs. So
+          # REPAIR: restore whichever markers went missing, log loudly, and let
+          # dedup proceed. The guard below is not weakened or bypassed.
+          #
+          # Identity is body-INDEPENDENT (a body-keyed lookup cannot find a PR
+          # whose body lost the key): the head branch ends in "-<changeset key>",
+          # and a PR's head branch cannot be renamed. Listed with a plain
+          # `--state open` query, never `--search`, whose index is body-keyed AND
+          # lags an edit by minutes.
+          if ! MANAGED="$(gh pr list --state open --limit 200 \
+            --json number,url,state,body,headRefName 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove the dedup marker it owns is still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
+            exit 1
+          fi
+          if ! printf '%s' "$MANAGED" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to self-heal markers against it: ${MANAGED}"
+            exit 1
+          fi
+          MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" '
+            map(select((.headRefName | test("^fix/drift-")) and (.headRefName | endswith("-" + $k))))')"
+          REASSERTED="$MINE"
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            HEAL_N="$(printf '%s' "$pr" | jq -r '.number')"
+            HEAL_BODY="$(printf '%s' "$pr" | jq -r '.body // ""')"
+            # Every candidate here matched the branch-key anchor (MINE requires
+            # it), which proves the PR IS this changeset's PR — so it is entitled
+            # to every marker in MARKERS. The sibling needs-human step also has a
+            # note-path anchor and must therefore scope this per candidate.
+            MISSING=()
+            for m in "${MARKERS[@]}"; do
+              case "$HEAL_BODY" in *"<!-- ${m} -->"*) ;; *) MISSING+=("$m") ;; esac
+            done
+            # An intact body is left BYTE-IDENTICAL: no edit, no API write, no
+            # duplicated marker — which is also what makes a re-run a no-op
+            # rather than an appending ratchet.
+            [ "${#MISSING[@]}" -gt 0 ] || continue
+            HEAL_FILE="${RUNNER_TEMP}/drift-marker-reassert-${HEAL_N}.md"
+            # APPEND-ONLY: human prose is copied through verbatim; only the
+            # missing marker lines are added after it.
+            {
+              printf '%s\n\n' "$HEAL_BODY"
+              printf '%s\n' "<!-- The marker comment(s) below are machine state the Fix Drift dedup guards match on. They went missing from this body and were restored automatically. Deleting them makes this workflow open a duplicate PR for the same changeset. -->"
+              for m in "${MISSING[@]}"; do printf '<!-- %s -->\n' "$m"; done
+            } > "$HEAL_FILE"
+            if ! HEAL_ERR="$(gh pr edit "$HEAL_N" --body-file "$HEAL_FILE" 2>&1)"; then
+              echo "::error::PR #${HEAL_N} has LOST dedup marker(s) [${MISSING[*]}] and re-asserting them FAILED, so this run cannot dedup against it and would open a duplicate: ${HEAL_ERR}"
+              exit 1
+            fi
+            echo "::warning::PR #${HEAL_N} was missing dedup marker(s) [${MISSING[*]}] — a body edit dropped machine state this workflow owns. RE-ASSERTED them; dedup below now matches and no duplicate PR is opened."
+            REASSERTED="$(printf '%s' "$REASSERTED" | jq -c --argjson n "$HEAL_N" --rawfile b "$HEAL_FILE" \
+              'map(if .number == $n then .body = $b else . end)')"
+          done < <(printf '%s' "$MINE" | jq -c '.[]')
+
           # FAIL CLOSED on an API fault. `2>/dev/null || echo '[]'` turned ANY
           # gh failure (a 401 after a token hiccup, a secondary rate limit, a
           # GitHub 5xx) into the assertion "there are no open PRs" — which does
@@ -345,21 +416,65 @@ jobs:
           # this guard's view of the open PRs — once 30 newer PRs exist, the
           # older already-proposed PR falls out of the window and the guard
           # opens a duplicate. The limit is load-bearing, not cosmetic.
-          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body 2>&1)"; then
-            echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+          # `--state all`, NOT `--state open`: dedup used to consider only OPEN
+          # PRs, so the moment a human CLOSED a proposal to reject it, the very
+          # next cron run stopped seeing it and opened a fresh one — daily,
+          # forever. `--search` narrows server-side on the changeset key so
+          # widening the state filter cannot let closed PRs crowd the older
+          # matching PR out of the --limit window.
+          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+            --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
           fi
-          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+          if ! printf '%s' "$ALL_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
-          DUP="$(printf '%s' "$OPEN_PRS" | jq -r --arg m "drift-changeset: ${CHANGESET_KEY}" \
-            'map(select((.body // "") | contains($m))) | .[0].number // empty')"
-          if [ -n "$DUP" ]; then
-            echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP} — not opening a duplicate"
+          # Fold the self-heal's own (search-index-free) view in. `--search` above
+          # is index-backed and lags a body edit by minutes, so a PR whose marker
+          # this step just restored is very likely STILL absent from ALL_PRS —
+          # dropping it here would re-open exactly the duplicate the repair just
+          # prevented. Union rather than replace: ALL_PRS is the only source of
+          # CLOSED (human-rejected) PRs, which the `--state open` self-heal list
+          # cannot see. Self-heal entries win on collision — they carry the
+          # post-repair body.
+          ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
+            '($b | map(.number)) as $healed
+             | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
+          # A CLOSED-but-never-MERGED PR carrying this marker is a human
+          # REJECTION of this exact changeset — respect it permanently. A
+          # genuinely different drift produces a different changeset key, so
+          # this suppresses the rejected proposal and nothing else.
+          REJECTED="$(printf '%s' "$ALL_PRS" | jq -r --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0].number // empty')"
+          if [ -n "$REJECTED" ]; then
+            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
+            echo "ok-applied: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
             exit 0
           fi
-          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          DUP="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "OPEN")) | .[0] // empty')"
+          if [ -n "$DUP" ]; then
+            # Emit the PR so the success notify can name it. This path used to
+            # throw $DUP away and emit no outputs at all, which left the notify
+            # step (gated on `steps.pr.outputs.url != ''`) skipped — a green,
+            # silent run: the same class of bug this PR fixes on the other path.
+            {
+              echo "url=$(printf '%s' "$DUP" | jq -r '.url')"
+              echo "number=$(printf '%s' "$DUP" | jq -r '.number')"
+              echo "deduped=true"
+            } >> "$GITHUB_OUTPUT"
+            echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #$(printf '%s' "$DUP" | jq -r '.number') — not opening a duplicate"
+            exit 0
+          fi
+          # The changeset key is appended as the LAST branch segment on purpose: a
+          # PR's head branch cannot be renamed, so this is the body-INDEPENDENT
+          # anchor the marker self-heal above uses to recognise this PR again if a
+          # human ever deletes its body markers. Keep it last — the self-heal
+          # matches on `endswith("-<key>")`.
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)-${CHANGESET_KEY}"
+          git checkout -B "$BRANCH"
           git push -u origin "$BRANCH"
           HEAD_SHA="$(git rev-parse HEAD)"
           echo "Pushed branch ${BRANCH} at ${HEAD_SHA}"
@@ -372,7 +487,12 @@ jobs:
             echo ""
             # Stable changeset marker — the dedup guard above matches open PRs on
             # this so a daily re-fire of the same drift never opens a second PR.
-            echo "<!-- drift-changeset: ${CHANGESET_KEY} -->"
+            # Emitted from the SINGLE MARKERS array built at the top of this step,
+            # so the set written here is by construction the set the marker
+            # self-heal re-asserts and the set the guard above matches.
+            for m in "${MARKERS[@]}"; do
+              echo "<!-- ${m} -->"
+            done
             echo ""
             echo "> **Needs human review + merge.** This PR was opened by the"
             echo "> deterministic drift-sync pipeline after \`drift-sync-check\`"
@@ -472,6 +592,293 @@ jobs:
           set -euo pipefail
           HEAD_SHA="$(git rev-parse HEAD)"
 
+          # An EMPTY changeset key silently switched the PRIMARY dedup guard off
+          # (`if [ -n ... ]`) and fell through to an unconditional push + PR.
+          # computeChangesetKey only returns "" when every outcome is a no-op
+          # (ok-no-churn), which cannot be true on a needs-human run, so an empty
+          # key here means drift-sync misbehaved — fail closed instead of running
+          # dedup-blind. Checked FIRST because every lookup below (the marker
+          # self-heal, then the dedup listing) is keyed on it.
+          if [ -z "${CHANGESET_KEY:-}" ]; then
+            echo "::error::changeset_key is empty on a needs-human run — the PRIMARY dedup guard cannot run, and pushing anyway is how daily duplicate PRs start. Refusing."
+            exit 1
+          fi
+
+          # SINGLE SOURCE OF TRUTH for every `<!-- drift-* -->` marker this step
+          # writes into a PR body. The body writer at the bottom emits exactly
+          # this array, the marker self-heal below re-asserts exactly this array,
+          # and each dedup guard matches an entry of it. A marker added here is
+          # therefore wired into all three at once. A hand-enumerated repair list
+          # would instead cover only the markers someone remembered, leaving the
+          # forgotten one's dedup path still defeatable by a body edit — which is
+          # precisely how ONE missing marker class becomes a duplicate PR.
+          MARKER="drift-changeset: ${CHANGESET_KEY}"
+          MARKERS=("$MARKER")
+
+          # The note file(s) drift-sync.ts committed this run. Resolved HERE, not
+          # further down next to the per-note guard, because the marker set —
+          # hence the self-heal — depends on it. Pure local read, no side effects.
+          mapfile -t COMMITTED < <(git diff --name-only "$BASE_SHA" HEAD)
+          NOTES=()
+          for f in "${COMMITTED[@]}"; do
+            case "$f" in drift-proposals/*) NOTES+=("$f") ;; esac
+          done
+          # Index-parallel with NOTES (the loop above never appends an empty
+          # element), so the per-note dedup guard below can match on
+          # NOTE_MARKERS[i] while still naming NOTES[i] in its log line — one
+          # source for the marker text, not two.
+          NOTE_MARKERS=()
+          for note in "${NOTES[@]:-}"; do
+            [ -n "$note" ] || continue
+            NOTE_MARKERS+=("drift-proposal-note: ${note}")
+          done
+          if [ "${#NOTE_MARKERS[@]}" -gt 0 ]; then
+            MARKERS+=("${NOTE_MARKERS[@]}")
+          fi
+
+          # ---- RE-ASSERT THIS STEP'S OWN MARKERS --------------------------------
+          # Every dedup guard below matches an HTML comment this step wrote into a
+          # PR BODY — i.e. machine state parked inside prose a HUMAN owns and
+          # edits. On 2026-08-03 a human rewrote PR #343's body wholesale, which
+          # deleted its markers; ~14h later the scheduled run could no longer find
+          # the changeset key on any PR and opened duplicate PR #350 for the same
+          # changeset — exactly the spam these guards exist to prevent.
+          #
+          # Validate-and-FAIL would have surfaced that a run sooner but STILL left
+          # a human to repair it, and "a human rewrote the prose" is a failure mode
+          # that recurs. So REPAIR: restore whichever markers went missing, log
+          # loudly, and let dedup proceed. No guard below is weakened or bypassed.
+          #
+          # Identity here MUST be body-INDEPENDENT — a body-keyed lookup cannot
+          # find a PR whose body lost the key. Two anchors, neither forgeable by a
+          # body edit:
+          #   (a) the head branch ends in "-<changeset key>" (a PR's head branch
+          #       cannot be renamed for the life of the PR). This is the anchor for
+          #       the mixed run whose committed diff carries NO note file, where
+          #       there is no note path to match on.
+          #   (b) the PR's changed files include one of THIS run's note paths. This
+          #       is the anchor for a re-fire whose outcome set changed and so
+          #       hashes to a DIFFERENT changeset key: (a) cannot match it, the
+          #       changeset guard legitimately does not fire, and the per-note
+          #       marker is the ONLY thing standing between it and a duplicate PR.
+          # Listed with a plain `--state open` query, never `--search`: that index
+          # is body-keyed AND lags an edit by minutes, so it cannot see a body this
+          # step is about to repair.
+          # `author` is requested because it — not the branch shape — is the only
+          # signal that recognises a bot PR predating the trailing changeset key
+          # (see bot_managed below). Dropping it from this field list silently
+          # narrows candidacy back to keyed branches, so the presence check below
+          # fails closed on it rather than letting coverage quietly shrink.
+          if ! MANAGED="$(gh pr list --state open --limit 200 \
+            --json number,url,state,body,headRefName,files,author 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove the dedup markers it owns are still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
+            exit 1
+          fi
+          if ! printf '%s' "$MANAGED" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to self-heal markers against it: ${MANAGED}"
+            exit 1
+          fi
+          # `has("author")`, not "the login is non-empty": gh always emits every
+          # key it was asked for, so an ABSENT key means the `--json` list above
+          # (or gh's payload shape) changed and half of bot_managed's coverage
+          # went with it — the exact fail-silent regression that made the
+          # self-heal select nothing on #350/#343/#337. A merely odd login (a
+          # deleted account) is not that, and must not wedge the daily cron.
+          if ! printf '%s' "$MANAGED" | jq -e 'length == 0 or all(has("author"))' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned open PR(s) with NO author field, so this run cannot tell which of them are the drift bot's own — half of the candidate filter is blind and the marker self-heal would skip the very PRs it exists for. Refusing to risk a duplicate: ${MANAGED}"
+            exit 1
+          fi
+          NOTES_JSON="$(printf '%s\n' "${NOTES[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')"
+          # Index-parallel with NOTES_JSON (both are built from arrays the loop
+          # above keeps index-parallel), so the selection below can hand back the
+          # exact marker STRINGS a candidate is entitled to. The marker text
+          # therefore still has ONE source — NOTE_MARKERS — and never gets a second
+          # copy inside a jq program.
+          NOTE_MARKERS_JSON="$(printf '%s\n' "${NOTE_MARKERS[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')"
+
+          # ---- ONE DEFINITION OF EVERY CANDIDATE-SELECTION PREDICATE ------------
+          # "Is one of THIS run's note paths among this PR's changed files?" used to
+          # be written TWICE — once in the candidate filter, once again, entirely
+          # independently, in the per-candidate marker scoping below. Two
+          # hand-written expressions that MUST agree are one edit away from
+          # disagreeing, and the second copy ended `jq -e … >/dev/null 2>&1`, so a
+          # jq fault, a malformed payload, or a missing `.files` ALL silently meant
+          # "note not present" — exit 0, no warning, duplicate PR. Every such fact
+          # is now derived here, once, and the selection carries its answer
+          # (`keyAnchored`, `wantMarkers`) forward with each candidate, so nothing
+          # downstream re-derives it.
+          #
+          # bot_managed: candidacy is restricted to PRs THIS WORKFLOW created.
+          # `^fix/drift-` alone is NOT a bot marker — humans use `fix/drift-<slug>`
+          # for drift work (that hand-off is exactly what the needs-human PR body
+          # asks a human to do), and matching one lets this step append machine
+          # markers to a HUMAN's PR body and fold that human PR into the bot's dedup
+          # set, suppressing a genuine needs-human PR indefinitely.
+          #
+          # "Is this PR bot-managed" has TWO SUFFICIENT signals, because either one
+          # alone under-covers:
+          #
+          #   keyed_branch — the trailing changeset key the ok-applied dedup already
+          #     relies on, generalised from "this run's key" to "a changeset key" (16
+          #     lowercase hex — computeChangesetKey's sha256 slice) plus the
+          #     date-and-run-id segments both branch builders emit, so a bot PR
+          #     carrying a DIFFERENT key still qualifies (that is precisely what the
+          #     note-path anchor exists for) while `fix/drift-alert-signal` does not.
+          #     A test pins this pattern against BOTH branch-construction sites, so
+          #     changing either branch shape reds instead of silently selecting
+          #     nothing.
+          #
+          #   bot_author — the PR was OPENED BY the drift bot. Load-bearing, not
+          #     belt-and-braces: the trailing changeset key is an addition of the
+          #     very change that introduced this self-heal, so EVERY bot PR that
+          #     predates it — #350, #343, #337, all `drift-needs-human/<date>-<run
+          #     id>` with no key suffix — fails keyed_branch. Keyed on the branch
+          #     shape ALONE, those PRs were never candidates at all, so NEITHER
+          #     anchor below was ever consulted and this self-heal selected NOTHING
+          #     on exactly the PRs that motivated it (#343's wholesale body rewrite
+          #     -> duplicate #350). The author is both body-INDEPENDENT (a body edit
+          #     cannot change it) and era-INDEPENDENT (it does not depend on a
+          #     branch shape this workflow only started emitting today), which is
+          #     what the two anchors below need in order to be reachable.
+          #
+          # bot_author is ANDed with the drift branch PREFIX so that widening
+          # candidacy cannot drag an unrelated bot PR (a dependency bump, another
+          # workflow) into this step's fail-closed changed-file audit below. Every
+          # PR this workflow opens carries one of those two prefixes — both branch
+          # builders emit them — so the AND costs no coverage.
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_LIB='
+            def keyed_branch:
+              (.headRefName // "")
+              | test("^(fix/drift-|drift-needs-human/)[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]+-[0-9a-f]{16}$");
+            def drift_branch:
+              (.headRefName // "") | test("^(fix/drift-|drift-needs-human/)");
+            def bot_author:
+              ((.author.login // "") | ascii_downcase) == "app/copilotkit-devops-bot";
+            def bot_managed: keyed_branch or (drift_branch and bot_author);
+            def key_anchored($k): (.headRefName // "") | endswith("-" + $k);
+            def files_usable: (.files | type) == "array";
+            def file_paths: [.files[] | .path];
+            def files_truncated: (file_paths | length) >= 100;
+            def matched_note_idx($notes):
+              file_paths as $p
+              | [ range(0; ($notes | length)) as $i
+                  | select(($p | index($notes[$i])) != null)
+                  | $i ];
+          '
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_CANDIDATES='
+            map(select(bot_managed))
+            | map(. + {
+                keyAnchored: key_anchored($k),
+                wantMarkers: (if files_usable
+                              then [ matched_note_idx($notes)[] | $noteMarkers[.] ]
+                              else [] end)
+              })
+            | map(select(.keyAnchored or ((.wantMarkers | length) > 0)))
+          '
+          # A bot-managed PR whose changed-file list this run CANNOT READ is not
+          # evidence that the note is absent from it — and "absent" is the answer
+          # that opens the duplicate. Two ways to be unreadable, both of which the
+          # old `[.files[]?.path]` collapsed to an empty list with no signal:
+          #   - the payload is not an array at all (a gh/API fault), and
+          #   - gh's GraphQL files connection truncated at its `first: 100` ceiling,
+          #     so the note may sit in a tail nobody fetched.
+          # Only load-bearing for a PR the branch-key anchor did NOT already select
+          # (anchor (a) needs no file list), so a bot PR of this run's own changeset
+          # is unaffected.
+          # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
+          JQ_UNPROVEN='
+            [ .[]
+              | select(bot_managed
+                       and ((key_anchored($k)) | not)
+                       and ((files_usable | not) or files_truncated))
+              | .number ]
+          '
+          UNPROVEN_ERR="${RUNNER_TEMP}/drift-candidate-audit.err"
+          if ! UNPROVEN="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" \
+            "${JQ_LIB}${JQ_UNPROVEN}" 2>"$UNPROVEN_ERR")"; then
+            echo "::error::the candidate-PR changed-file audit itself FAILED, so this run cannot tell whether an open bot PR already proposes one of this run's notes — refusing to risk a duplicate: $(cat "$UNPROVEN_ERR" 2>/dev/null)"
+            exit 1
+          fi
+          if [ "$(printf '%s' "$UNPROVEN" | jq -r 'length')" -gt 0 ]; then
+            echo "::error::open bot-managed PR(s) #$(printf '%s' "$UNPROVEN" | jq -r 'map(tostring) | join(", #")') came back with an UNREADABLE or 100-file-TRUNCATED changed-file list, so this run cannot prove they do not already propose note(s) [${NOTES[*]:-}]. Reading that as 'note not present' is exactly how a duplicate PR gets opened. Refusing."
+            exit 1
+          fi
+          MINE_ERR="${RUNNER_TEMP}/drift-candidate-select.err"
+          if ! MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" \
+            --argjson notes "$NOTES_JSON" --argjson noteMarkers "$NOTE_MARKERS_JSON" \
+            "${JQ_LIB}${JQ_CANDIDATES}" 2>"$MINE_ERR")"; then
+            echo "::error::selecting the PRs whose dedup markers this run owns FAILED, so it cannot prove those markers are still intact — refusing to risk a duplicate: $(cat "$MINE_ERR" 2>/dev/null)"
+            exit 1
+          fi
+          if ! printf '%s' "$MINE" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::the candidate-PR selection did not return an array — refusing to self-heal markers against it: ${MINE}"
+            exit 1
+          fi
+          # keyAnchored/wantMarkers/files are SELECTION SCRATCH, not PR state: strip
+          # them before this list is folded into the dedup view further down.
+          REASSERTED="$(printf '%s' "$MINE" | jq -c 'map(del(.keyAnchored, .wantMarkers, .files))')"
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            HEAL_N="$(printf '%s' "$pr" | jq -r '.number')"
+            HEAL_BODY="$(printf '%s' "$pr" | jq -r '.body // ""')"
+            # WHICH markers this PR is entitled to, scoped to the anchor that
+            # matched it. Anchor (a) — the head branch ends in THIS run's key —
+            # proves the PR *is* this changeset's PR, so it owns every marker in
+            # MARKERS. Anchor (b) only proves it proposes a note this run also
+            # carries: restore that note's marker and NOTHING else. Stamping this
+            # run's changeset key onto a PR that merely shares a note would
+            # assert it proposes a changeset it does not carry — in a mixed run,
+            # the registry-edit half — and would then suppress that half forever.
+            #
+            # BOTH facts come from the single selection program above — the branch
+            # anchor as `keyAnchored`, the note-path match as the `wantMarkers` it
+            # already resolved through NOTE_MARKERS. Re-deriving either here is what
+            # produced two `.files` expressions that had to agree, the second of
+            # which swallowed every jq/payload fault into "note not present".
+            WANT=()
+            if ! ANCHOR_A="$(printf '%s' "$pr" | jq -r '.keyAnchored')"; then
+              echo "::error::candidate PR entry carries no keyAnchored flag — the selection program did not produce it, so this run cannot tell which markers PR #${HEAL_N} owns. Refusing."
+              exit 1
+            fi
+            if [ "$ANCHOR_A" = "true" ]; then
+              WANT=("${MARKERS[@]}")
+            else
+              if ! WANT_LINES="$(printf '%s' "$pr" | jq -r '.wantMarkers[]' 2>&1)"; then
+                echo "::error::candidate PR #${HEAL_N} carries no readable wantMarkers list, so this run cannot tell which note marker it is entitled to — refusing to guess: ${WANT_LINES}"
+                exit 1
+              fi
+              while IFS= read -r m; do
+                [ -n "$m" ] || continue
+                WANT+=("$m")
+              done <<< "$WANT_LINES"
+            fi
+            MISSING=()
+            for m in "${WANT[@]}"; do
+              case "$HEAL_BODY" in *"<!-- ${m} -->"*) ;; *) MISSING+=("$m") ;; esac
+            done
+            # An intact body is left BYTE-IDENTICAL: no edit, no API write, no
+            # duplicated marker. That is also what makes re-running this step (or
+            # this whole workflow) a no-op rather than an appending ratchet.
+            [ "${#MISSING[@]}" -gt 0 ] || continue
+            HEAL_FILE="${RUNNER_TEMP}/drift-marker-reassert-${HEAL_N}.md"
+            # APPEND-ONLY: the human-written prose is copied through verbatim and
+            # only the missing marker lines are added after it.
+            {
+              printf '%s\n\n' "$HEAL_BODY"
+              printf '%s\n' "<!-- The marker comment(s) below are machine state the Fix Drift dedup guards match on. They went missing from this body and were restored automatically. Deleting them makes this workflow open a duplicate PR for the same changeset. -->"
+              for m in "${MISSING[@]}"; do printf '<!-- %s -->\n' "$m"; done
+            } > "$HEAL_FILE"
+            if ! HEAL_ERR="$(gh pr edit "$HEAL_N" --body-file "$HEAL_FILE" 2>&1)"; then
+              echo "::error::PR #${HEAL_N} has LOST dedup marker(s) [${MISSING[*]}] and re-asserting them FAILED, so this run cannot dedup against it and would open a duplicate: ${HEAL_ERR}"
+              exit 1
+            fi
+            echo "::warning::PR #${HEAL_N} was missing dedup marker(s) [${MISSING[*]}] — a body edit dropped machine state this workflow owns. RE-ASSERTED them; dedup below now matches and no duplicate PR is opened."
+            REASSERTED="$(printf '%s' "$REASSERTED" | jq -c --argjson n "$HEAL_N" --rawfile b "$HEAL_FILE" \
+              'map(if .number == $n then .body = $b else . end)')"
+          done < <(printf '%s' "$MINE" | jq -c '.[]')
+
           # ALERT CONTENT (see the "Alert on needs-human decision" step below).
           # That alert renders its PR link from THIS step's `url` output, which
           # used to be written only at the very end, after `gh pr create`. All
@@ -494,14 +901,36 @@ jobs:
           # gh failure (401, secondary rate limit, 5xx) into "there are no open
           # PRs", which DISABLES both dedup guards below rather than degrading
           # them, and the step then opens the duplicate they exist to prevent.
-          if ! OPEN_PRS="$(gh pr list --state open --limit 200 --json number,url,body 2>&1)"; then
-            echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${OPEN_PRS}"
+          #
+          # `--state all`, NOT `--state open`: the alert this step feeds tells
+          # humans to "set `Decision: include` … or close to reject", and while
+          # dedup only looked at OPEN PRs, following that instruction guaranteed
+          # a brand-new identical PR the next morning and every morning after.
+          # `--search` narrows server-side on the changeset key so widening the
+          # state filter cannot push the older matching PR out of the window.
+          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+            --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
+            echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
           fi
-          if ! printf '%s' "$OPEN_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${OPEN_PRS}"
+          if ! printf '%s' "$ALL_PRS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
+          # Fold the self-heal's own (search-index-free) view in. `--search` above
+          # is index-backed and lags a body edit by minutes, so a PR whose marker
+          # this step just restored is very likely STILL absent from ALL_PRS —
+          # dropping it here would re-open exactly the duplicate the repair just
+          # prevented. Union rather than replace: ALL_PRS is the only source of
+          # CLOSED (human-rejected) PRs, which the `--state open` self-heal list
+          # cannot see. Self-heal entries win on collision — they carry the
+          # post-repair body.
+          ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
+            '($b | map(.number)) as $healed
+             | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
+          # Only OPEN PRs can carry a still-pending decision; the guards below
+          # keep using this narrowed view.
+          OPEN_PRS="$(printf '%s' "$ALL_PRS" | jq -c 'map(select(.state == "OPEN"))')"
 
           # Emit the PR a human must act on, so the Slack alert can name AND
           # link it. No-op when there is no PR to name (nothing was found and
@@ -515,19 +944,31 @@ jobs:
           }
 
           # The open PR (if any) already carrying this run's stable changeset
-          # marker. Resolved BEFORE the guards below so every path can cite it.
-          # An EMPTY key silently switched the PRIMARY guard off and fell
-          # through to an unconditional push + PR. computeChangesetKey only
-          # returns "" when every outcome is a no-op (ok-no-churn), which cannot
-          # be true on a needs-human run, so an empty key here means drift-sync
-          # misbehaved — fail closed instead of running dedup-blind.
-          if [ -z "${CHANGESET_KEY:-}" ]; then
-            echo "::error::changeset_key is empty on a needs-human run — the PRIMARY dedup guard cannot run, and pushing anyway is how daily duplicate PRs start. Refusing."
-            exit 1
+          # marker is resolved below, BEFORE the guards, so every path can cite
+          # it. (CHANGESET_KEY's fail-closed emptiness check and MARKER live at
+          # the top of this step — the marker self-heal needs both.)
+
+          # A CLOSED-but-never-MERGED PR carrying this marker is the human
+          # REJECTION the alert explicitly invites ("or close to reject").
+          # Respect it permanently and stay QUIET: re-proposing it — and
+          # re-alerting about it — every morning is the spam that made following
+          # the instruction a punishment. A genuinely different drift hashes to a
+          # different changeset key, so only this decision is suppressed.
+          REJECTED_PR="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0] // empty')"
+          if [ -n "$REJECTED_PR" ]; then
+            REJECTED="$(printf '%s' "$REJECTED_PR" | jq -r '.number')"
+            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
+            echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it and not re-alerting"
+            # Emit it like every other early return, so the rejected PR is
+            # still nameable (and the "every exit names a PR" invariant holds).
+            emit_pr "$REJECTED" "$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
+            exit 0
           fi
+
           DUP_NUMBER=""
           DUP_URL=""
-          DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-changeset: ${CHANGESET_KEY}" \
+          DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "$MARKER" \
             'map(select((.body // "") | contains($m))) | .[0] // empty')"
           if [ -n "$DUP" ]; then
             DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
@@ -557,19 +998,17 @@ jobs:
             exit 0
           fi
 
-          # The note file(s) drift-sync.ts committed this run.
-          mapfile -t COMMITTED < <(git diff --name-only "$BASE_SHA" HEAD)
-          NOTES=()
-          for f in "${COMMITTED[@]}"; do
-            case "$f" in drift-proposals/*) NOTES+=("$f") ;; esac
-          done
-
           # SECONDARY de-dup (retained): never open a SECOND PR for a note a
           # still-open PR already proposes (matched by the per-note
-          # "drift-proposal-note: <path>" body marker this step writes below).
-          for note in "${NOTES[@]:-}"; do
+          # "drift-proposal-note: <path>" body marker this step writes below —
+          # NOTE_MARKERS[i], the same string the self-heal re-asserts, so the
+          # emitted set and the matched set cannot drift apart).
+          # NOTES / NOTE_MARKERS are computed at the top of this step: the marker
+          # self-heal needs them, and it must run before every guard here.
+          for i in "${!NOTES[@]}"; do
+            note="${NOTES[$i]}"
             [ -n "$note" ] || continue
-            DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "drift-proposal-note: ${note}" \
+            DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "${NOTE_MARKERS[$i]}" \
               'map(select((.body // "") | contains($m))) | .[0] // empty')"
             if [ -n "$DUP" ]; then
               DUP_NUMBER="$(printf '%s' "$DUP" | jq -r '.number')"
@@ -581,7 +1020,12 @@ jobs:
           done
 
           # Distinct branch (never collides with the ok-applied fix/drift-* branch).
-          BRANCH="drift-needs-human/$(date +%Y-%m-%d)-${RUN_ID}"
+          # The changeset key is the LAST segment on purpose: a PR's head branch
+          # cannot be renamed, so this is the body-INDEPENDENT anchor the marker
+          # self-heal above uses to recognise this PR again if a human ever
+          # deletes its body markers. Keep it last — the self-heal matches on
+          # `endswith("-<key>")`.
+          BRANCH="drift-needs-human/$(date +%Y-%m-%d)-${RUN_ID}-${CHANGESET_KEY}"
           git checkout -B "$BRANCH"
           git push -u origin "$BRANCH"
           echo "Pushed needs-human branch ${BRANCH} at ${HEAD_SHA}"
@@ -604,15 +1048,17 @@ jobs:
             echo ""
             echo "### Note file(s) in this PR"
             echo ""
-            # PRIMARY dedup marker — the changeset-key guard above matches open
-            # PRs on this, so a daily re-fire of the same drift (in ANY shape,
-            # including a mixed run that carries no NEW note file) never opens a
-            # second PR.
-            echo "<!-- drift-changeset: ${CHANGESET_KEY} -->"
             for note in "${NOTES[@]:-}"; do
               [ -n "$note" ] || continue
               echo "- \`${note}\`"
-              echo "<!-- drift-proposal-note: ${note} -->"
+            done
+            echo ""
+            # Dedup markers, emitted from the SINGLE MARKERS array built at the
+            # top of this step (the PRIMARY changeset marker plus one per note),
+            # so the set written here is by construction the set the marker
+            # self-heal re-asserts and the set the guards above match.
+            for m in "${MARKERS[@]}"; do
+              echo "<!-- ${m} -->"
             done
             echo ""
             echo "### drift-sync outcome"
@@ -674,16 +1120,23 @@ jobs:
       # self-healing-drift-plan.md "Bucket B"). The needs-human note was
       # persisted by the step above (a distinct PR was opened, or the note was
       # already in the repo / already proposed in an open PR — no PR spam). This
-      # alert fires the job RED so a human sees it. It is SKIPPED when the
-      # persist step itself FAILED (steps.needs_human_pr.outcome == 'failure') —
-      # that window is a tooling fault handled by the distinct gate-failure alert
-      # below, so the two never double-fire.
+      # alert fires the job RED so a human sees it.
+      #
+      # It requires the persist step to have actually SUCCEEDED. It used to say
+      # `outcome != 'failure'`, which also admits 'skipped' — and the persist
+      # step is gated `… && success()`, so ANY earlier failure (most plausibly
+      # one of the two `always()` artifact uploads) skips it. In that window a
+      # pure TOOLING fault fired this PRODUCT-DECISION alert, telling a human to
+      # go review a note that was never persisted, while the engineering-triage
+      # alert below — which only matched 'failure' — stayed silent. Exactly the
+      # wrong alert, and only the wrong alert.
       - name: Alert on needs-human decision
         id: alert_needs_human
         if: >-
           always() &&
           steps.sync.outputs.reason == 'needs-human' &&
-          steps.needs_human_pr.outcome != 'failure'
+          steps.needs_human_pr.outcome != 'failure' &&
+          steps.needs_human_pr.outputs.rejected == ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
@@ -800,6 +1253,7 @@ jobs:
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          DEDUPED: ${{ steps.pr.outputs.deduped }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -817,7 +1271,14 @@ jobs:
             echo "::error::SLACK_WEBHOOK not set — cannot send sync-success alert"
             exit 1
           fi
-          MSG="✅ *Drift-sync PR opened — needs human review + merge*${NL}A data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          # The dedup path now names its PR too, so distinguish "just opened"
+          # from "still sitting there unmerged" rather than claiming a PR was
+          # opened when none was.
+          if [ "${DEDUPED:-}" = "true" ]; then
+            MSG="⏳ *Drift-sync PR still open — needs human review + merge*${NL}The same data-only model-family sync was re-detected today because its PR is still unmerged. No duplicate was opened.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          else
+            MSG="✅ *Drift-sync PR opened — needs human review + merge*${NL}A data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          fi
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
