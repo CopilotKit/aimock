@@ -144,7 +144,7 @@ function jobPermissions(src: string = wf): Record<string, string> {
 function syncJobIf(src: string): string {
   const idx = src.indexOf("    if: >-");
   if (idx === -1) throw new Error("fix-drift.yml: no `sync` job `if:` gate found");
-  return src.slice(idx, src.indexOf("runs-on:", idx)).replace(/\s+/g, " ");
+  return src.slice(idx, locate(src, "runs-on:", "syncJobIf", idx)).replace(/\s+/g, " ");
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +185,31 @@ interface Step {
 }
 
 const indentOf = (l: string): number => l.length - l.trimStart().length;
+
+/**
+ * `src.indexOf(needle, from)` where a MISSING needle THROWS instead of yielding -1.
+ *
+ * Every locator in this file that feeds a slice bound or an ordering comparison
+ * goes through here. `String.prototype.indexOf` returning -1 is the root cause of
+ * the vacuous-guard class this suite was rebuilt to kill: `slice(at, -1)` spans
+ * everything but the last character (one guard thereby swallowed 6197 of the 6198
+ * remaining characters of the `pr` step and was satisfied by 7 unrelated
+ * `exit 1`s), and an ordering comparison against -1 silently inverts the very
+ * fact it asserts. A guard whose locator fails OPEN proves nothing.
+ *
+ * Boolean "is it present" tests are a different thing and are written as an
+ * explicit `=== -1` / `>= 0` check at the call site; this is only for the cases
+ * where -1 would change the guard's MEANING rather than answer its question.
+ */
+function locate(src: string, needle: string, label: string, from = 0): number {
+  const at = src.indexOf(needle, from);
+  if (at < 0)
+    throw new Error(
+      `${label}: cannot locate \`${needle}\` — refusing to derive a bound from a ` +
+        "locator that did not find its needle",
+    );
+  return at;
+}
 
 function steps(src: string = wf): Step[] {
   const lines = src.split("\n");
@@ -315,6 +340,9 @@ const codeOf = (s: Step): string =>
 function ifBlock(code: string, needle: string, label: string): string {
   const at = code.indexOf(needle);
   if (at === -1) throw new Error(`${label}: no \`${needle}\` to slice`);
+  // `lastIndexOf` is the ONE locator here whose -1 is correct rather than
+  // dangerous: the needle sitting on the first line yields -1, and `+1` makes
+  // that slice from 0 — exactly the intended start.
   const lines = code.slice(code.lastIndexOf("\n", at) + 1).split("\n");
   const closer = new RegExp(`^ {${indentOf(lines[0])}}fi\\s*$`);
   const end = lines.findIndex((l, i) => i > 0 && closer.test(l));
@@ -330,6 +358,9 @@ function ifBlock(code: string, needle: string, label: string): string {
 function whileLoop(code: string, needle: string, label: string): string {
   const at = code.indexOf(needle);
   if (at === -1) throw new Error(`${label}: no \`${needle}\` to slice`);
+  // `lastIndexOf` is the ONE locator here whose -1 is correct rather than
+  // dangerous: the needle sitting on the first line yields -1, and `+1` makes
+  // that slice from 0 — exactly the intended start.
   const lines = code.slice(code.lastIndexOf("\n", at) + 1).split("\n");
   const end = lines.findIndex((l, i) => i > 0 && /^\s*done < <\(/.test(l));
   if (end === -1)
@@ -1078,18 +1109,20 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
 // removed.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", () => {
-  it("the sync job's permissions block does not grant checks: read", () => {
-    const idx = wf.indexOf("permissions:");
-    expect(idx).toBeGreaterThan(-1);
-    const block = wf.slice(idx, wf.indexOf("steps:", idx));
-    expect(block).not.toMatch(/^\s*checks:\s*read\s*$/m);
-  });
-
-  it("the sync job's permissions block does not grant statuses: read", () => {
-    const idx = wf.indexOf("permissions:");
-    expect(idx).toBeGreaterThan(-1);
-    const block = wf.slice(idx, wf.indexOf("steps:", idx));
-    expect(block).not.toMatch(/^\s*statuses:\s*read\s*$/m);
+  it("no permissions block, at either scope, grants checks: read or statuses: read", () => {
+    // Deliberately spans from the WORKFLOW-level `permissions:` through to
+    // `steps:`, so it covers the job's block too — widening either scope reds
+    // this. Both bounds are located through `locate`, because a slice that
+    // silently ran to the end of the file (or started at 0) would still "pass"
+    // these negative assertions for the wrong reason.
+    const from = locate(wf, "permissions:", "permissions block");
+    const block = wf.slice(from, locate(wf, "steps:", "permissions block", from));
+    expect(block, "a permissions block grants `checks: read`").not.toMatch(
+      /^\s*checks:\s*read\s*$/m,
+    );
+    expect(block, "a permissions block grants `statuses: read`").not.toMatch(
+      /^\s*statuses:\s*read\s*$/m,
+    );
   });
 
   it("the app-token mint step does not request permission-checks or permission-statuses", () => {
@@ -1153,15 +1186,23 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
   });
 
   it("PREMISE: every `git push` runs behind the app-token `insteadOf` credential", () => {
-    const inject = steps().find((s) => /insteadOf/.test(codeOf(s)));
-    expect(inject, "no step injects a git push credential at all").toBeDefined();
-    expect(codeOf(inject!)).toContain("x-access-token:${TOKEN}");
-    expect(inject!.env.TOKEN).toBe(APP_TOKEN);
+    // ONE `steps()` call, and the positions come from `findIndex` on it. This used
+    // to call `steps()` twice and then `order.indexOf(inject)` — and `steps()`
+    // re-parses, so the two arrays hold DIFFERENT objects and `indexOf` returned
+    // -1 for the injector. Every real push index is greater than -1, so the
+    // ordering claim was trivially true and a push moved AHEAD of the credential
+    // injection would still have passed.
     const order = steps();
-    const injectAt = order.indexOf(inject!);
-    for (const s of order.filter((x) => /git push/.test(codeOf(x)))) {
+    const injectAt = order.findIndex((s) => /insteadOf/.test(codeOf(s)));
+    expect(injectAt, "no step injects a git push credential at all").toBeGreaterThanOrEqual(0);
+    const inject = order[injectAt];
+    expect(codeOf(inject)).toContain("x-access-token:${TOKEN}");
+    expect(inject.env.TOKEN).toBe(APP_TOKEN);
+    const pushes = order.map((s, i) => ({ s, i })).filter(({ s }) => /git push/.test(codeOf(s)));
+    expect(pushes.length, "no step pushes at all, so this guard proves nothing").toBeGreaterThan(0);
+    for (const { s, i } of pushes) {
       expect(
-        order.indexOf(s),
+        i,
         `${s.name}: pushes BEFORE the app-token credential is injected, so it would ` +
           "push with whatever ambient credential checkout left behind",
       ).toBeGreaterThan(injectAt);
@@ -1172,7 +1213,7 @@ describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", 
     const line = wf.split("\n").find((l) => /^ {4}permissions:/.test(l));
     expect(line, "the sync job declares no `permissions:` of its own").toBeDefined();
     expect(
-      line!.slice(line!.indexOf(":") + 1).trim(),
+      line!.slice(locate(line!, ":", "the sync job `permissions:` line") + 1).trim(),
       "`permissions:` carries an inline value (`read-all`, `write-all`, or a flow " +
         "mapping) — a blanket grant, not a per-scope mapping",
     ).toBe("");
@@ -1433,15 +1474,17 @@ describe("fix-drift.yml — early-infra catch-all failure alert", () => {
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — gate-failure alert also covers a later step failing after an ok-applied sync + successful assert", () => {
   it("the gate-failure alert fires on ok-applied + failure(), not only on steps.assert.outcome == 'failure' (so a Push/PR-create failure is caught too)", () => {
-    const idx = wf.indexOf("name: Alert on drift-sync-check gate failure");
-    expect(idx).toBeGreaterThan(-1);
-    const nextStep = wf.indexOf("\n      - name:", idx + 1);
-    const stepBlock = wf.slice(idx, nextStep === -1 ? undefined : nextStep);
+    // Asked of the step's OWN `if:`, via the slicer. This used to slice
+    // `wf.indexOf("name: Alert …")` to `wf.indexOf("\n      - name:", …)` and fall
+    // back to the END OF FILE when the second locator returned -1, so a renamed
+    // or moved step widened the window to every later step at once — and any
+    // other step's `if:` could then satisfy the positive assertion below.
+    const gate = stepByName("Alert on drift-sync-check gate failure").if ?? "";
     // Must be gated on general failure() in the ok-applied branch, not
     // narrowly on steps.assert.outcome == 'failure' — otherwise a failure in
     // a step AFTER assert (Push branch + create PR) is invisible to this
     // condition.
-    expect(stepBlock).toMatch(/steps\.sync\.outputs\.reason == 'ok-applied' && failure\(\)/);
+    expect(gate).toMatch(/steps\.sync\.outputs\.reason == 'ok-applied' && failure\(\)/);
   });
 
   it("the gate-failure alert message names which step actually failed", () => {
@@ -2191,7 +2234,9 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
     const decisions = (["DUP", "REJECTED_PR"] as const)
       .map((name) => ({
         name,
-        at: code.indexOf(`${name}="`),
+        // Through `locate`: a -1 here would silently INVERT the evaluation order
+        // this function exists to report.
+        at: locate(code, `${name}="`, st.name!),
         ...jqAssignment(code, name, st.name!),
       }))
       .sort((a, b) => a.at - b.at);
@@ -2387,7 +2432,7 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
         postedAt,
         `${st.name}: claims delivery BEFORE the curl, so a rejected POST still reads as ` +
           "delivered",
-      ).toBeGreaterThan(code.indexOf("curl "));
+      ).toBeGreaterThan(locate(code, "curl ", st.name!));
     }
   });
 
@@ -2436,11 +2481,15 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
     }
   });
 
-  it("MODEL: the block slicers THROW on a missing closer instead of widening to the whole step", () => {
+  it("MODEL: every locator and slicer THROWS on a miss instead of widening to the whole step", () => {
     // The known-negative for every slicer above. A bound derived from an
     // unchecked `indexOf` is the defect that made three guards vacuous at once,
     // so the slicers must be unable to return a silently-widened slice.
     const code = codeOf(stepById("pr"));
+    expect(() => locate(code, "no such needle anywhere", "model")).toThrow(/cannot locate/);
+    expect(locate(code, "exit 1", "model"), "locate does not find a needle that IS there").toBe(
+      code.indexOf("exit 1"),
+    );
     expect(() => ifBlock(code, 'if [ -z "${NOT_A_REAL_GUARD:-}" ]; then', "pr")).toThrow(
       /no .* to slice/,
     );
