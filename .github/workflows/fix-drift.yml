@@ -813,11 +813,19 @@ jobs:
           # The note file(s) drift-sync.ts committed this run. Resolved HERE, not
           # further down next to the per-note guard, because the marker set —
           # hence the self-heal — depends on it. Pure local read, no side effects.
-          mapfile -t COMMITTED < <(git diff --name-only "$BASE_SHA" HEAD)
+          #
+          # A plain `read` loop, NOT `mapfile`: `mapfile` is a bash-4 builtin, and
+          # it was the ONLY bash-4-or-newer construct anywhere in this workflow.
+          # The runner has bash 5 so it worked in production — but it also meant
+          # this step's body was the one body a test could not EXECUTE on a stock
+          # macOS dev box (bash 3.2), which is exactly how a hand-written mirror
+          # of these guards gets written instead of a run of them. The filter that
+          # used to follow is folded in, so the intermediate array is gone too.
+          # `|| [ -n "$f" ]` keeps a final line that carries no trailing newline.
           NOTES=()
-          for f in "${COMMITTED[@]}"; do
+          while IFS= read -r f || [ -n "$f" ]; do
             case "$f" in drift-proposals/*) NOTES+=("$f") ;; esac
-          done
+          done < <(git diff --name-only "$BASE_SHA" HEAD)
           # Index-parallel with NOTES (the loop above never appends an empty
           # element), so the per-note dedup guard below can match on
           # NOTE_MARKERS[i] while still naming NOTES[i] in its log line — one

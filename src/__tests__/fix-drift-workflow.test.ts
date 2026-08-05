@@ -1881,7 +1881,11 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
     // empty list. Scoped to the DEDUP region (between the git-diff scan and the
     // branch it pushes): the PR-body writer further down loops over the same
     // variable, so a whole-body match stayed green with the dedup loop gutted.
-    const scanIdx = body.search(/^\s*mapfile -t COMMITTED < <\(git diff --name-only /m);
+    // Anchored on the git-diff invocation that PRODUCES the note list, not on
+    // the bash construct that consumes it: keyed on `mapfile` this went red on a
+    // behaviour-preserving swap to a portable `read` loop, which is a test
+    // measuring an implementation choice instead of the fact it cares about.
+    const scanIdx = body.search(/git diff --name-only "\$BASE_SHA" HEAD/);
     const branchIdx = body.search(/^\s*BRANCH="/m);
     expect(scanIdx, "the persist step never lists the notes this run committed").toBeGreaterThan(
       -1,
@@ -1966,15 +1970,16 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
     expect(persist.env.CHANGESET_KEY).toBe("${{ steps.sync.outputs.changeset_key }}");
     const body = codeOf(persist);
     expect(body).toContain("drift-changeset: ${CHANGESET_KEY}");
-    // CRITICAL: the changeset-key dedup guard must appear BEFORE the
-    // `mapfile ... NOTES` scan. Pre-fix, the ONLY dedup lived inside the
-    // per-note for-loop, reachable only when a note file was in the diff —
-    // exactly what the empty-NOTES mixed run bypasses.
+    // CRITICAL: the changeset-key dedup guard must appear BEFORE the committed-
+    // note scan. Pre-fix, the ONLY dedup lived inside the per-note for-loop,
+    // reachable only when a note file was in the diff — exactly what the
+    // empty-NOTES mixed run bypasses. Anchored on the git-diff invocation that
+    // produces the note list rather than on the bash builtin that reads it.
     const guardIdx = body.indexOf("drift-changeset: ${CHANGESET_KEY}");
-    const mapfileIdx = body.indexOf("mapfile -t COMMITTED");
+    const noteScanIdx = body.search(/git diff --name-only "\$BASE_SHA" HEAD/);
     expect(guardIdx).toBeGreaterThan(-1);
-    expect(mapfileIdx).toBeGreaterThan(-1);
-    expect(guardIdx).toBeLessThan(mapfileIdx);
+    expect(noteScanIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(noteScanIdx);
   });
 
   it("the ok-applied Push+PR step ALSO de-dups on the changeset key (a never-auto-merged applied edit deserves exactly ONE open PR, re-findable across daily re-fires)", () => {
