@@ -41,7 +41,14 @@ import { join, resolve } from "node:path";
 
 import { describe, it, expect } from "vitest";
 
-import { SyncCoreReason } from "../../scripts/drift-sync.js";
+import {
+  SyncCoreReason,
+  UNCHECKED_PROVIDERS_LINE_PREFIX,
+  formatUncheckedProvidersLine,
+  infraSkipReason,
+  isCredentialUnusableSkip,
+  missingKeySkipReason,
+} from "../../scripts/drift-sync.js";
 
 const WORKFLOW_PATH = resolve(__dirname, "../../.github/workflows/fix-drift.yml");
 const wf = readFileSync(WORKFLOW_PATH, "utf-8");
@@ -287,6 +294,143 @@ const codeOf = (s: Step): string =>
     .split("\n")
     .filter((l) => !/^\s*#/.test(l))
     .join("\n");
+
+// ---------------------------------------------------------------------------
+// SHELL-BLOCK SLICERS.
+//
+// Every guard that asks "does THIS branch fail closed" needs the branch, not the
+// rest of the step. The previous versions derived a slice bound from an
+// UNCHECKED `code.indexOf(…)`: when the needle was absent `indexOf` returned -1,
+// `slice(at, -1)` spanned the whole remainder of the step, and an assertion for
+// `exit 1` was then satisfied by any of the 7 (ok-applied) / 14 (needs-human)
+// unrelated `exit 1`s further down. The refusal could be deleted outright and
+// the guard still passed.
+//
+// So these slicers close on the block's OWN indentation and THROW when the
+// closer is missing — a bound that cannot silently widen. The MODEL guards at
+// the bottom of this file pin that throwing behaviour.
+// ---------------------------------------------------------------------------
+
+/** The `if … then … fi` block opened by `needle`, closed at the `if`'s own indent. */
+function ifBlock(code: string, needle: string, label: string): string {
+  const at = code.indexOf(needle);
+  if (at === -1) throw new Error(`${label}: no \`${needle}\` to slice`);
+  const lines = code.slice(code.lastIndexOf("\n", at) + 1).split("\n");
+  const closer = new RegExp(`^ {${indentOf(lines[0])}}fi\\s*$`);
+  const end = lines.findIndex((l, i) => i > 0 && closer.test(l));
+  if (end === -1)
+    throw new Error(
+      `${label}: the block opened by \`${needle}\` has no closing \`fi\` at its own ` +
+        `indent — slicing to an unchecked indexOf() here swallows the whole rest of the step`,
+    );
+  return lines.slice(0, end + 1).join("\n");
+}
+
+/** The `while … done < <(…)` loop opened by `needle`, up to its process-substitution `done`. */
+function whileLoop(code: string, needle: string, label: string): string {
+  const at = code.indexOf(needle);
+  if (at === -1) throw new Error(`${label}: no \`${needle}\` to slice`);
+  const lines = code.slice(code.lastIndexOf("\n", at) + 1).split("\n");
+  const end = lines.findIndex((l, i) => i > 0 && /^\s*done < <\(/.test(l));
+  if (end === -1)
+    throw new Error(`${label}: the loop opened by \`${needle}\` has no \`done < <(…)\``);
+  return lines.slice(0, end + 1).join("\n");
+}
+
+/** The `{ … } > <redirect>` command group, matched on the closing brace's indent. */
+function braceGroup(code: string, redirect: string, label: string): string {
+  const lines = code.split("\n");
+  const close = lines.findIndex((l) => l.trim() === `} > ${redirect}`);
+  if (close === -1) throw new Error(`${label}: no \`} > ${redirect}\` command group`);
+  const indent = indentOf(lines[close]);
+  for (let i = close - 1; i >= 0; i--) {
+    if (indentOf(lines[i]) === indent && lines[i].trim() === "{") {
+      return lines.slice(i, close + 1).join("\n");
+    }
+  }
+  throw new Error(
+    `${label}: the \`} > ${redirect}\` group has no opening \`{\` at indent ${indent}`,
+  );
+}
+
+/** The whole `curl` invocation (its continuation lines included) in `code`. */
+function curlOf(code: string, label: string): string {
+  const lines = code.split("\n");
+  const start = lines.findIndex((l) => /^\s*curl\b/.test(l));
+  if (start === -1) throw new Error(`${label}: no \`curl\` invocation`);
+  let end = start;
+  while (end < lines.length && /\\\s*$/.test(lines[end])) end++;
+  return lines.slice(start, end + 1).join("\n");
+}
+
+/** The full `gh pr list` command whose output is assigned to `name`. */
+function ghListFor(code: string, name: string, label: string): string {
+  const at = code.indexOf(`${name}="$(gh pr list`);
+  if (at === -1) throw new Error(`${label}: no \`${name}="$(gh pr list …)"\` assignment`);
+  const end = code.indexOf(`2>&1)"`, at);
+  if (end === -1) throw new Error(`${label}: the \`${name}\` gh listing does not end \`2>&1)"\``);
+  return code.slice(at, end + 6);
+}
+
+/**
+ * The shell variable a `NAME="$(printf '%s' "$SRC" | jq … '<program>')"` reads,
+ * and the jq program it applies — so a guard can check the WIRING (which listing
+ * a selector actually consults) and then EXECUTE the selector's real semantics.
+ *
+ * Asserting the selector's literals exist proves neither: `.state == "CLOSED"`
+ * reading a listing pre-filtered to OPEN can never match, and both mutations
+ * passed a guard that only checked the tokens were present.
+ */
+function jqAssignment(
+  code: string,
+  name: string,
+  label: string,
+): { reads: string; program: string } {
+  const m = new RegExp(
+    `${name}="\\$\\(printf '%s' "\\$([A-Za-z_][A-Za-z0-9_]*)" \\| jq [^']*'([^']*)'\\)"`,
+  ).exec(code);
+  if (!m) throw new Error(`${label}: no \`${name}="$(printf … | jq … '…')"\` assignment`);
+  return { reads: m[1], program: m[2] };
+}
+
+/** Run a jq program for real, and return its (parsed) output — `undefined` for `empty`. */
+function jqEval(program: string, input: unknown, args: Record<string, string> = {}): unknown {
+  const argv = ["-c", ...Object.entries(args).flatMap(([k, v]) => ["--arg", k, v]), program];
+  const res = spawnSync("jq", argv, { input: JSON.stringify(input), encoding: "utf-8" });
+  if (res.status !== 0) throw new Error(`jq failed (${res.status}): ${res.stderr}`);
+  const out = res.stdout.trim();
+  return out === "" ? undefined : JSON.parse(out);
+}
+
+/** Run a sliced shell fragment with the given environment, and read a variable back. */
+function runFragment(
+  fragment: string,
+  env: Record<string, string>,
+  read: string,
+): { value: string; out: string } {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-frag-"));
+  try {
+    const outFile = join(dir, "value");
+    const script = join(dir, "frag.sh");
+    writeFileSync(
+      script,
+      ["set -euo pipefail", fragment, `printf '%s' "$${read}" > ${JSON.stringify(outFile)}`].join(
+        "\n",
+      ),
+    );
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: { ...process.env, ...env },
+    });
+    return {
+      value: readFileSync(outFile, "utf-8"),
+      out: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /** The named step, or a failed expectation naming what was looked for. */
 function stepByName(name: string, src: string = wf): Step {
@@ -616,6 +760,10 @@ function evaluateIf(exprIn: string, ctx: EvalCtx): boolean {
 /** Steps that exist to tell a human something (Slack + `::error::`). */
 const isAlertStep = (s: Step): boolean => /^(Alert|Notify)\b/.test(s.name ?? "");
 
+/** Every step that POSTs a Slack payload built from a `MSG=` assignment. */
+const slackSteps = (): Step[] =>
+  steps().filter((s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)));
+
 // ---------------------------------------------------------------------------
 // JOB SIMULATION. `evaluateIf` answers "would THIS step run"; several claims
 // here are about the job as a whole ("this failure reaches a human", "exactly
@@ -859,10 +1007,6 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
 // gets mangled, in every alert.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — Slack message bodies use REAL newlines, not a literal backslash-n", () => {
-  /** Every step that POSTs a Slack payload built from a `MSG=` assignment. */
-  const slackSteps = () =>
-    steps().filter((s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)));
-
   it("every Slack-posting step is found, in job order (a new one must be added here deliberately)", () => {
     expect(slackSteps().map((s) => s.name)).toEqual([
       "Alert on job CANCELLATION (posts ahead of the artifact uploads)",
@@ -1686,17 +1830,52 @@ describe("fix-drift.yml — the needs-human alert always names a PR", () => {
 // step against that output and reads what the runner would see.
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — an unusable provider credential cannot read as 'no drift'", () => {
-  /** drift-sync's real skip line (scripts/drift-sync.ts) for a revoked key. */
-  const REVOKED_KEY_SYNC = [
-    "#!/bin/sh",
-    "echo '  [skipped] google: infra error (status 401) fetching live /models for google — never mass-removing off a failed listing'",
-    "echo 'reason=ok-no-churn'",
-    "echo 'changeset-key='",
-    "exit 0",
-  ].join("\n");
+  /**
+   * A stand-in drift-sync whose machine line is BUILT from drift-sync.ts's own
+   * emitter, never transcribed.
+   *
+   * The previous fixture hand-copied the human-facing `  [skipped] …` log prose
+   * the workflow used to grep — and had already drifted from it, naming a
+   * provider `google` where the real enum emits `gemini`. Rewording that
+   * `console.log` therefore left this suite green while turning detection off.
+   */
+  const syncStub = (skipped: { provider: string; reason: string }[], withLine = true): string =>
+    [
+      "#!/bin/sh",
+      ...skipped.map((s) => `echo '  [skipped] ${s.provider}: ${s.reason}'`),
+      ...(withLine ? [`echo '${formatUncheckedProvidersLine(skipped)}'`] : []),
+      "echo 'reason=ok-no-churn'",
+      "echo 'changeset-key='",
+      "exit 0",
+    ].join("\n");
+
+  const REVOKED = { provider: "gemini", reason: infraSkipReason(401, "gemini") };
+  const TRANSIENT = { provider: "openai", reason: infraSkipReason(429, "openai") };
+
+  it("the workflow keys on the MACHINE line drift-sync emits, not on its log prose", () => {
+    expect(
+      codeOf(stepById("sync")),
+      "the stale-key preflight does not grep the machine line drift-sync actually prints, " +
+        "so the emitter and the detector can silently disagree",
+    ).toContain(`grep '^${UNCHECKED_PROVIDERS_LINE_PREFIX}'`);
+  });
+
+  it("the skip CLASSIFIER agrees with the reason builders, and still tolerates transient classes", () => {
+    // Both sides of this read the same two prose constants inside drift-sync.ts,
+    // so a reword cannot make the builder and the classifier disagree.
+    expect(isCredentialUnusableSkip(missingKeySkipReason("GOOGLE_API_KEY", "gemini"))).toBe(true);
+    for (const status of [401, 402, 403]) {
+      expect(isCredentialUnusableSkip(infraSkipReason(status, "gemini"))).toBe(true);
+    }
+    // 429 and 5xx resolve on their own and must never red an unattended cron.
+    for (const status of [429, 500, 503]) {
+      expect(isCredentialUnusableSkip(infraSkipReason(status, "openai"))).toBe(false);
+    }
+    expect(isCredentialUnusableSkip("live listing unavailable")).toBe(false);
+  });
 
   it("a revoked key reported as ok-no-churn fails the step and raises an alert", () => {
-    const obs = observeSyncStep(wf, REVOKED_KEY_SYNC);
+    const obs = observeSyncStep(wf, syncStub([REVOKED]));
     const reason = obs.outputs.reason ?? "";
     expect(
       reason,
@@ -1710,13 +1889,186 @@ describe("fix-drift.yml — an unusable provider credential cannot read as 'no d
         "concludes GREEN on a sync that never actually checked the provider",
     ).not.toBe(0);
     const keyed = steps()
-      .filter((s) => /^(Alert|Notify)\b/.test(s.name ?? ""))
+      .filter(isAlertStep)
       .filter((s) => (s.if ?? "").includes(`'${reason}'`));
     expect(
       keyed.map((s) => s.name),
       `the step publishes reason='${reason}' for an unchecked provider, but no alert ` +
         "step's `if:` mentions it — the reason is published into a void",
     ).not.toEqual([]);
+  });
+
+  it("KNOWN-NEGATIVE: a genuinely quiet day (and a TRANSIENT skip) stays quiet", () => {
+    // Without this the guard above is satisfiable by a preflight that reds every
+    // single run, which is a different way of telling a human nothing.
+    for (const skipped of [[], [TRANSIENT]]) {
+      const obs = observeSyncStep(wf, syncStub(skipped));
+      expect(
+        obs.outputs.reason,
+        `a run whose only skip was transient (${JSON.stringify(skipped)}) was reclassified — ` +
+          "a daily cron that reds on a 429 gets muted by the humans reading it",
+      ).toBe(SyncCoreReason.OK_NO_CHURN);
+      expect(obs.stepExit, "a quiet day failed the step").toBe(0);
+    }
+  });
+
+  it("an ABSENT machine line is a FAULT, not proof that every provider was checked", () => {
+    // "The line is missing" means the log could not be read, or drift-sync never
+    // got that far. An UNKNOWN must not resolve to the answer that passes.
+    const obs = observeSyncStep(wf, syncStub([REVOKED], false));
+    expect(
+      obs.outputs.reason,
+      "drift-sync printed no unchecked-providers= line at all and the step still published " +
+        "ok-no-churn — so an unprovable run is indistinguishable from a quiet one",
+    ).not.toBe(SyncCoreReason.OK_NO_CHURN);
+    expect(obs.stepExit, "an unprovable run left the step green").not.toBe(0);
+  });
+
+  it("an UNREADABLE sync log is a FAULT too — grep exit 2 is not grep exit 1", () => {
+    // OBSERVED, by running the preflight's own shell with a log path that does not
+    // exist (the `tee` failed): grep exits 2, not 1. `|| true` collapsed both into
+    // "" = "every provider was checked", so an unreadable log read as proof of the
+    // answer that passes.
+    const preflight = ifBlock(
+      codeOf(stepById("sync")),
+      'if [ "${REASON}" = "ok-no-churn" ]; then',
+      "sync",
+    );
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-log-"));
+    try {
+      const good = join(dir, "sync.log");
+      writeFileSync(good, `${formatUncheckedProvidersLine([REVOKED])}\nreason=ok-no-churn\n`);
+      const clean = join(dir, "clean.log");
+      writeFileSync(clean, `${formatUncheckedProvidersLine([])}\nreason=ok-no-churn\n`);
+      const cases: Array<[string, string, string]> = [
+        [good, "provider-unchecked", "a named unchecked provider did not reclassify the run"],
+        [clean, "ok-no-churn", "an empty unchecked-provider list reclassified a quiet day"],
+        [
+          join(dir, "never-written.log"),
+          "provider-unchecked",
+          "an UNREADABLE log (grep exit 2) read as 'every provider was checked' — the " +
+            "answer that passes",
+        ],
+      ];
+      for (const [logPath, want, why] of cases) {
+        const res = runFragment(
+          preflight,
+          { REASON: SyncCoreReason.OK_NO_CHURN, SYNC_LOG: logPath },
+          "REASON",
+        );
+        expect(res.value, `${why} (log=${logPath}, stdio=${res.out.trim()})`).toBe(want);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `bot_managed` — the predicate that decides WHICH open PRs the marker self-heal
+// is allowed to touch. It had NO test anywhere, while the workflow comment
+// asserted "A test pins this pattern against BOTH branch-construction sites".
+// A comment claiming a guard that does not exist is worse than no comment: the
+// widening the whole self-heal rests on was unfalsifiable, and reverting
+// `bot_managed` to key-only (or typo-ing the bot login) left the suite green.
+//
+// Every case below RUNS the workflow's own jq definitions.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — bot_managed decides candidacy, and is pinned to both branch builders", () => {
+  const jqLib = (): string => {
+    const m = /JQ_LIB='([\s\S]*?)'/.exec(codeOf(stepById("needs_human_pr")));
+    if (!m) throw new Error("needs_human_pr: no JQ_LIB definition block");
+    return m[1];
+  };
+  const def = (name: string, prJson: unknown): unknown => jqEval(`${jqLib()} ${name}`, prJson);
+
+  /** The drift bot's own login, as GitHub reports it for a GitHub App. */
+  const BOT = "app/copilotkit-devops-bot";
+  const RUN_ID = "30885817052";
+  const KEY = "eaa8db65f5647493";
+
+  /**
+   * The branch strings the workflow's TWO branch builders actually produce, by
+   * RUNNING their own `BRANCH=` assignments under bash (with `git rev-parse
+   * --abbrev-ref HEAD` standing in for the branch the `Configure git` step
+   * created). Pinning `keyed_branch` against a hand-written branch string instead
+   * would let either builder change shape while the pattern stayed green — and
+   * then the self-heal silently selects nothing.
+   */
+  const builtBranches = (): { okApplied: string; needsHuman: string } => {
+    const checkout = /git checkout -B "([^"]+)"/.exec(codeOf(stepById("gitcfg")))?.[1];
+    const prBranch = /BRANCH="([^"]+)"/.exec(codeOf(stepById("pr")))?.[1];
+    const nhBranch = /BRANCH="([^"]+)"/.exec(codeOf(stepById("needs_human_pr")))?.[1];
+    if (!checkout || !prBranch || !nhBranch) throw new Error("a BRANCH= builder moved");
+    const res = runFragment(
+      [
+        `RUN_ID=${JSON.stringify(RUN_ID)}`,
+        `CHANGESET_KEY=${JSON.stringify(KEY)}`,
+        `HEAD_BRANCH="${checkout}"`,
+        "git() { printf '%s\\n' \"$HEAD_BRANCH\"; }",
+        `OK_APPLIED="${prBranch}"`,
+        `NEEDS_HUMAN="${nhBranch}"`,
+        // A branch name cannot contain a space, so this separator is unambiguous.
+        'BOTH="${OK_APPLIED} ${NEEDS_HUMAN}"',
+      ].join("\n"),
+      {},
+      "BOTH",
+    );
+    const [okApplied, needsHuman] = res.value.split(" ");
+    return { okApplied, needsHuman };
+  };
+
+  it("keyed_branch accepts what BOTH branch builders actually produce", () => {
+    const { okApplied, needsHuman } = builtBranches();
+    for (const branch of [okApplied, needsHuman]) {
+      expect(branch, "a branch builder produced nothing").toBeTruthy();
+      expect(
+        def("keyed_branch", { headRefName: branch }),
+        `keyed_branch does not match the branch this workflow actually pushes (${branch}), so ` +
+          "the marker self-heal will not recognise its own PR and silently selects nothing",
+      ).toBe(true);
+    }
+    // Both must therefore be bot-managed without needing the author signal.
+    for (const branch of [okApplied, needsHuman]) {
+      expect(def("bot_managed", { headRefName: branch, author: { login: "jpr5" } })).toBe(true);
+    }
+  });
+
+  it("a bot PR on a PRE-KEY-ERA drift branch is still a candidate (that is what bot_author is for)", () => {
+    // #350/#343/#337 are all `drift-needs-human/<date>-<run id>` with no key
+    // suffix — the trailing key arrived with the self-heal itself. Keyed on the
+    // branch shape alone, the self-heal selected NOTHING on exactly the PRs that
+    // motivated it.
+    const legacy = { headRefName: `drift-needs-human/2026-08-04-${RUN_ID}` };
+    expect(def("keyed_branch", legacy), "the legacy branch is not key-anchored (premise)").toBe(
+      false,
+    );
+    expect(
+      def("bot_managed", { ...legacy, author: { login: BOT } }),
+      "a bot-authored PR on a pre-key-era drift branch is not a candidate, so its lost " +
+        "markers can never be repaired — verbatim the #343 -> #350 mechanism",
+    ).toBe(true);
+    // Case-insensitively, since GitHub's login casing is not guaranteed.
+    expect(def("bot_managed", { ...legacy, author: { login: BOT.toUpperCase() } })).toBe(true);
+  });
+
+  it("a HUMAN's drift branch and an unrelated bot PR are NOT candidates", () => {
+    // `^fix/drift-` alone is not a bot marker: humans use `fix/drift-<slug>` for
+    // drift work (the needs-human PR body asks them to), and matching one lets
+    // this step append machine markers to a human's PR body and fold that PR into
+    // the bot's dedup set — suppressing a genuine needs-human PR indefinitely.
+    expect(
+      def("bot_managed", { headRefName: "fix/drift-alert-signal", author: { login: "jpr5" } }),
+      "a HUMAN's fix/drift-<slug> PR is treated as bot-managed",
+    ).toBe(false);
+    // …and widening on the author must not drag in a bot PR from another workflow.
+    expect(
+      def("bot_managed", { headRefName: "renovate/vitest-3.x", author: { login: BOT } }),
+      "an unrelated bot PR is treated as bot-managed, so it enters this step's " +
+        "fail-closed changed-file audit and can wedge the daily cron",
+    ).toBe(false);
+    // A missing author must not throw (a deleted account is not a payload fault).
+    expect(def("bot_managed", { headRefName: "fix/drift-alert-signal" })).toBe(false);
   });
 });
 
@@ -1731,29 +2083,75 @@ describe("fix-drift.yml — an unusable provider credential cannot read as 'no d
 describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", () => {
   const prSteps = () => [stepById("pr"), stepById("needs_human_pr")];
 
-  it("each PR-open step RE-ASSERTS its own body markers, keyed on state a body edit cannot touch", () => {
+  const HEAL_LOOP = "while IFS= read -r pr; do";
+
+  it("each PR-open step's marker self-healer can actually REPAIR — on the artifact it repairs with", () => {
     for (const st of prSteps()) {
       const code = codeOf(st);
+      // (a) The candidate listing must be index-FREE. `--search`'s index is
+      // body-keyed AND lags an edit by minutes, so it cannot see the very body
+      // being repaired. Asked of the listing ITSELF: the previous guard sliced
+      // `code.slice(0, code.indexOf("gh pr edit"))` and then applied a
+      // `(?![\s\S]*gh pr edit)` lookahead to it — a slice that by construction
+      // contains no `gh pr edit`, so the lookahead could never match and the
+      // prohibition was structurally unable to fail.
+      const listing = ghListFor(code, "MANAGED", st.name!);
       expect(
-        code,
+        listing,
+        `${st.name}: the marker-repair candidate listing is not a plain --state open query`,
+      ).toContain("--state open");
+      expect(
+        listing,
+        `${st.name}: the candidate listing for the marker repair uses --search, whose ` +
+          "body-keyed index cannot see the very body being repaired",
+      ).not.toContain("--search");
+
+      // (b) The repair LOOP must iterate the selected candidates. Redirecting its
+      // `done` from anything else (`printf ''`) leaves the self-healer entirely
+      // dead while every text assertion about its body still passes.
+      const loop = whileLoop(code, HEAL_LOOP, st.name!);
+      expect(
+        loop.split("\n").at(-1)?.trim(),
+        `${st.name}: the marker-repair loop does not read the selected candidates, so ` +
+          "it iterates nothing and the self-healer is dead",
+      ).toBe(`done < <(printf '%s' "$MINE" | jq -c '.[]')`);
+
+      // (c) ONE missing marker is enough to repair — the #343 -> #350 incident
+      // shape exactly. `-gt 1` leaves a PR that lost a single marker unrepaired.
+      expect(
+        loop,
+        `${st.name}: the repair needs more than one missing marker, so a PR that lost ` +
+          "exactly one (the #343 -> #350 incident shape) is never repaired",
+      ).toContain(`[ "\${#MISSING[@]}" -gt 0 ] || continue`);
+
+      // (d) The WRITER must write the `<!-- … -->` form, checked against the
+      // WRITER and nothing else. The previous guard asserted this over the whole
+      // step, where the unrelated PR-BODY writer's `echo "<!-- ${m} -->"` satisfied
+      // it independently — so the repair could be changed to append bare markers
+      // (which its own detector then never matches: an appending ratchet, every
+      // run, forever) with the guard still green. Wrong artifact.
+      const writer = braceGroup(loop, '"$HEAL_FILE"', st.name!);
+      expect(
+        writer,
+        `${st.name}: the marker repair does not restore the "<!-- … -->" marker form its ` +
+          "own detector matches, so every later run re-edits the body",
+      ).toContain(`printf '<!-- %s -->\\n' "$m"`);
+      // …and the DETECTOR must match that same form, or an intact body reads as missing.
+      expect(
+        loop,
+        `${st.name}: the repair's own missing-marker detector does not match the form the ` +
+          "writer writes",
+      ).toContain(`case "$HEAL_BODY" in *"<!-- \${m} -->"*`);
+
+      // (e) The repair is written with `--body-file` (a `--body "$(cat …)"` form
+      // re-expands `${…}` in a human's prose).
+      expect(
+        loop,
         `${st.name}: never re-writes a PR body, so a human deleting a marker leaves ` +
           "dedup blind and the next run opens a duplicate",
       ).toMatch(/gh pr edit .*--body-file/);
-      expect(
-        code,
-        `${st.name}: the marker repair does not restore the "<!-- … -->" marker form ` +
-          "the dedup guards match on",
-      ).toMatch(/<!-- \$\{m\} -->/);
-      // The self-heal's own listing must NOT be `--search`: that index is
-      // body-keyed AND lags an edit by minutes, so it cannot see the body being
-      // repaired. Identity comes from the head branch instead, which a PR cannot
-      // rename — so the branch this step pushes must CARRY the changeset key.
-      const heal = code.slice(0, code.indexOf("gh pr edit"));
-      expect(
-        heal,
-        `${st.name}: the candidate listing for the marker repair uses --search, whose ` +
-          "body-keyed index cannot see the very body being repaired",
-      ).toMatch(/gh pr list --state open(?![\s\S]*--search[\s\S]*gh pr edit)/);
+
+      // (f) Identity is body-INDEPENDENT: the pushed branch carries the key.
       expect(
         code,
         `${st.name}: the pushed branch does not end in the changeset key, so the marker ` +
@@ -1762,25 +2160,116 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
     }
   });
 
-  it("each dedup listing sees CLOSED PRs, and a closed marker-carrying PR is not re-proposed", () => {
+  // The live payload this dedup is evaluated against today, read off
+  // `gh pr list --state all --search "eaa8db65f5647493 in:body"` on 2026-08-04:
+  // a CLOSED spam duplicate and the MERGED original, with the changeset marker in
+  // both bodies.
+  const KEY = "eaa8db65f5647493";
+  const MARKER = `drift-changeset: ${KEY}`;
+  const pr = (number: number, state: string) => ({
+    number,
+    url: `https://github.test/pr/${number}`,
+    state,
+    body: `prose\n<!-- ${MARKER} -->\nmore prose`,
+  });
+  const CLOSED_DUPLICATE = pr(350, "CLOSED");
+  const MERGED_ORIGINAL = pr(343, "MERGED");
+  const OPEN_PENDING = pr(351, "OPEN");
+
+  /**
+   * Evaluate a step's dedup selectors against a payload IN THE ORDER THE STEP
+   * EVALUATES THEM (the order is read off the artifact, not assumed), and report
+   * which decision fires first.
+   */
+  function firstDecision(st: Step, allPrs: unknown[]): { name: string; number?: number } {
+    const code = codeOf(st);
+    const env: Record<string, unknown> = { ALL_PRS: allPrs };
+    // The needs-human path narrows to OPEN first; the ok-applied path selects
+    // `.state == "OPEN"` inline. Resolve whichever exists.
+    const openPrs = code.includes('OPEN_PRS="') ? jqAssignment(code, "OPEN_PRS", st.name!) : null;
+    if (openPrs) env.OPEN_PRS = jqEval(openPrs.program, env[openPrs.reads]);
+    const decisions = (["DUP", "REJECTED_PR"] as const)
+      .map((name) => ({
+        name,
+        at: code.indexOf(`${name}="`),
+        ...jqAssignment(code, name, st.name!),
+      }))
+      .sort((a, b) => a.at - b.at);
+    for (const d of decisions) {
+      const hit = jqEval(d.program, env[d.reads], { m: MARKER }) as { number: number } | undefined;
+      if (hit !== undefined) return { name: d.name, number: hit.number };
+    }
+    return { name: "none" };
+  }
+
+  it("a CLOSED duplicate cannot outrank a still-OPEN proposal (the #350/#343 shape, live-observed)", () => {
     for (const st of prSteps()) {
       const code = codeOf(st);
-      const dedup = code.slice(code.indexOf("gh pr edit"));
+      // TEXT ORDER: the open-duplicate path must RETURN before the rejection test
+      // is even reached, or a closed PR still wins.
+      const dupAt = code.indexOf("already proposed in open PR");
+      const rejAt = code.indexOf('REJECTED_PR="');
+      expect(dupAt, `${st.name}: no open-duplicate path to order`).toBeGreaterThanOrEqual(0);
+      expect(rejAt, `${st.name}: no closed-rejection test to order`).toBeGreaterThanOrEqual(0);
       expect(
-        dedup,
+        dupAt,
+        `${st.name}: the closed-rejection test runs BEFORE the open-duplicate test, so a ` +
+          "human closing the spam DUPLICATE reads as rejecting the changeset itself and " +
+          "suppresses a decision still pending in an open PR",
+      ).toBeLessThan(rejAt);
+      expect(
+        code.slice(dupAt, rejAt),
+        `${st.name}: the open-duplicate path does not exit before the rejection test`,
+      ).toMatch(/^\s*exit 0$/m);
+
+      // …and the selectors, RUN for real, behave that way on the live payload.
+      expect(
+        firstDecision(st, [CLOSED_DUPLICATE, MERGED_ORIGINAL, OPEN_PENDING]),
+        `${st.name}: with a pending OPEN proposal present, the first decision is not the ` +
+          "duplicate one",
+      ).toEqual({ name: "DUP", number: 351 });
+      expect(
+        firstDecision(st, [CLOSED_DUPLICATE, MERGED_ORIGINAL]),
+        `${st.name}: with the proposal closed and nothing open, the rejection is not respected`,
+      ).toEqual({ name: "REJECTED_PR", number: 350 });
+      // A MERGED PR is an ACCEPTED decision. It must read as neither.
+      expect(
+        firstDecision(st, [MERGED_ORIGINAL]),
+        `${st.name}: a MERGED proposal reads as a rejection or a pending duplicate`,
+      ).toEqual({ name: "none" });
+    }
+  });
+
+  it("each dedup listing sees CLOSED PRs, and the CLOSED selector reads THAT listing", () => {
+    for (const st of prSteps()) {
+      const code = codeOf(st);
+      const listing = ghListFor(code, "ALL_PRS", st.name!);
+      expect(
+        listing,
         `${st.name}: the dedup listing is scoped to open PRs, so the moment a human ` +
           "CLOSES a proposal to reject it the next cron run stops seeing it and opens a " +
           "fresh one — daily, forever",
-      ).toMatch(/gh pr list --state all[\s\S]*--search "\$\{CHANGESET_KEY\} in:body"/);
+      ).toContain("--state all");
+      expect(listing, `${st.name}: the dedup listing is not narrowed on the key`).toContain(
+        '--search "${CHANGESET_KEY} in:body"',
+      );
+      expect(listing, `${st.name}: the dedup listing has no explicit --limit`).toContain(
+        "--limit 200",
+      );
+      // `state` must be REQUESTED, or `.state` is null on every entry and both the
+      // CLOSED and the OPEN selectors are dead for every PR at once.
       expect(
-        dedup,
-        `${st.name}: never selects a CLOSED marker-carrying PR, so a human rejection is ` +
-          "not respected",
-      ).toMatch(/\.state == "CLOSED"/);
+        /--json ([A-Za-z,]+)/.exec(listing)?.[1].split(","),
+        `${st.name}: the dedup listing does not request the \`state\` field, so \`.state\` ` +
+          "is null everywhere and the rejection path can never match",
+      ).toContain("state");
+      // WIRING, not token presence: the CLOSED selector must consult the
+      // all-states listing. Pointed at the OPEN-narrowed view it can never match,
+      // and a human rejection is re-proposed every morning.
       expect(
-        dedup,
-        `${st.name}: finds a human-rejected changeset but does not stop before pushing`,
-      ).toMatch(/rejected=\$\{REJECTED\}/);
+        jqAssignment(code, "REJECTED_PR", st.name!).reads,
+        `${st.name}: the CLOSED-PR selector reads a listing that cannot contain closed PRs`,
+      ).toBe("ALL_PRS");
     }
     expect(
       stepByName("Alert on needs-human decision").if ?? "",
@@ -1788,6 +2277,45 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         "re-alerting every morning is the spam that made following the instruction a " +
         "punishment",
     ).toContain("steps.needs_human_pr.outputs.rejected == ''");
+  });
+
+  it("a suppressed changeset is still REPORTED — the re-proposal is suppressed, not the telling", () => {
+    // Quiet used to mean silent: `exit 0`, no PR, the needs-human alert gated on
+    // `rejected == ''`, and on the ok-applied path a `rejected` output that NO
+    // step read. A run in that state was byte-identical to a quiet day, and the
+    // only way out was reopening the closed PR — which nobody knew to do.
+    for (const st of prSteps()) {
+      const code = codeOf(st);
+      const block = ifBlock(code, 'if [ -n "$REJECTED_PR" ]; then', st.name!);
+      expect(
+        block,
+        `${st.name}: the suppression does not publish the closing PR, so nothing can name it`,
+      ).toMatch(/echo "rejected=\$\{REJECTED\}"/);
+      expect(
+        block,
+        `${st.name}: the suppression publishes no url, so an alert cannot link the closing PR`,
+      ).toMatch(/rejected_url=/);
+    }
+    const notice = stepByName("Notify Slack on a SUPPRESSED (human-rejected) changeset");
+    // Both paths' outputs must be READ, or one of them suppresses in silence.
+    for (const output of ["steps.pr.outputs.rejected", "steps.needs_human_pr.outputs.rejected"]) {
+      expect(
+        notice.if ?? "",
+        `a changeset suppressed on one path is never reported: ${output} is not read`,
+      ).toContain(`${output} != ''`);
+    }
+    const msg = assembleSlackMessage(notice, {
+      PR_REJECTED: "350",
+      PR_REJECTED_URL: "https://github.test/pr/350",
+    });
+    expect(msg, "the suppression notice does not name the closing PR").toContain("#350");
+    expect(msg, "the suppression notice does not link the closing PR").toContain(
+      "https://github.test/pr/350",
+    );
+    expect(
+      msg,
+      "the suppression notice names no way back out, so a human who finds it cannot act",
+    ).toMatch(/REOPEN/);
   });
 });
 
@@ -1808,37 +2336,94 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
     ).toEqual([]);
   });
 
-  it("a DROPPED Slack notification fails its step rather than ending the job green", () => {
-    const slack = steps().filter(
-      (s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)),
-    );
-    expect(slack.length, "no Slack-posting step found").toBeGreaterThan(0);
-    for (const st of slack) {
-      const branch = /if \[ -z "\$\{SLACK_WEBHOOK:-\}" \]; then\n([\s\S]*?)\n *fi/.exec(codeOf(st));
-      expect(branch, `${st.name}: no missing-webhook branch to check`).not.toBeNull();
+  it("a DROPPED Slack notification is never mistaken for a delivered one", () => {
+    expect(slackSteps().length, "no Slack-posting step found").toBeGreaterThan(0);
+    for (const st of slackSteps()) {
+      const code = codeOf(st);
+      // (a) A missing webhook is a hard stop. Scoped to the branch by its own
+      // `fi`, so the assertion cannot be satisfied by an `exit 1` elsewhere.
+      const branch = ifBlock(code, 'if [ -z "${SLACK_WEBHOOK:-}" ]; then', st.name!);
       expect(
-        branch![1],
+        branch,
         `${st.name}: a missing webhook means the notification was DROPPED, and exiting 0 ` +
           "leaves the job green while nobody is told",
       ).toMatch(/^\s*exit 1$/m);
+
+      // (b) The POST ITSELF — the likelier way a notification is dropped, and the
+      // window the previous guard did not look at, since it only inspected the
+      // missing-webhook branch. Without `-f`, Slack answering 404 to a rotated
+      // webhook exits 0 and the drop is invisible; with `|| true`, so does
+      // everything else.
+      const post = curlOf(code, st.name!);
+      expect(
+        post,
+        `${st.name}: the POST drops the -f flag, so a 404 (rotated webhook), 403, 429 or ` +
+          "5xx exits 0 and the notification is lost with the job still green",
+      ).toMatch(/curl -[a-zA-Z]*f/);
+      expect(
+        post,
+        `${st.name}: the POST's failure is swallowed, so a dropped notification cannot be ` +
+          "distinguished from a delivered one",
+      ).not.toContain("||");
+      // (c) BOUNDED. No `--max-time` let a hung POST burn the job's whole
+      // remaining budget (and a cancellation's 5-minute one); no `--retry` lost
+      // the day's only alert to a single Slack 429/5xx.
+      expect(post, `${st.name}: the POST is unbounded — a hung Slack can hang the job`).toMatch(
+        /--max-time \d+/,
+      );
+      expect(
+        post,
+        `${st.name}: a single transient Slack failure loses the notification outright`,
+      ).toMatch(/--retry \d+/);
+
+      // (d) DELIVERY IS PROVEN POSITIVELY, and only AFTER the curl returned 0.
+      const postedAt = code.indexOf('echo "posted=true"');
+      expect(
+        postedAt,
+        `${st.name}: never publishes positive proof of delivery, so anything downstream ` +
+          "can only key on a step OUTCOME — which a failed POST also produces",
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        postedAt,
+        `${st.name}: claims delivery BEFORE the curl, so a rejected POST still reads as ` +
+          "delivered",
+      ).toBeGreaterThan(code.indexOf("curl "));
     }
   });
 
   it("both PR-open paths REFUSE to run dedup-blind on an empty changeset key", () => {
     for (const st of [stepById("pr"), stepById("needs_human_pr")]) {
       const code = codeOf(st);
-      const at = code.indexOf('if [ -z "${CHANGESET_KEY:-}" ]; then');
+      const NEEDLE = 'if [ -z "${CHANGESET_KEY:-}" ]; then';
+      const at = code.indexOf(NEEDLE);
       expect(
         at,
         `${st.name}: an EMPTY changeset key silently switches the PRIMARY dedup guard ` +
           "off (`if [ -n … ]`) and falls through to an unconditional push + PR",
       ).toBeGreaterThanOrEqual(0);
-      const guard = code.slice(at, code.indexOf("\n          fi", at));
+      // Sliced on the `if`'s OWN indent. The previous bound came from
+      // `code.indexOf("\n          fi", at)` — a `fi` at 20 spaces of file indent,
+      // which exists NOWHERE in this workflow — so `indexOf` returned -1,
+      // `slice(at, -1)` spanned the whole rest of the step, and the assertion was
+      // satisfied by 7 (ok-applied) / 14 (needs-human) unrelated `exit 1`s. The
+      // refusal could be replaced by `echo "continuing dedup-blind"` and this
+      // guard stayed green.
+      const guard = ifBlock(code, NEEDLE, st.name!);
+      expect(
+        guard.split("\n").length,
+        `${st.name}: the refusal slice spans more than the refusal, so an \`exit 1\` ` +
+          "elsewhere in the step can satisfy the assertion below",
+      ).toBeLessThanOrEqual(5);
       expect(
         guard,
         `${st.name}: the empty-changeset-key branch does not fail the step, so the run ` +
           "still pushes with no dedup",
       ).toMatch(/^\s*exit 1$/m);
+      expect(
+        guard,
+        `${st.name}: the empty-changeset-key branch returns SUCCESSFULLY, so the run is ` +
+          "green and silent on a sync that misbehaved",
+      ).not.toMatch(/^\s*exit 0$/m);
       for (const call of ["git push", "gh pr create"]) {
         const c = code.indexOf(call);
         if (c === -1) continue;
@@ -1849,6 +2434,23 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
         ).toBeLessThan(c);
       }
     }
+  });
+
+  it("MODEL: the block slicers THROW on a missing closer instead of widening to the whole step", () => {
+    // The known-negative for every slicer above. A bound derived from an
+    // unchecked `indexOf` is the defect that made three guards vacuous at once,
+    // so the slicers must be unable to return a silently-widened slice.
+    const code = codeOf(stepById("pr"));
+    expect(() => ifBlock(code, 'if [ -z "${NOT_A_REAL_GUARD:-}" ]; then', "pr")).toThrow(
+      /no .* to slice/,
+    );
+    // An `if` line whose block is not closed at its own indent: an over-indented
+    // `fi` must not be accepted as the closer.
+    expect(() =>
+      ifBlock('  if [ -z "$X" ]; then\n    echo hi\n    fi\n', 'if [ -z "$X" ]', "t"),
+    ).toThrow(/no closing `fi` at its own\s+indent/);
+    expect(() => whileLoop(code, "while never_written; do", "pr")).toThrow(/no .* to slice/);
+    expect(() => braceGroup(code, '"$NO_SUCH_FILE"', "pr")).toThrow(/no .* command group/);
   });
 });
 
@@ -1881,6 +2483,52 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       "the gate alert fired and ends in `exit 1`, yet the run is modelled GREEN — " +
         "every claim this table makes about alert-step outcomes is then fiction",
     ).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // `continue-on-error` IS THE ONE KEY THAT DECOUPLES A STEP'S OUTCOME FROM THE
+  // JOB'S STATUS, and it appeared nowhere in this workflow OR this suite. With
+  // it, a step exits non-zero (so `outcome == 'failure'`) while the job concludes
+  // SUCCESS and `failure()` is false — which defeats, from one added line: "a
+  // drift-sync CRASH cannot end green and silent" (on `sync`), "a Push/PR-create
+  // failure after a passing assert still alerts" (on `pr`), and "both alerts fail
+  // the job so a human sees it in CI status" (on `alert_gate`).
+  //
+  // The MODEL guard proves the simulation can SEE the key, so the ban below is
+  // load-bearing rather than decoration.
+  // -------------------------------------------------------------------------
+  it("MODEL: `continue-on-error` is parsed and modelled — with it, a failing step stops failing the JOB", () => {
+    const ANCHOR = "      - name: Run deterministic drift sync\n        id: sync\n";
+    const mutated = wf.replace(ANCHOR, `${ANCHOR}        continue-on-error: true\n`);
+    expect(mutated, "the injection anchor moved — this guard is testing nothing").not.toBe(wf);
+    expect(
+      stepById("sync", mutated).continueOnError,
+      "the step slicer does not read `continue-on-error` at all, so no guard here can see it",
+    ).toBe("true");
+    const scenario: Scenario = {
+      failing: ["sync"],
+      outputs: { sync: { reason: SyncCoreReason.OK_NO_CHURN, exit_code: "1" } },
+    };
+    expect(
+      simulateJob(scenario, wf).alerts,
+      "KNOWN-POSITIVE: a failing sync step must reach the catch-all as the workflow stands",
+    ).toEqual([CATCH_ALL]);
+    expect(
+      simulateJob(scenario, mutated).alerts,
+      "the simulation cannot see `continue-on-error`: with it the job concludes SUCCESS, " +
+        "`failure()` is false and every alert goes silent — so the ban below is the only " +
+        "thing standing between one added YAML line and a green, silent crash",
+    ).toEqual([]);
+  });
+
+  it("no step decouples its outcome from the job's status with `continue-on-error`", () => {
+    expect(
+      steps()
+        .filter((s) => s.continueOnError !== undefined)
+        .map((s) => `${s.id ?? s.name} (continue-on-error: ${s.continueOnError})`),
+      "a step sets `continue-on-error`, which leaves its outcome 'failure' while the job " +
+        "concludes SUCCESS — every `failure()`-gated alert in this job then stays silent",
+    ).toEqual([]);
   });
 
   it("MODEL: the notification that does NOT end in `exit 1` is still modelled as SUCCEEDING", () => {
