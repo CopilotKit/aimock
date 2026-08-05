@@ -1407,12 +1407,12 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
    * exited non-zero. Reachable from any Node-level failure after the log lines —
    * an unhandled rejection on a dangling promise, an OOM on the way out.
    */
-  const quietThenDied = (exit: number): string =>
+  const quietThenDied = (exit: number, reason = SyncCoreReason.OK_NO_CHURN): string =>
     [
       "#!/bin/sh",
       "echo 'unchecked-providers='",
-      "echo 'changeset-key='",
-      "echo 'reason=ok-no-churn'",
+      "echo 'changeset-key=eaa8db65f5647493'",
+      `echo 'reason=${reason}'`,
       `exit ${exit}`,
       "",
     ].join("\n");
@@ -1423,25 +1423,36 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
     // died" exited 0, concluded green, and selected none of the six Slack posts.
     // The same fail-open encoding as the `provider-unchecked` window one layer
     // down — an UNKNOWN collapsing into the answer that passes.
-    const obs = observeSyncStep(wf, quietThenDied(1));
-    expect(
-      obs.outputs.exit_code,
-      "the scenario did not actually make drift-sync exit non-zero",
-    ).toBe("1");
-    expect(
-      obs.stepExit,
-      `drift-sync printed reason=ok-no-churn and then exited ${obs.outputs.exit_code}, but ` +
-        `the sync STEP exited 0 and published reason=${JSON.stringify(obs.outputs.reason ?? "")}` +
-        " — the job concludes GREEN, every reason-keyed alert `if:` is false, and the " +
-        "catch-all needs failure(), so a dying sync is byte-identical to a quiet day",
-    ).not.toBe(0);
-    const reason = obs.outputs.reason ?? "";
-    const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));
-    expect(
-      keyed.map((s) => s.name),
-      `the step publishes reason='${reason}' for a sync that died after reporting, but no ` +
-        "alert step's `if:` mentions it — the fault is published into a void",
-    ).not.toEqual([]);
+    //
+    // Over BOTH reasons that claim the run was fine and over the exit codes a
+    // death actually arrives with, because one scenario left two one-token
+    // narrowings green: `-ne 0` → `-eq 1` still catches the only code a single
+    // fixture used while letting 137 (OOM — the mechanism's own cited motivating
+    // case) and 139 (SIGSEGV) through, and `ok-*)` → `ok-no-churn)` lets an
+    // ok-applied run report clean, die, and stay green and silent.
+    for (const reason of [SyncCoreReason.OK_NO_CHURN, SyncCoreReason.OK_APPLIED]) {
+      for (const exit of [1, 2, 137]) {
+        const obs = observeSyncStep(wf, quietThenDied(exit, reason));
+        expect(
+          obs.outputs.exit_code,
+          `the scenario did not actually make drift-sync exit ${exit}`,
+        ).toBe(String(exit));
+        expect(
+          obs.stepExit,
+          `drift-sync printed reason=${reason} and then exited ${exit}, but the sync STEP ` +
+            `exited 0 and published reason=${JSON.stringify(obs.outputs.reason ?? "")} — the ` +
+            "job concludes GREEN, every reason-keyed alert `if:` is false, and the catch-all " +
+            "needs failure(), so a dying sync is byte-identical to a quiet day",
+        ).not.toBe(0);
+        const published = obs.outputs.reason ?? "";
+        const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${published}'`));
+        expect(
+          keyed.map((s) => s.name),
+          `the step publishes reason='${published}' for a ${reason} run that died with ` +
+            `${exit}, but no alert step's \`if:\` mentions it — the fault is published into a void`,
+        ).not.toEqual([]);
+      }
+    }
   });
 
   it("KNOWN-NEGATIVE: the same clean log with a ZERO exit is still a quiet day", () => {
@@ -1981,13 +1992,31 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
     // out of the simulation, never hand-written). Executed, because a substring
     // check on `FAILING_STEP` passes on a body where every arm sets the same text.
     const OK_APPLIED = { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" };
-    const windows: Record<string, { scenario: Scenario; names: RegExp }> = {
+    const windows: Record<string, { scenario: Scenario; names: RegExp; fallback?: true }> = {
       "drift-sync crashed": {
         scenario: {
           failing: ["sync"],
           // A WORKFLOW-level reason: the sync step synthesises it, so there is no
           // SyncCoreReason member to name it by.
           outputs: { sync: { reason: "sync-crashed", exit_code: "1" } },
+        },
+        names: /Run deterministic drift sync/,
+      },
+      // The two arms with no window of their own could each be made DEAD by a
+      // one-character edit to the value they compare against — after which a
+      // revoked credential, or the internal gate reverting the edit, fell through
+      // to the "unidentified step" fallback and this guard stayed green.
+      "a provider was never actually checked (revoked/expired credential)": {
+        scenario: {
+          failing: ["sync"],
+          outputs: { sync: { reason: "provider-unchecked", exit_code: "1" } },
+        },
+        names: /Run deterministic drift sync/,
+      },
+      "drift-sync's own internal gate reverted the edit": {
+        scenario: {
+          failing: ["sync"],
+          outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } },
         },
         names: /Run deterministic drift sync/,
       },
@@ -2008,6 +2037,7 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
         // No `id:`, so it cannot be named — but the message must at least report
         // the state it observed instead of inventing a different one.
         names: /assert=skipped/,
+        fallback: true,
       },
     };
     const assembled = Object.fromEntries(
@@ -2016,11 +2046,40 @@ describe("fix-drift.yml — gate-failure alert also covers a later step failing 
         assembleSlackMessage(gate, alertEnvFrom(gate, scenario)),
       ]),
     );
-    for (const [label, { names }] of Object.entries(windows)) {
+    /**
+     * The step names this workflow actually HAS — the only vocabulary a
+     * "failing step: …" line may draw a name from. The fallback wording is
+     * admitted because two real steps (the artifact uploads) carry no `id:` and
+     * genuinely cannot be named; inventing a third name is what this rejects.
+     */
+    const namesARealStep = (msg: string): boolean =>
+      msg.includes("an unidentified step") ||
+      steps().some((s) => s.name !== undefined && msg.includes(s.name));
+    for (const [label, { names, fallback }] of Object.entries(windows)) {
       expect(
         assembled[label],
         `the gate alert does not name what failed when ${label}: ${JSON.stringify(assembled[label])}`,
       ).toMatch(names);
+      // …and the name it gives is a step that EXISTS. "Verify registry
+      // checksums" reads exactly as plausibly as the real thing and sends a human
+      // to a step that is not in the file — the defect class this ladder was
+      // written to close, reachable on any arm no window covered.
+      expect(
+        namesARealStep(assembled[label]),
+        `when ${label}, the gate alert names a step this workflow does not have: ` +
+          JSON.stringify(assembled[label]),
+      ).toBe(true);
+      if (fallback !== true) {
+        // An arm made DEAD (one character in the value it compares against) falls
+        // through to the fallback, which is true but useless: the run has a step
+        // to name and this says nobody knows which.
+        expect(
+          assembled[label],
+          `when ${label}, the gate alert falls through to "an unidentified step" — the arm ` +
+            "that covers this window is dead, so a human is told the workflow cannot tell " +
+            "them what broke",
+        ).not.toMatch(/an unidentified step/);
+      }
       // The ladder's needs-human arms must not claim an ok-applied run lost a
       // needs-human note. That run has no note; the claim sends a human hunting
       // for a file that does not exist and never names the step that broke.
@@ -3775,7 +3834,7 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     ).toEqual([]);
   });
 
-  it("no step decouples its outcome from the job's status with `continue-on-error`", () => {
+  it("neither a step NOR the job decouples its outcome from the status above it", () => {
     expect(
       steps()
         .filter((s) => s.continueOnError !== undefined)
@@ -3783,6 +3842,26 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       "a step sets `continue-on-error`, which leaves its outcome 'failure' while the job " +
         "concludes SUCCESS — every `failure()`-gated alert in this job then stays silent",
     ).toEqual([]);
+    // …and the same key one level up, which the step-scoped check above cannot
+    // see. On the JOB it decouples the job from the RUN: the alerts still fire
+    // (they key on `failure()` INSIDE the job), but the Actions UI and the
+    // workflow-failure notification both go green, so the red cron job — the one
+    // signal left when a webhook has been rotated — disappears too. Read as the
+    // job mapping's own KEYS, so no indentation or quoting spelling slips past.
+    const jobKeys = [
+      ...wf
+        .slice(locate(wf, "  sync:", "the sync job"), locate(wf, "    steps:", "the sync job"))
+        .matchAll(/^ {4}([A-Za-z][A-Za-z0-9-]*):/gm),
+    ].map((m) => m[1]);
+    expect(
+      jobKeys,
+      "the sync job's key list came out empty — this guard is reading nothing",
+    ).toContain("runs-on");
+    expect(
+      jobKeys,
+      "the JOB sets `continue-on-error`, so a failed job stops failing the workflow RUN: the " +
+        "Actions UI goes green and the workflow-failure notification never fires",
+    ).not.toContain("continue-on-error");
   });
 
   it("MODEL: the notification that does NOT end in `exit 1` is still modelled as SUCCEEDING", () => {
