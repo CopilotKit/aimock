@@ -3276,6 +3276,22 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
   // catch-all must stand down for exactly one value of `posted`, and for NO
   // value of `outcome`.
   // -------------------------------------------------------------------------
+  // The alerts the model believes the catch-all stands down for. Pinned against
+  // the workflow's own `if:` below, because both enumerations feed every step id
+  // the SAME `posted`: a FOURTH clause naming a step this list omits reads as
+  // unset, `'' != 'true'` holds, and every enumeration here stays green while the
+  // backstop has acquired a new way to be silenced.
+  const STAND_DOWN_IDS = ["alert_cancelled", "alert_needs_human", "alert_gate"];
+
+  /** The step ids whose `posted` output the catch-all's `if:` actually reads. */
+  const standDownIds = (): string[] => [
+    ...new Set(
+      [...stepByName(CATCH_ALL).if!.matchAll(/steps\.([A-Za-z0-9_-]+)\.outputs\.posted/g)].map(
+        (m) => m[1],
+      ),
+    ),
+  ];
+
   const catchAllSelected = (alert: { outcome?: StepOutcome; posted?: string }): boolean =>
     evaluateIf(stepByName(CATCH_ALL).if!, {
       event_name: "schedule",
@@ -3283,20 +3299,34 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       jobCancelled: true,
       steps: {
         sync: { outcome: "cancelled", outputs: {} },
-        alert_cancelled: {
-          outcome: alert.outcome ?? "success",
-          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
-        },
-        alert_needs_human: {
-          outcome: alert.outcome ?? "success",
-          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
-        },
-        alert_gate: {
-          outcome: alert.outcome ?? "success",
-          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
-        },
+        ...Object.fromEntries(
+          STAND_DOWN_IDS.map((id) => [
+            id,
+            {
+              outcome: alert.outcome ?? "success",
+              outputs: alert.posted === undefined ? {} : { posted: alert.posted },
+            },
+          ]),
+        ),
       },
     });
+
+  it("the catch-all's stand-down set is EXACTLY the alerts enumerated here", () => {
+    expect(
+      standDownIds().sort(),
+      "the catch-all reads a `posted` output this file does not enumerate, so the " +
+        "enumerations below feed that step nothing and cannot see what it silences. " +
+        "`alert_rejected` is the live hazard: it delivers on GREEN days, so a clause " +
+        "naming it would stand the backstop down on any day a changeset was suppressed — " +
+        "including one where an unrelated tooling fault is the only thing left unreported.",
+    ).toEqual([...STAND_DOWN_IDS].sort());
+    // Every id named must be a real step, or the clause is dead text.
+    for (const id of standDownIds())
+      expect(
+        () => stepById(id),
+        `the catch-all reads steps.${id}, which does not exist`,
+      ).not.toThrow();
+  });
 
   it("the catch-all stands down ONLY on POSITIVE proof of delivery — over the whole `posted` domain", () => {
     const answers = (["true", "false", "", "1", "TRUE"] as const).map((posted) => ({
