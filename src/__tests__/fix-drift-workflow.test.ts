@@ -432,6 +432,24 @@ function curlOf(code: string, label: string): string {
   return lines.slice(start, end + 1).join("\n");
 }
 
+/**
+ * The INTEGER value curl is handed for `flag`, so a bound can be checked for
+ * what it MEANS rather than for its shape. `--max-time 0` and `--retry 0` are
+ * curl's own spellings of "no limit" and "no retries", and both satisfy a
+ * `\d+` match — so a syntactic assertion accepts precisely the values that
+ * delete the bound it was written to require.
+ *
+ * Throws when the flag is absent or its value is not a whole number of seconds:
+ * a bound that cannot be read is not a bound.
+ */
+function curlFlagValue(cmd: string, flag: string, label: string): number {
+  const m = new RegExp(`(?:^|\\s)${flag}[= ]+(\\S+)`).exec(cmd);
+  if (m === null) throw new Error(`${label}: the POST carries no \`${flag}\``);
+  if (!/^\d+$/.test(m[1]))
+    throw new Error(`${label}: \`${flag} ${m[1]}\` is not a whole number of seconds`);
+  return Number(m[1]);
+}
+
 /** The full `gh pr list` command whose output is assigned to `name`. */
 function ghListFor(code: string, name: string, label: string): string {
   const at = code.indexOf(`${name}="$(gh pr list`);
@@ -2685,16 +2703,54 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
         `${st.name}: the POST's failure is swallowed, so a dropped notification cannot be ` +
           "distinguished from a delivered one",
       ).not.toContain("||");
-      // (c) BOUNDED. No `--max-time` let a hung POST burn the job's whole
-      // remaining budget (and a cancellation's 5-minute one); no `--retry` lost
-      // the day's only alert to a single Slack 429/5xx.
-      expect(post, `${st.name}: the POST is unbounded — a hung Slack can hang the job`).toMatch(
-        /--max-time \d+/,
-      );
+      // (c) BOUNDED, BY VALUE. No `--max-time` let a hung POST burn the job's
+      // whole remaining budget (and a cancellation's 5-minute one); no `--retry`
+      // lost the day's only alert to a single Slack 429/5xx. Asserting the flags
+      // are merely PRESENT (`/--max-time \d+/`) accepted `0` for both, which is
+      // curl's own spelling of "no limit" and "no retries" — so the two defects
+      // this check exists to prevent were reachable with it green. Observed
+      // against a real socket: `--max-time 0` was still running at 8s where `2`
+      // gave rc=28 at 3s; `--retry 0` made one attempt where `2` made three. A
+      // third spelling kills the retries without touching `--retry` at all:
+      // `--retry-max-time 1` expires the budget before the first `--retry-delay`
+      // elapses. So read the numbers and check the relationships between them.
+      const maxTime = curlFlagValue(post, "--max-time", st.name!);
+      const retry = curlFlagValue(post, "--retry", st.name!);
+      const retryDelay = curlFlagValue(post, "--retry-delay", st.name!);
+      const retryMaxTime = curlFlagValue(post, "--retry-max-time", st.name!);
       expect(
-        post,
-        `${st.name}: a single transient Slack failure loses the notification outright`,
-      ).toMatch(/--retry \d+/);
+        maxTime,
+        `${st.name}: \`--max-time ${maxTime}\` is curl's "no limit" — a hung Slack can hang ` +
+          "the job for its whole remaining budget",
+      ).toBeGreaterThan(0);
+      expect(
+        retry,
+        `${st.name}: \`--retry ${retry}\` means NO retries — a single transient Slack ` +
+          "failure loses the notification outright",
+      ).toBeGreaterThan(0);
+      expect(
+        retryDelay,
+        `${st.name}: \`--retry-delay ${retryDelay}\` retries with no pause, so every attempt ` +
+          "lands inside the same transient outage and the retries buy nothing",
+      ).toBeGreaterThan(0);
+      expect(
+        retryMaxTime,
+        `${st.name}: \`--retry-max-time ${retryMaxTime}\` expires before ${retry} retries at ` +
+          `\`--retry-delay ${retryDelay}\` can even happen — the retries are dead on arrival`,
+      ).toBeGreaterThanOrEqual(retry * retryDelay);
+      // Bounded ABOVE as well: the whole POST, retries included, has to finish
+      // inside a cancellation's 5-minute grace window — the tightest budget any
+      // of these steps runs under — and one attempt cannot outlive them all.
+      expect(
+        retryMaxTime,
+        `${st.name}: \`--retry-max-time ${retryMaxTime}\`s can outlive a cancellation's ` +
+          "5-minute grace window, so the alert is killed before it posts",
+      ).toBeLessThanOrEqual(240);
+      expect(
+        maxTime,
+        `${st.name}: one attempt (\`--max-time ${maxTime}\`) may outlast the entire retry ` +
+          `budget (\`--retry-max-time ${retryMaxTime}\`), so the bound that loses is unclear`,
+      ).toBeLessThanOrEqual(retryMaxTime);
 
       // (d) DELIVERY IS PROVEN POSITIVELY, and only AFTER the curl returned 0.
       const postedAt = code.indexOf('echo "posted=true"');
