@@ -1057,6 +1057,84 @@ const LIVE_MODEL_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>
   gemini: listGeminiModels,
 };
 
+// ---------------------------------------------------------------------------
+// UNUSABLE-CREDENTIAL SKIPS, AND THE MACHINE LINE THAT REPORTS THEM.
+//
+// An unusable credential is not an error here, it is a SKIP: with every provider
+// skipped the core has no live listing to diff, so it reports ok-no-churn and
+// exits 0 — byte-for-byte identical to a genuinely quiet day. `fix-drift.yml`
+// breaks that encoding collision by reclassifying the run, and it needs to know
+// WHICH skips mean "the credential is unusable" (a persistent misconfiguration a
+// human must fix) rather than "transient, it will resolve itself".
+//
+// That classification lives HERE, next to the strings it classifies, and is
+// published as a machine line — `unchecked-providers=<csv>` — alongside
+// `reason=` and `changeset-key=`. The workflow used to instead grep the
+// human-facing `  [skipped] …` log prose, which made a fail-closed safety guard
+// depend on an indent, a wording and an em-dash in a `console.log`: rewording
+// this file turned that guard silently off. The two prose fragments below are
+// each written ONCE and read by both the builder and the classifier, so a
+// reword cannot make the emitter and the detector disagree.
+// ---------------------------------------------------------------------------
+
+/** The one copy of the "no credential at all" wording. */
+const MISSING_KEY_SKIP_MARKER = "not set — skipping live sync for";
+/** The one copy of the "the live listing itself faulted" wording (status follows). */
+const INFRA_SKIP_MARKER = "infra error (status ";
+
+/** The skip reason a provider with NO credential configured gets. */
+export function missingKeySkipReason(envKey: string, provider: Provider): string {
+  return `${envKey} ${MISSING_KEY_SKIP_MARKER} ${provider}`;
+}
+
+/** The skip reason a provider whose live `/models` fetch faulted gets. */
+export function infraSkipReason(status: number, provider: Provider): string {
+  return `${INFRA_SKIP_MARKER}${status}) fetching live /models for ${provider} — never mass-removing off a failed listing`;
+}
+
+/**
+ * HTTP statuses that mean the CREDENTIAL is unusable, not that the provider had
+ * a moment. `isInfraSkip` also absorbs 429 and 5xx, and those are deliberately
+ * NOT here: they resolve on their own and must not red an unattended daily cron.
+ */
+export const CREDENTIAL_UNUSABLE_STATUSES: readonly number[] = [401, 402, 403];
+
+/**
+ * Does this skip reason mean the provider was never actually CHECKED because its
+ * credential is unusable?
+ *
+ * Reads the same two markers the builders above write, so the classifier cannot
+ * drift away from the emitter.
+ */
+export function isCredentialUnusableSkip(reason: string): boolean {
+  if (reason.includes(MISSING_KEY_SKIP_MARKER)) return true;
+  if (reason.startsWith(INFRA_SKIP_MARKER)) {
+    const status = Number.parseInt(reason.slice(INFRA_SKIP_MARKER.length), 10);
+    return CREDENTIAL_UNUSABLE_STATUSES.includes(status);
+  }
+  return false;
+}
+
+/** The machine line `fix-drift.yml` greps to tell "nothing changed" from "could not look". */
+export const UNCHECKED_PROVIDERS_LINE_PREFIX = "unchecked-providers=";
+
+/**
+ * `unchecked-providers=<csv>` for this run — the providers whose credential was
+ * unusable, so their live listing was never read.
+ *
+ * Emitted UNCONDITIONALLY (empty csv on a healthy run) so that the line's ABSENCE
+ * is itself a detectable fault rather than being indistinguishable from "no
+ * provider was skipped".
+ */
+export function formatUncheckedProvidersLine(
+  skipped: readonly { provider: string; reason: string }[],
+): string {
+  const unchecked = skipped
+    .filter((s) => isCredentialUnusableSkip(s.reason))
+    .map((s) => s.provider);
+  return `${UNCHECKED_PROVIDERS_LINE_PREFIX}${[...new Set(unchecked)].sort().join(",")}`;
+}
+
 /** Fetch one provider's live `/models` ids, or an honest skip (no key / infra error). */
 export async function fetchProviderChurnInput(provider: Provider): Promise<ProviderChurnInput> {
   const envKey = LIVE_MODEL_ENV_KEY[provider];
@@ -1065,7 +1143,7 @@ export async function fetchProviderChurnInput(provider: Provider): Promise<Provi
     return {
       provider,
       liveModelIds: null,
-      skipReason: `${envKey} not set — skipping live sync for ${provider}`,
+      skipReason: missingKeySkipReason(envKey, provider),
     };
   }
   try {
@@ -1076,7 +1154,7 @@ export async function fetchProviderChurnInput(provider: Provider): Promise<Provi
       return {
         provider,
         liveModelIds: null,
-        skipReason: `infra error (status ${err.status}) fetching live /models for ${provider} — never mass-removing off a failed listing`,
+        skipReason: infraSkipReason(err.status, provider),
       };
     }
     throw err;
@@ -1225,6 +1303,11 @@ export async function runDriftSyncCli(
     commitSyncChanges(outcome);
   }
 
+  // MACHINE line, printed unconditionally so its absence is a detectable fault:
+  // which providers were never actually checked because their credential is
+  // unusable. `fix-drift.yml` keys its stale-key preflight on this instead of on
+  // the human-facing `  [skipped] …` prose above.
+  console.log(formatUncheckedProvidersLine(outcome.skipped));
   console.log(`reason=${outcome.reason}`);
   // Stable, date-independent identity of this run's changeset — the workflow
   // greps this to de-dup PRs across daily re-fires in EVERY shape (including

@@ -217,17 +217,48 @@ jobs:
           # Only AUTH-class skips (401/402/403) and a missing key are treated as
           # faults: both are persistent misconfigurations that a human must fix.
           # Transient classes (429, 5xx) stay tolerated — they resolve on their
-          # own and must not red a daily cron.
+          # own and must not red a daily cron. That classification is made in
+          # drift-sync.ts (isCredentialUnusableSkip), not here.
           #
           # Scoped to ok-no-churn deliberately: that is the exact window where
           # the skip is INVISIBLE. On any other reason the run already produces
           # its own signal, and reclassifying would break the PR paths.
+          #
+          # Keyed on the MACHINE line `unchecked-providers=<csv>`, exactly like
+          # `reason=` and `changeset-key=` above. It used to grep drift-sync.ts's
+          # HUMAN-FACING log prose instead:
+          #   ^[[:space:]]+\[skipped\] .*(infra error \(status 40[123]\)|not set — …)
+          # which coupled a fail-closed safety guard to an indent, a wording and an
+          # em-dash in a `console.log`. Rewording that log line — or renumbering
+          # which HTTP codes count as auth-class — turned this guard silently OFF and
+          # restored the original revoked-key silent window, and the only test on it
+          # matched a HAND-COPIED duplicate of the prose (which had even drifted to
+          # naming a provider `google` that the real enum emits as `gemini`), so the
+          # suite stayed green while detection went dead.
+          #
+          # An ABSENT line is a FAULT, not "nothing to report": it means the log
+          # could not be read, or drift-sync did not get as far as printing it. An
+          # unknown must not resolve to the answer that passes.
           if [ "${REASON}" = "ok-no-churn" ]; then
-            UNCHECKED="$(grep -E '^[[:space:]]+\[skipped\] .*(infra error \(status 40[123]\)|not set — skipping live sync)' "${SYNC_LOG}" || true)"
-            if [ -n "${UNCHECKED}" ]; then
+            UNCHECKED_LINE=""
+            GREP_STATUS=0
+            # grep exits 1 for NO MATCH and 2 for an ERROR (unreadable log — e.g.
+            # `tee` failed, or the runner's disk filled). `|| true` collapsed both
+            # into "every provider was checked", i.e. an unreadable log read as
+            # PROOF of the answer that passes. Capture the status and split them.
+            UNCHECKED_LINE="$(grep '^unchecked-providers=' "${SYNC_LOG}" | tail -n1)" || GREP_STATUS=$?
+            if [ "${GREP_STATUS}" -ge 2 ]; then
               REASON="provider-unchecked"
-              echo "::error::drift-sync reported no churn, but at least one provider was never actually checked (unusable credential) — 'nothing changed' here means 'could not look':"
-              printf '%s\n' "${UNCHECKED}"
+              echo "::error::could not READ ${SYNC_LOG} to check whether every provider was actually checked (grep exited ${GREP_STATUS}) — an unreadable log is not evidence that the credentials worked"
+            elif [ "${GREP_STATUS}" -ne 0 ]; then
+              REASON="provider-unchecked"
+              echo "::error::drift-sync printed no 'unchecked-providers=' line at all, so this run cannot prove any provider was actually checked — treating 'no churn' as unproven rather than as a quiet day"
+            else
+              UNCHECKED="${UNCHECKED_LINE#unchecked-providers=}"
+              if [ -n "${UNCHECKED}" ]; then
+                REASON="provider-unchecked"
+                echo "::error::drift-sync reported no churn, but these providers were never actually checked (missing, revoked or expired credential) — 'nothing changed' here means 'could not look': ${UNCHECKED}"
+              fi
             fi
           fi
           {
@@ -243,6 +274,74 @@ jobs:
           if [ "${REASON}" = "sync-crashed" ] || [ "${REASON}" = "provider-unchecked" ]; then
             exit 1
           fi
+
+      # THE CANCELLATION POST GOES FIRST, AHEAD OF THE ARTIFACT UPLOADS.
+      #
+      # A cancelled job — a manual cancel, or this job's own
+      # `timeout-minutes: 30` firing — gets ONE bounded budget to run whatever
+      # remains: GitHub's documented cancellation timeout period is 5 minutes,
+      # after which "the server will forcibly terminate all jobs and steps
+      # marked for cancellation that are still running". The runner works
+      # through the remaining steps IN ORDER, so whatever sits earliest spends
+      # that budget first.
+      #
+      # The end-of-job catch-all below is the alert that covers cancellation,
+      # and BOTH `always()` artifact uploads sat ahead of it. `upload-artifact`
+      # retries internally against the artifact service, so a degraded or slow
+      # artifact service could consume the whole budget and the catch-all's
+      # cheap POST would never run — silently losing the very alert the
+      # `cancelled()` clause was added to deliver. GitHub's own docs warn about
+      # exactly this: "Avoid using `always` for any task that could suffer from
+      # a critical failure … otherwise the workflow may hang until it times
+      # out."
+      #
+      # So the cancellation POST is hoisted HERE, ahead of both uploads, where
+      # it is the first thing the runner reaches once the job starts
+      # cancelling. The catch-all below remains the backstop for the case this
+      # step's own POST fails (it stands down only on this step's positive
+      # `posted=true`, never on its step outcome — see the catch-all's comment).
+      #
+      # It cannot be merged into the catch-all: the catch-all reads
+      # `steps.alert_*.outputs` of steps that come LATER in the job, and a step
+      # cannot reference a step the runner has not evaluated yet (actionlint
+      # rejects the forward reference outright).
+      - name: Alert on job CANCELLATION (posts ahead of the artifact uploads)
+        id: alert_cancelled
+        if: cancelled()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SYNC_REASON: ${{ steps.sync.outputs.reason }}
+        run: |
+          set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
+          # A CANCELLED job did not "fail" anywhere — saying it did would send a
+          # human hunting for a broken step that does not exist.
+          if [ -z "${SYNC_REASON:-}" ]; then
+            WHERE="during INFRA/SETUP or drift-sync itself, BEFORE any reason was reported — most plausibly the job's own 30-minute timeout-minutes firing (or a manual cancel)"
+          else
+            WHERE="AFTER drift-sync reported reason='${SYNC_REASON}' — most plausibly the job's own 30-minute timeout-minutes firing (or a manual cancel)"
+          fi
+          echo "::error::Drift-sync job was CANCELLED ${WHERE}"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot send cancellation alert"
+            exit 1
+          fi
+          MSG="🧱⏹️ *Drift-sync job — CANCELLED / TIMED OUT* — the job was cancelled ${WHERE}; nothing was synced and no PR was opened. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below. Written
+          # only AFTER the curl returned 0, so the backstop can tell "this alert
+          # ran" from "this alert delivered".
+          echo "posted=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload drift-sync log
         if: always()
@@ -447,17 +546,17 @@ jobs:
           ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
             '($b | map(.number)) as $healed
              | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
-          # A CLOSED-but-never-MERGED PR carrying this marker is a human
-          # REJECTION of this exact changeset — respect it permanently. A
-          # genuinely different drift produces a different changeset key, so
-          # this suppresses the rejected proposal and nothing else.
-          REJECTED="$(printf '%s' "$ALL_PRS" | jq -r --arg m "$MARKER" \
-            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0].number // empty')"
-          if [ -n "$REJECTED" ]; then
-            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
-            echo "ok-applied: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
-            exit 0
-          fi
+          # A STILL-OPEN PR carrying this marker is a PENDING proposal, and it is
+          # tested BEFORE the closed-rejection test below. The ORDER is
+          # load-bearing, not stylistic: `--search "<key> in:body"` is a
+          # state-BLIND query, so one changeset routinely matches several PRs at
+          # once. On 2026-08-04 the live query for changeset eaa8db65f5647493
+          # returned [#350 CLOSED, #343 MERGED] — because a human closed the spam
+          # DUPLICATE #350, the single most natural response to duplicate-PR spam.
+          # With the rejection test first, that closure read as "a human rejected
+          # this changeset" and suppressed it permanently, with no PR and no
+          # Slack. A closure is only a rejection when NO open PR still carries the
+          # changeset, so the pending proposal must be resolved first.
           DUP="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
             'map(select(((.body // "") | contains($m)) and .state == "OPEN")) | .[0] // empty')"
           if [ -n "$DUP" ]; then
@@ -471,6 +570,32 @@ jobs:
               echo "deduped=true"
             } >> "$GITHUB_OUTPUT"
             echo "ok-applied: changeset ${CHANGESET_KEY} already proposed in open PR #$(printf '%s' "$DUP" | jq -r '.number') — not opening a duplicate"
+            exit 0
+          fi
+          # A CLOSED-but-never-MERGED PR carrying this marker, with no open PR
+          # still carrying it, is a human REJECTION of this exact changeset —
+          # respect it. A genuinely different drift produces a different changeset
+          # key, so this suppresses the rejected proposal and nothing else.
+          #
+          # `.state == "CLOSED"` and NEVER "MERGED": gh reports a merged PR as
+          # MERGED, so a proposal a human accepted can never read as one they
+          # rejected.
+          #
+          # The suppression is NOT silent. `rejected`/`rejected_url` are read by
+          # the "SUPPRESSED (human-rejected) changeset" notification below, which
+          # names the closing PR and the way back out. A bot that declines to
+          # raise a changeset and tells nobody is the fail-silent shape this whole
+          # workflow is being fixed for; fail-open is fine, fail-silent-to-a-human
+          # is not.
+          REJECTED_PR="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0] // empty')"
+          if [ -n "$REJECTED_PR" ]; then
+            REJECTED="$(printf '%s' "$REJECTED_PR" | jq -r '.number')"
+            {
+              echo "rejected=${REJECTED}"
+              echo "rejected_url=$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
+            } >> "$GITHUB_OUTPUT"
+            echo "ok-applied: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
             exit 0
           fi
           # The changeset key is appended as the LAST branch segment on purpose: a
@@ -953,24 +1078,6 @@ jobs:
           # it. (CHANGESET_KEY's fail-closed emptiness check and MARKER live at
           # the top of this step — the marker self-heal needs both.)
 
-          # A CLOSED-but-never-MERGED PR carrying this marker is the human
-          # REJECTION the alert explicitly invites ("or close to reject").
-          # Respect it permanently and stay QUIET: re-proposing it — and
-          # re-alerting about it — every morning is the spam that made following
-          # the instruction a punishment. A genuinely different drift hashes to a
-          # different changeset key, so only this decision is suppressed.
-          REJECTED_PR="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
-            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0] // empty')"
-          if [ -n "$REJECTED_PR" ]; then
-            REJECTED="$(printf '%s' "$REJECTED_PR" | jq -r '.number')"
-            echo "rejected=${REJECTED}" >> "$GITHUB_OUTPUT"
-            echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it and not re-alerting"
-            # Emit it like every other early return, so the rejected PR is
-            # still nameable (and the "every exit names a PR" invariant holds).
-            emit_pr "$REJECTED" "$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
-            exit 0
-          fi
-
           DUP_NUMBER=""
           DUP_URL=""
           DUP="$(printf '%s' "$OPEN_PRS" | jq -c --arg m "$MARKER" \
@@ -1000,6 +1107,50 @@ jobs:
           if [ -n "$DUP_NUMBER" ]; then
             emit_pr "$DUP_NUMBER" "$DUP_URL"
             echo "needs-human: changeset ${CHANGESET_KEY} already proposed in open PR #${DUP_NUMBER} — not opening a duplicate"
+            exit 0
+          fi
+
+          # A CLOSED-but-never-MERGED PR carrying this marker, with NO open PR
+          # still carrying it, is the human REJECTION the alert explicitly invites
+          # ("or close to reject"). Respect it: re-proposing the same decision
+          # every morning is the spam that made following the instruction a
+          # punishment. A genuinely different drift hashes to a different
+          # changeset key, so only this decision is suppressed.
+          #
+          # Tested AFTER the changeset dedup above, and the ORDER is load-bearing.
+          # `--search "<key> in:body"` is state-BLIND, so one changeset routinely
+          # matches several PRs: on 2026-08-04 the live query for changeset
+          # eaa8db65f5647493 returned [#350 CLOSED, #343 MERGED], because a human
+          # closed the spam DUPLICATE #350 — the most natural response to
+          # duplicate-PR spam there is. Tested FIRST, that closure read as "a human
+          # rejected this changeset" and suppressed it permanently while a decision
+          # was still pending in an open PR. A closure is only a rejection once no
+          # open PR carries the changeset any more.
+          #
+          # `.state == "CLOSED"` and NEVER "MERGED": gh reports a merged PR as
+          # MERGED, so a decision a human ACCEPTED can never read as one they
+          # rejected.
+          #
+          # And the suppression is NOT silent. Quiet here used to mean nothing at
+          # all — `exit 0`, no PR, and the needs-human alert additionally gated on
+          # `rejected == ''` — so a changeset could be suppressed forever with no
+          # record and no way for a human to discover they were in that state.
+          # `rejected`/`rejected_url` are read by the "SUPPRESSED (human-rejected)
+          # changeset" notification below, which names the closing PR and the way
+          # back out. It is the RE-PROPOSAL that is suppressed, never the telling.
+          REJECTED_PR="$(printf '%s' "$ALL_PRS" | jq -c --arg m "$MARKER" \
+            'map(select(((.body // "") | contains($m)) and .state == "CLOSED")) | .[0] // empty')"
+          if [ -n "$REJECTED_PR" ]; then
+            REJECTED="$(printf '%s' "$REJECTED_PR" | jq -r '.number')"
+            REJECTED_URL="$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
+            {
+              echo "rejected=${REJECTED}"
+              echo "rejected_url=${REJECTED_URL}"
+            } >> "$GITHUB_OUTPUT"
+            echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
+            # Emit it like every other early return, so the rejected PR is
+            # still nameable (and the "every exit names a PR" invariant holds).
+            emit_pr "$REJECTED" "$REJECTED_URL"
             exit 0
           fi
 
@@ -1120,6 +1271,66 @@ jobs:
       # independent of the edit), so human review remains the merge gate here,
       # unchanged in spirit from the pre-C3 verdict-gated path.
 
+      # A SUPPRESSION MUST NEVER BE SILENT.
+      #
+      # Both PR-open paths decline to re-raise a changeset whose proposal a human
+      # CLOSED. That policy is right — re-proposing a rejected decision every
+      # morning is the spam that made following the instruction a punishment — but
+      # it used to be enacted with `exit 0` and nothing else: no PR, no Slack (the
+      # needs-human alert is additionally gated on `rejected == ''`), and on the
+      # ok-applied path the `rejected` output was written and read by NOTHING at
+      # all. A run in that state is byte-identical to a quiet day, which is the
+      # exact encoding collision the rest of this workflow exists to break — and
+      # it has no recovery path, because the self-heal lists `--state open` only
+      # and so never touches the closed PR.
+      #
+      # So the re-PROPOSAL is suppressed and the TELLING is not: this names the
+      # closing PR and the two ways back out. It does NOT fail the job — a
+      # respected rejection is not a fault — so it deliberately has no `exit 1`.
+      - name: Notify Slack on a SUPPRESSED (human-rejected) changeset
+        id: alert_rejected
+        if: >-
+          always() &&
+          (steps.pr.outputs.rejected != '' ||
+           steps.needs_human_pr.outputs.rejected != '')
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          PR_REJECTED: ${{ steps.pr.outputs.rejected }}
+          PR_REJECTED_URL: ${{ steps.pr.outputs.rejected_url }}
+          NH_REJECTED: ${{ steps.needs_human_pr.outputs.rejected }}
+          NH_REJECTED_URL: ${{ steps.needs_human_pr.outputs.rejected_url }}
+        run: |
+          set -euo pipefail
+          # Slack renders a LITERAL \n when the payload carries the two
+          # characters backslash-n, which is what a bash double-quoted "\n"
+          # already is: jq --arg then escapes it to \\n. A REAL newline is
+          # what jq encodes into a line break. Same idiom as test-drift.yml.
+          NL=$'\n'
+          if [ -n "${PR_REJECTED:-}" ]; then
+            WHAT="a mechanical model-family sync"
+            CLOSED_PR="${PR_REJECTED}"
+            CLOSED_URL="${PR_REJECTED_URL:-}"
+          else
+            WHAT="a needs-human model-family decision"
+            CLOSED_PR="${NH_REJECTED}"
+            CLOSED_URL="${NH_REJECTED_URL:-}"
+          fi
+          echo "::warning::drift-sync re-detected a changeset whose proposal was CLOSED (PR #${CLOSED_PR}) — suppressing the re-proposal, NOT the notification"
+          if [ -z "${SLACK_WEBHOOK:-}" ]; then
+            echo "::error::SLACK_WEBHOOK not set — cannot report the suppressed changeset"
+            exit 1
+          fi
+          MSG="🤐 *Drift sync — changeset SUPPRESSED as human-rejected* — ${WHAT} was re-detected today and NOT re-proposed, because closed PR #${CLOSED_PR} carries its changeset marker. The registry stays drifted until someone acts.${NL}Closed PR: ${CLOSED_URL:-(no url captured)}${NL}To un-suppress: REOPEN that PR (it becomes the pending proposal again), or delete the \`<!-- drift-changeset: … -->\` marker from its body.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
+          echo "posted=true" >> "$GITHUB_OUTPUT"
+
       # Alert: the sync found a genuinely-new family or a still-referenced
       # deprecation — the two irreducible human decisions (see
       # self-healing-drift-plan.md "Bucket B"). The needs-human note was
@@ -1172,9 +1383,19 @@ jobs:
           fi
           MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+          # Bounded: `--max-time` so a hung POST cannot burn the job's (or a
+          # cancellation's) whole budget, and a small bounded `--retry` so a single
+          # Slack 429/5xx/TLS timeout does not lose the day's only alert. `-f` is
+          # load-bearing — without it an HTTP 404 from a rotated webhook exits 0
+          # and the drop is invisible.
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below. Written
+          # only AFTER the curl returned 0, so a step that RAN but delivered
+          # nothing is distinguishable from one that delivered.
+          echo "posted=true" >> "$GITHUB_OUTPUT"
           exit 1
 
       # Alert: covers every failure window once the sync itself has committed
@@ -1251,14 +1472,19 @@ jobs:
           fi
           MSG="🔒❌ *Drift sync — gate refused* — failing step: ${FAILING_STEP}. This needs engineering triage, not a product decision.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+          # Bounded + `-f`, for the reasons given on the needs-human alert above.
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
+          echo "posted=true" >> "$GITHUB_OUTPUT"
           exit 1
 
       # Slack notification on success. Never claims the change auto-merged —
       # see the NO AUTO-MERGE comment above.
       - name: Notify Slack on sync success
+        id: notify_success
         if: success() && steps.pr.outputs.url != ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -1290,9 +1516,13 @@ jobs:
             MSG="✅ *Drift-sync PR opened — needs human review + merge*${NL}A data-only, zero-LLM model-family sync passed drift-sync-check; a human must review CI + the diff and merge.${NL}PR: ${PR_URL}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           fi
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+          # Bounded + `-f`, for the reasons given on the needs-human alert above.
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
+          echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # End-of-job CATCH-ALL for ANY job failure the specific alerts above did
       # NOT cover. Its canonical case is the EARLY-infra window (checkout /
@@ -1309,24 +1539,38 @@ jobs:
       # So it is now keyed on the thing it actually means: the job did not
       # succeed and NO specific alert PROVABLY DELIVERED one.
       #
-      # `outcome != 'failure'`, NOT `outcome == 'skipped'`: both specific alerts
-      # end in a deliberate `exit 1` and have no other exit path, so 'failure' is
-      # exactly "this alert ran to completion and posted to Slack". Everything
-      # else — 'skipped' (never selected), 'cancelled' (selected, then cut short
-      # by the job's cancellation, its `curl` killed mid-flight), and '' (the
-      # runner never got as far as evaluating it) — means nobody was told, and
-      # each must reach this catch-all. `== 'skipped'` covered only the first of
-      # the three, and so stood down in exactly the cancellation window the
-      # `failure() || cancelled()` clause below was added to cover: the 30-minute
-      # `timeout-minutes` firing WHILE an alert step is POSTing left that step
-      # 'cancelled', which is neither 'skipped' nor 'failure', and the job ended
-      # with ZERO Slack. Same defect family, one level in: 'skipped' is not the
-      # same predicate as "did not alert".
+      # It keys on `outputs.posted`, NOT on a step OUTCOME. This is the whole
+      # point, and the previous key got it backwards. It used to stand down on
+      # `steps.alert_*.outcome != 'failure'`, justified by the claim that "both
+      # specific alerts end in a deliberate `exit 1` and have no other exit path,
+      # so 'failure' is exactly 'this alert ran to completion and posted to
+      # Slack'". That claim is FALSE. Under `set -euo pipefail` an alert step
+      # exits non-zero on THREE distinct events, and GitHub reports all three as
+      # `outcome == 'failure'`:
+      #   1. SLACK_WEBHOOK empty -> explicit `exit 1`  — NOTHING posted;
+      #   2. the `curl` itself failing (a rotated webhook answering 404, a 5xx, a
+      #      TLS timeout) -> `set -e` aborts the step with curl's status —
+      #      NOTHING delivered;
+      #   3. the curl succeeding, then the intended `exit 1` — delivered.
+      # Only (3) told a human anything, yet all three silenced this backstop. So
+      # the single likeliest way for the alerting to break — the webhook being
+      # rotated, revoked or transiently unavailable — was ALSO the thing that
+      # disabled the backstop covering it: every red day, forever, zero Slack.
       #
-      # This cannot double-fire. The only outcome that silences this step is the
-      # one that proves a specific alert completed, and a completed alert always
-      # `exit 1`s, so `failure()` below is true for the same runs — the two are
-      # mutually exclusive by construction, not by luck.
+      # So delivery is now PROVEN POSITIVELY instead of inferred from an exit
+      # code: each alert writes `posted=true` to `$GITHUB_OUTPUT` only AFTER its
+      # curl returns 0, and this step stands down only on that. Every other state
+      # — the step never selected, cut short by a cancellation, or run with a
+      # dead webhook — leaves `posted` empty and reaches this catch-all. (Outputs
+      # survive a step that then exits non-zero; the runner reads
+      # `$GITHUB_OUTPUT` regardless of exit code, which is why the write can
+      # precede the deliberate `exit 1`.) Same shape as the `provider-unchecked`
+      # fix one layer down: an UNKNOWN must not collapse into a determination.
+      #
+      # This cannot double-fire. The only thing that silences this step is proof
+      # that a specific alert delivered, and a delivered alert either `exit 1`s
+      # (both specific alerts) or leaves the job otherwise unchanged — so the
+      # two are mutually exclusive by construction, not by luck.
       # `failure() || cancelled()`, NOT `failure()`: a CANCELLED job — a manual
       # cancel, or this job's own `timeout-minutes: 30` firing — is a THIRD
       # outcome, and GitHub's `failure()` is FALSE for it. So a run killed by the
@@ -1337,10 +1581,12 @@ jobs:
       # succeed". Naming `cancelled()` is also what makes the runner evaluate
       # this step at all once the job is cancelling, rather than skipping it.
       - name: Alert on early-infra failure (catch-all)
+        id: alert_catchall
         if: >-
           (failure() || cancelled()) &&
-          steps.alert_needs_human.outcome != 'failure' &&
-          steps.alert_gate.outcome != 'failure'
+          steps.alert_cancelled.outputs.posted != 'true' &&
+          steps.alert_needs_human.outputs.posted != 'true' &&
+          steps.alert_gate.outputs.posted != 'true'
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
@@ -1388,6 +1634,14 @@ jobs:
           fi
           MSG="🧱❌ *Drift-sync job — ${HEADLINE}* — the job ${VERB} ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
-          curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
+          # Bounded + `-f`, for the reasons given on the needs-human alert above.
+          curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
+            -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD"
+          # POSITIVE PROOF OF DELIVERY, for symmetry with the alerts above: this
+          # step is the last backstop, so nothing reads it today — but a future
+          # step added after it must be able to tell "the catch-all ran" from "the
+          # catch-all delivered", which is the exact distinction this whole
+          # mechanism exists to keep.
+          echo "posted=true" >> "$GITHUB_OUTPUT"

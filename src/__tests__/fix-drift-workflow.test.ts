@@ -163,6 +163,18 @@ interface Step {
   run: string;
   /** Indent the `run:` block carried in the file, for the verbatim check. */
   runIndent: number;
+  /**
+   * `continue-on-error:`, as written.
+   *
+   * Read because it is the ONLY mechanism in Actions that decouples a step's
+   * `outcome` from the job's status: with it, a step can exit non-zero (so
+   * `outcome == 'failure'`) while the job still concludes SUCCESS, making
+   * `failure()` false. Three of this workflow's claims — a sync crash cannot end
+   * green, a post-assert failure still alerts, an alert's `exit 1` reds the run —
+   * rest on that not being true, and a simulation that does not parse the key
+   * cannot see it being added.
+   */
+  continueOnError?: string;
 }
 
 const indentOf = (l: string): number => l.length - l.trimStart().length;
@@ -249,6 +261,7 @@ function steps(src: string = wf): Step[] {
 
       if (key === "name") step.name = inline.replace(/^["']|["']$/g, "");
       if (key === "id") step.id = inline.replace(/^["']|["']$/g, "");
+      if (key === "continue-on-error") step.continueOnError = inline.trim();
     }
     return step;
   });
@@ -612,7 +625,14 @@ const isAlertStep = (s: Step): boolean => /^(Alert|Notify)\b/.test(s.name ?? "")
 // ---------------------------------------------------------------------------
 interface Scenario {
   event_name?: string;
-  /** Step ids or names that FAIL when the runner selects them. */
+  /**
+   * Step ids or names that FAIL when the runner selects them.
+   *
+   * For an ALERT step this means its `curl` failed — a rotated webhook answering
+   * 404, a 5xx, a TLS timeout — so it ran and delivered NOTHING. That is the
+   * distinction the `posted=true` output exists to make, and modelling it is what
+   * lets a guard ask whether the backstop still covers a dead webhook.
+   */
   failing?: string[];
   /** Step outputs, by step id, published when that step is selected. */
   outputs?: Record<string, Record<string, string>>;
@@ -662,9 +682,11 @@ function simulateJob(
     steps: {},
   };
   const failing = new Set(sc.failing ?? []);
+  const named = (s: Step): boolean =>
+    (s.id !== undefined && failing.has(s.id)) || (s.name !== undefined && failing.has(s.name));
   const selected: Step[] = [];
-  /** Steps the cancellation cut short: they ran, but they did not DO their job. */
-  const cutShort = new Set<Step>();
+  /** Alert steps that ran AND whose `curl` returned 0 — the only ones that told anyone. */
+  const delivered = new Set<Step>();
   for (const s of steps(src)) {
     const runs = s.if === undefined ? !ctx.jobFailed && !ctx.jobCancelled : evaluateIf(s.if, ctx);
     const cancels =
@@ -674,32 +696,46 @@ function simulateJob(
     const fails =
       runs &&
       !cancels &&
-      ((s.id !== undefined && failing.has(s.id)) ||
-        (s.name !== undefined && failing.has(s.name)) ||
+      (named(s) ||
         // A step that RAN TO COMPLETION and whose only exit path is `exit 1`
         // reports 'failure' — the scenario does not get to say otherwise.
         completesNonZero(s));
+    // DELIVERY, modelled separately from the step's outcome, because the two are
+    // NOT the same fact: an alert step ends in a deliberate `exit 1` (so a
+    // delivered alert reports 'failure'), and it ALSO reports 'failure' when its
+    // `curl` died against a rotated webhook and nothing was delivered at all. A
+    // model that reads delivery off the outcome cannot distinguish them, which is
+    // exactly why an `outcome`-keyed backstop looked load-bearing.
+    if (runs && !cancels && isAlertStep(s) && !named(s)) delivered.add(s);
     if (s.id) {
       ctx.steps[s.id] = {
         outcome: runs ? (cancels ? "cancelled" : fails ? "failure" : "success") : "skipped",
         // Outputs are published by a step that RAN, even if it then failed (the
-        // sync step writes $GITHUB_OUTPUT before exiting non-zero). A step cut
-        // short by a cancellation published nothing.
-        outputs: runs && !cancels ? (sc.outputs?.[s.id] ?? {}) : {},
+        // sync step writes $GITHUB_OUTPUT before exiting non-zero, and so does
+        // every alert's `posted=true`). A step cut short by a cancellation
+        // published nothing.
+        outputs:
+          runs && !cancels
+            ? { ...(sc.outputs?.[s.id] ?? {}), ...(delivered.has(s) ? { posted: "true" } : {}) }
+            : {},
       };
     }
     if (runs) selected.push(s);
-    if (cancels) cutShort.add(s);
-    if (fails) ctx.jobFailed = true;
+    // `continue-on-error: true` leaves the step's OUTCOME 'failure' while the
+    // job's status is computed from its CONCLUSION, which becomes success — so
+    // `failure()` is false and every alert gated on it goes silent. Modelled so
+    // that adding the key to any step is visible to these guards instead of
+    // silently defeating three of them.
+    if (fails && s.continueOnError === undefined) ctx.jobFailed = true;
     if (cancels) ctx.jobCancelled = true;
   }
   return {
     selected,
-    // DELIVERED alerts. A step the cancellation killed mid-`curl` told nobody
-    // anything, so counting it as an alert is the same class of fiction as
-    // modelling `exit 1` as success — and it is the fiction that would make a
-    // genuinely silent cancellation window look like it "alerted once".
-    alerts: selected.filter((s) => isAlertStep(s) && !cutShort.has(s)).map((s) => s.name!),
+    // DELIVERED alerts only. A step the cancellation killed mid-`curl`, or whose
+    // POST was rejected, told nobody anything — counting either as an alert is
+    // the same class of fiction as modelling `exit 1` as success, and it is the
+    // fiction that made a genuinely silent window look like it "alerted once".
+    alerts: selected.filter((s) => delivered.has(s)).map((s) => s.name!),
     jobFailed: ctx.jobFailed,
     jobCancelled: ctx.jobCancelled,
     outcomes: Object.fromEntries(
@@ -827,8 +863,10 @@ describe("fix-drift.yml — Slack message bodies use REAL newlines, not a litera
   const slackSteps = () =>
     steps().filter((s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)));
 
-  it("all four Slack-posting steps are found (needs-human, gate-failure, success, catch-all)", () => {
+  it("every Slack-posting step is found, in job order (a new one must be added here deliberately)", () => {
     expect(slackSteps().map((s) => s.name)).toEqual([
+      "Alert on job CANCELLATION (posts ahead of the artifact uploads)",
+      "Notify Slack on a SUPPRESSED (human-rejected) changeset",
       "Alert on needs-human decision",
       "Alert on drift-sync-check gate failure",
       "Notify Slack on sync success",
@@ -2031,43 +2069,86 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
   });
 
   // -------------------------------------------------------------------------
-  // `cancelled` is a fourth outcome for the ALERT STEPS TOO, not only for the
-  // job. Once the catch-all's job-level predicate covers cancellation, its two
-  // STEP-level clauses are the next layer of the same defect: a step keyed on
-  // `outcome == 'skipped'` is false for a CANCELLED step. So in the very window
-  // the widening was added for, the job cancels DURING an alert step: that
-  // step's curl is killed (nothing reaches Slack), its outcome is 'cancelled',
-  // the `== 'skipped'` clause is false, and the catch-all — the only alert left
-  // — stands down. Silence.
+  // DELIVERY IS PROVEN POSITIVELY, NEVER INFERRED FROM AN EXIT CODE.
   //
-  // The correct discriminator is "did an alert PROVABLY complete", and both
-  // alert steps have NO exit path except `exit 1` (pinned separately above), so
-  // that is exactly `outcome == 'failure'`. Hence `!= 'failure'`: skipped,
-  // cancelled and not-yet-evaluated all reach the catch-all; only a completed
-  // alert silences it.
+  // The catch-all used to stand down on `steps.alert_*.outcome != 'failure'`,
+  // on the stated premise that an alert step's only exit path is its deliberate
+  // `exit 1`, so 'failure' means "ran to completion and posted". Under
+  // `set -euo pipefail` that is false: a `curl -fsS` dying against a rotated
+  // webhook (404), a 5xx or a TLS timeout ALSO exits the step non-zero, with
+  // nothing delivered — so the likeliest way for alerting to break was also the
+  // thing that disabled the backstop covering it.
+  //
+  // The only honest discriminator is a positive one written AFTER the curl
+  // returns 0. Both enumerations below are over the real `if:` text: the
+  // catch-all must stand down for exactly one value of `posted`, and for NO
+  // value of `outcome`.
   // -------------------------------------------------------------------------
-  it("the catch-all stands down ONLY for an alert that provably COMPLETED — over the whole step-outcome domain, not just 'skipped'", () => {
-    // Every value GitHub can report for a step, asked of the real `if:`.
+  const catchAllSelected = (alert: { outcome?: StepOutcome; posted?: string }): boolean =>
+    evaluateIf(stepByName(CATCH_ALL).if!, {
+      event_name: "schedule",
+      jobFailed: false,
+      jobCancelled: true,
+      steps: {
+        sync: { outcome: "cancelled", outputs: {} },
+        alert_cancelled: {
+          outcome: alert.outcome ?? "success",
+          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
+        },
+        alert_needs_human: {
+          outcome: alert.outcome ?? "success",
+          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
+        },
+        alert_gate: {
+          outcome: alert.outcome ?? "success",
+          outputs: alert.posted === undefined ? {} : { posted: alert.posted },
+        },
+      },
+    });
+
+  it("the catch-all stands down ONLY on POSITIVE proof of delivery — over the whole `posted` domain", () => {
+    const answers = (["true", "false", "", "1", "TRUE"] as const).map((posted) => ({
+      posted,
+      selected: catchAllSelected({ posted }),
+    }));
+    expect(
+      answers.filter((a) => !a.selected).map((a) => a.posted),
+      "the catch-all stands down on a `posted` value that is not the one an alert " +
+        "writes ONLY after its curl returned 0 — so it can be silenced by an alert " +
+        "that ran and delivered nothing",
+    ).toEqual(["true"]);
+  });
+
+  it("NO alert step OUTCOME can silence the catch-all — an exit code is not evidence of delivery", () => {
+    // The whole step-outcome domain, with `posted` unset: 'failure' in particular
+    // must NOT stand the catch-all down, because a dead webhook produces it.
     const answers = (["skipped", "cancelled", "", "success", "failure"] as const).map(
-      (outcome) => ({
-        outcome,
-        selected: evaluateIf(stepByName(CATCH_ALL).if!, {
-          event_name: "schedule",
-          jobFailed: false,
-          jobCancelled: true,
-          steps: {
-            sync: { outcome: "cancelled", outputs: {} },
-            alert_needs_human: { outcome, outputs: {} },
-            alert_gate: { outcome, outputs: {} },
-          },
-        }),
-      }),
+      (outcome) => ({ outcome, selected: catchAllSelected({ outcome }) }),
     );
     expect(
       answers.filter((a) => !a.selected).map((a) => a.outcome),
-      "the catch-all stands down for an alert outcome that does NOT prove the alert " +
-        "was delivered — a cancelled alert step's curl was killed, so nobody was told",
-    ).toEqual(["failure"]);
+      "the catch-all is keyed on a step OUTCOME again — an alert whose POST was " +
+        "rejected reports 'failure' having delivered nothing, and would silence the " +
+        "very backstop that covers a rotated webhook",
+    ).toEqual([]);
+  });
+
+  it("a dead webhook does NOT silence the backstop (the alert ran, delivered nothing, catch-all still fires)", () => {
+    // The Z1 window, simulated rather than asserted: the gate alert is selected
+    // and its curl fails. It delivered nothing, so the run must not end silent.
+    const res = simulateJob({
+      failing: ["alert_gate"],
+      outputs: { sync: { reason: SyncCoreReason.GATE_FAILED, exit_code: "1" } },
+    });
+    expect(
+      res.selected.map((s) => s.name),
+      "the gate alert was never even selected, so this scenario proves nothing",
+    ).toContain(GATE_ALERT);
+    expect(
+      res.alerts,
+      "the gate alert's POST failed — nothing reached Slack — yet the catch-all stood " +
+        "down anyway, so a rotated or revoked webhook means total silence on every red day",
+    ).toEqual([CATCH_ALL]);
   });
 
   const CANCELLED_ALERT_SCENARIOS: Array<{ label: string; scenario: Scenario }> = [
