@@ -368,44 +368,6 @@ function ifBlock(code: string, needle: string, label: string): string {
   return lines.slice(0, end + 1).join("\n");
 }
 
-/**
- * Every `exit 0` in `code` that PRECEDES `needle`, paired with the `if …; then`
- * line that guards it.
- *
- * The ordering guard this feeds used to compare the text positions of two
- * selectors and nothing else. That is not the property it was asserting:
- * relocating the closed-rejection test below an UNRELATED early return (the
- * no-new-commit gate) kept the two selectors in the demanded order while making
- * the rejection UNREACHABLE on that path — no `rejected` output, so the
- * suppression notice cannot fire and the needs-human alert takes its contentless
- * branch and reds the job every morning. Reachability is a property of every
- * gate in between, not of two selectors' relative order.
- */
-function earlyReturnsBefore(
-  code: string,
-  needle: string,
-  label: string,
-): Array<{ guard: string; line: number }> {
-  // Through `locate`: a -1 bound here would slice nothing and report NO early
-  // returns, i.e. the guard would pass by failing to look.
-  const lines = code.slice(0, locate(code, needle, label)).split("\n");
-  return lines.flatMap((l, i) => {
-    if (!/^\s*exit 0\s*$/.test(l)) return [];
-    // The nearest enclosing `if …; then`: the `exit 0` sits inside it, so its
-    // opener is the closest LESS-indented `if`/`elif` above it.
-    for (let j = i - 1; j >= 0; j--) {
-      if (!lines[j].trim()) continue;
-      if (indentOf(lines[j]) < indentOf(l) && /^\s*(if|elif)\b.*;\s*then\s*$/.test(lines[j])) {
-        return [{ guard: lines[j].trim(), line: i }];
-      }
-    }
-    throw new Error(
-      `${label}: the \`exit 0\` on line ${i} has no enclosing \`if …; then\` — refusing to ` +
-        "report an unguarded early return as if it were guarded",
-    );
-  });
-}
-
 /** The `while … done < <(…)` loop opened by `needle`, up to its process-substitution `done`. */
 function whileLoop(code: string, needle: string, label: string): string {
   const at = code.indexOf(needle);
@@ -779,6 +741,134 @@ function envStatesFrom(step: Step): Array<{ label: string; env: Record<string, s
     { label: "every declared value present", env: {} },
     ...[...states].map(([label, env]) => ({ label, env })),
   ];
+}
+
+/**
+ * `mapfile` is a bash-4 builtin and macOS still ships bash 3.2, where the persist
+ * body would abort on a `command not found` that has nothing to do with the
+ * property under test. Defined ONLY when the running shell lacks it, so on the
+ * ubuntu runner the real builtin executes and this prologue is inert — and the
+ * MODEL guard below runs it against the builtin's contract, because a harness
+ * that mis-fills an array is a harness reporting a different program's answers.
+ */
+const MAPFILE_SHIM = [
+  "if ! type mapfile >/dev/null 2>&1; then",
+  "  mapfile() {",
+  '    [ "$1" = "-t" ] && shift',
+  '    eval "$1=()"',
+  '    while IFS= read -r __mf_line; do eval "$1+=(\\"\\$__mf_line\\")"; done',
+  "  }",
+  "fi",
+].join("\n");
+
+/**
+ * EXECUTE a persist step's own `run:` body against stubbed `git` and `gh`, and
+ * report what the runner would see in `$GITHUB_OUTPUT`.
+ *
+ * These two steps decide, in a FIXED ORDER, whether today's changeset is already
+ * proposed (an open PR carries its marker), already rejected (only a closed one
+ * does), or new — and that order IS the mechanism. It used to be guarded by
+ * comparing the text positions of two selectors and by enumerating the `exit 0`
+ * lines that precede one of them, and every version of that was defeated without
+ * touching behaviour: `exit 0 # comment` and a bare `exit` are invisible to the
+ * enumeration, and leaving the selector where it is while moving the block that
+ * ACTS on it satisfies both. Each restores the same bug: the no-new-commit gate
+ * returning in front of the closed-rejection test, so a rejection is never
+ * detected, `rejected` is never published, the suppression notice cannot fire and
+ * the needs-human alert reds the job every morning instead.
+ *
+ * So run the decision rather than reading it. `git` answers `rev-parse` and
+ * `diff --name-only` from `headSha`/`diffFiles`; `gh pr list` answers the
+ * `--state open` self-heal listing and the `--state all --search` dedup listing
+ * separately, because pointing one selector at the other listing is itself a
+ * defect this file guards.
+ */
+function observePersistStep(
+  step: Step,
+  {
+    openPrs = [],
+    searchPrs = [],
+    headSha = "1111111111111111111111111111111111111111",
+    baseSha = "2222222222222222222222222222222222222222",
+    diffFiles = ["drift-proposals/2026-08-04-1-drift.md"],
+    changesetKey = "eaa8db65f5647493",
+  }: {
+    openPrs?: unknown[];
+    searchPrs?: unknown[];
+    headSha?: string;
+    baseSha?: string;
+    diffFiles?: string[];
+    changesetKey?: string;
+  },
+): { stepExit: number; outputs: Record<string, string>; stdio: string; ghLog: string } {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-persist-"));
+  try {
+    const bin = delegatingBin(["git", "gh"]);
+    const write = (name: string, content: string): string => {
+      const p = join(dir, name);
+      writeFileSync(p, content);
+      return p;
+    };
+    const gitFile = write(
+      "git-stub.sh",
+      [
+        'case "$1 $2" in',
+        '  "rev-parse HEAD") printf \'%s\\n\' "$GIT_HEAD_SHA" ;;',
+        '  "rev-parse --abbrev-ref") printf \'%s\\n\' "fix/drift-2026-08-04-1" ;;',
+        '  "diff --name-only") cat "$GIT_DIFF_FILES" ;;',
+        "esac",
+        "exit 0",
+      ].join("\n"),
+    );
+    const logFile = write("gh.log", "");
+    const ghFile = write(
+      "gh-stub.sh",
+      [
+        `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
+        'case "$*" in',
+        '  "pr list --state open"*) cat "$GH_OPEN_JSON" ;;',
+        '  "pr list --state all"*) cat "$GH_ALL_JSON" ;;',
+        "esac",
+        "exit 0",
+      ].join("\n"),
+    );
+    const outFile = write("github_output", "");
+    const script = write("step.sh", `${MAPFILE_SHIM}\n${runOf(step)}`);
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        GH_TOKEN: "<GH_TOKEN>",
+        RUN_ID: "<RUN_ID>",
+        CHANGESET_KEY: changesetKey,
+        BASE_SHA: baseSha,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        [stubVar("git")]: gitFile,
+        [stubVar("gh")]: ghFile,
+        GIT_HEAD_SHA: headSha,
+        GIT_DIFF_FILES: write("diff", `${diffFiles.join("\n")}\n`),
+        GH_OPEN_JSON: write("open.json", JSON.stringify(openPrs)),
+        GH_ALL_JSON: write("all.json", JSON.stringify(searchPrs)),
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    if (res.error) throw res.error;
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      ghLog: readFileSync(logFile, "utf-8"),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -2690,6 +2780,14 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
   const CLOSED_DUPLICATE = pr(350, "CLOSED");
   const MERGED_ORIGINAL = pr(343, "MERGED");
   const OPEN_PENDING = pr(351, "OPEN");
+  /** The ack marker the suppression notice's one-shot is keyed on. */
+  const ACK_MARKER = `drift-suppression-reported: ${KEY}`;
+  const CLOSED_AND_ACKED = {
+    ...CLOSED_DUPLICATE,
+    body: `${CLOSED_DUPLICATE.body}\n<!-- ${ACK_MARKER} -->`,
+  };
+  /** A re-fire whose note is already committed: `git rev-parse HEAD` == `BASE_SHA`. */
+  const NO_NEW_COMMIT = "3333333333333333333333333333333333333333";
 
   /**
    * Evaluate a step's dedup selectors against a payload IN THE ORDER THE STEP
@@ -2739,23 +2837,36 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         `${st.name}: the open-duplicate path does not exit before the rejection test`,
       ).toMatch(/^\s*exit 0$/m);
 
-      // …and the open-duplicate dedup is the ONLY early return allowed to
-      // outrank the rejection test. Every OTHER gate reaching `exit 0` first
-      // makes the rejection unreachable on that path — which is how the
-      // `HEAD_SHA == BASE_SHA` no-new-commit return (a gate with nothing to say
-      // about OPEN-vs-CLOSED precedence) came to sit in front of it: the state
-      // then published no `rejected`, the suppression notice could not fire, and
-      // the needs-human alert reds the job with its contentless body every
-      // morning. Asked of EVERY early return, so a third gate cannot be
-      // interposed later either.
-      for (const { guard, line } of earlyReturnsBefore(code, 'REJECTED_PR="', st.name!)) {
-        expect(
-          guard,
-          `${st.name}: the early return at body line ${line} (\`${guard}\`) reaches ` +
-            "`exit 0` BEFORE the closed-rejection test, so a human rejection is never " +
-            "detected on that path — only the OPEN-duplicate dedup may outrank it",
-        ).toMatch(/^if \[ -n "\$DUP[A-Z_]*" \]; then$/);
-      }
+      // …and the rejection is REACHED, and ACTED ON, on the path where an
+      // unrelated gate used to return in front of it: a daily re-fire whose note
+      // is already in the repo, so there is no new commit to push. RUN, because
+      // every text-shaped version of this claim was defeated without touching
+      // behaviour — enumerating the `exit 0` lines before the selector missed
+      // `exit 0 # nothing to push` and a bare `exit`, and both that and the
+      // position compare above are satisfied by leaving the selector where it is
+      // and moving the block that ACTS on it below the gate. Each of those
+      // restores the same bug: no `rejected` published, so the suppression notice
+      // cannot fire and the needs-human alert reds the job every morning.
+      const refire = observePersistStep(st, {
+        searchPrs: [CLOSED_DUPLICATE, MERGED_ORIGINAL],
+        headSha: NO_NEW_COMMIT,
+        baseSha: NO_NEW_COMMIT,
+      });
+      expect(
+        refire.stepExit,
+        `${st.name}: respecting a human rejection FAILS the step: ${refire.stdio}`,
+      ).toBe(0);
+      expect(
+        refire.outputs.rejected,
+        `${st.name}: on a re-fire with NO new commit to push, the human rejection is never ` +
+          "detected — nothing publishes `rejected`, so the suppression notice cannot fire and " +
+          `the needs-human alert reds the job every morning instead: ${refire.stdio}`,
+      ).toBe("350");
+      expect(
+        refire.outputs.rejected_url,
+        `${st.name}: the rejection is detected but publishes no url, so the notice cannot ` +
+          "link the closing PR a human has to reopen",
+      ).toBe("https://github.test/pr/350");
 
       // …and the selectors, RUN for real, behave that way on the live payload.
       expect(
@@ -2773,6 +2884,22 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         `${st.name}: a MERGED proposal reads as a rejection or a pending duplicate`,
       ).toEqual({ name: "none" });
     }
+  });
+
+  it("an already-proposed changeset still NAMES its open PR, so the run is not green and silent", () => {
+    // The dedup return used to throw $DUP away and publish nothing but the fact
+    // that it deduped. `notify_success` is gated on `steps.pr.outputs.url != ''`,
+    // so that run said nothing at all about a proposal still sitting open and
+    // unmerged — green, and silent about a pending human decision.
+    const dup = observePersistStep(stepById("pr"), { searchPrs: [OPEN_PENDING] });
+    expect(dup.stepExit, `the open-duplicate path fails the step: ${dup.stdio}`).toBe(0);
+    expect(dup.outputs.deduped, "the run did not actually take the dedup path").toBe("true");
+    expect(
+      [dup.outputs.url, dup.outputs.number],
+      "the dedup path publishes no url/number for the open PR it found, so `notify_success` " +
+        "(gated on `steps.pr.outputs.url`) is skipped and the run is green and silent about a " +
+        "proposal a human still has to merge",
+    ).toEqual(["https://github.test/pr/351", "351"]);
   });
 
   it("each dedup listing sees CLOSED PRs, and the CLOSED selector reads THAT listing", () => {
@@ -2873,31 +3000,38 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
     // a channel people learn to ignore is silence by another route. So the notice
     // is keyed on a state that CHANGES: an ack marker on the closed PR's own
     // body, which outlives the run.
+    // EXECUTED, over both states of the closed PR's body. Which branch publishes
+    // `rejected_ack` is not a question a regex can answer, and it is the state
+    // that silences the notice for ever: dropping `jq -e` (jq then exits 0
+    // whatever the boolean says), inverting `contains`, or publishing
+    // `rejected_ack=true` before the check each takes the "already reported"
+    // branch on EVERY run, so the suppression is never narrated to anyone — while
+    // a marker that is not byte-stable (a date folded into it, say) re-posts a
+    // near-identical line every morning, which is the fatigue it exists to stop.
     for (const st of prSteps()) {
-      const block = ifBlock(codeOf(st), 'if [ -n "$REJECTED_PR" ]; then', st.name!);
+      const first = observePersistStep(st, { searchPrs: [CLOSED_DUPLICATE] });
       expect(
-        block,
-        `${st.name}: the suppression publishes no ack state, so the notice cannot tell the ` +
-          "first run after the closure from the four hundredth",
-      ).toMatch(/rejected_ack=true/);
-      // …and it only READS that state. Writing the ack here is the defect below:
-      // this step runs BEFORE the notice, so the marker recorded a telling that
-      // had not happened yet. That the ack outlives the run is pinned on the step
-      // that now performs the write, gated on the notice's proof of delivery.
+        first.outputs.rejected,
+        `${st.name}: the suppression publishes no \`rejected\`, so the needs-human alert ` +
+          `fires again for a decision a human already refused: ${first.stdio}`,
+      ).toBe("350");
       expect(
-        block,
-        `${st.name}: the persist step WRITES the ack marker, and it runs BEFORE the ` +
-          "suppression notice POSTs — so one dropped POST on the first run after the closure " +
-          "leaves `rejected_ack` recorded for ever and the suppression permanently un-narrated",
-      ).not.toMatch(/ACK_FILE/);
-      // `rejected` itself must STILL be published every run: it is what keeps the
-      // needs-human alert suppressed, and that suppression must last as long as
-      // the rejection does.
+        first.outputs.rejected_ack,
+        `${st.name}: the FIRST run after the closure already reads as reported, so the notice ` +
+          "stands down and the suppression is never narrated to anyone",
+      ).toBeUndefined();
+
+      const again = observePersistStep(st, { searchPrs: [CLOSED_AND_ACKED] });
       expect(
-        block,
-        `${st.name}: the suppression stopped publishing \`rejected\`, so the needs-human ` +
-          "alert fires again for a decision a human already refused",
-      ).toMatch(/echo "rejected=\$\{REJECTED\}"/);
+        again.outputs.rejected_ack,
+        `${st.name}: a closed PR that CARRIES the ack marker is not recognised, so the notice ` +
+          "re-posts the same suppression line every morning for ever",
+      ).toBe("true");
+      expect(
+        again.outputs.rejected,
+        `${st.name}: an already-reported suppression stops publishing \`rejected\`, so the ` +
+          "needs-human alert starts firing again for a refused decision",
+      ).toBe("350");
     }
     for (const id of ["pr", "needs_human_pr"]) {
       expect(
@@ -3154,16 +3288,17 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       "the ack was not written to the closing PR the needs-human path named",
     ).toContain("pr edit 350");
     expect(nh.written, "the body written carries no ack marker at all").toContain(marker);
+    // APPEND-ONLY, BYTE-FOR-BYTE. Asserting the prose and the changeset marker are
+    // merely PRESENT accepted a body the ack had mangled: reading it with `jq`
+    // instead of `jq -r` writes back the JSON ENCODING of the body — one quoted
+    // line whose newlines have become the two characters `\n` — and both
+    // substrings survive that intact. What a human owns has to come through
+    // unchanged, not just recognisably.
     expect(
-      nh.written,
-      "the human's prose was not copied through — the ack REWROTE the body instead of " +
-        "appending to it",
-    ).toContain("human prose a maintainer owns");
-    expect(
-      nh.written,
-      "the changeset marker was dropped from the body, so the suppression itself stops " +
-        "holding and the changeset is re-proposed tomorrow",
-    ).toContain(`drift-changeset: ${ACK_KEY}`);
+      nh.written.slice(0, body.length),
+      "the existing body was not copied through VERBATIM — the ack rewrote prose a human " +
+        "owns instead of appending after it",
+    ).toBe(body);
 
     // The ok-applied path's closure must be acknowledged too, and it WINS, so the
     // receipt lands on the same PR the notice named.
@@ -3546,6 +3681,29 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
     ).toThrow(/no closing `fi` at its own\s+indent/);
     expect(() => whileLoop(code, "while never_written; do", "pr")).toThrow(/no .* to slice/);
     expect(() => braceGroup(code, '"$NO_SUCH_FILE"', "pr")).toThrow(/no .* command group/);
+  });
+
+  it("MODEL: the persist harness's `mapfile` prologue fills the array the builtin would", () => {
+    // The persist observations run the real body, and on a shell without the
+    // bash-4 builtin that body's note list comes from this prologue. A prologue
+    // that mis-fills the array reports another program's answers — and it would
+    // do so QUIETLY, since an empty note list is a legal state.
+    const probe = join(mkdtempSync(join(tmpdir(), "fix-drift-mapfile-")), "probe.sh");
+    writeFileSync(
+      probe,
+      [
+        MAPFILE_SHIM,
+        "mapfile -t GOT < <(printf '%s\\n' 'a b' 'c')",
+        'printf \'%s|\' "${#GOT[@]}" "${GOT[0]}" "${GOT[1]}"',
+      ].join("\n"),
+    );
+    const res = spawnSync("/bin/bash", [probe], { encoding: "utf-8" });
+    expect(res.stderr, "the mapfile prologue does not run under this shell").toBe("");
+    expect(
+      res.stdout,
+      "the prologue does not reproduce `mapfile -t`: the persist body's committed-note list " +
+        "would be wrong, and an empty one is a legal state so nothing would notice",
+    ).toBe("2|a b|c|");
   });
 });
 
