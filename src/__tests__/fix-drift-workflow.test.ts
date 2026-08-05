@@ -35,7 +35,8 @@
  * actionlint run in CI covers structural validity separately.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -1361,6 +1362,132 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
 // the workflow explicitly does NO auto-merge; see the NO-AUTO-MERGE block
 // above), so both the permissions and the stale comment are dead and must be
 // removed.
+// ---------------------------------------------------------------------------
+// The ONE unpinned executable in the job: `sh <(curl https://ollama.com/install.sh)`.
+//
+// Every `uses:` here is pinned by commit SHA and `pnpm install --frozen-lockfile`
+// is pinned by the lockfile's integrity hashes, but that URL is MUTABLE, and the
+// step used to run six steps after an app token with `contents: write` +
+// `pull-requests: write` was minted into the job. Two independent properties are
+// asserted, because neither alone closes it: the code runs BEFORE the token
+// exists, and the bytes are verified before `sh` sees them (a compromised script
+// that cannot read the token can still plant a `git`/`gh`/`node` on PATH for the
+// later steps that hold it).
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the unpinned install script cannot reach the app token", () => {
+  const OLLAMA_STEP = "Provision Ollama daemon (drift-sync-check re-collect gate)";
+
+  /**
+   * EXECUTE the provisioning step's `run:` body with `curl` serving `served` bytes.
+   *
+   * Only `curl` and `sh` are stubbed — the verification itself (sha256sum, the
+   * comparison, the exit) is the workflow's own code, run as written. `sh` records
+   * that it was reached, which is the question that matters: a step that "fails"
+   * AFTER handing the file to a shell has not refused anything.
+   */
+  const observeProvision = (
+    served: string,
+    expectedSha256?: string,
+  ): { stepExit: number; shRan: boolean; stdio: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-ollama-"));
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const servedFile = join(dir, "served");
+      writeFileSync(servedFile, served);
+      const shMarker = join(dir, "sh-ran");
+      // -o <path> is the only curl form this step uses for the download; the
+      // readiness poll (`curl -sf http://127.0.0.1:11434/...`) has no -o and must
+      // simply fail so the wait loop falls through.
+      writeFileSync(
+        join(bin, "curl"),
+        [
+          "#!/bin/sh",
+          'out=""',
+          'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; esac; shift; done',
+          `[ -n "$out" ] || exit 7`,
+          `cat ${JSON.stringify(servedFile)} > "$out"`,
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      writeFileSync(join(bin, "sh"), `#!/bin/sh\ntouch ${JSON.stringify(shMarker)}\n`, {
+        mode: 0o755,
+      });
+      for (const noop of ["ollama", "sleep"])
+        writeFileSync(join(bin, noop), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const step = stepByName(OLLAMA_STEP);
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(step.env)) env[k] = v;
+      if (expectedSha256 !== undefined) env.OLLAMA_INSTALL_SHA256 = expectedSha256;
+      const res = spawnSync("/bin/bash", [script], {
+        cwd: dir,
+        encoding: "utf-8",
+        env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH ?? ""}`, RUNNER_TEMP: dir },
+      });
+      return {
+        stepExit: res.status ?? -1,
+        shRan: existsSync(shMarker),
+        stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("the install script runs BEFORE the app token is minted, not after", () => {
+    const names = steps().map((s) => s.id ?? s.name ?? "");
+    const ollamaIdx = names.indexOf(OLLAMA_STEP);
+    const tokenIdx = names.indexOf("app-token");
+    expect(ollamaIdx, "no Ollama provisioning step found").toBeGreaterThan(-1);
+    expect(tokenIdx, "no app-token step found").toBeGreaterThan(-1);
+    expect(
+      ollamaIdx,
+      "the unpinned install script executes while an app token with contents:write and " +
+        "pull-requests:write is already live in the job",
+    ).toBeLessThan(tokenIdx);
+  });
+
+  it("the pin is a real sha256 the step actually compares the download against", () => {
+    const step = stepByName(OLLAMA_STEP);
+    expect(
+      step.env.OLLAMA_INSTALL_SHA256 ?? "",
+      "the step declares no pinned digest, so there is nothing to verify against",
+    ).toMatch(/^[0-9a-f]{64}$/);
+    // …and the comparison must be against the DOWNLOAD, not against a constant
+    // recomputed from itself.
+    expect(codeOf(step)).toMatch(/sha256sum "\$SCRIPT"/);
+  });
+
+  it("TAMPERED bytes are REFUSED before `sh` ever sees the file (EXECUTED)", () => {
+    const obs = observeProvision("#!/bin/sh\n# attacker-substituted payload\nexit 0\n");
+    expect(
+      obs.shRan,
+      "the workflow handed a script whose bytes do NOT match the pin to `sh` — this is " +
+        "arbitrary third-party code executing as the runner user, and every later step in " +
+        "the job holds a write-scoped app token it can reach through PATH",
+    ).toBe(false);
+    expect(obs.stepExit, "the step concluded successfully on a tampered download").not.toBe(0);
+    expect(obs.stdio).toContain("does not match its pinned sha256");
+  });
+
+  it("POSITIVE CONTROL: bytes that DO match the pin are executed (the gate is not just 'always refuse')", () => {
+    // The digest is computed from the served bytes here rather than shipping a
+    // 15KB copy of the real script: the property under test is that a MATCH
+    // proceeds, and without this the refusal above is satisfied by a step that
+    // never runs anything at all.
+    const good = "#!/bin/sh\n# the reviewed upstream script\nexit 0\n";
+    const sha = createHash("sha256").update(good).digest("hex");
+    const obs = observeProvision(good, sha);
+    expect(
+      obs.shRan,
+      "a download matching its pin was refused, so provisioning can never run",
+    ).toBe(true);
+    expect(obs.stepExit, obs.stdio).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", () => {
   it("no permissions block, at either scope, grants checks: read or statuses: read", () => {
