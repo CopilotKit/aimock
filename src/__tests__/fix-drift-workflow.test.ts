@@ -35,11 +35,11 @@
  * actionlint run in CI covers structural validity separately.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, it, expect } from "vitest";
+import { afterAll, describe, it, expect, vi } from "vitest";
 
 import {
   SyncCoreReason,
@@ -49,6 +49,17 @@ import {
   isCredentialUnusableSkip,
   missingKeySkipReason,
 } from "../../scripts/drift-sync.js";
+
+// Most guards here match text, but the load-bearing ones EXECUTE a workflow
+// body under bash — which is orders of magnitude slower than a substring test.
+// `vitest.config.ts` sets no `testTimeout`, so the default 5000ms applied, and
+// the alert-delivery guard measured 4109ms of it on an IDLE 18-core machine and
+// exceeded it under load. A guard whose RED cannot be told apart from a timeout
+// proves nothing — worse, it teaches people to re-run CI, which is the alert
+// fatigue this whole workflow is being fixed for, relocated into CI. So the
+// budget for THIS file is stated, generously, rather than inherited by
+// accident. The observations' own cost is cut separately (see `delegatingBin`).
+vi.setConfig({ testTimeout: 30_000 });
 
 const WORKFLOW_PATH = resolve(__dirname, "../../.github/workflows/fix-drift.yml");
 const wf = readFileSync(WORKFLOW_PATH, "utf-8");
@@ -529,6 +540,46 @@ function stepByName(name: string, src: string = wf): Step {
   return hits[0];
 }
 
+/** The environment variable naming the script `bin/<name>` delegates to. */
+const stubVar = (name: string): string => `STUB_${name.toUpperCase()}`;
+
+const stubBins = new Map<string, string>();
+
+/**
+ * A `bin/` directory of stub executables, created ONCE per process.
+ *
+ * Each stub is a DELEGATOR: it `exec`s a plain, NON-executable script whose path
+ * arrives in an environment variable, so a caller varies what a stub does
+ * without creating a new executable file.
+ *
+ * That indirection is not tidiness, it is the guards' time budget. Creating a
+ * fresh executable and running it costs ~200ms here (measured: 18 runs of an
+ * identical body took 3801ms with a per-run stub and 214ms with one reused
+ * stub), and the alert-delivery guard below runs six alert bodies against
+ * several curl outcomes each. At one stub per observation it took 4109ms of
+ * vitest's 5000ms default on an IDLE 18-core machine and exceeded it under load
+ * — during review it false-RED'd twice and both times looked like a real catch.
+ * A delegating stub is written once and reused by every observation in the file.
+ */
+function delegatingBin(names: string[]): string {
+  const key = names.join(",");
+  const cached = stubBins.get(key);
+  if (cached !== undefined) return cached;
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-bin-"));
+  for (const name of names) {
+    writeFileSync(join(dir, name), `#!/bin/sh\nexec /bin/sh "$${stubVar(name)}" "$@"\n`, {
+      mode: 0o755,
+    });
+  }
+  stubBins.set(key, dir);
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of stubBins.values()) rmSync(dir, { recursive: true, force: true });
+  stubBins.clear();
+});
+
 /**
  * EXECUTE the sync step's own `run:` body against a stand-in drift-sync, and
  * report what the runner would see.
@@ -551,9 +602,9 @@ function observeSyncStep(
 } {
   const dir = mkdtempSync(join(tmpdir(), "fix-drift-crash-"));
   try {
-    const bin = join(dir, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "npx"), npxStub, { mode: 0o755 });
+    const bin = delegatingBin(["npx"]);
+    const npxFile = join(dir, "npx-stub.sh");
+    writeFileSync(npxFile, npxStub);
     const outFile = join(dir, "github_output");
     writeFileSync(outFile, "");
     const script = join(dir, "step.sh");
@@ -564,11 +615,13 @@ function observeSyncStep(
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
+        [stubVar("npx")]: npxFile,
         SYNC_LOG: join(dir, "drift-sync.log"),
         GITHUB_OUTPUT: outFile,
         RUNNER_TEMP: dir,
       },
     });
+    if (res.error) throw res.error;
     const outputs: Record<string, string> = {};
     for (const line of readFileSync(outFile, "utf-8").split("\n")) {
       const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
@@ -584,12 +637,17 @@ function observeSyncStep(
   }
 }
 
-/** Every alert step's `env:` key gets a value, so `set -u` cannot be what stops the body. */
+/**
+ * The one alert `env:` value that has to be REAL rather than a placeholder: the
+ * webhook is the one key whose emptiness the bodies legitimately treat as a hard
+ * stop, so it gets a URL and every other key gets `<KEY>` (see below).
+ */
 const ALERT_ENV_STUB: Record<string, string> = { SLACK_WEBHOOK: "https://hooks.slack.test/T/B/x" };
 
 /**
  * EXECUTE an alert step's own `run:` body against a `curl` that returns
- * `curlExit`, and report what the runner would see in `$GITHUB_OUTPUT`.
+ * `curlExit`, and report what the runner would see: the step's exit status, its
+ * `$GITHUB_OUTPUT`, and EVERY POST curl was actually asked to make.
  *
  * `posted=true` is the catch-all's stand-down signal, so a step that publishes it
  * having delivered NOTHING is byte-identical to a delivered alert and the backstop
@@ -598,11 +656,29 @@ const ALERT_ENV_STUB: Record<string, string> = { SLACK_WEBHOOK: "https://hooks.s
  * strips `-e` from the body's own `set` line, which is how any dependence on that
  * option is MEASURED rather than assumed: `set -e` is a shell option no guard
  * here reads, and a one-token edit to it must not be able to fake a delivery.
+ *
+ * `posts` is what makes the observation about DELIVERY rather than about an
+ * output: an early `echo "posted=true"; exit 1` publishes the stand-down signal
+ * while curl is never reached at all, and reading `$GITHUB_OUTPUT` alone cannot
+ * tell that apart from a POST that succeeded.
+ *
+ * Every declared key defaults to a NON-EMPTY `<KEY>`, the same discipline
+ * `assembleSlackMessage` uses. Feeding `""` everywhere put this harness in the
+ * impossible-fixture class the workflow itself was just fixed for
+ * (`NEEDS_HUMAN_PR_OUTCOME: ""` is a state the runner cannot produce): the
+ * runner's values are non-empty, so a body branching on an equality test against
+ * a real value was invisible here. `env` selects a specific state to observe —
+ * see `envStatesFrom`, which drives the whole reachable domain rather than one
+ * fixture.
  */
 function observeAlertPost(
   step: Step,
-  { curlExit, errexit = true }: { curlExit: number; errexit?: boolean },
-): { stepExit: number; outputs: Record<string, string> } {
+  {
+    curlExit,
+    errexit = true,
+    env: envOverride = {},
+  }: { curlExit: number; errexit?: boolean; env?: Record<string, string> },
+): { stepExit: number; outputs: Record<string, string>; posts: string[] } {
   let body = runOf(step);
   if (!errexit) {
     const stripped = body.replace(/^(\s*set -)([a-z]*)e([a-z]*\b)/m, "$1$2$3");
@@ -615,15 +691,25 @@ function observeAlertPost(
   }
   const dir = mkdtempSync(join(tmpdir(), "fix-drift-post-"));
   try {
-    const bin = join(dir, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "curl"), `#!/bin/sh\nexit ${curlExit}\n`, { mode: 0o755 });
+    const bin = delegatingBin(["curl"]);
+    const postLog = join(dir, "posts");
+    writeFileSync(postLog, "");
+    const curlFile = join(dir, "curl-stub.sh");
+    // ONE line per invocation: the payload carries real newlines (that is the
+    // point of `${NL}`), so a raw `printf "$*"` would log a single POST as
+    // several lines and "how many POSTs happened" would read off by two.
+    writeFileSync(
+      curlFile,
+      `{ printf '%s' "$*" | tr '\\n' ' '; printf '\\n'; } >> ${JSON.stringify(postLog)}\n` +
+        `exit ${curlExit}\n`,
+    );
     const outFile = join(dir, "github_output");
     writeFileSync(outFile, "");
     const script = join(dir, "step.sh");
     writeFileSync(script, body);
     const env: Record<string, string> = {};
-    for (const key of Object.keys(step.env)) env[key] = ALERT_ENV_STUB[key] ?? "";
+    for (const key of Object.keys(step.env)) env[key] = ALERT_ENV_STUB[key] ?? `<${key}>`;
+    Object.assign(env, envOverride);
     const res = spawnSync("/bin/bash", [script], {
       cwd: dir,
       encoding: "utf-8",
@@ -631,19 +717,68 @@ function observeAlertPost(
         ...process.env,
         ...env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
+        [stubVar("curl")]: curlFile,
         GITHUB_OUTPUT: outFile,
         RUNNER_TEMP: dir,
       },
     });
+    // A spawn that never ran (EAGAIN, ENOMEM, ETXTBSY) reports status null, and
+    // `-1` with no outputs SATISFIES every safety assertion below — the
+    // observation would become vacuous in exactly the direction that passes.
+    if (res.error) throw res.error;
     const outputs: Record<string, string> = {};
     for (const line of readFileSync(outFile, "utf-8").split("\n")) {
       const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
       if (m) outputs[m[1]] = m[2];
     }
-    return { stepExit: res.status ?? -1, outputs };
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      posts: readFileSync(postLog, "utf-8").split("\n").filter(Boolean),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Every (env var, value) state the step's OWN body distinguishes, read out of
+ * the artifact.
+ *
+ * A body that branches on `[ "${SYNC_REASON}" = "provider-unchecked" ]` has a
+ * reachable state a single fixture cannot reach, and that is how a zero-Slack
+ * path hid: an early `posted=true; exit 1` gated on a real `SYNC_REASON` value
+ * stood the catch-all down with nothing delivered, and both harnesses fed a
+ * value (`""`, `<SYNC_REASON>`) that no comparison in the body matches.
+ *
+ * So the domain comes from the comparisons the body itself makes: every literal
+ * an `env:`-declared variable is compared against, plus the empty string for
+ * every variable tested with `-z`/`-n`. A branch added later extends the swept
+ * domain by existing, which is what a fixture list cannot do.
+ *
+ * `SLACK_WEBHOOK` is excluded: an empty webhook is the ONE state in which these
+ * bodies are entitled not to POST, and it has its own guard.
+ */
+function envStatesFrom(step: Step): Array<{ label: string; env: Record<string, string> }> {
+  const body = runOf(step);
+  const declared = new Set(Object.keys(step.env));
+  const states = new Map<string, Record<string, string>>();
+  const add = (name: string, value: string): void => {
+    if (!declared.has(name) || name === "SLACK_WEBHOOK") return;
+    states.set(`${name}=${JSON.stringify(value)}`, { [name]: value });
+  };
+  for (const m of body.matchAll(
+    /\[\s+"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-)?\}"\s+(?:=|!=)\s+"([^"]*)"\s+\]/g,
+  )) {
+    add(m[1], m[2]);
+  }
+  for (const m of body.matchAll(/\[\s+-[zn]\s+"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-)?\}"\s+\]/g)) {
+    add(m[1], "");
+  }
+  return [
+    { label: "every declared value present", env: {} },
+    ...[...states].map(([label, env]) => ({ label, env })),
+  ];
 }
 
 /**
@@ -2880,18 +3015,17 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
   ): { stepExit: number; ghLog: string; written: string; stdio: string } => {
     const dir = mkdtempSync(join(tmpdir(), "fix-drift-ack-"));
     try {
-      const bin = join(dir, "bin");
-      mkdirSync(bin);
+      const bin = delegatingBin(["gh"]);
       const prFile = join(dir, "pr.json");
       const logFile = join(dir, "gh.log");
       const bodyFile = join(dir, "written");
       writeFileSync(prFile, JSON.stringify(prJson));
       writeFileSync(logFile, "");
       writeFileSync(bodyFile, "");
+      const ghFile = join(dir, "gh-stub.sh");
       writeFileSync(
-        join(bin, "gh"),
+        ghFile,
         [
-          "#!/bin/sh",
           `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
           'if [ "$1 $2" = "pr view" ]; then',
           `  cat ${JSON.stringify(prFile)}`,
@@ -2906,7 +3040,6 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
           "fi",
           "exit 0",
         ].join("\n"),
-        { mode: 0o755 },
       );
       // Every declared `env:` key gets a value, so `set -u` is never what stops
       // the body — the same discipline as ALERT_ENV_STUB.
@@ -2922,10 +3055,12 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
           ...env,
           ...envOverride,
           PATH: `${bin}:${process.env.PATH ?? ""}`,
+          [stubVar("gh")]: ghFile,
           GITHUB_OUTPUT: join(dir, "github_output"),
           RUNNER_TEMP: dir,
         },
       });
+      if (res.error) throw res.error;
       return {
         stepExit: res.status ?? -1,
         ghLog: readFileSync(logFile, "utf-8"),
@@ -3273,11 +3408,29 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
       // `-e` from an alert was invisible here. That published `posted=true` with
       // nothing delivered, byte-identical to a real alert, standing the catch-all
       // down: the total-silence window this mechanism exists to close.
-      expect(
-        observeAlertPost(st, { curlExit: 0 }).outputs.posted,
-        `${st.name}: a DELIVERED alert publishes no positive proof, so anything downstream ` +
-          "can only key on a step OUTCOME — which a failed POST also produces",
-      ).toBe("true");
+      //
+      // Asked of EVERY STATE THE BODY DISTINGUISHES (`envStatesFrom`), not of one
+      // fixture. With a webhook present these bodies have no other path that
+      // declines to post, so "a POST happened and `posted` proves it" has to hold
+      // across the whole reachable domain — otherwise an early `posted=true;
+      // exit 1` gated on a real `SYNC_REASON` value publishes the stand-down
+      // signal having reached Slack with nothing, and the day is a RED job with
+      // ZERO messages: the total-silence window, re-opened one `if` at a time.
+      for (const { label, env } of envStatesFrom(st)) {
+        const posted = observeAlertPost(st, { curlExit: 0, env });
+        expect(
+          posted.posts.length,
+          `${st.name}: with ${label} the body reaches Slack ${posted.posts.length} times ` +
+            "instead of once — a state the runner can produce short-circuits the POST, and " +
+            `it published posted=${JSON.stringify(posted.outputs.posted ?? "")}`,
+        ).toBe(1);
+        expect(
+          posted.outputs.posted,
+          `${st.name}: with ${label} a DELIVERED alert publishes no positive proof, so ` +
+            "anything downstream can only key on a step OUTCOME — which a failed POST also " +
+            "produces",
+        ).toBe("true");
+      }
       for (const errexit of [true, false]) {
         const dropped = observeAlertPost(st, { curlExit: 22, errexit });
         const how = errexit ? "ON" : "OFF";
@@ -3292,6 +3445,40 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
           `${st.name}: a REJECTED POST leaves the step GREEN with errexit ${how}`,
         ).not.toBe(0);
       }
+    }
+  });
+
+  it("MODEL: the swept alert states include the values the BODIES branch on", () => {
+    // Without this the sweep above can go vacuous silently — a regex that stops
+    // matching yields one state, the guard still passes, and the impossible-
+    // fixture window is back with every assertion green.
+    const gate = envStatesFrom(stepById("alert_gate")).map((s) => s.label);
+    for (const want of [
+      'SYNC_REASON="sync-crashed"',
+      'SYNC_REASON="provider-unchecked"',
+      'SYNC_REASON="gate-failed"',
+      'NEEDS_HUMAN_PR_OUTCOME="failure"',
+      'NEEDS_HUMAN_PR_OUTCOME="skipped"',
+      'ASSERT_OUTCOME="failure"',
+      'PR_OUTCOME="failure"',
+    ]) {
+      expect(
+        gate,
+        `the alert-state sweep does not read ${want} out of the gate alert's own body, so ` +
+          "that branch is never executed and an early stand-down hiding behind it is invisible",
+      ).toContain(want);
+    }
+    // …and it reaches the empty-string states a `-z`/`-n` test distinguishes,
+    // without ever emptying the webhook (whose own guard owns that state).
+    expect(envStatesFrom(stepById("alert_catchall")).map((s) => s.label)).toContain(
+      'SYNC_REASON=""',
+    );
+    for (const st of slackSteps()) {
+      expect(
+        envStatesFrom(st).map((s) => s.label),
+        `${st.name}: the sweep empties SLACK_WEBHOOK, which is the one state these bodies ` +
+          "are entitled not to POST in",
+      ).not.toContain('SLACK_WEBHOOK=""');
     }
   });
 
