@@ -254,17 +254,21 @@ function stepByName(name: string, src: string = wf): Step {
 }
 
 /**
- * EXECUTE the sync step's own `run:` body against a drift-sync that CRASHES
- * before printing any `reason=` line, and report what the runner would see.
+ * EXECUTE the sync step's own `run:` body against a stand-in drift-sync, and
+ * report what the runner would see.
  *
- * This is an OBSERVATION, not an assertion about the body's text: the step is
- * run under bash with `npx` replaced by a stub standing in for drift-sync.ts's
- * fatal handler (`drift-sync fatal error: …` on stderr, exit 1 — it fires before
- * the first `console.log`, because runDriftSyncCli awaits every provider's churn
- * input up front). Whatever the step then does with that exit code — swallow it
- * or propagate it — is measured, not guessed.
+ * This is an OBSERVATION, not an assertion about the body's text: the step is run
+ * under bash with `npx` replaced by `npxStub`. The default stub stands in for
+ * drift-sync.ts's fatal handler (`drift-sync fatal error: …` on stderr, exit 1 —
+ * it fires before the first `console.log`, because runDriftSyncCli awaits every
+ * provider's churn input up front), so a CRASH prints no `reason=` line at all.
+ * Whatever the step then does with that output — swallow it or propagate it — is
+ * measured, not guessed.
  */
-function observeSyncStepUnderCrash(src: string = wf): {
+function observeSyncStep(
+  src: string = wf,
+  npxStub = "#!/bin/sh\necho 'drift-sync fatal error: fetch failed' >&2\nexit 1\n",
+): {
   stepExit: number;
   outputs: Record<string, string>;
   stdio: string;
@@ -273,11 +277,7 @@ function observeSyncStepUnderCrash(src: string = wf): {
   try {
     const bin = join(dir, "bin");
     mkdirSync(bin);
-    writeFileSync(
-      join(bin, "npx"),
-      "#!/bin/sh\necho 'drift-sync fatal error: fetch failed' >&2\nexit 1\n",
-      { mode: 0o755 },
-    );
+    writeFileSync(join(bin, "npx"), npxStub, { mode: 0o755 });
     const outFile = join(dir, "github_output");
     writeFileSync(outFile, "");
     const script = join(dir, "step.sh");
@@ -404,7 +404,7 @@ describe("fix-drift.yml — the step slicer reads the artifact verbatim (both gu
 // straight out through that fatal handler.
 //
 // The guard below does not pattern-match a fix. It EXECUTES the step's own run
-// body against a crashing drift-sync (`observeSyncStepUnderCrash`) and takes the
+// body against a crashing drift-sync (`observeSyncStep`) and takes the
 // step's real exit status and real `$GITHUB_OUTPUT` as the finding; the alert
 // side is then checked against the artifact's OWN `if:` text, so the reason the
 // step publishes must be one an alert step is actually keyed on.
@@ -414,14 +414,14 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
   const alertSteps = () => steps().filter((s) => /^(Alert|Notify)\b/.test(s.name ?? ""));
 
   it("the crash is observable in the step's captured outputs at all", () => {
-    const obs = observeSyncStepUnderCrash();
+    const obs = observeSyncStep();
     expect(obs.stdio).toContain("drift-sync fatal error");
     // drift-sync's real exit code is captured even though the step may swallow it.
     expect(obs.outputs.exit_code).toBe("1");
   });
 
   it("the crash makes the STEP itself fail, so the job cannot conclude green", () => {
-    const obs = observeSyncStepUnderCrash();
+    const obs = observeSyncStep();
     expect(
       obs.stepExit,
       `drift-sync crashed (exit_code=${obs.outputs.exit_code}) but the sync STEP exited 0 ` +
@@ -432,7 +432,7 @@ describe("fix-drift.yml — M1: a drift-sync CRASH cannot end green and silent",
   });
 
   it("the reason the crash publishes is one an alert step is KEYED ON", () => {
-    const obs = observeSyncStepUnderCrash();
+    const obs = observeSyncStep();
     const reason = obs.outputs.reason ?? "";
     expect(reason, "a crash published no reason= at all").not.toBe("");
     const keyed = alertSteps().filter((s) => (s.if ?? "").includes(`'${reason}'`));
@@ -1165,6 +1165,183 @@ describe("fix-drift.yml — the needs-human alert always names a PR", () => {
           "newer PRs exist an already-proposed PR falls out of the window, the dedup " +
           "misses it, and the workflow opens a duplicate",
       ).toMatch(/--limit \d+/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A provider whose credential is UNUSABLE is not evidence that nothing drifted.
+//
+// fetchProviderChurnInput turns an unusable key into a SKIP, not an error: a
+// missing key becomes "<ENV> not set", and isInfraSkip() absorbs 401/402/403, so
+// a revoked key becomes an "infra error (status 401)" skip. With every provider
+// skipped the core has no live listing to diff, reports ok-no-churn and exits 0
+// — byte-for-byte identical to a genuinely quiet day. This EXECUTES the sync
+// step against that output and reads what the runner would see.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — an unusable provider credential cannot read as 'no drift'", () => {
+  /** drift-sync's real skip line (scripts/drift-sync.ts) for a revoked key. */
+  const REVOKED_KEY_SYNC = [
+    "#!/bin/sh",
+    "echo '  [skipped] google: infra error (status 401) fetching live /models for google — never mass-removing off a failed listing'",
+    "echo 'reason=ok-no-churn'",
+    "echo 'changeset-key='",
+    "exit 0",
+  ].join("\n");
+
+  it("a revoked key reported as ok-no-churn fails the step and raises an alert", () => {
+    const obs = observeSyncStep(wf, REVOKED_KEY_SYNC);
+    const reason = obs.outputs.reason ?? "";
+    expect(
+      reason,
+      "drift-sync skipped a provider on a 401 and reported ok-no-churn, and the step " +
+        "republished ok-no-churn unchanged — 'nothing changed' here means 'could not " +
+        "look', so a revoked key silently disables the sync for good.",
+    ).not.toBe(SyncCoreReason.OK_NO_CHURN);
+    expect(
+      obs.stepExit,
+      `the step exited 0 having published reason=${JSON.stringify(reason)}, so the job ` +
+        "concludes GREEN on a sync that never actually checked the provider",
+    ).not.toBe(0);
+    const keyed = steps()
+      .filter((s) => /^(Alert|Notify)\b/.test(s.name ?? ""))
+      .filter((s) => (s.if ?? "").includes(`'${reason}'`));
+    expect(
+      keyed.map((s) => s.name),
+      `the step publishes reason='${reason}' for an unchecked provider, but no alert ` +
+        "step's `if:` mentions it — the reason is published into a void",
+    ).not.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Both dedup guards match an HTML comment this workflow wrote into a PR BODY —
+// machine state parked inside prose a HUMAN owns. On 2026-08-03 a wholesale
+// rewrite of PR #343's body deleted its markers and ~14h later the scheduled run
+// opened duplicate PR #350 for the same changeset. And a CLOSED PR carrying the
+// marker is a human REJECTION that an `--state open` listing cannot see, so
+// rejecting a proposal used to guarantee an identical one the next morning.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", () => {
+  const prSteps = () => [stepById("pr"), stepById("needs_human_pr")];
+
+  it("each PR-open step RE-ASSERTS its own body markers, keyed on state a body edit cannot touch", () => {
+    for (const st of prSteps()) {
+      const code = codeOf(st);
+      expect(
+        code,
+        `${st.name}: never re-writes a PR body, so a human deleting a marker leaves ` +
+          "dedup blind and the next run opens a duplicate",
+      ).toMatch(/gh pr edit .*--body-file/);
+      expect(
+        code,
+        `${st.name}: the marker repair does not restore the "<!-- … -->" marker form ` +
+          "the dedup guards match on",
+      ).toMatch(/<!-- \$\{m\} -->/);
+      // The self-heal's own listing must NOT be `--search`: that index is
+      // body-keyed AND lags an edit by minutes, so it cannot see the body being
+      // repaired. Identity comes from the head branch instead, which a PR cannot
+      // rename — so the branch this step pushes must CARRY the changeset key.
+      const heal = code.slice(0, code.indexOf("gh pr edit"));
+      expect(
+        heal,
+        `${st.name}: the candidate listing for the marker repair uses --search, whose ` +
+          "body-keyed index cannot see the very body being repaired",
+      ).toMatch(/gh pr list --state open(?![\s\S]*--search[\s\S]*gh pr edit)/);
+      expect(
+        code,
+        `${st.name}: the pushed branch does not end in the changeset key, so the marker ` +
+          "repair has no body-independent anchor to recognise its own PR by",
+      ).toMatch(/BRANCH="[^"\n]*\$\{CHANGESET_KEY\}"/);
+    }
+  });
+
+  it("each dedup listing sees CLOSED PRs, and a closed marker-carrying PR is not re-proposed", () => {
+    for (const st of prSteps()) {
+      const code = codeOf(st);
+      const dedup = code.slice(code.indexOf("gh pr edit"));
+      expect(
+        dedup,
+        `${st.name}: the dedup listing is scoped to open PRs, so the moment a human ` +
+          "CLOSES a proposal to reject it the next cron run stops seeing it and opens a " +
+          "fresh one — daily, forever",
+      ).toMatch(/gh pr list --state all[\s\S]*--search "\$\{CHANGESET_KEY\} in:body"/);
+      expect(
+        dedup,
+        `${st.name}: never selects a CLOSED marker-carrying PR, so a human rejection is ` +
+          "not respected",
+      ).toMatch(/\.state == "CLOSED"/);
+      expect(
+        dedup,
+        `${st.name}: finds a human-rejected changeset but does not stop before pushing`,
+      ).toMatch(/rejected=\$\{REJECTED\}/);
+    }
+    expect(
+      stepByName("Alert on needs-human decision").if ?? "",
+      "the needs-human alert still fires for a changeset a human already rejected — " +
+        "re-alerting every morning is the spam that made following the instruction a " +
+        "punishment",
+    ).toContain("steps.needs_human_pr.outputs.rejected == ''");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Three fail-silent repairs this suite could not previously detect: reverting
+// any of them passed the whole suite.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — fail-silent repairs a revert must not be able to pass", () => {
+  it("every jq read of a PR body defaults a NULL body to the empty string", () => {
+    // `.body | contains($m)` THROWS on `body: null`, which GitHub returns for a
+    // PR with an empty description — one such PR anywhere in the listing killed
+    // every dedup query at once (jq error, step exit 5).
+    const reads = [...wf.matchAll(/\.body\b(?!\s*(?:=[^=]|\/\/ ""))/g)];
+    expect(
+      reads.map((m) => wf.slice(m.index, m.index + 60)),
+      'a jq program reads `.body` without a `// ""` default, so a single PR with an ' +
+        "empty description takes the whole dedup query down",
+    ).toEqual([]);
+  });
+
+  it("a DROPPED Slack notification fails its step rather than ending the job green", () => {
+    const slack = steps().filter(
+      (s) => runOf(s).includes("SLACK_WEBHOOK") && /\bMSG=/.test(runOf(s)),
+    );
+    expect(slack.length, "no Slack-posting step found").toBeGreaterThan(0);
+    for (const st of slack) {
+      const branch = /if \[ -z "\$\{SLACK_WEBHOOK:-\}" \]; then\n([\s\S]*?)\n *fi/.exec(codeOf(st));
+      expect(branch, `${st.name}: no missing-webhook branch to check`).not.toBeNull();
+      expect(
+        branch![1],
+        `${st.name}: a missing webhook means the notification was DROPPED, and exiting 0 ` +
+          "leaves the job green while nobody is told",
+      ).toMatch(/^\s*exit 1$/m);
+    }
+  });
+
+  it("both PR-open paths REFUSE to run dedup-blind on an empty changeset key", () => {
+    for (const st of [stepById("pr"), stepById("needs_human_pr")]) {
+      const code = codeOf(st);
+      const at = code.indexOf('if [ -z "${CHANGESET_KEY:-}" ]; then');
+      expect(
+        at,
+        `${st.name}: an EMPTY changeset key silently switches the PRIMARY dedup guard ` +
+          "off (`if [ -n … ]`) and falls through to an unconditional push + PR",
+      ).toBeGreaterThanOrEqual(0);
+      const guard = code.slice(at, code.indexOf("\n          fi", at));
+      expect(
+        guard,
+        `${st.name}: the empty-changeset-key branch does not fail the step, so the run ` +
+          "still pushes with no dedup",
+      ).toMatch(/^\s*exit 1$/m);
+      for (const call of ["git push", "gh pr create"]) {
+        const c = code.indexOf(call);
+        if (c === -1) continue;
+        expect(
+          at,
+          `${st.name}: the empty-changeset-key refusal comes AFTER \`${call}\`, so the ` +
+            "duplicate is already open by the time it fires",
+        ).toBeLessThan(c);
+      }
     }
   });
 });
