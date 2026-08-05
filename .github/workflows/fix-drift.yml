@@ -214,11 +214,15 @@ jobs:
           # day. So revoked keys disable the sync indefinitely and nobody is
           # told. Confirmed by running the real drift-sync.ts with invalid keys.
           #
-          # Only AUTH-class skips (401/402/403) and a missing key are treated as
-          # faults: both are persistent misconfigurations that a human must fix.
-          # Transient classes (429, 5xx) stay tolerated — they resolve on their
-          # own and must not red a daily cron. That classification is made in
-          # drift-sync.ts (isCredentialUnusableSkip), not here.
+          # An unusable credential is not the only way to end up not having looked.
+          # Only TRANSIENT skips (a 429 or a 5xx from the provider's own /models
+          # endpoint) are tolerated — they resolve on their own and must not red a
+          # daily cron; EVERY other skip class counts, including a live listing
+          # that came back too short to trust and any class added to drift-sync.ts
+          # in future. That classification is made in drift-sync.ts
+          # (isProviderUncheckedSkip), not here, and it is an allowlist of the
+          # tolerated class rather than of the faults — so a new skip class fails
+          # CLOSED instead of silently reading as "checked fine".
           #
           # Scoped to ok-no-churn deliberately: that is the exact window where
           # the skip is INVISIBLE. On any other reason the run already produces
@@ -257,7 +261,7 @@ jobs:
               UNCHECKED="${UNCHECKED_LINE#unchecked-providers=}"
               if [ -n "${UNCHECKED}" ]; then
                 REASON="provider-unchecked"
-                echo "::error::drift-sync reported no churn, but these providers were never actually checked (missing, revoked or expired credential) — 'nothing changed' here means 'could not look': ${UNCHECKED}"
+                echo "::error::drift-sync reported no churn, but these providers were never actually checked — 'nothing changed' here means 'could not look': ${UNCHECKED}. The per-provider reason is on the '[skipped] <provider>: …' lines of the drift-sync-log artifact (an unusable credential, or a live /models listing too short to trust)"
               fi
             fi
           fi
@@ -1654,7 +1658,7 @@ jobs:
           if [ "${SYNC_REASON}" = "sync-crashed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts exited ${SYNC_EXIT_CODE:-?} and the run is UNCLASSIFIABLE — it printed no usable reason= line, or it reported a clean one and then died anyway; see the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "provider-unchecked" ]; then
-            FAILING_STEP="Run deterministic drift sync (a provider was never actually CHECKED — a missing, revoked or expired API key made it skip, so 'no churn' meant 'could not look'; rotate the credential. See the drift-sync-log artifact)"
+            FAILING_STEP="Run deterministic drift sync (a provider was never actually CHECKED, so 'no churn' meant 'could not look' — an unusable API key to rotate, or a live /models listing too short to trust. The '[skipped] <provider>: …' lines of the drift-sync-log artifact name which)"
           elif [ "${SYNC_REASON}" = "gate-failed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts's own internal drift-sync-check gate reverted the mechanical edit before commit)"
           # The needs-human arms are gated on the RUN SHAPE, not on the persist

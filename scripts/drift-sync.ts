@@ -405,7 +405,7 @@ export function detectDeprecatedFamiliesForSync(
     return {
       status: "skipped",
       reason:
-        `live /models listing too short to trust for ${provider} ` +
+        `${LISTING_UNTRUSTED_SKIP_MARKER} for ${provider} ` +
         `(${liveModelIds.length} raw id(s), need >= ${floor} — the number of ` +
         `families aimock mocks for this provider) — never mass-removing off a ` +
         `truncated or empty listing`,
@@ -1081,6 +1081,11 @@ const LIVE_MODEL_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>
 const MISSING_KEY_SKIP_MARKER = "not set — skipping live sync for";
 /** The one copy of the "the live listing itself faulted" wording (status follows). */
 const INFRA_SKIP_MARKER = "infra error (status ";
+/**
+ * The one copy of the "the listing came back, but too short to believe" wording —
+ * read by `detectDeprecatedFamiliesForSync`, which writes the reason.
+ */
+export const LISTING_UNTRUSTED_SKIP_MARKER = "live /models listing too short to trust";
 
 /** The skip reason a provider with NO credential configured gets. */
 export function missingKeySkipReason(envKey: string, provider: Provider): string {
@@ -1093,45 +1098,67 @@ export function infraSkipReason(status: number, provider: Provider): string {
 }
 
 /**
- * HTTP statuses that mean the CREDENTIAL is unusable, not that the provider had
- * a moment. `isInfraSkip` also absorbs 429 and 5xx, and those are deliberately
- * NOT here: they resolve on their own and must not red an unattended daily cron.
+ * Does this skip reason mean the provider had a MOMENT — something that resolves
+ * on its own and must never red an unattended daily cron?
+ *
+ * This is the ONLY tolerated class, and it is an explicit ALLOWLIST: a 429, or a
+ * 5xx from the provider's own `/models` endpoint. `isInfraSkip` absorbs exactly
+ * those plus 401/402/403.
  */
-export const CREDENTIAL_UNUSABLE_STATUSES: readonly number[] = [401, 402, 403];
+export function isTransientSkip(reason: string): boolean {
+  if (!reason.startsWith(INFRA_SKIP_MARKER)) return false;
+  const status = Number.parseInt(reason.slice(INFRA_SKIP_MARKER.length), 10);
+  if (!Number.isInteger(status)) return false;
+  return status === 429 || (status >= 500 && status <= 599);
+}
 
 /**
- * Does this skip reason mean the provider was never actually CHECKED because its
- * credential is unusable?
+ * Does this skip mean the provider's drift was never actually CHECKED, so "no
+ * churn" for it means "could not look"?
  *
- * Reads the same two markers the builders above write, so the classifier cannot
- * drift away from the emitter.
+ * FAIL-CLOSED BY CONSTRUCTION, and that is the whole point. This used to be the
+ * other way round — an ALLOWLIST of two recognised faults (a missing key, and an
+ * `infra error (status 40[123])`) with `return false` for everything else. So
+ * every skip class the allowlist did not name was silently reported as "checked
+ * fine", and there was a third one: `detectDeprecatedFamiliesForSync` skips the
+ * whole deprecation half when the live listing comes back SHORTER than the number
+ * of families aimock mocks for that provider — a provider whose API changed shape,
+ * or a partial/truncated response. That skip left `unchecked-providers=` EMPTY, so
+ * `fix-drift.yml` read the run as a quiet day: green, no alert, and deprecations
+ * for that provider never checked again for as long as the truncation lasted.
+ * The `input.skipReason ?? "live listing unavailable"` fallback in the core loop
+ * fell through the same hole.
+ *
+ * Inverted rather than extended by one more case, because extending it leaves the
+ * NEXT skip class invisible in exactly the same way. Now a class has to be
+ * deliberately named TRANSIENT to be tolerated, and an unrecognised reason —
+ * including one added by a future change to this file — reclassifies the run
+ * instead of passing silently. An UNKNOWN must not collapse into the answer that
+ * passes; that is the same rule the workflow's own absent-line and unreadable-log
+ * branches follow.
  */
-export function isCredentialUnusableSkip(reason: string): boolean {
-  if (reason.includes(MISSING_KEY_SKIP_MARKER)) return true;
-  if (reason.startsWith(INFRA_SKIP_MARKER)) {
-    const status = Number.parseInt(reason.slice(INFRA_SKIP_MARKER.length), 10);
-    return CREDENTIAL_UNUSABLE_STATUSES.includes(status);
-  }
-  return false;
+export function isProviderUncheckedSkip(reason: string): boolean {
+  return !isTransientSkip(reason);
 }
 
 /** The machine line `fix-drift.yml` greps to tell "nothing changed" from "could not look". */
 export const UNCHECKED_PROVIDERS_LINE_PREFIX = "unchecked-providers=";
 
 /**
- * `unchecked-providers=<csv>` for this run — the providers whose credential was
- * unusable, so their live listing was never read.
+ * `unchecked-providers=<csv>` for this run — the providers whose drift this run
+ * did not actually check, for any reason that is not a transient blip.
  *
  * Emitted UNCONDITIONALLY (empty csv on a healthy run) so that the line's ABSENCE
  * is itself a detectable fault rather than being indistinguishable from "no
- * provider was skipped".
+ * provider was skipped". The per-provider REASON is not encoded here — the
+ * human-facing `  [skipped] <provider>: <reason>` lines in the same log (uploaded
+ * as the drift-sync-log artifact) carry it, and keeping this line a bare CSV is
+ * what lets the workflow's grep stay pinned and trivial.
  */
 export function formatUncheckedProvidersLine(
   skipped: readonly { provider: string; reason: string }[],
 ): string {
-  const unchecked = skipped
-    .filter((s) => isCredentialUnusableSkip(s.reason))
-    .map((s) => s.provider);
+  const unchecked = skipped.filter((s) => isProviderUncheckedSkip(s.reason)).map((s) => s.provider);
   return `${UNCHECKED_PROVIDERS_LINE_PREFIX}${[...new Set(unchecked)].sort().join(",")}`;
 }
 
