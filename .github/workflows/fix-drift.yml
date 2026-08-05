@@ -530,9 +530,29 @@ jobs:
           # Identity is body-INDEPENDENT (a body-keyed lookup cannot find a PR
           # whose body lost the key): the head branch ends in "-<changeset key>",
           # and a PR's head branch cannot be renamed. Listed with a plain
-          # `--state open` query, never `--search`, whose index is body-keyed AND
+          # state-filtered query, never `--search`, whose index is body-keyed AND
           # lags an edit by minutes.
-          if ! MANAGED="$(gh pr list --state open --limit 200 \
+          #
+          # `--state all`, NOT `--state open`, and the repair then scoped to OPEN or
+          # CLOSED. A CLOSED PR carrying this marker is how a human REJECTS a
+          # changeset, and that decision lives in exactly one place: that PR's body.
+          # So a human editing a closed PR's body — which is a normal thing to do to
+          # a PR you have just declined, e.g. writing down why — deleted the only
+          # record of the rejection. The dedup listing below could not find it either
+          # (`--search "<key> in:body"` is body-keyed, and the key is what was
+          # deleted), so the rejection was lost PERMANENTLY and this workflow
+          # re-proposed the identical changeset the next morning and every morning
+          # after. The self-heal exists to repair exactly that deletion and was
+          # looking only at open PRs.
+          #
+          # This does NOT widen candidacy: the filter is unchanged, and every
+          # candidate still has to carry THIS run's changeset key as the last segment
+          # of its head branch — which is what keeps a human's `fix/drift-<slug>`
+          # branch out of it. MERGED is excluded because a merged PR is an ACCEPTED
+          # decision, never a pending proposal and never a rejection, so no guard
+          # here consults it and appending machine markers to it would be a write
+          # with no reader.
+          if ! MANAGED="$(gh pr list --state all --limit 200 \
             --json number,url,state,body,headRefName 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove the dedup marker it owns is still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
             exit 1
@@ -542,7 +562,9 @@ jobs:
             exit 1
           fi
           MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" '
-            map(select((.headRefName | test("^fix/drift-")) and (.headRefName | endswith("-" + $k))))')"
+            map(select((.state == "OPEN" or .state == "CLOSED")
+                       and (.headRefName | test("^fix/drift-"))
+                       and (.headRefName | endswith("-" + $k))))')"
           REASSERTED="$MINE"
           while IFS= read -r pr; do
             [ -n "$pr" ] || continue
@@ -905,15 +927,27 @@ jobs:
           #       hashes to a DIFFERENT changeset key: (a) cannot match it, the
           #       changeset guard legitimately does not fire, and the per-note
           #       marker is the ONLY thing standing between it and a duplicate PR.
-          # Listed with a plain `--state open` query, never `--search`: that index
+          # Listed with a plain state-filtered query, never `--search`: that index
           # is body-keyed AND lags an edit by minutes, so it cannot see a body this
           # step is about to repair.
+          #
+          # `--state all`, not `--state open`, for the reason spelled out on the
+          # ok-applied step above: a CLOSED PR's body is where a human's REJECTION of
+          # a changeset lives, and editing that body used to destroy the record
+          # permanently, so this workflow re-proposed the rejected changeset every
+          # morning. The CLOSED half of the population is admitted through anchor (a)
+          # ONLY — see `select_state` below — because anchor (b) is the one that runs
+          # the fail-closed changed-file audit, and letting every closed bot PR the
+          # repo has ever had into that audit would turn one truncated file list into
+          # a daily red cron. MERGED is excluded throughout: an accepted decision is
+          # neither a pending proposal nor a rejection.
+          #
           # `author` is requested because it — not the branch shape — is the only
           # signal that recognises a bot PR predating the trailing changeset key
           # (see bot_managed below). Dropping it from this field list silently
           # narrows candidacy back to keyed branches, so the presence check below
           # fails closed on it rather than letting coverage quietly shrink.
-          if ! MANAGED="$(gh pr list --state open --limit 200 \
+          if ! MANAGED="$(gh pr list --state all --limit 200 \
             --json number,url,state,body,headRefName,files,author 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove the dedup markers it owns are still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
             exit 1
@@ -1001,6 +1035,15 @@ jobs:
               ((.author.login // "") | ascii_downcase) == "app/copilotkit-devops-bot";
             def bot_managed: keyed_branch or (drift_branch and bot_author);
             def key_anchored($k): (.headRefName // "") | endswith("-" + $k);
+            # WHICH STATES EACH ANCHOR MAY REACH. (No apostrophes in here: JQ_LIB is
+            # a single-quoted shell string, and one would terminate it.)
+            # OPEN reaches both anchors, as before. CLOSED reaches anchor (a) only: it
+            # is admitted so a REJECTION marker can be repaired on the closed PR that
+            # records it, and anchor (a) needs no changed-file list, so it cannot drag
+            # the closed backlog into the fail-closed truncation audit below.
+            # MERGED reaches neither — an accepted decision is not a proposal.
+            def select_state($k):
+              (.state == "OPEN") or (.state == "CLOSED" and key_anchored($k));
             def files_usable: (.files | type) == "array";
             def file_paths: [.files[] | .path];
             def files_truncated: (file_paths | length) >= 100;
@@ -1012,7 +1055,7 @@ jobs:
           '
           # shellcheck disable=SC2016 # $-names here are JQ variables, not shell ones
           JQ_CANDIDATES='
-            map(select(bot_managed))
+            map(select(bot_managed and select_state($k)))
             | map(. + {
                 keyAnchored: key_anchored($k),
                 wantMarkers: (if files_usable
@@ -1035,6 +1078,7 @@ jobs:
           JQ_UNPROVEN='
             [ .[]
               | select(bot_managed
+                       and select_state($k)
                        and ((key_anchored($k)) | not)
                        and ((files_usable | not) or files_truncated))
               | .number ]
