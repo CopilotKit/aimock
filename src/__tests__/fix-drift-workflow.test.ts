@@ -1926,4 +1926,94 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     expect(sim.jobFailed).toBe(false);
     expect(sim.alerts).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // A CANCELLED job — a manual cancel, or this job's own `timeout-minutes: 30`
+  // firing — is a THIRD job outcome, not a flavour of failure. GitHub's
+  // `failure()` is FALSE for it, so the catch-all (the only alert covering a
+  // window no reason-keyed alert owns) stood down and the job ended with ZERO
+  // Slack on an unattended daily cron. Same defect family as the crash window:
+  // `failure()` is not the same predicate as "did not succeed".
+  // -------------------------------------------------------------------------
+  const CANCEL_SCENARIOS: Array<{ label: string; scenario: Scenario }> = [
+    {
+      label: "the 30-minute job timeout fires while drift-sync is still running",
+      scenario: { cancelledAt: "sync" },
+    },
+    {
+      label: "a human cancels the run during infra/setup, before drift-sync starts",
+      scenario: { cancelledAt: "Provision Ollama daemon (drift-sync-check re-collect gate)" },
+    },
+    {
+      label: "the timeout fires during the ok-applied Push/PR step, after a reason was published",
+      scenario: {
+        cancelledAt: "pr",
+        outputs: { sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" } },
+      },
+    },
+    {
+      label: "the timeout fires during the needs-human persist step",
+      scenario: {
+        cancelledAt: "needs_human_pr",
+        outputs: { sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" } },
+      },
+    },
+  ];
+
+  for (const { label, scenario } of CANCEL_SCENARIOS) {
+    it(`CANCELLED: ${label} -> exactly one alert fires (never silence)`, () => {
+      const res = simulateJob(scenario);
+      expect(res.jobCancelled, "the scenario did not actually cancel the job").toBe(true);
+      // A cancellation is not a flavour of failure — stated where it is actually
+      // load-bearing: the CUT-SHORT STEP reports 'cancelled', never 'failure'.
+      expect(res.outcomes[scenario.cancelledAt!] ?? "cancelled").toBe("cancelled");
+      expect(
+        res.alerts.length,
+        "a cancelled/timed-out job ended with ZERO Slack — nobody is told anything",
+      ).toBeGreaterThan(0);
+      // Still exactly one: widening the catch-all must not double-fire.
+      expect(res.alerts.length, `more than one alert fired: ${res.alerts.join(", ")}`).toBe(1);
+    });
+  }
+
+  it("the catch-all's predicate covers cancellation as well as failure (failure() alone is silent through a timeout)", () => {
+    const gate = stepByName(CATCH_ALL).if ?? "";
+    expect(
+      gate,
+      "the catch-all does not name cancelled(), so `failure()` is false through a " +
+        "timeout AND the runner skips the step outright once the job is cancelling",
+    ).toMatch(/cancelled\(\)/);
+  });
+
+  it("the job HAS the timeout that produces the cancelled outcome this covers", () => {
+    // A human can cancel regardless, but this pins the documented 30-minute
+    // trigger the catch-all's wording names.
+    expect(wf).toMatch(/^ {4}timeout-minutes: 30$/m);
+  });
+
+  it("the catch-all NAMES the cancellation instead of blaming a step that never failed", () => {
+    const step = stepByName(CATCH_ALL);
+    // `cancelled()` is not available in `env:`, so the wording branch has to read
+    // the job's own status — and it can only do that if the step imports it.
+    expect(
+      step.env.JOB_STATUS,
+      "the catch-all cannot see that the job was cancelled, so its message can only " +
+        "say the job FAILED — sending a human hunting for a broken step that does " +
+        "not exist",
+    ).toBe("${{ job.status }}");
+    const cancelled = assembleSlackMessage(step, { JOB_STATUS: "cancelled", SYNC_REASON: "" });
+    const failed = assembleSlackMessage(step, { JOB_STATUS: "failure", SYNC_REASON: "" });
+    expect(
+      cancelled,
+      "a cancelled/timed-out job gets the same message as a failed one — it did not " +
+        '"fail" anywhere, and saying so misdirects the human reading it',
+    ).not.toEqual(failed);
+    expect(cancelled).toMatch(/CANCELLED|TIMED OUT/);
+    expect(cancelled).toMatch(/timeout-minutes/);
+    expect(cancelled, "the cancelled message still claims the job failed").not.toMatch(
+      /\bfailed\b/,
+    );
+    // …and the failure wording must not regress into cancellation wording.
+    expect(failed).toMatch(/\bfailed\b/);
+  });
 });

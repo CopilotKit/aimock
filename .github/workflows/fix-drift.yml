@@ -1306,9 +1306,19 @@ jobs:
       # `exit 1`, so their outcome is 'failure' whenever they fire and
       # 'skipped' only when they did not run — which makes 'skipped' the exact
       # discriminator for "nothing else alerted".
+      #
+      # `failure() || cancelled()`, NOT `failure()`: a CANCELLED job — a manual
+      # cancel, or this job's own `timeout-minutes: 30` firing — is a THIRD
+      # outcome, and GitHub's `failure()` is FALSE for it. So a run killed by the
+      # timeout (the Ollama provisioning stalling, or drift-sync's clean
+      # re-collect running long) satisfied NO alert's condition and ended with
+      # ZERO Slack on an unattended daily cron. Same defect family as the
+      # crash window above: `failure()` is not the same predicate as "did not
+      # succeed". Naming `cancelled()` is also what makes the runner evaluate
+      # this step at all once the job is cancelling, rather than skipping it.
       - name: Alert on early-infra failure (catch-all)
         if: >-
-          failure() &&
+          (failure() || cancelled()) &&
           steps.alert_needs_human.outcome == 'skipped' &&
           steps.alert_gate.outcome == 'skipped'
         env:
@@ -1316,6 +1326,11 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           SYNC_REASON: ${{ steps.sync.outputs.reason }}
+          # `cancelled()` is not available in `env:` (only in an `if:`), so the
+          # step reads the job's own status instead. If it ever fails to say
+          # 'cancelled' the alert still FIRES — it just falls through to the
+          # generic wording, so the worst case here is cosmetic, never silence.
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
           # Slack renders a LITERAL \n when the payload carries the two
@@ -1323,17 +1338,35 @@ jobs:
           # already is: jq --arg then escapes it to \\n. A REAL newline is
           # what jq encodes into a line break. Same idiom as test-drift.yml.
           NL=$'\n'
-          # Name the window, so "catch-all" never means "unexplained".
-          if [ -z "${SYNC_REASON:-}" ]; then
+          # Name the window, so "catch-all" never means "unexplained". The
+          # headline distinguishes the two cases the step now covers, rather
+          # than always blaming setup.
+          # A CANCELLED job did not "fail" anywhere — saying it did would send a
+          # human hunting for a broken step that does not exist. Name the
+          # cancellation (whose overwhelmingly likely cause on an unattended cron
+          # is this job's own `timeout-minutes: 30`) and where it landed.
+          if [ "${JOB_STATUS:-}" = "cancelled" ]; then
+            HEADLINE="CANCELLED / TIMED OUT"
+            VERB="was cancelled"
+            if [ -z "${SYNC_REASON:-}" ]; then
+              WHERE="during INFRA/SETUP or drift-sync itself, BEFORE any reason was reported — most plausibly the job's own 30-minute timeout-minutes firing (or a manual cancel)"
+            else
+              WHERE="AFTER drift-sync reported reason='${SYNC_REASON}' — most plausibly the job's own 30-minute timeout-minutes firing (or a manual cancel)"
+            fi
+          elif [ -z "${SYNC_REASON:-}" ]; then
+            HEADLINE="INFRA/SETUP failure"
+            VERB="failed"
             WHERE="during INFRA/SETUP (checkout / token mint / pnpm install / ag-ui clone / git config / ollama provisioning) BEFORE drift-sync ran"
           else
+            HEADLINE="uncovered failure"
+            VERB="failed"
             WHERE="AFTER drift-sync reported reason='${SYNC_REASON}', in a step no specific alert covers (e.g. an artifact upload)"
           fi
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
-            echo "::error::Drift-sync job failed ${WHERE} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
+            echo "::error::Drift-sync job ${VERB} ${WHERE} AND SLACK_WEBHOOK is not set — no alert could be sent. See run https://github.com/${REPO}/actions/runs/${RUN_ID}"
             exit 1
           fi
-          MSG="🧱❌ *Drift-sync job — uncovered failure* — the job failed ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧱❌ *Drift-sync job — ${HEADLINE}* — the job ${VERB} ${WHERE}; this is not a sync-gate failure. Manual intervention needed.${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           curl -fsS --show-error -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
