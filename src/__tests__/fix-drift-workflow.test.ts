@@ -2667,10 +2667,11 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
 
   it("DRIFT.md documents the ONLY way out of a rejection-suppressed changeset", () => {
     // Closing a drift-sync PR suppresses that changeset permanently, and the
-    // self-heal lists `--state open` only so it never touches the closed PR. The
-    // Slack notice names the escape hatch, but a maintainer reading the docs must
-    // find it too — this is the one instruction whose absence leaves a drifted
-    // registry with no discoverable recovery.
+    // self-heal now REPAIRS the marker on that closed PR, so deleting it from the
+    // body is not a way out either. The Slack notice names the one escape hatch,
+    // but a maintainer reading the docs must find it too — this is the one
+    // instruction whose absence leaves a drifted registry with no discoverable
+    // recovery.
     const driftMd = readFileSync(resolve(__dirname, "../../DRIFT.md"), "utf-8");
     expect(driftMd, "DRIFT.md does not say that closing a PR rejects the changeset").toMatch(
       /CLOSED[\s\S]{0,200}reject/i,
