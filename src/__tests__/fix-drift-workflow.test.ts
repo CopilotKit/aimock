@@ -168,6 +168,8 @@ interface Step {
   env: Record<string, string>;
   /** The `run:` block scalar, dedented. Empty for `uses:` steps. */
   run: string;
+  /** The action a `uses:` step invokes, as written — so job ORDER can name it. */
+  uses?: string;
   /** Indent the `run:` block carried in the file, for the verbatim check. */
   runIndent: number;
   /**
@@ -293,6 +295,7 @@ function steps(src: string = wf): Step[] {
 
       if (key === "name") step.name = inline.replace(/^["']|["']$/g, "");
       if (key === "id") step.id = inline.replace(/^["']|["']$/g, "");
+      if (key === "uses") step.uses = inline.trim();
       if (key === "continue-on-error") step.continueOnError = inline.trim();
     }
     return step;
@@ -1256,6 +1259,46 @@ describe("fix-drift.yml — Slack message bodies use REAL newlines, not a litera
       "Notify Slack on sync success",
       "Alert on early-infra failure (catch-all)",
     ]);
+  });
+
+  it("the cancellation POST is FIRST among the steps a cancelled job still runs", () => {
+    // The whole value of hoisting this step is POSITIONAL: a cancelled job has one
+    // bounded budget (GitHub's documented 5 minutes) and the runner works through
+    // the remaining steps IN ORDER, so an `upload-artifact` retrying against a
+    // degraded artifact service can eat the budget and the cheap POST after it
+    // never runs. Nothing here modelled position — `simulateJob` walks every step
+    // and never truncates a cancelled job — so the step could be demoted below
+    // both uploads and stay green, which is the state it was hoisted OUT of.
+    const all = steps();
+    const cancelAt = all.findIndex((s) => s.id === "alert_cancelled");
+    expect(cancelAt, "no step with id `alert_cancelled` to check the position of").toBeGreaterThan(
+      -1,
+    );
+    // Every step a cancelled job still reaches is one whose `if:` survives
+    // cancellation — i.e. carries `always()` or `cancelled()`. None may precede it.
+    const ahead = all
+      .slice(0, cancelAt)
+      .filter((s) => /\b(always|cancelled)\s*\(\s*\)/.test(s.if ?? ""));
+    expect(
+      ahead.map((s) => s.name ?? s.uses),
+      "a step that a cancelled job also runs sits AHEAD of the cancellation POST, so it " +
+        "spends the cancellation budget first and the alert can be killed before it posts",
+    ).toEqual([]);
+    // Named explicitly, because these two are the reason for the hoist and an
+    // `if:` rewritten to any other cancellation-surviving spelling must still fail.
+    const uploads = all
+      .map((s, i) => ({ i, name: s.name ?? s.uses }))
+      .filter(({ i }) => /actions\/upload-artifact/.test(all[i].uses ?? ""));
+    expect(uploads.length, "no `upload-artifact` step — the hoist has nothing to be ahead of").toBe(
+      2,
+    );
+    for (const u of uploads) {
+      expect(
+        cancelAt,
+        `the cancellation POST sits BELOW \`${u.name}\`, so a slow artifact service can burn ` +
+          "the cancellation budget before the alert is ever attempted",
+      ).toBeLessThan(u.i);
+    }
   });
 
   it("each alert's ASSEMBLED message carries a real newline and no literal backslash-n", () => {
