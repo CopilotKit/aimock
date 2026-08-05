@@ -49,6 +49,60 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The clean-re-collect gate exercises every live leg, so without a local
+      # daemon the Ollama leg would spuriously quarantine/error on a missing host
+      # instead of behaving as it does under test-drift.yml's own daily run.
+      #
+      # THIS RUNS FIRST, AND THE SCRIPT IS CHECKSUM-PINNED. Both halves matter and
+      # neither alone is sufficient.
+      #
+      # `sh <(curl …)` of a MUTABLE URL is arbitrary third-party code executing as
+      # the runner user, and it used to sit six steps after the app token was
+      # minted — a token with `contents: write` + `pull-requests: write` on this
+      # repo, live for the rest of the job. Ordering it ahead of the mint means the
+      # token does not exist yet while that code runs, so it cannot be read out of
+      # the job's state; it also starts the token's one-hour life AFTER the slowest
+      # setup step instead of before it, which is strictly better for a job with
+      # `timeout-minutes: 30`.
+      #
+      # But reordering alone does not close it. A compromised script can plant a
+      # `git`, `gh` or `node` earlier on PATH, or write a shell rc, and every later
+      # step — the ones that DO hold the token — would execute it. So the bytes are
+      # verified against a sha256 reviewed at the URL, and a mismatch is a hard
+      # `exit 1` before `sh` ever sees the file. Everything else in this job's
+      # third-party surface is already pinned: every `uses:` by commit SHA, and
+      # `pnpm install --frozen-lockfile` by the lockfile's own integrity hashes.
+      # This was the one unpinned executable in the job.
+      #
+      # WHEN THIS FAILS: Ollama published a new install.sh. Read the diff at
+      # https://ollama.com/install.sh, then re-pin OLLAMA_INSTALL_SHA256 below to
+      # the digest the error message prints. The failure is loud and alerted (the
+      # end-of-job catch-all covers the infra/setup window), never silent — an
+      # unverified script must not run just because verifying it was inconvenient.
+      - name: Provision Ollama daemon (drift-sync-check re-collect gate)
+        env:
+          # sha256 of https://ollama.com/install.sh, 15902 bytes, reviewed 2026-08-05.
+          OLLAMA_INSTALL_SHA256: 25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f
+        run: |
+          set -euo pipefail
+          SCRIPT="${RUNNER_TEMP}/ollama-install.sh"
+          curl -fsSL https://ollama.com/install.sh -o "$SCRIPT"
+          ACTUAL="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "${OLLAMA_INSTALL_SHA256}" ]; then
+            echo "::error::ollama.com/install.sh does not match its pinned sha256 — REFUSING to execute it. Expected ${OLLAMA_INSTALL_SHA256}, got ${ACTUAL}. Review the script at that URL and re-pin OLLAMA_INSTALL_SHA256 in .github/workflows/fix-drift.yml if the change is legitimate."
+            exit 1
+          fi
+          sh "$SCRIPT"
+          ollama serve > /tmp/ollama-serve.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+              echo "ollama daemon ready"; break
+            fi
+            sleep 1
+          done
+          ollama pull qwen2:0.5b
+
       - name: Mint app token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -86,23 +140,6 @@ jobs:
           # a re-fire of an already-persisted note (nothing to push).
           echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git checkout -B "fix/drift-$(date +%Y-%m-%d)-${RUN_ID}"
-
-      # The clean-re-collect gate exercises every live leg, so without a local
-      # daemon the Ollama leg would spuriously quarantine/error on a missing host
-      # instead of behaving as it does under test-drift.yml's own daily run.
-      - name: Provision Ollama daemon (drift-sync-check re-collect gate)
-        run: |
-          set -euo pipefail
-          curl -fsSL https://ollama.com/install.sh -o "${RUNNER_TEMP}/ollama-install.sh"
-          sh "${RUNNER_TEMP}/ollama-install.sh"
-          ollama serve > /tmp/ollama-serve.log 2>&1 &
-          for _ in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
-              echo "ollama daemon ready"; break
-            fi
-            sleep 1
-          done
-          ollama pull qwen2:0.5b
 
       # Step 1: the deterministic (zero-LLM) model-family sync.
       #
