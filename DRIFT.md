@@ -113,9 +113,9 @@ When a model is deprecated:
 
 ## WebSocket Drift Coverage
 
-In addition to the 23 existing drift tests (20 HTTP response-shape + 3 model deprecation), the following new endpoint coverage has been added:
+Alongside the 23 core drift tests (20 HTTP response-shape + 3 model deprecation), these endpoints are covered too:
 
-### New Endpoint Drift Coverage
+### Additional Endpoint Drift Coverage
 
 | Endpoint                                 | Provider      | Type              | Status  |
 | ---------------------------------------- | ------------- | ----------------- | ------- |
@@ -193,23 +193,21 @@ family does not, by itself, fail the drift tests):
    - a classified family absent from live listings with **zero remaining aimock references** → a mechanical, comment-marked removal
    - a still-referenced deprecated family, or a genuinely new/unclassified family → **never** auto-edited; a family-keyed dedup note file is written under `drift-proposals/` and the run is routed to a human (no PR spam on re-fire)
 2. **Gate** — `scripts/drift-sync-check.ts` re-verifies any mechanical edit before (inside `drift-sync.ts`) and after (workflow defense-in-depth) it is kept: a changed-file allowlist (only `model-registry.ts` data literals + `drift-proposals/` notes), a checksum-pin re-assert over the frozen classification logic, and a clean re-collect
-3. **PR** — the workflow always opens a pull request that a human reviews + merges (no auto-merge). There are two distinct PR classes:
+3. **PR** — the workflow opens a pull request for a human to review + merge (never auto-merged), unless an open PR already proposes the same changeset or a human has already rejected it. There are two distinct PR classes:
    - **`ok-applied`** — a successful mechanical registry edit. Pushed onto the `fix/drift-*` branch `drift-sync.ts` committed onto; a human reviews CI + the diff and merges.
    - **`needs-human`** — a routed decision. `drift-sync.ts` commits the `drift-proposals/` note file(s), and the workflow pushes a **distinct `drift-needs-human/*` branch** and opens a PR so the note lands in the repo (the job also goes RED + Slack-alerts so the decision is seen). The PR is **never auto-merged**. To approve a _new-family_ note, set its `Decision: include` line and **merge the PR**; the **next** drift-sync run reads the approved note from `main` and applies the mechanical registry edit (an `ok-applied` PR). That two-run hand-off is how the loop closes.
 
    **Closing a drift-sync PR REJECTS that changeset, permanently.** A CLOSED-but-never-merged PR carrying the `<!-- drift-changeset: <key> -->` marker tells the workflow a human decided against that exact changeset, so it stops re-proposing it (a genuinely different drift hashes to a different key and is unaffected; a **merged** PR is an accepted decision and is never read as a rejection). A still-**open** PR carrying the marker always wins over a closed one, so closing a duplicate does not reject the changeset the surviving PR is still proposing. The suppression is **not silent, and not repetitive** — the first run after the closure posts a Slack line naming the closing PR, then records an ack marker in that PR's body so the identical line is not re-posted every morning for as long as the rejection stands (which is for ever: the closure is permanent and the changeset key is date-independent). Delete that ack marker and the next run reports the suppression again. **To un-suppress:** REOPEN that PR (it becomes the pending proposal again), or delete the `<!-- drift-changeset: … -->` marker from its body. The registry stays drifted until one of those happens.
 
+   Editing markers out of an **open** drift-sync PR does nothing, on the other hand: the workflow restores the markers it owns on the open PRs it can recognise as its own, warns in the run log, and dedups normally. A **closed** PR's changeset marker is never restored — which is what makes closing one a durable rejection.
+
    **"No churn" is not the same as "could not look".** An unusable provider credential (a missing key, or a 401/402/403) makes `drift-sync.ts` SKIP that provider's live listing, which with nothing to diff reports `ok-no-churn` and exits 0 — indistinguishable from a genuinely quiet day. So the sync prints a machine line, `unchecked-providers=<csv>`, and the workflow reclassifies such a run to `provider-unchecked`: the job goes RED and Slack names the credential to rotate. Transient classes (429, 5xx) stay tolerated. An unreadable log, or a missing `unchecked-providers=` line, is treated as a fault too — an unprovable run must not pass as a quiet one.
 
-   **Re-fires never spam a second PR — idempotent in every run shape.** Because a drift-sync PR is never auto-merged, an un-merged drift is re-detected on every daily cron run. Both PR classes therefore dedup on a **stable changeset key**: `drift-sync.ts` emits a date-independent `changeset-key` (a hash of the sorted set of applied + deferred family outcomes, independent of the date-stamped comment text and the run-id branch name), and each PR body carries a `<!-- drift-changeset: <key> -->` marker. Before opening a PR, the workflow skips if an open PR already carries that marker. This covers the **mixed run** — a mechanical removal of one family committed the same run a _different_ family is deferred to a human (its note already on `main`) — whose committed diff is a registry edit with **no new note file**: a note-path-only key would be empty there and let a new PR open every day. A run that produces no new commit at all (note already on `main`, nothing applied) pushes nothing; and the older per-note `drift-proposal-note: <path>` body marker is retained as a secondary guard.
+   **Re-fires never spam a second PR — idempotent in every run shape.** Because a drift-sync PR is never auto-merged, an un-merged drift is re-detected on every daily cron run. Both PR classes therefore dedup on a **stable changeset key**: `drift-sync.ts` emits a date-independent `changeset-key` (a hash of the sorted set of applied + deferred family outcomes, independent of the date-stamped comment text and the run-id branch name), and each PR body carries a `<!-- drift-changeset: <key> -->` marker. Before opening a PR, the workflow skips if an open PR already carries that marker. This covers the **mixed run** — a mechanical removal of one family committed the same run a _different_ family is deferred to a human (its note already on `main`) — whose committed diff is a registry edit with **no new note file**: a note-path-only key would be empty there and let a new PR open every day. A run that produces no new commit at all (note already on `main`, nothing applied) pushes nothing, and a per-note `drift-proposal-note: <path>` body marker is a secondary guard behind the changeset key.
 
 ### Artifacts
 
 - `drift-report.json` (test-drift.yml) / `drift-sync-log`, `drift-sync-check-log` (fix-drift.yml) — structured/plaintext run output (retained 30 days)
-
-### Manual trigger
-
-The sync workflow also supports `workflow_dispatch` for manual runs.
 
 ## Cost
 
