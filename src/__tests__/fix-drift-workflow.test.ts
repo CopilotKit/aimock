@@ -1742,6 +1742,23 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
     expect(driftMd).toContain("drift-sync-check-log");
   });
 
+  it("DRIFT.md documents the ONLY way out of a rejection-suppressed changeset", () => {
+    // Closing a drift-sync PR suppresses that changeset permanently, and the
+    // self-heal lists `--state open` only so it never touches the closed PR. The
+    // Slack notice names the escape hatch, but a maintainer reading the docs must
+    // find it too — this is the one instruction whose absence leaves a drifted
+    // registry with no discoverable recovery.
+    const driftMd = readFileSync(resolve(__dirname, "../../DRIFT.md"), "utf-8");
+    expect(driftMd, "DRIFT.md does not say that closing a PR rejects the changeset").toMatch(
+      /CLOSED[\s\S]{0,200}reject/i,
+    );
+    expect(
+      driftMd,
+      "DRIFT.md documents no way to un-suppress a rejected changeset, so the registry " +
+        "stays drifted with no discoverable recovery",
+    ).toMatch(/REOPEN/);
+  });
+
   it("the workflow actually uploads a drift-sync-check-log artifact (matching the drift-sync-log sibling's retention)", () => {
     expect(wf).toContain("name: drift-sync-check-log");
     expect(wfFlat).toContain("path: ${{ runner.temp }}/drift-sync-check.log");
