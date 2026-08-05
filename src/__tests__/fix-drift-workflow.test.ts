@@ -36,9 +36,17 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { describe, it, expect } from "vitest";
 
@@ -684,6 +692,218 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
       throw new Error(`${step.name}: assembling MSG failed (${res.status}): ${res.stderr}`);
     }
     return readFileSync(outFile, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EXECUTE either PR-OPEN step, whole, against a real git repo and a scripted `gh`.
+//
+// These two steps hold every dedup and rejection decision in the workflow, and
+// each is several hundred lines of bash and jq. Re-deriving those decisions in
+// TypeScript is what produced the bulk of this PR's review findings: a mirror
+// that called itself verbatim while modelling a superseded gate. So the body is
+// RUN, as written, and only the two things that reach outside the runner are
+// stubbed — `gh`, and `git push`. Everything else is real: a real repository with
+// a real base commit and a real diff, and the real `jq`.
+//
+// What comes back is what the runner would see: the step's exit status, its
+// `$GITHUB_OUTPUT`, every `gh` invocation in order, and the body text of every
+// `gh pr edit`. A guard that stands down is then visible as the ABSENCE of a
+// `pr create` call rather than inferred from a substring.
+// ---------------------------------------------------------------------------
+interface PrStepRun {
+  stepExit: number;
+  outputs: Record<string, string>;
+  stdio: string;
+  /** Every `gh` invocation, argv-joined, in call order. */
+  ghCalls: string[];
+  /** PR number -> the body text `gh pr edit --body-file` was handed. */
+  edits: Record<string, string>;
+  /** Did the step get as far as opening a PR? */
+  created: boolean;
+  /** Did the step get as far as pushing a branch? */
+  pushed: boolean;
+}
+
+/** A PR in the scenario's repository, in `gh pr list --json`'s own shape. */
+interface PrFixture {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  headRefName: string;
+  body: string;
+  files?: { path: string }[];
+  author?: { login: string };
+}
+
+interface PrStepScenario {
+  changesetKey: string;
+  /** Files the sync committed on top of the base commit (path -> contents). */
+  committed?: Record<string, string>;
+  /**
+   * The repository's PRs — ONE population, from which each `gh pr list` response is
+   * DERIVED by the flags that query actually passes.
+   *
+   * Deliberately not "what each query returns": handing a `--state open` query a
+   * CLOSED PR is how a test convinces itself the self-heal can see a closed
+   * rejection when the real gh never would. Both item-4 guards below passed
+   * against unfixed code until this was derived instead of dictated.
+   */
+  prs?: PrFixture[];
+  /** What the post-create `--json url,number,headRefOid --jq …` lookup prints. */
+  matchOut?: string;
+}
+
+const REAL_GIT = (() => {
+  const r = spawnSync("/usr/bin/env", ["which", "git"], { encoding: "utf-8" });
+  const p = (r.stdout ?? "").trim();
+  if (!p) throw new Error("no git on PATH — this suite executes the real PR-open step bodies");
+  return p;
+})();
+
+function observePrStep(
+  stepId: "pr" | "needs_human_pr",
+  sc: PrStepScenario,
+  src: string = wf,
+): PrStepRun {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-pr-"));
+  try {
+    const repo = join(dir, "repo");
+    const bin = join(dir, "bin");
+    const fix = join(dir, "fix");
+    const edits = join(dir, "edits");
+    for (const d of [repo, bin, fix, edits]) mkdirSync(d, { recursive: true });
+
+    const git = (...argv: string[]): void => {
+      const r = spawnSync(REAL_GIT, argv, {
+        cwd: repo,
+        encoding: "utf-8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+      });
+      if (r.status !== 0) throw new Error(`git ${argv.join(" ")} failed: ${r.stderr}`);
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t.test");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "seed.txt"), "seed\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    const baseSha = spawnSync(REAL_GIT, ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf-8",
+    }).stdout.trim();
+    // The sync's own commit: the note file(s) and/or the registry edit this run
+    // produced. `git diff --name-only "$BASE_SHA" HEAD` in the step then reads it.
+    if (sc.committed && Object.keys(sc.committed).length > 0) {
+      for (const [rel, contents] of Object.entries(sc.committed)) {
+        const abs = join(repo, rel);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, contents);
+      }
+      git("add", "-A");
+      git("commit", "-q", "-m", "sync");
+    }
+
+    // Each response DERIVED from the one population, the way gh would derive it.
+    const prs = sc.prs ?? [];
+    writeFileSync(join(fix, "open.json"), JSON.stringify(prs.filter((p) => p.state === "OPEN")));
+    writeFileSync(join(fix, "all.json"), JSON.stringify(prs));
+    // `--search "<key> in:body"` is a BODY-keyed index: it cannot match a PR whose
+    // body no longer contains the key. That is half of the mechanism by which a
+    // human's edit loses a rejection, so the stub must model it, not skip it.
+    writeFileSync(
+      join(fix, "search.json"),
+      JSON.stringify(prs.filter((p) => p.body.includes(sc.changesetKey))),
+    );
+    writeFileSync(join(fix, "match.out"), sc.matchOut ?? "");
+    const calls = join(dir, "gh-calls.log");
+    writeFileSync(calls, "");
+
+    // `git`: real, except `push`, which is the one call that leaves the machine.
+    writeFileSync(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "push" ]; then',
+        `  printf 'PUSH %s\\n' "$*" >> ${JSON.stringify(calls)}`,
+        "  exit 0",
+        "fi",
+        `exec ${JSON.stringify(REAL_GIT)} "$@"`,
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // `gh`: dispatches on the flags the two steps actually pass. An unrecognised
+    // invocation exits non-zero rather than returning something plausible — the
+    // steps all fail CLOSED on a gh fault, so a stub that guessed would hide a
+    // divergence between this scenario and the body's real call shape.
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> ${JSON.stringify(calls)}`,
+        'ARGS="$*"',
+        'case "$ARGS" in',
+        `  "pr list"*headRefOid*) cat ${JSON.stringify(join(fix, "match.out"))}; exit 0;;`,
+        `  "pr list"*--search*) cat ${JSON.stringify(join(fix, "search.json"))}; exit 0;;`,
+        `  "pr list"*"--state all"*) cat ${JSON.stringify(join(fix, "all.json"))}; exit 0;;`,
+        `  "pr list"*"--state open"*) cat ${JSON.stringify(join(fix, "open.json"))}; exit 0;;`,
+        '  "pr edit"*)',
+        '    N="$3"; shift 3; BF=""',
+        '    while [ $# -gt 0 ]; do case "$1" in --body-file) BF="$2"; shift;; esac; shift; done',
+        `    [ -n "$BF" ] && cp "$BF" ${JSON.stringify(edits)}/"$N".md`,
+        "    exit 0;;",
+        '  "pr create"*) exit 0;;',
+        "esac",
+        'echo "gh stub: unhandled invocation: $ARGS" >&2',
+        "exit 64",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // The post-create lookup sleeps 10s between six attempts; a scenario that
+    // resolves on the first attempt never reaches it, and this keeps the ones
+    // that deliberately do not from costing a minute.
+    writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const step = stepById(stepId, src);
+    const outFile = join(dir, "github_output");
+    writeFileSync(outFile, "");
+    const script = join(dir, "step.sh");
+    writeFileSync(script, runOf(step));
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: repo,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        GH_TOKEN: "stub-token",
+        BASE_SHA: baseSha,
+        RUN_ID: "9999",
+        CHANGESET_KEY: sc.changesetKey,
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    const ghCalls = readFileSync(calls, "utf-8").split("\n").filter(Boolean);
+    const editBodies: Record<string, string> = {};
+    for (const f of readdirSync(edits)) {
+      editBodies[f.replace(/\.md$/, "")] = readFileSync(join(edits, f), "utf-8");
+    }
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      ghCalls,
+      edits: editBodies,
+      created: ghCalls.some((c) => c.startsWith("pr create")),
+      pushed: ghCalls.some((c) => c.startsWith("PUSH ")),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -4160,5 +4380,133 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
         "a push that was never attempted instead of naming the earlier step that failed",
     ).not.toEqual(failed);
     expect(skipped).toMatch(/SKIPPED/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two PR-open steps, EXECUTED whole, on the run shapes their guards decide.
+//
+// Every assertion below reads an observation from `observePrStep`: the real
+// several-hundred-line bash-and-jq body, run against a real repository and a
+// scripted `gh`. "The step stood down" is the ABSENCE of a `pr create` call, not
+// a substring of the source.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not when read", () => {
+  const BOT = { login: "app/copilotkit-devops-bot" };
+  const NOTE = "drift-proposals/openai-mythical-1.new-family.md";
+  const REGISTRY = "src/__tests__/drift/model-registry.ts";
+  /** This run's key: nothing anywhere proposes it yet. */
+  const KEY = "1111222233334444";
+  /** An EARLIER run's key, carried by a PR that is already open. */
+  const OLD_KEY = "9999aaaabbbbcccc";
+
+  it("CANARY: the harness really runs the body — a clean run pushes and opens exactly one PR", () => {
+    // Without this, every "the step stood down" assertion below is also satisfied
+    // by a harness that cannot get the body to do anything at all.
+    for (const [id, matchOut] of [
+      ["needs_human_pr", '{"url":"https://x/pr/1","number":1}'],
+      ["pr", '{"url":"https://x/pr/2","number":2}'],
+    ] as const) {
+      const r = observePrStep(id, {
+        changesetKey: KEY,
+        committed: { [NOTE]: "note\n" },
+        matchOut,
+      });
+      expect(r.stepExit, `${id}: ${r.stdio}`).toBe(0);
+      expect(r.pushed, `${id} pushed no branch`).toBe(true);
+      expect(
+        r.ghCalls.filter((c) => c.startsWith("pr create")),
+        `${id}`,
+      ).toHaveLength(1);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // A per-NOTE overlap must not decide the whole RUN.
+  //
+  // The mixed run: drift-sync mechanically applied a registry edit AND deferred a
+  // different family to a human. Its note is already proposed by a PR from an
+  // EARLIER run — whose outcome set was different, so it hashes to a different
+  // changeset key and the primary guard legitimately does not fire. The per-note
+  // guard then matched that note and `exit 0`'d the entire step, so the registry
+  // edit was committed locally, never pushed, and re-detected identically every
+  // morning: proposed to nobody, for ever.
+  //
+  // Control only reaches that loop AFTER the primary changeset guard has declined,
+  // which means no open PR carries this run's changeset — so the run's content is
+  // by construction un-proposed and standing down always loses it. That is why
+  // the remedy is to remove the stand-down rather than to narrow it.
+  // -------------------------------------------------------------------------
+  const mixedRunWhoseNoteIsAlreadyProposed = (): PrStepRun =>
+    observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      // BOTH halves: the applied registry edit, and the deferred note.
+      committed: { [REGISTRY]: "// mechanically edited\n", [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 42,
+          url: "https://x/pr/42",
+          state: "OPEN",
+          headRefName: `drift-needs-human/2026-07-01-8888-${OLD_KEY}`,
+          body: `earlier proposal\n<!-- drift-changeset: ${OLD_KEY} -->\n<!-- drift-proposal-note: ${NOTE} -->\n`,
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/51","number":51}',
+    });
+
+  it("a mixed run whose NOTE is already proposed still proposes its REGISTRY EDIT", () => {
+    const r = mixedRunWhoseNoteIsAlreadyProposed();
+    expect(
+      r.created,
+      "the per-note guard matched one note and `exit 0`'d the whole step, so the registry " +
+        "edit committed by this run was never pushed and no PR proposes it — and the next " +
+        "cron run re-detects it and stands down again, every morning, indefinitely. " +
+        `stdio: ${r.stdio}`,
+    ).toBe(true);
+    expect(r.pushed, "nothing was pushed, so there is no branch for a PR to be opened from").toBe(
+      true,
+    );
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("…and it SAYS why two open PRs now carry the same note", () => {
+    // The overlap is real and worth reporting — two PRs carrying one note looks
+    // exactly like the duplicate-PR bug this workflow exists to prevent. What is
+    // removed is the stand-down, not the telling.
+    const r = mixedRunWhoseNoteIsAlreadyProposed();
+    expect(r.stdio).toContain("::warning::");
+    expect(r.stdio).toContain(NOTE);
+    expect(r.stdio).toContain("#42");
+  });
+
+  it("NEGATIVE CONTROL: a re-fire of the SAME changeset still opens no second PR", () => {
+    // The dedup that actually matters is the changeset-keyed one, and removing the
+    // per-note stand-down must not weaken it. Same scenario, except the open PR
+    // carries THIS run's key.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [REGISTRY]: "// mechanically edited\n", [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 42,
+          url: "https://x/pr/42",
+          state: "OPEN",
+          headRefName: `drift-needs-human/2026-07-01-8888-${KEY}`,
+          body: `<!-- drift-changeset: ${KEY} -->\n<!-- drift-proposal-note: ${NOTE} -->\n`,
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+    });
+    expect(
+      r.created,
+      "a daily re-fire of a changeset an open PR already proposes opened a SECOND PR — " +
+        `unbounded duplicate-PR spam. stdio: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.pushed).toBe(false);
+    expect(r.outputs.number).toBe("42");
+    expect(r.stepExit, r.stdio).toBe(0);
   });
 });
