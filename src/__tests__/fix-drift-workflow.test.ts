@@ -2205,6 +2205,33 @@ describe("fix-drift.yml — an unusable provider credential cannot read as 'no d
     ).toContain(`grep '^${UNCHECKED_PROVIDERS_LINE_PREFIX}'`);
   });
 
+  it("the machine line's EMISSION is unconditional in drift-sync.ts, not just its FORMAT", () => {
+    // The stub above builds the line from the real emitter, so its FORMAT cannot
+    // drift — but nothing exercised the CALL SITE, and the whole value of the line
+    // is that its ABSENCE is itself a detectable fault. Wrapping the emission in
+    // `if (outcome.skipped.length > 0)` left every guard green while turning a
+    // healthy quiet day into a `provider-unchecked` reclassify that reds and
+    // alerts every morning — and a line that can legitimately be missing can no
+    // longer prove anything by being missing.
+    //
+    // Pinned on the statement's FORM rather than by running it: runDriftSyncCli
+    // awaits a live listing from every provider, so there is nothing to observe
+    // here without the network.
+    const src = readFileSync(resolve(__dirname, "../../scripts/drift-sync.ts"), "utf-8");
+    const calls = [...src.matchAll(/^(.*)console\.log\(formatUncheckedProvidersLine\(/gm)];
+    expect(
+      calls.length,
+      "drift-sync.ts emits the machine line from no single place, so the workflow's stale-key " +
+        "preflight has nothing dependable to grep",
+    ).toBe(1);
+    expect(
+      calls[0][1],
+      "the machine line is emitted CONDITIONALLY — a healthy quiet day then prints no line " +
+        "at all, the workflow reclassifies it `provider-unchecked`, and the cron alerts " +
+        "every morning about providers that were checked fine",
+    ).toBe("  ");
+  });
+
   it("the skip CLASSIFIER agrees with the reason builders, and still tolerates transient classes", () => {
     // Both sides of this read the same two prose constants inside drift-sync.ts,
     // so a reword cannot make the builder and the classifier disagree.
