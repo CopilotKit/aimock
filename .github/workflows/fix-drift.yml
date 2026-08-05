@@ -1140,7 +1140,7 @@ jobs:
         if: >-
           always() &&
           steps.sync.outputs.reason == 'needs-human' &&
-          steps.needs_human_pr.outcome != 'failure' &&
+          steps.needs_human_pr.outcome == 'success' &&
           steps.needs_human_pr.outputs.rejected == ''
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -1193,12 +1193,15 @@ jobs:
       # is a genuine tooling fault, NOT a needs-human product decision, so it
       # gets its own distinct alert whose message names the step that failed.
       #
-      # G#2: this ALSO covers the needs-human persist step's OWN failure
-      # (steps.needs_human_pr.outcome == 'failure' — a rejected push, a
-      # `gh pr create` error, or its head-SHA PR-match polling loop exhausting
-      # its attempts). That is a tooling fault, not a product decision, so it
-      # belongs here rather than in the needs-human alert (which is skipped on a
-      # persist failure, so the two never double-fire).
+      # G#2: this ALSO covers the needs-human persist step not SUCCEEDING —
+      # either it FAILED (a rejected push, a `gh pr create` error, or its
+      # head-SHA PR-match polling loop exhausting its attempts) or it was
+      # SKIPPED because an earlier step failed and it is gated on `success()`.
+      # Both mean the note was not persisted, which is a tooling fault rather
+      # than a product decision, so both belong here. Keyed on `!= 'success'`
+      # precisely so the skipped window stops falling through to the
+      # needs-human alert; the two remain mutually exclusive and never
+      # double-fire.
       - name: Alert on drift-sync-check gate failure
         id: alert_gate
         if: >-
@@ -1207,7 +1210,7 @@ jobs:
            steps.sync.outputs.reason == 'sync-crashed' ||
            steps.sync.outputs.reason == 'provider-unchecked' ||
            (steps.sync.outputs.reason == 'ok-applied' && failure()) ||
-           (steps.sync.outputs.reason == 'needs-human' && steps.needs_human_pr.outcome == 'failure'))
+           (steps.sync.outputs.reason == 'needs-human' && steps.needs_human_pr.outcome != 'success'))
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
@@ -1232,6 +1235,8 @@ jobs:
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts's own internal drift-sync-check gate reverted the mechanical edit before commit)"
           elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Persist needs-human note + open PR (push rejected, gh pr create error, or PR-match polling exhausted — the needs-human note may not have been persisted)"
+          elif [ "${NEEDS_HUMAN_PR_OUTCOME}" = "skipped" ]; then
+            FAILING_STEP="Persist needs-human note + open PR was SKIPPED because an EARLIER step failed (it is gated on success()) — the needs-human note was NOT persisted, so the decision is not reachable in the repo"
           elif [ "${ASSERT_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Assert drift-sync-check (defense-in-depth)"
           elif [ "${PR_OUTCOME}" = "failure" ]; then

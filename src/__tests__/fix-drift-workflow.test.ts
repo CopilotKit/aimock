@@ -1400,12 +1400,24 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
   });
 
   it("the needs-human persist step's OWN failure is alerted (gate-failure alert references its outcome)", () => {
-    // In the `if:`, not merely somewhere in the step: the step also imports that
-    // outcome as env, so a whole-block grep stays green with the gate removed.
+    // The step also imports that outcome as env, so a whole-block grep stays
+    // green with the gate removed. Asked of the `if:` by EVALUATING it, not by
+    // matching a literal: which comparison it uses is settled over the whole
+    // outcome domain in "every outcome reaches a human EXACTLY once" below.
+    const gateAlert = stepByName("Alert on drift-sync-check gate failure");
+    expect(gateAlert.env.NEEDS_HUMAN_PR_OUTCOME).toBe("${{ steps.needs_human_pr.outcome }}");
     expect(
-      stepByName("Alert on drift-sync-check gate failure").if,
+      evaluateIf(gateAlert.if!, {
+        event_name: "schedule",
+        jobFailed: true,
+        jobCancelled: false,
+        steps: {
+          sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
+          needs_human_pr: { outcome: "failure", outputs: {} },
+        },
+      }),
       "a failure of the needs-human persist step is not covered by any alert",
-    ).toContain("steps.needs_human_pr.outcome == 'failure'");
+    ).toBe(true);
   });
 });
 
@@ -2092,4 +2104,137 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
       expect(res.alerts.length, `more than one alert fired: ${res.alerts.join(", ")}`).toBe(1);
     });
   }
+
+  // -------------------------------------------------------------------------
+  // The needs-human PRODUCT-DECISION alert says a human decision is waiting in
+  // a PR. That claim is only true if the persist step SUCCEEDED. It was keyed on
+  // `outcome != 'failure'`, which also admits 'skipped' — and the persist step is
+  // gated on `success()`, so ANY earlier failure skips it. In that window the
+  // note was never pushed, yet the alert fired anyway and told a human to go
+  // review a decision that does not exist in the repo.
+  //
+  // Its counterpart, the gate-failure alert, was keyed on `== 'failure'`, so it
+  // stood down in the same window. The two predicates left the skipped window
+  // owned by NEITHER the right alert: the wrong one fired, and the tooling fault
+  // that actually happened was never named.
+  //
+  // Enumerated over the persist step's whole outcome domain, with the outcome
+  // each scenario actually produced read back from the simulation — so a
+  // scenario that stops producing the outcome it is named for cannot quietly
+  // pass.
+  // -------------------------------------------------------------------------
+  const PERSIST_WINDOWS: Array<{
+    outcome: StepOutcome;
+    label: string;
+    scenario: Scenario;
+    expect: string[];
+  }> = [
+    {
+      outcome: "success",
+      label: "the note was pushed and a PR names it — a real product decision",
+      scenario: {
+        outputs: {
+          sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+          needs_human_pr: OK,
+        },
+      },
+      expect: [NEEDS_HUMAN_ALERT],
+    },
+    {
+      outcome: "failure",
+      label: "the push was rejected / `gh pr create` errored — a tooling fault",
+      scenario: {
+        failing: ["needs_human_pr"],
+        outputs: { sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" } },
+      },
+      expect: [GATE_ALERT],
+    },
+    {
+      outcome: "skipped",
+      label: "an EARLIER step failed, so the success()-gated persist never ran at all",
+      scenario: {
+        failing: ["Configure git for push"],
+        outputs: { sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" } },
+      },
+      expect: [GATE_ALERT],
+    },
+  ];
+
+  for (const { outcome, label, scenario, expect: wanted } of PERSIST_WINDOWS) {
+    it(`needs-human persist ${outcome}: ${label} -> exactly: ${wanted.join(", ")}`, () => {
+      const res = simulateJob(scenario);
+      expect(
+        res.outcomes.needs_human_pr,
+        `the scenario did not actually leave the persist step '${outcome}'`,
+      ).toBe(outcome);
+      expect(
+        res.alerts,
+        outcome === "success"
+          ? "a persisted note did not produce the product-decision alert"
+          : "the persist step did not SUCCEED, so the note is not in the repo — a " +
+              "product-decision alert here tells a human to review a decision that " +
+              "does not exist, and zero alerts tells them nothing at all",
+      ).toEqual(wanted);
+    });
+  }
+
+  it("the product-decision alert fires ONLY on a provably persisted note, over the whole outcome domain", () => {
+    const answers = (["success", "failure", "cancelled", "skipped", ""] as const).map(
+      (outcome) => ({
+        outcome,
+        selected: evaluateIf(stepByName(NEEDS_HUMAN_ALERT).if!, {
+          event_name: "schedule",
+          jobFailed: true,
+          jobCancelled: false,
+          steps: {
+            sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
+            needs_human_pr: { outcome, outputs: {} },
+          },
+        }),
+      }),
+    );
+    expect(
+      answers.filter((a) => a.selected).map((a) => a.outcome),
+      "the needs-human alert fires on a persist outcome that does NOT prove the note " +
+        "reached the repo",
+    ).toEqual(["success"]);
+  });
+
+  it("the gate-failure alert owns every persist outcome the product alert does not", () => {
+    const answers = (["success", "failure", "cancelled", "skipped", ""] as const).map(
+      (outcome) => ({
+        outcome,
+        selected: evaluateIf(stepByName(GATE_ALERT).if!, {
+          event_name: "schedule",
+          jobFailed: true,
+          jobCancelled: false,
+          steps: {
+            sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
+            needs_human_pr: { outcome, outputs: {} },
+          },
+        }),
+      }),
+    );
+    expect(
+      answers.filter((a) => !a.selected).map((a) => a.outcome),
+      "an unpersisted note reaches neither alert — the window is owned by nobody",
+    ).toEqual(["success"]);
+  });
+
+  it("the gate-failure alert's message NAMES the skipped persist, not just the failed one", () => {
+    const gate = stepByName(GATE_ALERT);
+    const base = {
+      SYNC_REASON: SyncCoreReason.NEEDS_HUMAN,
+      ASSERT_OUTCOME: "",
+      PR_OUTCOME: "",
+    };
+    const failed = assembleSlackMessage(gate, { ...base, NEEDS_HUMAN_PR_OUTCOME: "failure" });
+    const skipped = assembleSlackMessage(gate, { ...base, NEEDS_HUMAN_PR_OUTCOME: "skipped" });
+    expect(
+      skipped,
+      "a SKIPPED persist gets the same wording as a FAILED one, so the message blames " +
+        "a push that was never attempted instead of naming the earlier step that failed",
+    ).not.toEqual(failed);
+    expect(skipped).toMatch(/SKIPPED/);
+  });
 });
