@@ -362,11 +362,11 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below. Written
           # only AFTER the curl returned 0, so the backstop can tell "this alert
           # ran" from "this alert delivered".
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload drift-sync log
         if: always()
@@ -1447,9 +1447,9 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # Alert: the sync found a genuinely-new family or a still-referenced
       # deprecation — the two irreducible human decisions (see
@@ -1511,11 +1511,11 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below. Written
           # only AFTER the curl returned 0, so a step that RAN but delivered
           # nothing is distinguishable from one that delivered.
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
           exit 1
 
       # Alert: covers every failure window once the sync itself has committed
@@ -1613,9 +1613,9 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
           exit 1
 
       # Slack notification on success. Never claims the change auto-merged —
@@ -1657,9 +1657,9 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY — see the catch-all's comment below.
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
 
       # End-of-job CATCH-ALL for ANY job failure the specific alerts above did
       # NOT cover. Its canonical case is the EARLY-infra window (checkout /
@@ -1775,10 +1775,19 @@ jobs:
           curl -fsS --show-error --retry 2 --retry-delay 3 --retry-max-time 60 --max-time 15 \
             -X POST "$SLACK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+            -d "$PAYLOAD" &&
           # POSITIVE PROOF OF DELIVERY, for symmetry with the alerts above: this
           # step is the last backstop, so nothing reads it today — but a future
           # step added after it must be able to tell "the catch-all ran" from "the
           # catch-all delivered", which is the exact distinction this whole
           # mechanism exists to keep.
-          echo "posted=true" >> "$GITHUB_OUTPUT"
+          #
+          # `&&`, NOT a following line. On its own line the echo was unreached
+          # only because `set -e` aborted the step first — so dropping `-e` from
+          # any alert step published `posted=true` with nothing delivered, which
+          # is byte-identical to a real alert and stands this backstop down. The
+          # proof now hangs off the POST's own exit status, so it cannot outlive
+          # a shell option. The step still ends non-zero on a dropped POST either
+          # way — the failing list is the last command here, and where an explicit
+          # `exit 1` follows it, that runs — so a drop is never a green day.
+            echo "posted=true" >> "$GITHUB_OUTPUT"

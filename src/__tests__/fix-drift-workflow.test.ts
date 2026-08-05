@@ -581,6 +581,68 @@ function observeSyncStep(
   }
 }
 
+/** Every alert step's `env:` key gets a value, so `set -u` cannot be what stops the body. */
+const ALERT_ENV_STUB: Record<string, string> = { SLACK_WEBHOOK: "https://hooks.slack.test/T/B/x" };
+
+/**
+ * EXECUTE an alert step's own `run:` body against a `curl` that returns
+ * `curlExit`, and report what the runner would see in `$GITHUB_OUTPUT`.
+ *
+ * `posted=true` is the catch-all's stand-down signal, so a step that publishes it
+ * having delivered NOTHING is byte-identical to a delivered alert and the backstop
+ * stands down. Whether that can happen is a question about the body's control
+ * flow, not about the order of two lines of text — so run it. `errexit: false`
+ * strips `-e` from the body's own `set` line, which is how any dependence on that
+ * option is MEASURED rather than assumed: `set -e` is a shell option no guard
+ * here reads, and a one-token edit to it must not be able to fake a delivery.
+ */
+function observeAlertPost(
+  step: Step,
+  { curlExit, errexit = true }: { curlExit: number; errexit?: boolean },
+): { stepExit: number; outputs: Record<string, string> } {
+  let body = runOf(step);
+  if (!errexit) {
+    const stripped = body.replace(/^(\s*set -)([a-z]*)e([a-z]*\b)/m, "$1$2$3");
+    if (stripped === body)
+      throw new Error(
+        `${step.name}: declares no errexit (\`set -…e…\`), so every later command in the body ` +
+          "runs on regardless of what failed before it",
+      );
+    body = stripped;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-post-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "curl"), `#!/bin/sh\nexit ${curlExit}\n`, { mode: 0o755 });
+    const outFile = join(dir, "github_output");
+    writeFileSync(outFile, "");
+    const script = join(dir, "step.sh");
+    writeFileSync(script, body);
+    const env: Record<string, string> = {};
+    for (const key of Object.keys(step.env)) env[key] = ALERT_ENV_STUB[key] ?? "";
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        ...env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    return { stepExit: res.status ?? -1, outputs };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * ASSEMBLE a Slack alert's message the way bash will, and return the result.
  *
@@ -2752,18 +2814,34 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
           `budget (\`--retry-max-time ${retryMaxTime}\`), so the bound that loses is unclear`,
       ).toBeLessThanOrEqual(retryMaxTime);
 
-      // (d) DELIVERY IS PROVEN POSITIVELY, and only AFTER the curl returned 0.
-      const postedAt = code.indexOf('echo "posted=true"');
+      // (d) DELIVERY IS PROVEN POSITIVELY, AND the proof does not rest on a shell
+      // option nothing checks. OBSERVED by running the body, because asserting
+      // that `echo "posted=true"` merely sits AFTER the `curl` in the text did not
+      // cover the real hazard: with the echo on its own following line, the only
+      // thing keeping it unreached on a failed POST was `set -e` aborting the
+      // step — and the shell-options guard is scoped to the sync step, so dropping
+      // `-e` from an alert was invisible here. That published `posted=true` with
+      // nothing delivered, byte-identical to a real alert, standing the catch-all
+      // down: the total-silence window this mechanism exists to close.
       expect(
-        postedAt,
-        `${st.name}: never publishes positive proof of delivery, so anything downstream ` +
+        observeAlertPost(st, { curlExit: 0 }).outputs.posted,
+        `${st.name}: a DELIVERED alert publishes no positive proof, so anything downstream ` +
           "can only key on a step OUTCOME — which a failed POST also produces",
-      ).toBeGreaterThanOrEqual(0);
-      expect(
-        postedAt,
-        `${st.name}: claims delivery BEFORE the curl, so a rejected POST still reads as ` +
-          "delivered",
-      ).toBeGreaterThan(locate(code, "curl ", st.name!));
+      ).toBe("true");
+      for (const errexit of [true, false]) {
+        const dropped = observeAlertPost(st, { curlExit: 22, errexit });
+        const how = errexit ? "ON" : "OFF";
+        expect(
+          dropped.outputs.posted,
+          `${st.name}: a REJECTED POST still reads as delivered with errexit ${how} — the ` +
+            "catch-all stands down and a dead webhook means total silence on every red day",
+        ).toBeUndefined();
+        // And the step still has to FAIL, or the day is green with nobody told.
+        expect(
+          dropped.stepExit,
+          `${st.name}: a REJECTED POST leaves the step GREEN with errexit ${how}`,
+        ).not.toBe(0);
+      }
     }
   });
 
