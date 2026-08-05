@@ -34,7 +34,8 @@
  * step green. The repo ships no YAML dependency and this suite adds none; an
  * actionlint run in CI covers structural validity separately.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -4667,4 +4668,130 @@ describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not whe
     expect(r.outputs.rejected ?? "", "a MERGED PR was read as a human rejection").toBe("");
     expect(r.created, r.stdio).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The payload actually goes OVER THE WIRE, to a socket that records it.
+//
+// Every other guard in this suite stubs `curl` with `#!/bin/sh; exit N`, so the
+// question "would Slack accept and render this?" has only ever been answered from
+// the value of `$MSG` and the text of the `curl` line. The flags, the method, the
+// header, and the JSON body have never been exercised. So point `SLACK_WEBHOOK` at
+// a local HTTP server and run the real `curl` — the request that arrives is the
+// request Slack would receive.
+//
+// This is NOT proof that Slack RENDERS it as intended: nothing here has ever
+// reached Slack, and only a real webhook can close that. What it does close is
+// everything between the `MSG=` assignment and the socket.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — every alert's payload is POSTed, and arrives as valid JSON", () => {
+  interface Captured {
+    method: string;
+    contentType: string;
+    body: string;
+  }
+
+  const postToLocalSink = async (
+    step: Step,
+  ): Promise<{ requests: Captured[]; outputs: Record<string, string>; stdio: string }> => {
+    const requests: Captured[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        requests.push({
+          method: req.method ?? "",
+          contentType: String(req.headers["content-type"] ?? ""),
+          body: Buffer.concat(chunks).toString("utf-8"),
+        });
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+      });
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    const addr = server.address();
+    if (addr === null || typeof addr === "string") throw new Error("sink did not bind a port");
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-sink-"));
+    try {
+      const outFile = join(dir, "github_output");
+      writeFileSync(outFile, "");
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const env: Record<string, string> = {};
+      // Non-empty placeholders for every declared key, so `set -u` is satisfied and
+      // each message takes its content-bearing branch — the same convention
+      // `assembleSlackMessage` uses.
+      for (const key of Object.keys(step.env)) env[key] = `<${key}>`;
+      env.SLACK_WEBHOOK = `http://127.0.0.1:${addr.port}/services/T/B/x`;
+      // `spawn`, NOT `spawnSync`. The sink is served by THIS process's event loop,
+      // and a synchronous spawn blocks it — so curl connects, nothing ever answers,
+      // and the step dies on `--max-time 15` having "sent no request". The first
+      // version of this test did exactly that on all six steps, which is the whole
+      // argument for running the thing instead of reasoning about it.
+      const res = await new Promise<{ stdout: string; stderr: string }>((ok) => {
+        const child = spawn("/bin/bash", [script], {
+          cwd: dir,
+          env: { ...process.env, ...env, GITHUB_OUTPUT: outFile, RUNNER_TEMP: dir },
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf-8")));
+        child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf-8")));
+        child.on("close", () => ok({ stdout, stderr }));
+      });
+      const outputs: Record<string, string> = {};
+      for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+        const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+        if (m) outputs[m[1]] = m[2];
+      }
+      return { requests, outputs, stdio: `${res.stdout ?? ""}${res.stderr ?? ""}` };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((ok) => server.close(() => ok()));
+    }
+  };
+
+  it("PREMISE: there are Slack-posting steps to exercise", () => {
+    expect(slackSteps().length).toBeGreaterThan(0);
+  });
+
+  for (const step of slackSteps()) {
+    it(`${step.name}: the real curl delivers exactly one POST of valid JSON`, async () => {
+      const obs = await postToLocalSink(step);
+      expect(
+        obs.requests,
+        `${step.name} sent no request at all — the curl line does not reach the webhook it ` +
+          `was handed. stdio: ${obs.stdio}`,
+      ).toHaveLength(1);
+      const req = obs.requests[0];
+      expect(req.method).toBe("POST");
+      expect(req.contentType).toContain("application/json");
+      // Slack rejects a body that is not an object with a `text`, and a payload
+      // assembled with an unquoted `$MSG` produces exactly that.
+      const parsed: unknown = JSON.parse(req.body);
+      expect(typeof parsed).toBe("object");
+      const text = (parsed as { text?: unknown }).text;
+      expect(typeof text, `${step.name}: the payload carries no string \`text\``).toBe("string");
+      expect((text as string).length).toBeGreaterThan(0);
+      // The M2 property, now measured ON THE WIRE rather than on `$MSG`: a REAL
+      // newline, never the two characters backslash-n, which Slack renders literally.
+      expect(
+        text as string,
+        `${step.name}: the delivered message has no real newline — every line Slack shows ` +
+          "will be run together, or a literal \\n will appear in the channel",
+      ).toContain("\n");
+      expect(
+        req.body,
+        `${step.name}: the JSON encodes a literal backslash-n, which Slack renders as the ` +
+          "two characters rather than a line break",
+      ).not.toContain("\\\\n");
+      // And the delivery receipt the catch-all stands down for is published — here
+      // by a POST that genuinely happened, not by a stub returning 0.
+      expect(
+        obs.outputs.posted,
+        `${step.name}: the POST succeeded but the step published no proof of delivery, so ` +
+          "the end-of-job catch-all cannot tell this alert landed",
+      ).toBe("true");
+    });
+  }
 });
