@@ -2559,6 +2559,84 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       "the suppression notice names no way back out, so a human who finds it cannot act",
     ).toMatch(/REOPEN/);
   });
+
+  /** Would the suppression notice be selected, given these persist-step outputs? */
+  const noticeFires = (outputs: Record<string, string>, job = { failed: false }): boolean =>
+    evaluateIf(stepByName("Notify Slack on a SUPPRESSED (human-rejected) changeset").if!, {
+      event_name: "schedule",
+      jobFailed: job.failed,
+      jobCancelled: false,
+      steps: {
+        sync: { outcome: "success", outputs: { reason: SyncCoreReason.NEEDS_HUMAN } },
+        needs_human_pr: { outcome: "success", outputs },
+      },
+    });
+
+  it("a PERMANENT suppression is reported ONCE, not byte-identically every morning", () => {
+    // A closed PR stays closed and the changeset key is deliberately
+    // date-independent, so `rejected` alone made this notice re-post the same
+    // line every daily run, for ever — on the same channel as the real alerts.
+    // That is the fatigue this workflow is being fixed for wearing a new hat, and
+    // a channel people learn to ignore is silence by another route. So the notice
+    // is keyed on a state that CHANGES: an ack marker on the closed PR's own
+    // body, which outlives the run.
+    for (const st of prSteps()) {
+      const block = ifBlock(codeOf(st), 'if [ -n "$REJECTED_PR" ]; then', st.name!);
+      expect(
+        block,
+        `${st.name}: the suppression publishes no ack state, so the notice cannot tell the ` +
+          "first run after the closure from the four hundredth",
+      ).toMatch(/rejected_ack=true/);
+      expect(
+        block,
+        `${st.name}: the ack is not recorded anywhere that outlives the run, so every run ` +
+          "is the first run",
+      ).toMatch(/gh pr edit "\$REJECTED" --body-file/);
+      // `rejected` itself must STILL be published every run: it is what keeps the
+      // needs-human alert suppressed, and that suppression must last as long as
+      // the rejection does.
+      expect(
+        block,
+        `${st.name}: the suppression stopped publishing \`rejected\`, so the needs-human ` +
+          "alert fires again for a decision a human already refused",
+      ).toMatch(/echo "rejected=\$\{REJECTED\}"/);
+    }
+    for (const id of ["pr", "needs_human_pr"]) {
+      expect(
+        stepByName("Notify Slack on a SUPPRESSED (human-rejected) changeset").if ?? "",
+        `the notice does not read steps.${id}.outputs.rejected_ack, so that path re-posts ` +
+          "the same suppression line every morning",
+      ).toContain(`steps.${id}.outputs.rejected_ack != 'true'`);
+    }
+    // EXECUTED against the real `if:`: fires on the first run, stands down after.
+    expect(
+      noticeFires({ rejected: "350", rejected_url: "https://github.test/pr/350" }),
+      "the suppression is never reported at all",
+    ).toBe(true);
+    expect(
+      noticeFires({ rejected: "350", rejected_ack: "true" }),
+      "an already-reported suppression re-posts the same line",
+    ).toBe(false);
+    // FAIL OPEN: an ack that could not be recorded must cost a repeat ping, never
+    // a suppression nobody was ever told about.
+    expect(
+      noticeFires({ rejected: "350", rejected_ack: "" }),
+      "an unrecorded ack silences the notice — the failure direction that loses the telling",
+    ).toBe(true);
+  });
+
+  it("the suppression notice is not gated on the JOB's status — a respected rejection is neither", () => {
+    // `always()` is load-bearing twice over: keyed on `failure()` the notice
+    // vanishes on the green run that is its normal shape, and with no status
+    // function at all the implicit `success()` drops it in exactly the window the
+    // needs-human alert was just fixed for (any later step failing).
+    for (const failed of [false, true]) {
+      expect(
+        noticeFires({ rejected: "350" }, { failed }),
+        `a suppressed changeset goes unreported when the job ${failed ? "FAILS" : "is GREEN"}`,
+      ).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2717,6 +2795,7 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
   const CATCH_ALL = "Alert on early-infra failure (catch-all)";
   const GATE_ALERT = "Alert on drift-sync-check gate failure";
   const NEEDS_HUMAN_ALERT = "Alert on needs-human decision";
+  const REJECTED_ALERT = "Notify Slack on a SUPPRESSED (human-rejected) changeset";
   const OK = { url: "https://example.test/pr/1", number: "1" };
 
   it("MODEL: an alert step whose only exit path is `exit 1` is modelled as FAILING, so an alerting run is modelled RED", () => {
@@ -2848,6 +2927,48 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
         outputs: { sync: { reason: SyncCoreReason.OK_NO_CHURN, exit_code: "0" } },
       },
       expect: [CATCH_ALL],
+    },
+    {
+      // The suppression window, which no scenario reached before: a human closed
+      // the proposal, so the RE-PROPOSAL is suppressed and the day must still be
+      // reported — on the first run after the closure, and on a GREEN job.
+      label: "needs-human, but a human REJECTED the changeset (closure not reported yet)",
+      scenario: {
+        outputs: {
+          sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+          needs_human_pr: { ...OK, rejected: "350", rejected_url: "https://example.test/pr/350" },
+        },
+      },
+      expect: [REJECTED_ALERT],
+    },
+    {
+      // …and on every later run: still suppressed, already reported, so silent.
+      // Told once beats told every morning; the state is permanent by design.
+      label: "the same rejection once it has been reported (the ack is on the closed PR)",
+      scenario: {
+        outputs: {
+          sync: { reason: SyncCoreReason.NEEDS_HUMAN, exit_code: "1" },
+          needs_human_pr: {
+            ...OK,
+            rejected: "350",
+            rejected_url: "https://example.test/pr/350",
+            rejected_ack: "true",
+          },
+        },
+      },
+      expect: [],
+    },
+    {
+      // The same window on the ok-applied path. It emits no `url`, so the success
+      // notification correctly stands down and does not claim a PR was opened.
+      label: "ok-applied, but a human REJECTED the changeset",
+      scenario: {
+        outputs: {
+          sync: { reason: SyncCoreReason.OK_APPLIED, exit_code: "0" },
+          pr: { rejected: "350", rejected_url: "https://example.test/pr/350" },
+        },
+      },
+      expect: [REJECTED_ALERT],
     },
     {
       label: "ok-applied all the way through — the success notification, not an alert",

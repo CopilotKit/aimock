@@ -632,6 +632,42 @@ jobs:
               echo "rejected_url=$(printf '%s' "$REJECTED_PR" | jq -r '.url')"
             } >> "$GITHUB_OUTPUT"
             echo "ok-applied: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
+            # TOLD ONCE, NOT TOLD EVERY MORNING.
+            #
+            # The closure is permanent and the changeset key is deliberately
+            # date-independent, so `rejected` on its own made the suppression
+            # notice re-post a byte-identical line every daily run for ever — on
+            # the same channel as the real alerts. That is the daily-noise problem
+            # this workflow is being fixed for in a new costume, and a channel
+            # people learn to ignore is silence by another route. So the notice is
+            # keyed on a state that CHANGES: an ack marker appended (append-only,
+            # the same idiom as the marker self-heal above) to the closed PR's own
+            # body, which is the only place that outlives a run.
+            #
+            # `rejected` is still published on EVERY run — it is what keeps the
+            # needs-human alert suppressed, and that must hold as long as the
+            # rejection does. Only the POSTING is one-shot.
+            #
+            # FAIL OPEN: an ack that cannot be written is not recorded, so the
+            # suppression is reported again next run — a repeat ping, never a
+            # suppression nobody was told about. (If the POST itself then fails the
+            # run goes red and the end-of-job catch-all reports the day, so the
+            # window is noisy rather than silent.)
+            ACK_MARKER="drift-suppression-reported: ${CHANGESET_KEY}"
+            if printf '%s' "$REJECTED_PR" | jq -e --arg a "<!-- ${ACK_MARKER} -->" \
+              '(.body // "") | contains($a)' >/dev/null; then
+              echo "rejected_ack=true" >> "$GITHUB_OUTPUT"
+              echo "ok-applied: this suppression was already reported (PR #${REJECTED} carries the ack marker) — not re-posting it"
+            else
+              ACK_FILE="${RUNNER_TEMP}/drift-suppression-ack-${REJECTED}.md"
+              {
+                printf '%s\n\n' "$(printf '%s' "$REJECTED_PR" | jq -r '.body // ""')"
+                printf '<!-- %s -->\n' "${ACK_MARKER}"
+              } > "$ACK_FILE"
+              if ! ACK_ERR="$(gh pr edit "$REJECTED" --body-file "$ACK_FILE" 2>&1)"; then
+                echo "::warning::could not record the suppression ack on PR #${REJECTED} (${ACK_ERR}) — reporting the suppression anyway; the next run tries again"
+              fi
+            fi
             exit 0
           fi
           # The changeset key is appended as the LAST branch segment on purpose: a
@@ -1193,6 +1229,24 @@ jobs:
               echo "rejected_url=${REJECTED_URL}"
             } >> "$GITHUB_OUTPUT"
             echo "needs-human: changeset ${CHANGESET_KEY} was REJECTED by a human (closed PR #${REJECTED}) — not re-proposing it"
+            # TOLD ONCE, NOT TOLD EVERY MORNING — see the identical block on the
+            # ok-applied path above for why the ack lives in the closed PR's body
+            # and why `rejected` is still published on every run.
+            ACK_MARKER="drift-suppression-reported: ${CHANGESET_KEY}"
+            if printf '%s' "$REJECTED_PR" | jq -e --arg a "<!-- ${ACK_MARKER} -->" \
+              '(.body // "") | contains($a)' >/dev/null; then
+              echo "rejected_ack=true" >> "$GITHUB_OUTPUT"
+              echo "needs-human: this suppression was already reported (PR #${REJECTED} carries the ack marker) — not re-posting it"
+            else
+              ACK_FILE="${RUNNER_TEMP}/drift-suppression-ack-${REJECTED}.md"
+              {
+                printf '%s\n\n' "$(printf '%s' "$REJECTED_PR" | jq -r '.body // ""')"
+                printf '<!-- %s -->\n' "${ACK_MARKER}"
+              } > "$ACK_FILE"
+              if ! ACK_ERR="$(gh pr edit "$REJECTED" --body-file "$ACK_FILE" 2>&1)"; then
+                echo "::warning::could not record the suppression ack on PR #${REJECTED} (${ACK_ERR}) — reporting the suppression anyway; the next run tries again"
+              fi
+            fi
             # Emit it like every other early return, so the rejected PR is
             # still nameable (and the "every exit names a PR" invariant holds).
             emit_pr "$REJECTED" "$REJECTED_URL"
@@ -1346,10 +1400,19 @@ jobs:
       # respected rejection is not a fault — so it deliberately has no `exit 1`.
       - name: Notify Slack on a SUPPRESSED (human-rejected) changeset
         id: alert_rejected
+        # `always()`, and it is load-bearing twice: a respected rejection is
+        # neither a failure nor a success, so keyed on `failure()` this notice
+        # would vanish on the GREEN run that is its normal shape, and with no
+        # status function at all the implicit `success()` would drop it in exactly
+        # the window the needs-human alert was just fixed for (any later step
+        # failing). `rejected_ack` is the one-shot: the suppression is reported on
+        # the first run after the closure, not on all four hundred after it.
         if: >-
           always() &&
-          (steps.pr.outputs.rejected != '' ||
-           steps.needs_human_pr.outputs.rejected != '')
+          ((steps.pr.outputs.rejected != '' &&
+            steps.pr.outputs.rejected_ack != 'true') ||
+           (steps.needs_human_pr.outputs.rejected != '' &&
+            steps.needs_human_pr.outputs.rejected_ack != 'true'))
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPO: ${{ github.repository }}
