@@ -94,18 +94,21 @@
             </tr>
             <tr>
               <td><code>POST</code></td>
-              <td><code>/__aimock/reset/fixtures</code></td>
-              <td>Full reset: fixtures + generation state + journal</td>
+              <td><code>/__aimock/reset</code></td>
+              <td>
+                Full reset: fixtures, journal entries, fixture match-counts (sequence position),
+                video + fal.ai job state, and the Gemini interaction / event-id counters
+              </td>
             </tr>
             <tr>
               <td><code>POST</code></td>
               <td><code>/__aimock/reset/journal</code></td>
-              <td>Clear only the request journal</td>
+              <td>Clear only the request journal entries</td>
             </tr>
             <tr>
               <td><code>POST</code></td>
-              <td><code>/__aimock/reset</code></td>
-              <td><strong>Deprecated.</strong> Alias for <code>/reset/fixtures</code></td>
+              <td><code>/__aimock/reset/fixtures</code></td>
+              <td><strong>Deprecated.</strong> Alias for <code>/reset</code></td>
             </tr>
             <tr>
               <td><code>POST</code></td>
@@ -118,11 +121,13 @@
         <h2>Reset Routes</h2>
         <p>
           aimock keeps several kinds of in-memory state between requests: the loaded
-          <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video,
-          fal.ai, and Gemini counters), the <strong>fixture match-counts</strong> (sequence
-          position), and the <strong>request journal</strong> (recorded requests). The reset routes
-          let you clear these selectively &mdash; a full reset clears everything, while a journal
-          reset clears only the recorded requests and leaves the rest intact.
+          <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video and
+          fal.ai jobs, plus the Gemini interaction and event-id counters), the
+          <strong>fixture match-counts</strong> (sequence position), and the
+          <strong>request journal</strong> (recorded requests). There are two reset routes:
+          <code>POST /__aimock/reset</code> clears all of it, and
+          <code>POST /__aimock/reset/journal</code> clears only the recorded requests and leaves
+          everything else intact.
         </p>
 
         <div
@@ -136,23 +141,23 @@
             margin: 1.5rem 0;
           "
         >
-          <strong style="color: var(--warning)">The footgun this split fixes</strong> &mdash; a
-          caller that wanted a clean journal between test runs used to call
-          <code>POST /__aimock/reset</code> and unintentionally wiped the loaded fixtures too. Every
-          subsequent request then returned <code>no_fixture_match</code> until the server was
-          restarted. If you only want a clean read between runs, use
+          <strong style="color: var(--warning)">Pick the narrower route</strong> &mdash;
+          <code>POST /__aimock/reset</code> wipes the loaded fixtures along with everything else, so
+          every subsequent request returns <code>no_fixture_match</code> until you load fixtures
+          again. If all you want is a clean read between test runs, use
           <code>POST /__aimock/reset/journal</code> &mdash; it leaves your fixtures intact.
         </div>
 
-        <h3>POST /__aimock/reset/fixtures</h3>
+        <h3>POST /__aimock/reset</h3>
         <p>
-          <strong>Full reset.</strong> Clears the in-memory fixtures, the generation state (video /
-          fal.ai / Gemini counters), <em>and</em> the journal. Use this when you want the server
-          returned to a pristine, fixture-free state.
+          <strong>Full reset.</strong> Returns the server to a pristine, fixture-free state. It
+          clears the in-memory fixtures, the journal entries <em>and</em> the per-test fixture
+          match-counts (so sequenced fixtures rewind to their first response), the video and fal.ai
+          job and queue state, and the Gemini interaction and event-id counters.
         </p>
         <div class="code-block">
           <div class="code-block-header">Full reset <span class="lang-tag">shell</span></div>
-          <pre><code>$ curl -X POST http://localhost:4010/__aimock/reset/fixtures</code></pre>
+          <pre><code>$ curl -X POST http://localhost:4010/__aimock/reset</code></pre>
         </div>
         <div class="code-block">
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
@@ -177,17 +182,21 @@
           <pre><code>{ <span class="prop">"reset"</span>: <span class="kw">true</span> }</code></pre>
         </div>
 
-        <h3>POST /__aimock/reset <span style="color: var(--warning)">(Deprecated)</span></h3>
+        <h3>
+          POST /__aimock/reset/fixtures <span style="color: var(--warning)">(Deprecated)</span>
+        </h3>
         <p>
-          <strong>Deprecated alias</strong> for <code>/__aimock/reset/fixtures</code>. It performs
-          the same full reset, but additionally sets a <code>Deprecation: true</code> response
-          header and adds <code>deprecated</code> / <code>deprecation</code> fields to the body.
-          Prefer the explicit <code>/reset/fixtures</code> or <code>/reset/journal</code> routes
-          &mdash; they make the intent (and blast radius) of the reset unambiguous.
+          <strong>Deprecated alias</strong> for <code>/__aimock/reset</code>. The name promises a
+          fixtures-only reset, but it performs the same full reset &mdash; journal, match-counts,
+          job state and counters all go with it. It additionally sets a
+          <code>Deprecation: true</code> response header and adds <code>deprecated</code> /
+          <code>deprecation</code> fields to the body. Use <code>/reset</code> for a full reset, or
+          <code>/reset/journal</code> for a journal-only one; to clear fixtures and nothing else,
+          use <code>DELETE /__aimock/fixtures</code>.
         </p>
         <div class="code-block">
           <div class="code-block-header">Deprecated reset <span class="lang-tag">shell</span></div>
-          <pre><code>$ curl -i -X POST http://localhost:4010/__aimock/reset</code></pre>
+          <pre><code>$ curl -i -X POST http://localhost:4010/__aimock/reset/fixtures</code></pre>
         </div>
         <div class="code-block">
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
@@ -195,7 +204,7 @@
 {
   <span class="prop">"reset"</span>: <span class="kw">true</span>,
   <span class="prop">"deprecated"</span>: <span class="kw">true</span>,
-  <span class="prop">"deprecation"</span>: <span class="str">"POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)"</span>
+  <span class="prop">"deprecation"</span>: <span class="str">"POST /__aimock/reset/fixtures is deprecated; use POST /__aimock/reset (full reset) or POST /__aimock/reset/journal (journal only)"</span>
 }</code></pre>
         </div>
 
@@ -253,7 +262,7 @@
         <h3>DELETE /__aimock/fixtures</h3>
         <p>
           Clears all registered fixtures. Generation state and the journal are left untouched. To
-          clear everything at once, use <code>/__aimock/reset/fixtures</code> instead.
+          clear everything at once, use <code>/__aimock/reset</code> instead.
         </p>
         <div class="code-block">
           <div class="code-block-header">Clear fixtures <span class="lang-tag">shell</span></div>

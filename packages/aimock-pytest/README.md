@@ -69,10 +69,11 @@ aimock.get_last_request()  # most recent request or None
 aimock.next_error(429, {"message": "Rate limited"})
 
 # Reset
-aimock.clear_fixtures()    # remove all fixtures
-aimock.reset_fixtures()    # clear fixtures + generation state (and journal)
+aimock.clear_fixtures()    # remove all fixtures, nothing else
+aimock.reset()             # full reset: fixtures, journal entries + match-counts,
+                           # video/fal job state, Gemini counters
 aimock.reset_journal()     # clear only the request journal (fixtures preserved)
-aimock.reset()             # alias for reset_fixtures()
+aimock.reset_fixtures()    # alias for reset() — a full reset, despite the name
 ```
 
 ## CLI Options
