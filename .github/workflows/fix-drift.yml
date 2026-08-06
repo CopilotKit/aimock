@@ -54,8 +54,8 @@ jobs:
       # daemon the Ollama leg would spuriously quarantine/error on a missing host
       # instead of behaving as it does under test-drift.yml's own daily run.
       #
-      # THIS RUNS FIRST, AND THE SCRIPT IS CHECKSUM-PINNED. Both halves matter and
-      # neither alone is sufficient.
+      # THIS RUNS FIRST, AND EVERY BYTE IT EXECUTES IS CHECKSUM-PINNED. Both
+      # halves matter and neither alone is sufficient.
       #
       # `sh <(curl …)` of a MUTABLE URL is arbitrary third-party code executing as
       # the runner user, and it used to sit six steps after the app token was
@@ -66,34 +66,66 @@ jobs:
       # setup step instead of before it, which is strictly better for a job with
       # `timeout-minutes: 30`.
       #
-      # But reordering alone does not close it. A compromised script can plant a
+      # But reordering alone does not close it. A compromised payload can plant a
       # `git`, `gh` or `node` earlier on PATH, or write a shell rc, and every later
-      # step — the ones that DO hold the token — would execute it. So the bytes are
-      # verified against a sha256 reviewed at the URL, and a mismatch is a hard
-      # `exit 1` before `sh` ever sees the file. Everything else in this job's
-      # third-party surface is already pinned: every `uses:` by commit SHA, and
-      # `pnpm install --frozen-lockfile` by the lockfile's own integrity hashes.
-      # This was the one unpinned executable in the job.
+      # step — the ones that DO hold the token — would execute it.
       #
-      # WHEN THIS FAILS: Ollama published a new install.sh. Read the diff at
-      # https://ollama.com/install.sh, then re-pin OLLAMA_INSTALL_SHA256 below to
-      # the digest the error message prints. The failure is loud and alerted (the
-      # end-of-job catch-all covers the infra/setup window), never silent — an
-      # unverified script must not run just because verifying it was inconvenient.
+      # ollama.com/install.sh IS NOT USED, and pinning it was not enough. Its own
+      # bytes can be pinned, but the script then streams
+      # `https://ollama.com/download/ollama-linux-<arch>.tar.zst` — a mutable,
+      # unversioned URL carrying no digest — straight into `sudo tar -x` under
+      # /usr/local, so a SECOND unpinned payload plants root-owned binaries on
+      # PATH just as effectively as the script could. It cannot be fixed in place
+      # either: the script pipes that download through `zstd -d` into `tar`, so it
+      # never holds the file and has nothing to verify. (On a GPU host it also adds
+      # NVIDIA CUDA apt/yum repos and runs `$PACKAGE_MANAGER -y install` — more
+      # unpinned root execution this job has no use for.)
+      #
+      # So the release artifact is fetched DIRECTLY and verified before anything
+      # unpacks it: one URL, pinned to an immutable release tag, whose bytes must
+      # match a reviewed sha256 or the step hard-`exit 1`s before `tar` runs. The
+      # tarball is the whole product — `bin/ollama` plus `lib/ollama/*` — and this
+      # step already ran `ollama serve` itself rather than using the systemd unit
+      # install.sh sets up, so nothing else in that script was load-bearing here.
+      #
+      # Every other byte this job executes is already pinned: each `uses:` by
+      # commit SHA, and `pnpm install --frozen-lockfile` by the lockfile's own
+      # integrity hashes. With this, nothing in the job runs code it has not
+      # verified.
+      #
+      # WHEN THIS FAILS: Ollama cut a new release, or an artifact was rebuilt.
+      # Pick the version at https://github.com/ollama/ollama/releases, take
+      # `ollama-linux-amd64.tar.zst`'s digest from that release's own
+      # `sha256sum.txt`, and update BOTH values below together. The failure is loud
+      # and alerted (the end-of-job catch-all covers the infra/setup window), never
+      # silent — unverified bytes must not be unpacked as root just because
+      # verifying them was inconvenient.
       - name: Provision Ollama daemon (drift-sync-check re-collect gate)
         env:
-          # sha256 of https://ollama.com/install.sh, 15902 bytes, reviewed 2026-08-05.
-          OLLAMA_INSTALL_SHA256: 25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f
+          # ollama-linux-amd64.tar.zst from the v0.32.6 release, 1420686963 bytes.
+          # Digest agreed on 2026-08-05 by three independent sources: the release's
+          # sha256sum.txt, the GitHub release API's own asset `digest` field, and
+          # sha256 of the downloaded bytes.
+          OLLAMA_VERSION: v0.32.6
+          OLLAMA_TARBALL_SHA256: dec2fa50d24e6868ca3c4c977d69d059399372105f951a9acc320a5a79aadcfc
         run: |
           set -euo pipefail
-          SCRIPT="${RUNNER_TEMP}/ollama-install.sh"
-          curl -fsSL https://ollama.com/install.sh -o "$SCRIPT"
-          ACTUAL="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
-          if [ "$ACTUAL" != "${OLLAMA_INSTALL_SHA256}" ]; then
-            echo "::error::ollama.com/install.sh does not match its pinned sha256 — REFUSING to execute it. Expected ${OLLAMA_INSTALL_SHA256}, got ${ACTUAL}. Review the script at that URL and re-pin OLLAMA_INSTALL_SHA256 in .github/workflows/fix-drift.yml if the change is legitimate."
+          # Fail on a MISSING decompressor rather than discovering it mid-pipe,
+          # where `tar` would be handed a truncated stream as root.
+          if ! command -v zstd >/dev/null 2>&1; then
+            echo "::error::zstd is not installed on this runner, so the pinned Ollama tarball cannot be unpacked. Install zstd before this step."
             exit 1
           fi
-          sh "$SCRIPT"
+          TARBALL="${RUNNER_TEMP}/ollama-linux-amd64.tar.zst"
+          curl -fsSL "https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst" -o "$TARBALL"
+          ACTUAL="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "${OLLAMA_TARBALL_SHA256}" ]; then
+            echo "::error::the Ollama ${OLLAMA_VERSION} tarball does not match its pinned sha256 — REFUSING to unpack it as root. Expected ${OLLAMA_TARBALL_SHA256}, got ${ACTUAL}. Check the release's sha256sum.txt and re-pin OLLAMA_VERSION/OLLAMA_TARBALL_SHA256 in .github/workflows/fix-drift.yml if the change is legitimate."
+            exit 1
+          fi
+          # Only now, on bytes that matched. The archive is `bin/ollama` +
+          # `lib/ollama/*`, so /usr/local puts the binary on the default PATH.
+          zstd -d -c "$TARBALL" | sudo tar -xf - -C /usr/local
           ollama serve > /tmp/ollama-serve.log 2>&1 &
           for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then

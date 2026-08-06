@@ -1918,39 +1918,49 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
 // above), so both the permissions and the stale comment are dead and must be
 // removed.
 // ---------------------------------------------------------------------------
-// The ONE unpinned executable in the job: `sh <(curl https://ollama.com/install.sh)`.
+// Ollama provisioning: the job's third-party BYTES, and where they get executed.
 //
 // Every `uses:` here is pinned by commit SHA and `pnpm install --frozen-lockfile`
-// is pinned by the lockfile's integrity hashes, but that URL is MUTABLE, and the
-// step used to run six steps after an app token with `contents: write` +
+// is pinned by the lockfile's integrity hashes, but this step fetches a release
+// artifact over the network and unpacks it into /usr/local AS ROOT, and it used
+// to run six steps after an app token with `contents: write` +
 // `pull-requests: write` was minted into the job. Two independent properties are
-// asserted, because neither alone closes it: the code runs BEFORE the token
-// exists, and the bytes are verified before `sh` sees them (a compromised script
-// that cannot read the token can still plant a `git`/`gh`/`node` on PATH for the
-// later steps that hold it).
+// asserted, because neither alone closes it: the fetch happens BEFORE the token
+// exists, and the bytes are verified before anything unpacks them (a payload that
+// cannot read the token can still plant a root-owned `git`/`gh`/`node` on PATH
+// for the later steps that hold it).
+//
+// Pinning ollama.com/install.sh was NOT sufficient and this suite used to assert
+// the weaker property. That script streams an unversioned, undigested
+// `ollama-linux-<arch>.tar.zst` through `zstd -d` into `sudo tar -x` — RUN
+// VERBATIM out of the pinned script's own bytes on 2026-08-05, attacker-supplied
+// content reached `sudo tar -xf - -C <dest>` and the script exited 0. So the
+// artifact is fetched directly and digest-checked instead, and the question this
+// harness asks is about `tar`, not about `sh`.
 // ---------------------------------------------------------------------------
-describe("fix-drift.yml — the unpinned install script cannot reach the app token", () => {
+describe("fix-drift.yml — nothing unpacks bytes it has not pinned, and none of it can reach the app token", () => {
   const OLLAMA_STEP = "Provision Ollama daemon (drift-sync-check re-collect gate)";
 
   /**
    * EXECUTE the provisioning step's `run:` body with `curl` serving `served` bytes.
    *
-   * Only `curl` and `sh` are stubbed — the verification itself (sha256sum, the
-   * comparison, the exit) is the workflow's own code, run as written. `sh` records
-   * that it was reached, which is the question that matters: a step that "fails"
-   * AFTER handing the file to a shell has not refused anything.
+   * Only `curl`, `sudo` and `tar` are stubbed — the verification itself
+   * (sha256sum, the comparison, the exit) is the workflow's own code, run as
+   * written. `tar` records that it was reached, which is the question that
+   * matters: a step that "fails" AFTER handing the payload to a root-privileged
+   * extractor has not refused anything.
    */
   const observeProvision = (
     served: string,
     expectedSha256?: string,
-  ): { stepExit: number; shRan: boolean; stdio: string } => {
+  ): { stepExit: number; tarRan: boolean; tarSaw: string; stdio: string } => {
     const dir = mkdtempSync(join(tmpdir(), "fix-drift-ollama-"));
     try {
       const bin = join(dir, "bin");
       mkdirSync(bin);
       const servedFile = join(dir, "served");
       writeFileSync(servedFile, served);
-      const shMarker = join(dir, "sh-ran");
+      const tarSawFile = join(dir, "tar-saw");
       // -o <path> is the only curl form this step uses for the download; the
       // readiness poll (`curl -sf http://127.0.0.1:11434/...`) has no -o and must
       // simply fail so the wait loop falls through.
@@ -1965,9 +1975,17 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
         ].join("\n"),
         { mode: 0o755 },
       );
-      writeFileSync(join(bin, "sh"), `#!/bin/sh\ntouch ${JSON.stringify(shMarker)}\n`, {
+      // `tar` is the root-privileged extractor and the thing that must never see
+      // unverified bytes: it records WHAT it was handed, so "refused" is the
+      // absence of a payload rather than an inference from an exit code.
+      writeFileSync(join(bin, "tar"), `#!/bin/sh\ncat > ${JSON.stringify(tarSawFile)}\n`, {
         mode: 0o755,
       });
+      // `sudo` must pass through, or a refusal would be indistinguishable from
+      // "sudo is not installed on the machine running this suite".
+      writeFileSync(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
+      // `zstd` decompresses; the served bytes stand in for the archive verbatim.
+      writeFileSync(join(bin, "zstd"), '#!/bin/sh\ncat "${3:--}"\n', { mode: 0o755 });
       for (const noop of ["ollama", "sleep"])
         writeFileSync(join(bin, noop), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       const step = stepByName(OLLAMA_STEP);
@@ -1975,7 +1993,7 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
       writeFileSync(script, runOf(step));
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(step.env)) env[k] = v;
-      if (expectedSha256 !== undefined) env.OLLAMA_INSTALL_SHA256 = expectedSha256;
+      if (expectedSha256 !== undefined) env.OLLAMA_TARBALL_SHA256 = expectedSha256;
       const res = spawnSync("/bin/bash", [script], {
         cwd: dir,
         encoding: "utf-8",
@@ -1983,7 +2001,8 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
       });
       return {
         stepExit: res.status ?? -1,
-        shRan: existsSync(shMarker),
+        tarRan: existsSync(tarSawFile),
+        tarSaw: existsSync(tarSawFile) ? readFileSync(tarSawFile, "utf-8") : "",
         stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
       };
     } finally {
@@ -1991,7 +2010,7 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
     }
   };
 
-  it("the install script runs BEFORE the app token is minted, not after", () => {
+  it("provisioning runs BEFORE the app token is minted, not after", () => {
     const names = steps().map((s) => s.id ?? s.name ?? "");
     const ollamaIdx = names.indexOf(OLLAMA_STEP);
     const tokenIdx = names.indexOf("app-token");
@@ -1999,7 +2018,7 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
     expect(tokenIdx, "no app-token step found").toBeGreaterThan(-1);
     expect(
       ollamaIdx,
-      "the unpinned install script executes while an app token with contents:write and " +
+      "third-party bytes are unpacked as root while an app token with contents:write and " +
         "pull-requests:write is already live in the job",
     ).toBeLessThan(tokenIdx);
   });
@@ -2007,38 +2026,67 @@ describe("fix-drift.yml — the unpinned install script cannot reach the app tok
   it("the pin is a real sha256 the step actually compares the download against", () => {
     const step = stepByName(OLLAMA_STEP);
     expect(
-      step.env.OLLAMA_INSTALL_SHA256 ?? "",
+      step.env.OLLAMA_TARBALL_SHA256 ?? "",
       "the step declares no pinned digest, so there is nothing to verify against",
     ).toMatch(/^[0-9a-f]{64}$/);
     // …and the comparison must be against the DOWNLOAD, not against a constant
     // recomputed from itself.
-    expect(codeOf(step)).toMatch(/sha256sum "\$SCRIPT"/);
+    expect(codeOf(step)).toMatch(/sha256sum "\$TARBALL"/);
   });
 
-  it("TAMPERED bytes are REFUSED before `sh` ever sees the file (EXECUTED)", () => {
-    const obs = observeProvision("#!/bin/sh\n# attacker-substituted payload\nexit 0\n");
+  it("NOTHING in the step is fetched from a mutable, unversioned URL", () => {
+    // The defect this replaced: a pinned install.sh whose OWN download —
+    // `ollama.com/download/ollama-linux-<arch>.tar.zst`, no version, no digest —
+    // went into `sudo tar -x`. Pinning the wrapper while it fetches an unpinned
+    // payload is the failure mode, so every URL the step names must carry the
+    // version, and the script that does not must not come back.
+    const code = codeOf(stepByName(OLLAMA_STEP));
+    const urls = code.match(/https?:\/\/[^\s"')]+/g) ?? [];
+    expect(urls.length, "the step fetches nothing at all").toBeGreaterThan(0);
+    for (const url of urls) {
+      if (url.startsWith("http://127.0.0.1")) continue; // the local readiness poll
+      expect(
+        url,
+        `\`${url}\` is not pinned to a release version, so its bytes can change under the ` +
+          "digest that is supposed to describe them",
+      ).toContain("${OLLAMA_VERSION}");
+    }
     expect(
-      obs.shRan,
-      "the workflow handed a script whose bytes do NOT match the pin to `sh` — this is " +
-        "arbitrary third-party code executing as the runner user, and every later step in " +
-        "the job holds a write-scoped app token it can reach through PATH",
+      code,
+      "ollama.com/install.sh is back — it streams an unversioned, undigested tarball into " +
+        "`sudo tar -x`, so pinning the script's own bytes leaves a second unpinned payload " +
+        "planting root-owned binaries on PATH",
+    ).not.toContain("ollama.com/install.sh");
+  });
+
+  it("TAMPERED bytes are REFUSED before root `tar` ever sees them (EXECUTED)", () => {
+    const obs = observeProvision("ATTACKER-SUBSTITUTED ARCHIVE\n");
+    expect(
+      obs.tarRan,
+      "the workflow handed an archive whose bytes do NOT match the pin to a root-privileged " +
+        "`tar` unpacking into /usr/local — that plants arbitrary root-owned binaries on PATH, " +
+        "and every later step in the job holds a write-scoped app token they can reach. " +
+        `tar was handed: ${JSON.stringify(obs.tarSaw)}`,
     ).toBe(false);
     expect(obs.stepExit, "the step concluded successfully on a tampered download").not.toBe(0);
     expect(obs.stdio).toContain("does not match its pinned sha256");
   });
 
-  it("POSITIVE CONTROL: bytes that DO match the pin are executed (the gate is not just 'always refuse')", () => {
+  it("POSITIVE CONTROL: bytes that DO match the pin are unpacked (the gate is not just 'always refuse')", () => {
     // The digest is computed from the served bytes here rather than shipping a
-    // 15KB copy of the real script: the property under test is that a MATCH
+    // 1.4GB copy of the real archive: the property under test is that a MATCH
     // proceeds, and without this the refusal above is satisfied by a step that
-    // never runs anything at all.
-    const good = "#!/bin/sh\n# the reviewed upstream script\nexit 0\n";
+    // never unpacks anything at all.
+    const good = "the reviewed upstream archive\n";
     const sha = createHash("sha256").update(good).digest("hex");
     const obs = observeProvision(good, sha);
     expect(
-      obs.shRan,
+      obs.tarRan,
       "a download matching its pin was refused, so provisioning can never run",
     ).toBe(true);
+    expect(obs.tarSaw, "tar was reached but handed something other than the verified bytes").toBe(
+      good,
+    );
     expect(obs.stepExit, obs.stdio).toBe(0);
   });
 });
