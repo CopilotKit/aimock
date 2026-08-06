@@ -30,7 +30,8 @@
  * Frozen surfaces — DATA, membership-pinned in `DATA_FROZEN`:
  *   model-registry.ts      — includeFamilies and excludeFamilies, per provider
  *   voice-models.ts        — knownVoiceModelFamilies, gaRealtimeModels
- *   deprecation-detector.ts — FORWARD_LOOKING_FAMILIES, per provider
+ *   deprecation-detector.ts — FORWARD_LOOKING_FAMILIES, per provider;
+ *                             MIN_LISTING_SIZE (all three providers, one entry)
  *
  * Keep both lists exact. A guard whose own inventory is wrong is a false
  * record: it invites the reader to assume a surface is covered when it is not.
@@ -49,7 +50,7 @@ import {
   excludeFamilies,
 } from "./model-registry.js";
 import { normalizeModelFamily } from "./model-family.js";
-import { FORWARD_LOOKING_FAMILIES } from "./deprecation-detector.js";
+import { FORWARD_LOOKING_FAMILIES, MIN_LISTING_SIZE } from "./deprecation-detector.js";
 import {
   isVoiceModelId,
   knownVoiceModelFamilies,
@@ -461,6 +462,24 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "FORWARD_LOOKING_FAMILIES.gemini": {
     members: () => [...FORWARD_LOOKING_FAMILIES.gemini].sort(),
     pin: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  },
+  // The fail-closed floor on the raw live `/models` id count, per provider.
+  // RAISING a number here switches that provider's ENTIRE deprecation half off
+  // — silently, on a green run, for as long as the listing stays under it. That
+  // is not hypothetical: the floor used to default to
+  // `includeFamilies[provider].size`, which put anthropic's at 20 against a
+  // live listing of 11, and its deprecation half was skipped on 12 of 12 daily
+  // runs with surviving artifacts while every one of them reported a quiet day.
+  // Nothing pinned it, and the number moved 19 -> 20 in an ordinary
+  // classify-a-family commit. Pinned as one entry (not per provider) because
+  // the three numbers are chosen against each other — see MIN_LISTING_SIZE's
+  // own doc for how each was derived from what is OBSERVED to clear.
+  MIN_LISTING_SIZE: {
+    members: () =>
+      Object.entries(MIN_LISTING_SIZE)
+        .map(([p, n]) => `${p}:${n}`)
+        .sort(),
+    pin: "242cbc769b0a6eadaab23a19801939756072f6d4bb7af30070a1ef72de9f6aca",
   },
 };
 

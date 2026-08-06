@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { includeFamilies } from "./drift/model-registry.js";
+import { MIN_LISTING_SIZE } from "./drift/deprecation-detector.js";
 import {
   detectDeprecatedFamiliesForSync,
   unclassifiedFamiliesForSync,
@@ -172,6 +173,121 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
     if (result.status !== "checked") return;
     const families = result.candidates.map((c) => c.family).sort();
     expect(families).toEqual(["claude-3-opus"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fail-closed floor is a LISTING-PLAUSIBILITY floor, not a coverage floor.
+// ---------------------------------------------------------------------------
+
+describe("the deprecation floor is a plausibility check on the LISTING, not on our coverage", () => {
+  /**
+   * The size of the repo's own frozen healthy anthropic `/models` wave, captured
+   * 2026-07-16 and living inline in `models.drift.ts`'s "Anthropic: every live
+   * family is classified" case. SIXTEEN raw ids: that is what a healthy anthropic
+   * listing looks like by this repo's own record, and it was already under the
+   * old floor of 20.
+   *
+   * The SIZE, not the ids. This file sits inside the tree
+   * `isFamilyStillReferenced` scans (`src/`, minus `src/__tests__/drift/`), so a
+   * real family literal written here would count as aimock still USING that
+   * family and quietly route its deprecation to a human note instead of a
+   * mechanical removal. Verified: pasting the sixteen real ids in moved all nine
+   * currently zero-referenced anthropic families into "still referenced". Every
+   * listing built below therefore uses ids that match no family.
+   */
+  const FROZEN_HEALTHY_ANTHROPIC_WAVE_SIZE = 16;
+  const listingOfSize = (n: number, tag: string): string[] =>
+    Array.from({ length: n }, (_, i) => `${tag}-live-${i}`);
+
+  it("no provider's floor can ratchet with the number of families aimock mocks", () => {
+    // THE DEFECT, stated as an invariant, and asserted BEHAVIOURALLY rather than
+    // by reading the constant — the failure mode is a consumer that goes back to
+    // `classified.size` while `MIN_LISTING_SIZE` still sits there looking right.
+    //
+    // `floor = includeFamilies[provider].size` compares a count of RAW IDS against
+    // a count of DISTINCT FAMILIES, so every family classified raised the bar the
+    // live listing had to clear. anthropic's went 19 -> 20 in a single ordinary
+    // classify-one-more-family commit while its live listing only shrank, and its
+    // deprecation half was skipped on 12 of 12 daily runs with surviving
+    // artifacts — every one green and silent.
+    for (const provider of ["openai", "anthropic", "gemini"] as const) {
+      const oneUnderFamilyCount = listingOfSize(includeFamilies[provider].size - 1, provider);
+      expect(
+        detectDeprecatedFamiliesForSync(oneUnderFamilyCount, provider).status,
+        `a live ${provider} listing of ${oneUnderFamilyCount.length} raw ids — one under the ` +
+          `${includeFamilies[provider].size} families aimock mocks — was still refused, so the ` +
+          `floor tracks our own coverage instead of the listing's plausibility, and every ` +
+          `family classified from here narrows the window further`,
+      ).toBe("checked");
+      // …and the constant itself agrees, so the two cannot drift apart silently.
+      expect(MIN_LISTING_SIZE[provider]).toBeLessThan(includeFamilies[provider].size);
+    }
+  });
+
+  it("anthropic's floor is clearable by the listing PRODUCTION actually returns", () => {
+    // OBSERVED, from the drift-sync-log artifacts of 12 of 12 `Fix Drift` runs
+    // (2026-07-24 -> 2026-08-05): anthropic's live listing carried ELEVEN raw ids
+    // (ten on the first). Any floor above that number switches the entire
+    // deprecation half off, forever, on a green run. Asserted by RUNNING the
+    // detector on an eleven-id listing, not by comparing numbers — the production
+    // symptom was a `status: "skipped"`, so that is what has to stop happening.
+    const PRODUCTION_ANTHROPIC_LISTING_SIZE = 11;
+    const productionSizedListing = listingOfSize(PRODUCTION_ANTHROPIC_LISTING_SIZE, "anthropic");
+    const result = detectDeprecatedFamiliesForSync(productionSizedListing, "anthropic", {
+      isReferenced: () => true,
+    });
+    expect(
+      result.status,
+      "an eleven-id anthropic listing — the size OBSERVED on every retained production run — " +
+        "is still refused as too short to trust, so the deprecation half is skipped every " +
+        "morning and the run still reports a quiet day",
+    ).toBe("checked");
+  });
+
+  it("the repo's OWN frozen healthy /models wave clears the floor, for every provider", () => {
+    // The structural proof that the old floor was unreachable rather than
+    // unlucky: the healthiest anthropic listing this repo has ever recorded is 16
+    // ids and the floor was 20, so even a perfect day skipped. A floor a captured
+    // HEALTHY listing cannot clear is not a truncation guard, it is an off switch.
+    const wave = listingOfSize(FROZEN_HEALTHY_ANTHROPIC_WAVE_SIZE, "anthropic");
+    const result = detectDeprecatedFamiliesForSync(wave, "anthropic", {
+      isReferenced: () => true,
+    });
+    expect(
+      result.status,
+      `the frozen healthy anthropic wave (${wave.length} raw ids) is still under anthropic's ` +
+        `floor of ${MIN_LISTING_SIZE.anthropic}`,
+    ).toBe("checked");
+  });
+
+  it("and it is still FAIL-CLOSED: empty, and one-below-floor, both still skip", () => {
+    // The negative control. Every assertion above is satisfiable by deleting the
+    // floor outright, which is the destructive failure the guard exists for — a
+    // truncated listing looking like "every family disappeared" and cascading
+    // into a proposal to nuke the registry.
+    for (const provider of ["openai", "anthropic", "gemini"] as const) {
+      expect(detectDeprecatedFamiliesForSync([], provider).status).toBe("skipped");
+      const oneShort = listingOfSize(MIN_LISTING_SIZE[provider] - 1, provider);
+      expect(
+        detectDeprecatedFamiliesForSync(oneShort, provider).status,
+        `a listing of ${oneShort.length} ids cleared ${provider}'s floor of ` +
+          `${MIN_LISTING_SIZE[provider]} — the fail-closed guard is off`,
+      ).toBe("skipped");
+    }
+  });
+
+  it("the skip REASON no longer claims the floor is the family count", () => {
+    // The prose was the only place the unit mismatch was written down, and it
+    // stated the wrong thing confidently: a reader of the production log was told
+    // "need >= 20 — the number of families aimock mocks for this provider", which
+    // reads as a coverage statement and hides that a raw-id count is on the other
+    // side of the comparison.
+    const skip = detectDeprecatedFamiliesForSync([], "anthropic");
+    expect(skip.status).toBe("skipped");
+    if (skip.status !== "skipped") return;
+    expect(skip.reason).not.toContain("the number of families aimock mocks");
+    expect(skip.reason).toContain(`need >= ${MIN_LISTING_SIZE.anthropic}`);
   });
 });
 

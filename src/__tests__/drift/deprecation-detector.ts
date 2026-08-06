@@ -136,3 +136,70 @@ export const FORWARD_LOOKING_FAMILIES: Record<Provider, ReadonlySet<string>> = {
 export function isForwardLookingFamily(family: string, provider: Provider): boolean {
   return FORWARD_LOOKING_FAMILIES[provider].has(family);
 }
+
+// ---------------------------------------------------------------------------
+// The fail-closed floor on the RAW live `/models` id count.
+// ---------------------------------------------------------------------------
+
+/**
+ * The smallest live `/models` listing the deprecation half will diff against,
+ * per provider — below this the listing is treated as truncated/empty/reshaped
+ * and the whole deprecation half is abandoned for that provider rather than
+ * risk mass-removing the registry off a bad response.
+ *
+ * WHY THIS IS AN EXPLICIT NUMBER AND NOT `includeFamilies[provider].size`.
+ * It used to default to the family count, and that is a UNIT MISMATCH: a count
+ * of RAW IDS compared against a count of DISTINCT FAMILIES. The rationale for
+ * it ("a healthy listing returns many more raw ids than distinct families,
+ * because every dated snapshot multiplies one family into several ids") holds
+ * only for a provider whose listing is inflated by ids we exclude — openai
+ * (44 excluded families plus every `-preview`) and gemini (24). It is FALSE
+ * for anthropic, which excludes 3 legacy tokens and serves roughly one id per
+ * family.
+ *
+ * The consequence was not theoretical. Anthropic's live listing returned 11
+ * raw ids against a floor of 20, so its deprecation half was skipped on 12 of
+ * 12 `Fix Drift` runs with surviving artifacts (2026-07-24 → 2026-08-05) —
+ * every one of them green and silent. It was never reachable: this repo's own
+ * frozen healthy `/models` wave (`models.drift.ts`, captured 2026-07-16) is 16
+ * ids, already under 20, and the floor RATCHETED UP by one with every family
+ * added to `includeFamilies` while the supply side could only shrink as
+ * Anthropic retired models. A coverage floor conflates "the listing is broken"
+ * with "we mock more families than the provider still serves" — and the second
+ * is EXACTLY the condition this detector exists to report.
+ *
+ * HOW EACH NUMBER WAS CHOSEN. The floor's only job is "never mass-remove off a
+ * truncated or empty listing", so each is set well below the smallest healthy
+ * listing there is direct evidence for, and is NEVER raised above evidence —
+ * raising a floor past what has been proven to clear is precisely how the
+ * anthropic blind spot was created.
+ *
+ *  - `openai` 20 — the live listing cleared the old floor of 40 on 12/12 runs
+ *    (so >= 40), and the frozen healthy wave is 59 ids. Half of the smallest
+ *    directly-observed clearance. openai is not currently failing but was
+ *    NEXT: 1.48x headroom on the frozen wave, shrinking by one every time a
+ *    family is classified. 20 is 2x headroom that retirement cannot erode.
+ *  - `anthropic` 8 — the live listing was 11 raw ids on 12/12 runs (10 once),
+ *    and the frozen healthy wave is 16. 8 is half the frozen wave and 0.73x
+ *    the observed live count, so the deprecation half actually runs; a genuine
+ *    Anthropic listing falling to 7 or fewer would mean a third of the served
+ *    catalog vanished at once, which is a real fault worth fail-closing on.
+ *  - `gemini` 8 — the frozen healthy wave is 52 ids, but the only DIRECT
+ *    evidence from production is that it cleared the old floor of 9 (so >= 9).
+ *    The floor is therefore kept at or below 9 rather than at half of 52: a
+ *    floor set from a fixture instead of from what is known to clear is the
+ *    same mistake in a different provider.
+ *
+ * INVARIANT, enforced by `drift-sync-core.test.ts`: every floor here is
+ * strictly LESS than `includeFamilies[provider].size`, so the floor can never
+ * again ratchet with the number of families aimock mocks.
+ *
+ * Membership is checksum-pinned in `logic-pin.test.ts`: raising a number here
+ * silently switches a provider's deprecation detection off, which is the same
+ * one-line silencing edit `FORWARD_LOOKING_FAMILIES` is pinned against.
+ */
+export const MIN_LISTING_SIZE: Record<Provider, number> = {
+  openai: 20,
+  anthropic: 8,
+  gemini: 8,
+};

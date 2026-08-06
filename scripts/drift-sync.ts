@@ -42,6 +42,7 @@ import {
   NON_MODEL_TOKENS,
 } from "../src/__tests__/drift/model-registry.js";
 import {
+  MIN_LISTING_SIZE,
   isFamilyStillReferenced,
   isForwardLookingFamily,
 } from "../src/__tests__/drift/deprecation-detector.js";
@@ -399,15 +400,15 @@ export function detectDeprecatedFamiliesForSync(
   } = {},
 ): DeprecationCheckResult {
   const classified = includeFamilies[provider];
-  const floor = opts.minListingSize ?? classified.size;
+  const floor = opts.minListingSize ?? MIN_LISTING_SIZE[provider];
 
   if (liveModelIds.length === 0 || liveModelIds.length < floor) {
     return {
       status: "skipped",
       reason:
         `live /models listing too short to trust for ${provider} ` +
-        `(${liveModelIds.length} raw id(s), need >= ${floor} — the number of ` +
-        `families aimock mocks for this provider) — never mass-removing off a ` +
+        `(${liveModelIds.length} raw id(s), need >= ${floor} — the smallest ` +
+        `listing this provider plausibly returns) — never mass-removing off a ` +
         `truncated or empty listing`,
     };
   }
