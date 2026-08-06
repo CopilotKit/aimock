@@ -186,7 +186,33 @@ jobs:
           npm view "@copilotkit/aimock@${VERSION}" version
 
       - name: Install build tools
-        run: pip install hatch
+        # HASH-PINNED, and hatchling rather than hatch. Both halves were measured
+        # on 2026-08-05, not reasoned about:
+        #
+        #  1. `pip install hatch` resolves a NAME from PyPI at run time. Run
+        #     verbatim with the registry serving substituted bytes, it installed
+        #     them (exit 0) and `hatch build` then EXECUTED them (exit 0). This
+        #     job carries `environment: pypi` and `id-token: write` and is the
+        #     job that publishes aimock-pytest under our own OIDC identity, so
+        #     that is arbitrary code beside a publish token.
+        #
+        #  2. Pinning `hatch` would NOT have been sufficient — the same
+        #     pinned-wrapper/unpinned-payload shape as the Ollama installer.
+        #     `hatch build` builds in an ISOLATED environment and fetches this
+        #     project's `build-system.requires` (hatchling) from PyPI at build
+        #     time, unpinned. Against an empty index `hatch build` dies with
+        #     "hatchling was not found in the package registry"; `python -m
+        #     hatchling build` succeeds, because it fetches nothing.
+        #
+        # `--require-hashes` is scoped to THIS invocation on purpose. Applying it
+        # job-wide (PIP_REQUIRE_HASHES) would also hit the unhashed `pip install
+        # --dry-run` probe in the next step, whose FAILURE means "not published
+        # yet" — a hash-gated probe would fail for the wrong reason and turn the
+        # already-published gate into an unconditional publish.
+        #
+        # `python -m pip` rather than `pip` so the interpreter that installs the
+        # backend is the same one that imports it in the build step below.
+        run: python -m pip install --require-hashes -r .github/requirements/hatchling.txt
 
       - name: Check if pytest version is already published
         id: check
@@ -201,7 +227,13 @@ jobs:
 
       - name: Build pytest package
         if: steps.check.outputs.published == 'false'
-        run: cd packages/aimock-pytest && hatch build
+        # The published artifacts are unchanged: `hatch build` and `python -m
+        # hatchling build` produced byte-identical sdist and wheel for this
+        # package at 0.5.2 — sha256 0a54957ba57c52957c863fdb85b535d9715269f07ff9b4d776de98d0f6d68580
+        # and 29ac7b3a07d9c73955ab08f75736ebcf728134eceb5264b988e8e933f5ee2c35.
+        # `python -m` rather than the console script so the build does not depend
+        # on where the pinned install put its entry points on PATH.
+        run: cd packages/aimock-pytest && python -m hatchling build
 
       - name: Publish pytest package to PyPI
         if: steps.check.outputs.published == 'false'
