@@ -37,7 +37,7 @@ import {
 import { normalizeModelFamily } from "./model-family.js";
 import { NON_MODEL_TOKENS, isClassifiedFamily, includeFamilies } from "./model-registry.js";
 import { formatDriftReport } from "./schema.js";
-import { isFamilyStillReferenced } from "./deprecation-detector.js";
+import { MIN_LISTING_SIZE, isFamilyStillReferenced } from "./deprecation-detector.js";
 
 export type Provider = "openai" | "anthropic" | "gemini";
 
@@ -146,12 +146,13 @@ export async function runUnclassifiedFamilyCanary(
 // removal signal off a listing that is empty, short/truncated, or that the
 // caller could not fetch at all (infra error). A transient truncated or
 // failed `/models` response must never look like "every family disappeared"
-// and cascade into proposing to nuke the registry. The floor defaults to the
-// number of families aimock mocks for that provider — a healthy provider
-// listing returns many more raw ids than distinct families (every dated
-// snapshot/build-tag variant multiplies one family into several ids), so a
-// listing shorter than the family count itself is definitionally truncated,
-// not a genuinely tiny catalog.
+// and cascade into proposing to nuke the registry. The floor defaults to
+// `MIN_LISTING_SIZE[provider]` (deprecation-detector.ts): an explicit
+// per-provider count of RAW IDS, set below the smallest healthy listing there
+// is evidence for. It is deliberately NOT the number of families aimock mocks
+// — comparing raw ids against a family count is a unit mismatch that silently
+// switched anthropic's deprecation half off for weeks; the rationale for that
+// default is documented, with the numbers, on `MIN_LISTING_SIZE` itself.
 //
 // A family that clears the fail-closed floor and is genuinely missing from
 // the live listing is still not auto-proposed for removal if it is STILL
@@ -189,15 +190,15 @@ export function detectDeprecatedFamilies(
   } = {},
 ): DeprecationCheckResult {
   const classified = includeFamilies[provider];
-  const floor = opts.minListingSize ?? classified.size;
+  const floor = opts.minListingSize ?? MIN_LISTING_SIZE[provider];
 
   if (liveModelIds.length === 0 || liveModelIds.length < floor) {
     return {
       status: "skipped",
       reason:
         `live /models listing too short to trust for ${provider} ` +
-        `(${liveModelIds.length} raw id(s), need >= ${floor} — the number of ` +
-        `families aimock mocks for this provider) — never mass-removing off a ` +
+        `(${liveModelIds.length} raw id(s), need >= ${floor} — the smallest ` +
+        `listing this provider plausibly returns) — never mass-removing off a ` +
         `truncated or empty listing`,
     };
   }

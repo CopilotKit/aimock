@@ -42,6 +42,7 @@ import {
   NON_MODEL_TOKENS,
 } from "../src/__tests__/drift/model-registry.js";
 import {
+  MIN_LISTING_SIZE,
   isFamilyStillReferenced,
   isForwardLookingFamily,
 } from "../src/__tests__/drift/deprecation-detector.js";
@@ -337,11 +338,14 @@ export function addChangelogEntry(report: DriftReport, version: string): void {
 //
 //   - DEPRECATION (classified − live, via a mirror of C4's
 //     `detectDeprecatedFamilies`): a family aimock mocks that a healthy live
-//     listing no longer contains.
-//       * zero-reference (nothing in aimock's own source still names it) →
-//         mechanical, comment-marked removal from `includeFamilies`.
-//       * still-referenced → NEVER auto-removed. Routed to a human via a
-//         family-keyed dedup note file under `drift-proposals/`.
+//     listing no longer contains. Either way the registry is NOT touched — both
+//     legs route to a family-keyed dedup note file under `drift-proposals/`,
+//     because `includeFamilies`'s membership is checksum-pinned and re-pinning
+//     it is a reviewed human decision (see the removal probe in
+//     `runDriftSyncCore` for the full argument):
+//       * zero-reference (nothing in aimock's own source still names it) → a
+//         note PROPOSING the removal, naming the exact two-file edit to make.
+//       * still-referenced → a note recording that a human must decide at all.
 //   - ADDITION (a genuinely new, UNCLASSIFIED family — matches no include,
 //     exclude, `-preview`, or Gemma rule): NEVER auto-classified. Routed to a
 //     human via the same dedup note-file mechanism. Only once a human edits
@@ -399,15 +403,15 @@ export function detectDeprecatedFamiliesForSync(
   } = {},
 ): DeprecationCheckResult {
   const classified = includeFamilies[provider];
-  const floor = opts.minListingSize ?? classified.size;
+  const floor = opts.minListingSize ?? MIN_LISTING_SIZE[provider];
 
   if (liveModelIds.length === 0 || liveModelIds.length < floor) {
     return {
       status: "skipped",
       reason:
-        `live /models listing too short to trust for ${provider} ` +
-        `(${liveModelIds.length} raw id(s), need >= ${floor} — the number of ` +
-        `families aimock mocks for this provider) — never mass-removing off a ` +
+        `${LISTING_UNTRUSTED_SKIP_MARKER} for ${provider} ` +
+        `(${liveModelIds.length} raw id(s), need >= ${floor} — the smallest ` +
+        `listing this provider plausibly returns) — never mass-removing off a ` +
         `truncated or empty listing`,
     };
   }
@@ -457,6 +461,7 @@ export const DRIFT_PROPOSALS_DIR = "drift-proposals";
 export type ProposalKind =
   | "new-family"
   | "still-referenced-deprecation"
+  | "zero-reference-deprecation"
   | "registry-structural-mismatch";
 export type ProposalDecision = "pending" | "include";
 
@@ -472,7 +477,9 @@ export function proposalNoteRelPath(
       ? "new-family"
       : kind === "registry-structural-mismatch"
         ? "structural-mismatch"
-        : "deprecated-referenced";
+        : kind === "zero-reference-deprecation"
+          ? "deprecated-unreferenced"
+          : "deprecated-referenced";
   return `${DRIFT_PROPOSALS_DIR}/${provider}-${slug}-${kindSlug}.md`;
 }
 
@@ -494,7 +501,9 @@ export function renderProposalNote(
       ? "New / unclassified model family"
       : kind === "registry-structural-mismatch"
         ? "Registry structural mismatch — mechanical edit could not be applied"
-        : "Deprecated-but-still-referenced model family";
+        : kind === "zero-reference-deprecation"
+          ? "Deprecated zero-reference model family — removal PROPOSED, not applied"
+          : "Deprecated-but-still-referenced model family";
   const lines = [
     `# ${title}: ${family}`,
     "",
@@ -513,6 +522,23 @@ export function renderProposalNote(
       "     drift-sync run will then apply the mechanical registry edit (still",
       "     zero-LLM: this is a human-authored decision, not generated code). -->",
       "Decision: pending",
+      "",
+    );
+  }
+  if (kind === "zero-reference-deprecation") {
+    lines.push(
+      "## How to apply",
+      "",
+      `1. Delete the \`"${family}"\` entry from \`includeFamilies.${provider}\` in`,
+      `   \`${MODEL_REGISTRY_REL_PATH}\`.`,
+      `2. Re-pin \`DATA_FROZEN["includeFamilies.${provider}"]\` in`,
+      "   `src/__tests__/drift/logic-pin.test.ts` with the new membership checksum.",
+      "3. Delete this note file.",
+      "",
+      "All three belong in ONE reviewed commit: step 1 without step 2 leaves the",
+      "membership pin red, and step 2 without step 1 is a silent canary-silencing edit.",
+      "That deliberate, reviewed re-pin is a decision the pin reserves for a human, which",
+      "is exactly why drift-sync proposes this removal instead of applying it.",
       "",
     );
   }
@@ -723,6 +749,7 @@ export type FamilyAction =
   | "added"
   | "needs-human-new-family"
   | "needs-human-still-referenced"
+  | "needs-human-zero-reference"
   | "needs-human-structural-mismatch"
   | "no-op";
 
@@ -794,23 +821,69 @@ export function runDriftSyncCore(
     } else {
       for (const cand of dep.candidates) {
         if (!cand.stillReferenced) {
-          const edit = removeFamilyLiteralInSource(
+          // The removal is computed but NOT persisted — a PROBE, deliberately.
+          //
+          // `includeFamilies[provider]`'s membership is checksum-pinned in
+          // `logic-pin.test.ts` (`DATA_FROZEN`), and gate-2 re-runs that whole
+          // file over the edited tree. So a persisted mechanical removal always
+          // reds its own gate: `pin-check-failed` -> `revertFiles([...touched])`
+          // -> the registry edit AND every needs-human note written that run are
+          // wiped -> `reason=gate-failed`, no PR of any class. OBSERVED against
+          // this repo's own frozen healthy anthropic wave. drift-sync cannot
+          // repair that itself either: `drift-sync-check`'s changed-file
+          // allowlist is `model-registry.ts` + `drift-proposals/` ONLY, so it is
+          // forbidden from touching the pin — and the pin's own message reserves
+          // the re-pin for "a deliberate, reviewed" human decision. A run that
+          // silently destroyed its own notes to attempt an edit that can never be
+          // kept is strictly worse than not attempting it.
+          //
+          // So a zero-reference deprecation routes to a note like every other
+          // decision drift-sync is not authorised to take alone. The registry is
+          // never mutated, the notes always survive, and the note spells out the
+          // two-file removal a human applies in one reviewed commit.
+          //
+          // The probe is still RUN because its verdict is load-bearing: it is
+          // what distinguishes "the literal is there and a removal is well-formed"
+          // from `locatorMiss` (the registry's structure moved — a real fault with
+          // its own route) and from a clean no-op.
+          const probe = removeFamilyLiteralInSource(
             registrySource,
             "includeFamilies",
             cand.provider,
             cand.family,
             `REMOVED ${stamp} (drift-sync): "${cand.family}" no longer in live /models, zero-reference`,
           );
-          if (edit.changed) {
-            registrySource = edit.text;
-            registryChanged = true;
+          if (probe.changed) {
+            const zrPath = proposalNoteRelPath(
+              cand.provider,
+              cand.family,
+              "zero-reference-deprecation",
+            );
+            ensureProposalNote(
+              deps,
+              zrPath,
+              () =>
+                renderProposalNote(
+                  cand.provider,
+                  cand.family,
+                  "zero-reference-deprecation",
+                  `"${cand.family}" no longer appears in the live /models listing and nothing in ` +
+                    `aimock's own source still references it, so removing it from ` +
+                    `includeFamilies.${cand.provider} is mechanically safe. drift-sync does not ` +
+                    `apply it: that set's membership is checksum-pinned, and re-pinning is a ` +
+                    `reviewed human decision the sync's own changed-file allowlist forbids it ` +
+                    `from making.`,
+                  stamp,
+                ),
+              touchedFiles,
+            );
             outcomes.push({
               provider: cand.provider,
               family: cand.family,
-              action: "removed",
-              detail: edit.detail,
+              action: "needs-human-zero-reference",
+              detail: `"${cand.family}" is deprecated and zero-reference — removal proposed to a human (${zrPath})`,
             });
-          } else if (edit.locatorMiss) {
+          } else if (probe.locatorMiss) {
             // G#1: the AST locator could not find includeFamilies[provider] in
             // model-registry.ts. A real deprecation could not be applied — this
             // must route to a human, NEVER collapse into a silent clean no-op.
@@ -839,14 +912,14 @@ export function runDriftSyncCore(
               provider: cand.provider,
               family: cand.family,
               action: "needs-human-structural-mismatch",
-              detail: `${edit.detail} (${smPath})`,
+              detail: `${probe.detail} (${smPath})`,
             });
           } else {
             outcomes.push({
               provider: cand.provider,
               family: cand.family,
               action: "no-op",
-              detail: edit.detail,
+              detail: probe.detail,
             });
           }
         } else {
@@ -1081,6 +1154,11 @@ const LIVE_MODEL_LISTERS: Record<Provider, (apiKey: string) => Promise<string[]>
 const MISSING_KEY_SKIP_MARKER = "not set — skipping live sync for";
 /** The one copy of the "the live listing itself faulted" wording (status follows). */
 const INFRA_SKIP_MARKER = "infra error (status ";
+/**
+ * The one copy of the "the listing came back, but too short to believe" wording —
+ * read by `detectDeprecatedFamiliesForSync`, which writes the reason.
+ */
+export const LISTING_UNTRUSTED_SKIP_MARKER = "live /models listing too short to trust";
 
 /** The skip reason a provider with NO credential configured gets. */
 export function missingKeySkipReason(envKey: string, provider: Provider): string {
@@ -1093,45 +1171,67 @@ export function infraSkipReason(status: number, provider: Provider): string {
 }
 
 /**
- * HTTP statuses that mean the CREDENTIAL is unusable, not that the provider had
- * a moment. `isInfraSkip` also absorbs 429 and 5xx, and those are deliberately
- * NOT here: they resolve on their own and must not red an unattended daily cron.
+ * Does this skip reason mean the provider had a MOMENT — something that resolves
+ * on its own and must never red an unattended daily cron?
+ *
+ * This is the ONLY tolerated class, and it is an explicit ALLOWLIST: a 429, or a
+ * 5xx from the provider's own `/models` endpoint. `isInfraSkip` absorbs exactly
+ * those plus 401/402/403.
  */
-export const CREDENTIAL_UNUSABLE_STATUSES: readonly number[] = [401, 402, 403];
+export function isTransientSkip(reason: string): boolean {
+  if (!reason.startsWith(INFRA_SKIP_MARKER)) return false;
+  const status = Number.parseInt(reason.slice(INFRA_SKIP_MARKER.length), 10);
+  if (!Number.isInteger(status)) return false;
+  return status === 429 || (status >= 500 && status <= 599);
+}
 
 /**
- * Does this skip reason mean the provider was never actually CHECKED because its
- * credential is unusable?
+ * Does this skip mean the provider's drift was never actually CHECKED, so "no
+ * churn" for it means "could not look"?
  *
- * Reads the same two markers the builders above write, so the classifier cannot
- * drift away from the emitter.
+ * FAIL-CLOSED BY CONSTRUCTION, and that is the whole point. This used to be the
+ * other way round — an ALLOWLIST of two recognised faults (a missing key, and an
+ * `infra error (status 40[123])`) with `return false` for everything else. So
+ * every skip class the allowlist did not name was silently reported as "checked
+ * fine", and there was a third one: `detectDeprecatedFamiliesForSync` skips the
+ * whole deprecation half when the live listing comes back SHORTER than the number
+ * of families aimock mocks for that provider — a provider whose API changed shape,
+ * or a partial/truncated response. That skip left `unchecked-providers=` EMPTY, so
+ * `fix-drift.yml` read the run as a quiet day: green, no alert, and deprecations
+ * for that provider never checked again for as long as the truncation lasted.
+ * The `input.skipReason ?? "live listing unavailable"` fallback in the core loop
+ * fell through the same hole.
+ *
+ * Inverted rather than extended by one more case, because extending it leaves the
+ * NEXT skip class invisible in exactly the same way. Now a class has to be
+ * deliberately named TRANSIENT to be tolerated, and an unrecognised reason —
+ * including one added by a future change to this file — reclassifies the run
+ * instead of passing silently. An UNKNOWN must not collapse into the answer that
+ * passes; that is the same rule the workflow's own absent-line and unreadable-log
+ * branches follow.
  */
-export function isCredentialUnusableSkip(reason: string): boolean {
-  if (reason.includes(MISSING_KEY_SKIP_MARKER)) return true;
-  if (reason.startsWith(INFRA_SKIP_MARKER)) {
-    const status = Number.parseInt(reason.slice(INFRA_SKIP_MARKER.length), 10);
-    return CREDENTIAL_UNUSABLE_STATUSES.includes(status);
-  }
-  return false;
+export function isProviderUncheckedSkip(reason: string): boolean {
+  return !isTransientSkip(reason);
 }
 
 /** The machine line `fix-drift.yml` greps to tell "nothing changed" from "could not look". */
 export const UNCHECKED_PROVIDERS_LINE_PREFIX = "unchecked-providers=";
 
 /**
- * `unchecked-providers=<csv>` for this run — the providers whose credential was
- * unusable, so their live listing was never read.
+ * `unchecked-providers=<csv>` for this run — the providers whose drift this run
+ * did not actually check, for any reason that is not a transient blip.
  *
  * Emitted UNCONDITIONALLY (empty csv on a healthy run) so that the line's ABSENCE
  * is itself a detectable fault rather than being indistinguishable from "no
- * provider was skipped".
+ * provider was skipped". The per-provider REASON is not encoded here — the
+ * human-facing `  [skipped] <provider>: <reason>` lines in the same log (uploaded
+ * as the drift-sync-log artifact) carry it, and keeping this line a bare CSV is
+ * what lets the workflow's grep stay pinned and trivial.
  */
 export function formatUncheckedProvidersLine(
   skipped: readonly { provider: string; reason: string }[],
 ): string {
-  const unchecked = skipped
-    .filter((s) => isCredentialUnusableSkip(s.reason))
-    .map((s) => s.provider);
+  const unchecked = skipped.filter((s) => isProviderUncheckedSkip(s.reason)).map((s) => s.provider);
   return `${UNCHECKED_PROVIDERS_LINE_PREFIX}${[...new Set(unchecked)].sort().join(",")}`;
 }
 

@@ -54,9 +54,11 @@ import { afterAll, describe, it, expect, vi } from "vitest";
 import {
   SyncCoreReason,
   UNCHECKED_PROVIDERS_LINE_PREFIX,
+  detectDeprecatedFamiliesForSync,
   formatUncheckedProvidersLine,
   infraSkipReason,
-  isCredentialUnusableSkip,
+  isProviderUncheckedSkip,
+  isTransientSkip,
   missingKeySkipReason,
 } from "../../scripts/drift-sync.js";
 
@@ -2916,6 +2918,21 @@ describe("fix-drift.yml — an unusable provider credential cannot read as 'no d
 
   const REVOKED = { provider: "gemini", reason: infraSkipReason(401, "gemini") };
   const TRANSIENT = { provider: "openai", reason: infraSkipReason(429, "openai") };
+  /**
+   * The THIRD skip class, taken from the function that PRODUCES it rather than
+   * transcribed: `detectDeprecatedFamiliesForSync` abandons the whole deprecation
+   * half when the live listing comes back too short to trust (a partial response,
+   * or an API that changed shape). Reading the reason off the real call is what
+   * makes this fixture unable to drift from the emitter — the previous fixture in
+   * this describe hand-copied log prose and had already drifted from it.
+   */
+  const listingUntrustedReason = (): string => {
+    const dep = detectDeprecatedFamiliesForSync([], "openai");
+    if (dep.status !== "skipped")
+      throw new Error("an EMPTY live listing no longer skips the deprecation half");
+    return dep.reason;
+  };
+  const TRUNCATED = { provider: "openai", reason: listingUntrustedReason() };
 
   it("the workflow keys on the MACHINE line drift-sync emits, not on its log prose", () => {
     expect(
@@ -2953,17 +2970,76 @@ describe("fix-drift.yml — an unusable provider credential cannot read as 'no d
   });
 
   it("the skip CLASSIFIER agrees with the reason builders, and still tolerates transient classes", () => {
-    // Both sides of this read the same two prose constants inside drift-sync.ts,
-    // so a reword cannot make the builder and the classifier disagree.
-    expect(isCredentialUnusableSkip(missingKeySkipReason("GOOGLE_API_KEY", "gemini"))).toBe(true);
+    // Both sides of this read the same prose constants inside drift-sync.ts, so a
+    // reword cannot make the builder and the classifier disagree.
+    expect(isProviderUncheckedSkip(missingKeySkipReason("GOOGLE_API_KEY", "gemini"))).toBe(true);
     for (const status of [401, 402, 403]) {
-      expect(isCredentialUnusableSkip(infraSkipReason(status, "gemini"))).toBe(true);
+      expect(isProviderUncheckedSkip(infraSkipReason(status, "gemini"))).toBe(true);
     }
     // 429 and 5xx resolve on their own and must never red an unattended cron.
     for (const status of [429, 500, 503]) {
-      expect(isCredentialUnusableSkip(infraSkipReason(status, "openai"))).toBe(false);
+      expect(isTransientSkip(infraSkipReason(status, "openai"))).toBe(true);
+      expect(isProviderUncheckedSkip(infraSkipReason(status, "openai"))).toBe(false);
     }
-    expect(isCredentialUnusableSkip("live listing unavailable")).toBe(false);
+  });
+
+  it("the classifier fails CLOSED: a skip class it does not recognise counts as UNCHECKED", () => {
+    // The defect this replaces: the classifier was an allowlist of the two faults
+    // it knew, returning false — "checked fine" — for everything else. Three
+    // reasons the real code produces fell through it. None of them is a transient
+    // blip, and none may read as a quiet day.
+    //
+    // The third skip class, whose reason is taken from the real producer.
+    expect(
+      isProviderUncheckedSkip(TRUNCATED.reason),
+      "a live /models listing too short to trust reads as 'this provider was checked and " +
+        "nothing drifted', so the whole deprecation half goes unchecked on a green, silent run",
+    ).toBe(true);
+    // The core loop's own fallback when a skip arrives with no reason attached.
+    expect(isProviderUncheckedSkip("live listing unavailable")).toBe(true);
+    // And the class nobody has written yet, which is the point of inverting the
+    // default: an unrecognised reason must not be able to resolve to "fine".
+    expect(
+      isProviderUncheckedSkip("some skip class a later change to drift-sync.ts adds"),
+      "an unrecognised skip class still resolves to 'checked fine', so the next one added " +
+        "to drift-sync.ts is invisible to the preflight exactly as the last one was",
+    ).toBe(true);
+    // …while the tolerated class is still tolerated, so this is not just "always true".
+    expect(isProviderUncheckedSkip(TRANSIENT.reason)).toBe(false);
+  });
+
+  it("a live listing too short to trust reported as ok-no-churn fails the step (EXECUTED)", () => {
+    // The end-to-end surface, not the classifier in isolation: the stand-in
+    // drift-sync builds its machine line with the REAL emitter, and the REAL sync
+    // step body then runs against that log and decides. Both halves of the contract
+    // — what drift-sync writes and what the workflow reads — are exercised.
+    const obs = observeSyncStep(wf, syncStub([TRUNCATED]));
+    expect(
+      obs.outputs.reason ?? "",
+      "drift-sync abandoned openai's whole deprecation half because the live listing came " +
+        "back too short to trust, reported ok-no-churn, and the step republished it — so a " +
+        "provider whose API changed shape stops being checked for deprecations, green and " +
+        "silent, every morning",
+    ).not.toBe(SyncCoreReason.OK_NO_CHURN);
+    expect(
+      obs.stepExit,
+      `the step exited 0 having published reason=${JSON.stringify(obs.outputs.reason ?? "")}`,
+    ).not.toBe(0);
+    // The provider is NAMED, not merely counted — a human has to know which one.
+    expect(obs.stdio).toContain("openai");
+  });
+
+  it("a TRANSIENT skip still passes: the fail-closed default did not red every quiet day", () => {
+    // The negative control for the inversion. Without it, "classify everything as
+    // unchecked" would satisfy every assertion above while reddening the cron on
+    // any 429 — turning a fail-silent bug into a fail-noisy one.
+    const obs = observeSyncStep(wf, syncStub([TRANSIENT]));
+    expect(
+      obs.outputs.reason,
+      "a 429 from one provider now reclassifies the whole run, so a transient blip reds " +
+        "an unattended daily cron and alerts a human who has nothing to fix",
+    ).toBe(SyncCoreReason.OK_NO_CHURN);
+    expect(obs.stepExit).toBe(0);
   });
 
   it("a revoked key reported as ok-no-churn fails the step and raises an alert", () => {
