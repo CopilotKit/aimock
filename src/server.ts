@@ -272,32 +272,46 @@ function handleNotFound(res: http.ServerResponse, message: string): void {
 const CONTROL_PREFIX = "/__aimock";
 
 /**
- * Perform a full fixtures reset: clear the fixtures array, journal, video/fal
- * generation state, and the interaction/event-id counters, then zero the
- * `aimock_fixtures_loaded` gauge. Shared by `/reset/fixtures` and the
- * deprecated `/reset` alias.
+ * The per-server state a full reset clears. `ServerInstance` structurally
+ * satisfies this, so `LLMock.reset()` and the control-API full-reset route
+ * share a single definition of "everything" instead of two lists that drift.
  */
-function performFixturesReset(
-  fixtures: Fixture[],
-  journal: Journal,
-  videoStates: VideoStateMap,
-  openRouterVideoJobs: OpenRouterVideoJobMap,
-  veoVideoJobs: VeoVideoJobMap,
-  grokVideoJobs: GrokVideoJobMap,
-  defaults: HandlerDefaults,
-): void {
+export interface FullResetTargets {
+  journal: Journal;
+  videoStates: VideoStateMap;
+  openRouterVideoJobs: OpenRouterVideoJobMap;
+  veoVideoJobs: VeoVideoJobMap;
+  grokVideoJobs: GrokVideoJobMap;
+  defaults: HandlerDefaults;
+}
+
+/**
+ * Perform a full reset: clear the fixtures array, the journal (entries *and*
+ * per-test fixture match-counts, i.e. sequence position), the video and fal.ai
+ * job/queue state, and the Gemini interaction/event-id counters, then re-zero
+ * the `aimock_fixtures_loaded` gauge.
+ *
+ * `targets` is `null` when no server is running (an in-process `reset()` before
+ * `start()`). The process-global generation state is reset either way, since it
+ * is not owned by any one server instance.
+ *
+ * Shared by `POST /__aimock/reset` (canonical), its deprecated
+ * `POST /__aimock/reset/fixtures` alias, and `LLMock.reset()`.
+ */
+export function performFullReset(fixtures: Fixture[], targets: FullResetTargets | null): void {
   fixtures.length = 0;
-  journal.clear();
-  videoStates.clear();
-  openRouterVideoJobs.clear();
-  veoVideoJobs.clear();
-  grokVideoJobs.clear();
   falJobs.clear();
   falQueueStates.clear();
   resetInteractionCounter();
   resetEventIdCounter();
-  if (defaults.registry) {
-    defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
+  if (!targets) return;
+  targets.journal.clear();
+  targets.videoStates.clear();
+  targets.openRouterVideoJobs.clear();
+  targets.veoVideoJobs.clear();
+  targets.grokVideoJobs.clear();
+  if (targets.defaults.registry) {
+    targets.defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
 }
 
@@ -395,17 +409,19 @@ async function handleControlAPI(
     return true;
   }
 
-  // POST /__aimock/reset/fixtures — full reset (fixtures + journal + match counts)
-  if (subPath === "/reset/fixtures" && req.method === "POST") {
-    performFixturesReset(
-      fixtures,
-      journal,
-      videoStates,
-      openRouterVideoJobs,
-      veoVideoJobs,
-      grokVideoJobs,
-      defaults,
-    );
+  const resetTargets = (): FullResetTargets => ({
+    journal,
+    videoStates,
+    openRouterVideoJobs,
+    veoVideoJobs,
+    grokVideoJobs,
+    defaults,
+  });
+
+  // POST /__aimock/reset — full reset (fixtures, journal entries + fixture
+  // match-counts, video/fal job state, Gemini counters)
+  if (subPath === "/reset" && req.method === "POST") {
+    performFullReset(fixtures, resetTargets());
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ reset: true }));
     return true;
@@ -420,21 +436,15 @@ async function handleControlAPI(
     return true;
   }
 
-  // POST /__aimock/reset — DEPRECATED alias for /reset/fixtures (full reset)
-  if (subPath === "/reset" && req.method === "POST") {
-    performFixturesReset(
-      fixtures,
-      journal,
-      videoStates,
-      openRouterVideoJobs,
-      veoVideoJobs,
-      grokVideoJobs,
-      defaults,
-    );
+  // POST /__aimock/reset/fixtures — DEPRECATED alias for /reset. The name
+  // promises a fixtures-only reset but it always performed the full reset;
+  // /reset is the honest route. Behaviour is unchanged for existing callers.
+  if (subPath === "/reset/fixtures" && req.method === "POST") {
+    performFullReset(fixtures, resetTargets());
     const deprecation =
-      "POST /__aimock/reset is deprecated; use POST /__aimock/reset/fixtures (full reset) or POST /__aimock/reset/journal (journal only)";
+      "POST /__aimock/reset/fixtures is deprecated; use POST /__aimock/reset (full reset) or POST /__aimock/reset/journal (journal only)";
     defaults.logger.warn(
-      "POST /__aimock/reset is deprecated; use /__aimock/reset/fixtures or /__aimock/reset/journal",
+      "POST /__aimock/reset/fixtures is deprecated; use /__aimock/reset or /__aimock/reset/journal",
     );
     res.writeHead(200, { "Content-Type": "application/json", Deprecation: "true" });
     res.end(JSON.stringify({ reset: true, deprecated: true, deprecation }));
@@ -1977,7 +1987,7 @@ export async function createServerWithResolvedAuth(
         // Clear only the request journal entries, preserving fixture
         // match-counts (sequencing state). Clearing the request log must not
         // silently rewind sequenced fixtures. For a full reset (entries +
-        // match-counts), use POST /__aimock/reset/fixtures.
+        // match-counts), use POST /__aimock/reset.
         journal.clearEntries();
         res.writeHead(204);
         res.end();

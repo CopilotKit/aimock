@@ -2504,11 +2504,10 @@ async function captureOpenRouterVideoRecordFixture(args: {
       ...(capturedB64 !== undefined ? { b64: capturedB64 } : {}),
       ...(cost !== undefined ? { cost } : {}),
     };
-    // World-generation guard: a fixtures reset (POST
-    // /__aimock/reset/fixtures) landing during the multi-second capture
-    // above clears BOTH the fixtures array and the job map
-    // (performFixturesReset) — so map identity is a valid proxy for "same
-    // world": if `jobs.get(key)` no longer returns this job, the world this
+    // World-generation guard: a full reset (POST /__aimock/reset) landing
+    // during the multi-second capture above clears BOTH the fixtures array
+    // and the job map (performFullReset) — so map identity is a valid proxy
+    // for "same world": if `jobs.get(key)` no longer returns this job, the world this
     // capture belongs to is gone and persisting would push a stale fixture
     // into the NEXT world's array (and write a file the new world never
     // asked for). Checked immediately before persistFixture with no await

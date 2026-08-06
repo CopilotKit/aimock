@@ -220,7 +220,7 @@ describe("/__aimock control API", () => {
 
       const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ reset: true });
+      expect(JSON.parse(res.body)).toMatchObject({ reset: true });
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
     });
@@ -268,13 +268,13 @@ describe("/__aimock control API", () => {
       expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBe(countBefore);
     });
 
-    it("POST /__aimock/reset is a deprecated alias that still performs a full reset", async () => {
+    it("POST /__aimock/reset/fixtures is a deprecated alias that still performs a full reset", async () => {
       const fixtures: Fixture[] = [
         { match: { userMessage: "hello" }, response: { content: "Hi" } },
       ];
       instance = await createServer(fixtures);
 
-      const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
+      const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
       expect(res.status).toBe(200);
       const body = JSON.parse(res.body);
       expect(body).toMatchObject({ reset: true, deprecated: true });

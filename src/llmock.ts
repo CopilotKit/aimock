@@ -17,7 +17,12 @@ import type {
   TranscriptionResponse,
   VideoResponse,
 } from "./types.js";
-import { createServer, createServerWithResolvedAuth, type ServerInstance } from "./server.js";
+import {
+  createServer,
+  createServerWithResolvedAuth,
+  performFullReset,
+  type ServerInstance,
+} from "./server.js";
 import type { ResolvedInboundAuth } from "./api-key-auth.js";
 import {
   loadFixtureFile,
@@ -30,8 +35,7 @@ import { Journal } from "./journal.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
-import { falJobs } from "./fal-audio.js";
-import { falQueueStates, imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
+import { imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
 
 export class LLMock {
   private fixtures: Fixture[] = [];
@@ -422,18 +426,20 @@ export class LLMock {
 
   // ---- Reset ----
 
+  /**
+   * Full reset — the in-process equivalent of `POST /__aimock/reset`. Shares
+   * one implementation with the control-API route so the two cannot drift.
+   *
+   * The one deliberate difference: search / rerank / moderation fixtures are
+   * also cleared here. Those are registered through this class only — the
+   * control API has no route that creates them, so the HTTP reset can neither
+   * reach nor observe them.
+   */
   reset(): this {
-    this.clearFixtures();
     this.searchFixtures.length = 0;
     this.rerankFixtures.length = 0;
     this.moderationFixtures.length = 0;
-    falJobs.clear();
-    falQueueStates.clear();
-    if (this.serverInstance) {
-      this.serverInstance.journal.clear();
-      this.serverInstance.videoStates.clear();
-      this.serverInstance.openRouterVideoJobs.clear();
-    }
+    performFullReset(this.fixtures, this.serverInstance);
     return this;
   }
 
