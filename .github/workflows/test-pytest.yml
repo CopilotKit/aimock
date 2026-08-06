@@ -45,6 +45,24 @@ jobs:
 
       # Install and test Python package
       - name: Install aimock-pytest
-        run: pip install ./packages/aimock-pytest[test]
+        # The build backend is hash-pinned and build isolation is OFF, so pip
+        # does not resolve `build-system.requires` from PyPI and execute it here.
+        # Measured on 2026-08-05: with the registry serving substituted bytes,
+        # the old one-liner imported the substituted `hatchling.build` twice
+        # (get_requires_for_build_wheel, then prepare_metadata) before it did
+        # anything else.
+        #
+        # `requests` and `pytest` are STILL resolved unpinned, deliberately. This
+        # job exists to catch breakage against current releases across four
+        # Pythons; freezing them would retire that signal, and this job declares
+        # no secrets and holds `contents: read`. The publish job — which does hold
+        # a publish identity — installs from the same pinned file and builds the
+        # same way, so the backend that builds a release is the backend tested here.
+        #
+        # `python -m pip` rather than `pip` so the interpreter that installs the
+        # backend is the same one that has to import it during the build.
+        run: |
+          python -m pip install --require-hashes -r .github/requirements/hatchling.txt
+          python -m pip install --no-build-isolation "./packages/aimock-pytest[test]"
       - name: Run Python tests
         run: cd packages/aimock-pytest && pytest tests/ -v
