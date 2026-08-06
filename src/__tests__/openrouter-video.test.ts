@@ -2267,7 +2267,7 @@ describe("OpenRouter video — reset plumbing", () => {
     return id;
   }
 
-  test("POST /__aimock/reset/fixtures clears job state (old jobId polls 404)", async () => {
+  test("POST /__aimock/reset clears job state (old jobId polls 404)", async () => {
     mock = new LLMock({ port: 0 });
     mock.addFixture({
       match: { userMessage: "reset http", endpoint: "video" },
@@ -2280,8 +2280,33 @@ describe("OpenRouter video — reset plumbing", () => {
     expect(before.status).toBe(200);
     await before.arrayBuffer();
 
+    const reset = await fetch(`${mock.url}/__aimock/reset`, { method: "POST" });
+    expect(reset.status).toBe(200);
+    await reset.arrayBuffer();
+
+    const after = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(after.status).toBe(404);
+    expect((await after.json()).error.code).toBe(404);
+  });
+
+  // The deprecated alias must keep clearing job state identically — that
+  // back-compat is the reason it still exists.
+  test("POST /__aimock/reset/fixtures (deprecated alias) clears job state too", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { userMessage: "reset alias", endpoint: "video" },
+      response: { video: { id: "vid_ral", status: "completed" } },
+    });
+    await mock.start();
+    const id = await submitJob("reset alias");
+
+    const before = await fetch(`${mock.url}/api/v1/videos/${id}`);
+    expect(before.status).toBe(200);
+    await before.arrayBuffer();
+
     const reset = await fetch(`${mock.url}/__aimock/reset/fixtures`, { method: "POST" });
     expect(reset.status).toBe(200);
+    expect(reset.headers.get("deprecation")).toBe("true");
     await reset.arrayBuffer();
 
     const after = await fetch(`${mock.url}/api/v1/videos/${id}`);
@@ -3143,7 +3168,7 @@ describe("OpenRouter video submit — fixtures reset during a slow ResponseFacto
     });
     // The factory is mid-await — reset the world underneath it.
     await new Promise<void>((r) => setTimeout(r, 150));
-    const reset = await fetch(`${mock.url}/__aimock/reset/fixtures`, { method: "POST" });
+    const reset = await fetch(`${mock.url}/__aimock/reset`, { method: "POST" });
     expect(reset.status).toBe(200);
     await reset.arrayBuffer();
 

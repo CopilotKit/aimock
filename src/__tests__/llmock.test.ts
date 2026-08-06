@@ -1041,6 +1041,350 @@ describe("LLMock", () => {
       // clearFixtures alone should not throw before start
       expect(mock.clearFixtures()).toBe(mock);
     });
+
+    // reset() must be the in-process equivalent of POST /__aimock/reset. These
+    // exercise the stores the in-process path used to leave behind.
+    it("clears Veo and Grok video job state — pre-reset poll ids stop resolving", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "veo clip", endpoint: "video" },
+        response: {
+          video: { id: "veo_reset", status: "completed", url: "https://files.example/v.mp4" },
+        },
+      });
+      mock.addFixture({
+        match: { userMessage: "grok clip", endpoint: "video" },
+        response: {
+          video: { id: "vid_grok_reset", status: "completed", url: "https://cdn.x.ai/v.mp4" },
+        },
+      });
+      await mock.start();
+
+      const veoSubmit = (await (
+        await fetch(`${mock.url}/v1beta/models/veo-3.1-generate-preview:predictLongRunning`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instances: [{ prompt: "veo clip" }] }),
+        })
+      ).json()) as { name: string };
+      expect(typeof veoSubmit.name).toBe("string");
+
+      const grokSubmit = (await (
+        await fetch(`${mock.url}/v1/videos/generations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "grok-imagine-video", prompt: "grok clip" }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof grokSubmit.request_id).toBe("string");
+
+      // Both jobs resolve while they are still in the maps.
+      expect((await fetch(`${mock.url}/v1beta/${veoSubmit.name}`)).status).toBe(200);
+      expect((await fetch(`${mock.url}/v1/videos/${grokSubmit.request_id}`)).status).toBe(200);
+
+      mock.reset();
+
+      expect((await fetch(`${mock.url}/v1beta/${veoSubmit.name}`)).status).toBe(404);
+      expect((await fetch(`${mock.url}/v1/videos/${grokSubmit.request_id}`)).status).toBe(404);
+    });
+
+    it("rewinds the Gemini interaction-id counter", async () => {
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+
+      const first = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      const second = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      // The counter really did advance, so a rewind is observable.
+      expect(first.id).not.toBe(second.id);
+
+      mock.reset();
+      mock.onMessage("hello", { content: "Hi there!" });
+
+      const afterReset = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      expect(afterReset.id).toBe("aimock-int-0");
+    });
+
+    it("rewinds the Gemini interactions event-id counter", async () => {
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+
+      // Burn some event ids on a streaming interaction.
+      await postTo(mock.url, "/v1beta/interactions", {
+        model: "gemini-2.5-flash",
+        input: "hello",
+        stream: true,
+      });
+
+      mock.reset();
+      mock.onMessage("hello", { content: "Hi there!" });
+
+      const res = await postTo(mock.url, "/v1beta/interactions", {
+        model: "gemini-2.5-flash",
+        input: "hello",
+        stream: true,
+      });
+      const firstEventLine = res.data.split("\n").find((l) => l.startsWith("data: "));
+      expect(firstEventLine).toBeDefined();
+      const firstEvent = JSON.parse(firstEventLine!.slice(6)) as { event_id: string };
+      expect(firstEvent.event_id).toBe("evt_1");
+    });
+
+    it("clears Sora video state — a pre-reset video id stops resolving", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "sora clip", endpoint: "video" },
+        response: {
+          video: { id: "video_sora_reset", status: "completed", url: "https://s/v.mp4" },
+        },
+      });
+      await mock.start();
+
+      const created = (await (
+        await fetch(`${mock.url}/v1/videos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "sora-2", prompt: "sora clip" }),
+        })
+      ).json()) as { id: string };
+      expect(typeof created.id).toBe("string");
+      expect((await fetch(`${mock.url}/v1/videos/${created.id}`)).status).toBe(200);
+
+      mock.reset();
+
+      const after = await fetch(`${mock.url}/v1/videos/${created.id}`);
+      expect(after.status).toBe(404);
+      expect(((await after.json()) as { error: { type: string } }).error.type).toBe("not_found");
+    });
+
+    it("clears fal.ai audio queue jobs — a pre-reset request_id stops resolving", async () => {
+      mock = new LLMock();
+      mock.onFalAudio("drum loop", { audio: "SGVsbG8=", format: "mp3" });
+      await mock.start();
+
+      const envelope = (await (
+        await fetch(`${mock.url}/fal/queue/submit/fal-ai/stable-audio`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: "drum loop" }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof envelope.request_id).toBe("string");
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(200);
+
+      mock.reset();
+
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(404);
+    });
+
+    it("clears fal.ai general queue state — a pre-reset request_id stops resolving", async () => {
+      mock = new LLMock();
+      mock.onFalQueue(/flux/, { images: [{ url: "https://example.com/cat.png" }] });
+      await mock.start();
+
+      const falHeaders = { "x-fal-target-host": "queue.fal.run" };
+      const envelope = (await (
+        await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...falHeaders },
+          body: JSON.stringify({ input: { prompt: "a cat" } }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof envelope.request_id).toBe("string");
+      const statusUrl = `${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}/status`;
+      expect((await fetch(statusUrl, { headers: falHeaders })).status).toBe(200);
+
+      mock.reset();
+
+      expect((await fetch(statusUrl, { headers: falHeaders })).status).toBe(404);
+    });
+
+    // The full reset clears journal ENTRIES *and* per-test fixture
+    // match-counts. Only the latter carries sequence position, so a reset that
+    // used clearEntries() would leave sequenced fixtures parked mid-sequence.
+    it("clears fixture match-counts, rewinding sequence position", async () => {
+      const first = {
+        match: { userMessage: "seq", sequenceIndex: 0 },
+        response: { content: "FIRST" },
+      };
+      const second = {
+        match: { userMessage: "seq", sequenceIndex: 1 },
+        response: { content: "SECOND" },
+      };
+      mock = new LLMock();
+      mock.addFixture(first).addFixture(second);
+      await mock.start();
+
+      // Counts are per-testId, so drive BOTH the default scope and a named
+      // one — a reset that only clears the default sentinel would strand
+      // every other tenant mid-sequence.
+      const asTenant = (msg: string) =>
+        fetch(`${mock!.url}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-test-id": "tenant-a" },
+          body: JSON.stringify(chatBody(msg, false)),
+        }).then((r) => r.text());
+
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("SECOND");
+      expect(mock.journal.getFixtureMatchCount(first)).toBe(2);
+
+      expect(await asTenant("seq")).toContain("FIRST");
+      expect(await asTenant("seq")).toContain("SECOND");
+      expect(mock.journal.getFixtureMatchCount(first, "tenant-a")).toBe(2);
+
+      mock.reset();
+      // Re-add the SAME fixture objects — counts are keyed by object identity,
+      // so a surviving count would still be attached to them.
+      mock.addFixture(first).addFixture(second);
+
+      expect(mock.journal.getFixtureMatchCount(first)).toBe(0);
+      expect(mock.journal.getFixtureMatchCount(first, "tenant-a")).toBe(0);
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
+      expect(await asTenant("seq")).toContain("FIRST");
+    });
+
+    // The documented divergence from the HTTP reset: these three stores are
+    // in-process only, so nothing but this test guards them.
+    it("clears search, rerank and moderation fixtures", async () => {
+      mock = new LLMock();
+      mock.onSearch("weather", [
+        { title: "Weather Report", url: "https://example.com/weather", content: "Sunny today" },
+      ]);
+      mock.onRerank("machine learning", [{ index: 0, relevance_score: 0.99 }]);
+      mock.onModerate("violent", { flagged: true, categories: { violence: true } });
+      await mock.start();
+
+      const search = async () =>
+        JSON.parse(
+          (await postTo(mock!.url, "/search", { query: "What is the weather?" })).data,
+        ) as {
+          results: unknown[];
+        };
+      const rerank = async () =>
+        JSON.parse(
+          (
+            await postTo(mock!.url, "/v2/rerank", {
+              query: "What is machine learning?",
+              documents: ["ML is a subset of AI"],
+              model: "rerank-v3.5",
+            })
+          ).data,
+        ) as { results: unknown[] };
+      const moderate = async () =>
+        JSON.parse(
+          (await postTo(mock!.url, "/v1/moderations", { input: "This is violent content" })).data,
+        ) as { results: Array<{ flagged: boolean }> };
+
+      expect((await search()).results).toHaveLength(1);
+      expect((await rerank()).results).toHaveLength(1);
+      expect((await moderate()).results[0].flagged).toBe(true);
+
+      mock.reset();
+
+      // A cleared fixture store yields an empty/unflagged response, not an error.
+      expect((await search()).results).toHaveLength(0);
+      expect((await rerank()).results).toHaveLength(0);
+      expect((await moderate()).results[0].flagged).toBe(false);
+    });
+
+    // performFullReset takes a null target before start(). The process-global
+    // stores must still be cleared on that path.
+    it("clears process-global state even when called before start()", async () => {
+      // Seed the global fal stores and the Gemini counters through a first,
+      // fully-started instance, then stop it.
+      const seeder = new LLMock();
+      seeder.onFalAudio("drum loop", { audio: "SGVsbG8=", format: "mp3" });
+      seeder.onMessage("hello", { content: "Hi there!" });
+      await seeder.start();
+      // The file-level afterEach only stops `mock`, so this handle is ours to
+      // close on every path.
+      let envelope: { request_id: string };
+      try {
+        envelope = (await (
+          await fetch(`${seeder.url}/fal/queue/submit/fal-ai/stable-audio`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: "drum loop" }),
+          })
+        ).json()) as { request_id: string };
+        await postTo(seeder.url, "/v1beta/interactions", {
+          model: "gemini-2.5-flash",
+          input: "hello",
+          stream: false,
+        });
+      } finally {
+        await seeder.stop();
+      }
+
+      // A brand-new, NEVER-STARTED instance resets the process-global state.
+      const unstarted = new LLMock();
+      unstarted.onMessage("x", { content: "y" });
+      unstarted.reset();
+      expect(unstarted.getFixtures()).toHaveLength(0);
+
+      // Observe through a fresh server: the seeded fal job is gone and the
+      // Gemini interaction counter restarted.
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(404);
+      const interaction = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      expect(interaction.id).toBe("aimock-int-0");
+    });
+
+    it("re-zeroes the aimock_fixtures_loaded gauge", async () => {
+      mock = new LLMock({ metrics: true });
+      mock.onMessage("a", { content: "1" });
+      mock.onMessage("b", { content: "2" });
+      await mock.start();
+
+      const scrape = async () => (await fetch(`${mock!.url}/metrics`)).text();
+      expect(await scrape()).toContain("aimock_fixtures_loaded{} 2");
+
+      mock.reset();
+
+      expect(await scrape()).toContain("aimock_fixtures_loaded{} 0");
+    });
   });
 
   describe("baseUrl getter", () => {

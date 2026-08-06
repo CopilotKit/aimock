@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import type { Fixture, ChatCompletionRequest } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -11,7 +11,7 @@ function httpRequest(
   url: string,
   method: string,
   body?: object,
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const opts: http.RequestOptions = {
@@ -27,6 +27,7 @@ function httpRequest(
       res.on("end", () =>
         resolve({
           status: res.statusCode ?? 0,
+          headers: res.headers,
           body: Buffer.concat(chunks).toString(),
         }),
       );
@@ -194,15 +195,19 @@ describe("/__aimock control API", () => {
       ];
       instance = await createServer(fixtures);
 
-      // Make a request to populate journal
+      // Make a request to populate the journal AND the fixture's match-count.
       await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
       expect(instance.journal.size).toBeGreaterThan(0);
+      const fixture = fixtures[0];
+      expect(instance.journal.getFixtureMatchCount(fixture)).toBeGreaterThan(0);
 
       const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
       expect(res.status).toBe(200);
       expect(JSON.parse(res.body)).toMatchObject({ reset: true });
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
+      // The name of this test promises match counts — assert them.
+      expect(instance.journal.getFixtureMatchCount(fixture)).toBe(0);
     });
   });
 
@@ -219,7 +224,7 @@ describe("/__aimock control API", () => {
 
       const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ reset: true });
+      expect(JSON.parse(res.body)).toMatchObject({ reset: true });
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
     });
@@ -267,18 +272,77 @@ describe("/__aimock control API", () => {
       expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBe(countBefore);
     });
 
-    it("POST /__aimock/reset is a deprecated alias that still performs a full reset", async () => {
+    // The alias's deprecation signal and its full-reset behaviour are covered
+    // together, and more strictly, by "full-reset deprecation direction" below.
+  });
+
+  describe("full-reset deprecation direction", () => {
+    it("POST /__aimock/reset is canonical — success body carries no deprecation signal", async () => {
       const fixtures: Fixture[] = [
         { match: { userMessage: "hello" }, response: { content: "Hi" } },
       ];
       instance = await createServer(fixtures);
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
 
       const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
       expect(res.status).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body).toMatchObject({ reset: true, deprecated: true });
-      expect(typeof body.deprecation).toBe("string");
+      expect(res.headers.deprecation).toBeUndefined();
+      expect(JSON.parse(res.body)).toEqual({ reset: true });
       expect(fixtures.length).toBe(0);
+      expect(instance.journal.size).toBe(0);
+    });
+
+    it("POST /__aimock/reset/fixtures is the deprecated alias — signals deprecation and still full-resets", async () => {
+      const fixtures: Fixture[] = [
+        { match: { userMessage: "hello" }, response: { content: "Hi" } },
+      ];
+      instance = await createServer(fixtures);
+      await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
+      expect(instance.journal.size).toBeGreaterThan(0);
+      expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBeGreaterThan(0);
+
+      const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
+      expect(res.status).toBe(200);
+      expect(res.headers.deprecation).toBe("true");
+
+      const body = JSON.parse(res.body) as {
+        reset: boolean;
+        deprecated: boolean;
+        deprecation: string;
+      };
+      expect(body.reset).toBe(true);
+      expect(body.deprecated).toBe(true);
+      // Points callers at the canonical route, not back at itself. Asserting
+      // the whole string: any substring of it that mentions "/__aimock/reset"
+      // is also present in a message that points back at /reset/fixtures.
+      expect(body.deprecation).toBe(
+        "POST /__aimock/reset/fixtures is deprecated; use POST /__aimock/reset (full reset) or POST /__aimock/reset/journal (journal only)",
+      );
+
+      // Back-compat: the alias still performs the same full reset.
+      expect(fixtures.length).toBe(0);
+      expect(instance.journal.size).toBe(0);
+    });
+
+    // The log warning is the third documented deprecation signal, alongside
+    // the header and the body fields. The suite defaults to logLevel silent,
+    // so the level has to be raised for the warning to reach console.warn.
+    it("logs a deprecation warning for the alias and stays silent for the canonical route", async () => {
+      instance = await createServer([], { logLevel: "warn" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await httpRequest(`${instance.url}/__aimock/reset`, "POST");
+        expect(warn).not.toHaveBeenCalled();
+
+        await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0].join(" ")).toContain(
+          "POST /__aimock/reset/fixtures is deprecated; use /__aimock/reset or /__aimock/reset/journal",
+        );
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

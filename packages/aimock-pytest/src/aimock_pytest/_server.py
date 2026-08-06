@@ -324,15 +324,19 @@ class AIMockServer:
         return self
 
     def reset(self) -> AIMockServer:
-        """Full reset: clear fixtures + generation state + journal (alias for
-        :meth:`reset_fixtures`)."""
-        return self.reset_fixtures()
+        """Full reset via ``POST /__aimock/reset``: clears fixtures, journal
+        entries and fixture match-counts, video/fal job state, and the Gemini
+        counters."""
+        self._control_request("POST", "/reset", timeout=5).raise_for_status()
+        return self
 
     def reset_fixtures(self) -> AIMockServer:
-        """Clear fixtures + generation state (and journal) via
-        ``POST /__aimock/reset/fixtures``."""
-        self._control_request("POST", "/reset/fixtures", timeout=5).raise_for_status()
-        return self
+        """Alias for :meth:`reset` — a full reset, not a fixtures-only one.
+
+        The name is kept for compatibility; ``DELETE /__aimock/fixtures``
+        (:meth:`clear_fixtures`) is the fixtures-only call.
+        """
+        return self.reset()
 
     def reset_journal(self) -> AIMockServer:
         """Clear ONLY the request journal, leaving fixtures intact, via

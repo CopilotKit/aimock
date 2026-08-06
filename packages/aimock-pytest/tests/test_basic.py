@@ -184,6 +184,82 @@ def test_reset_clears_fixtures(aimock):
     assert r.status_code == 404
 
 
+def _capture_control_posts(monkeypatch):
+    """Spy on requests.post, recording every /__aimock/ control call.
+
+    Returns the list the spy appends ``(url, response)`` to.  The real request
+    still goes out, so the recorded response is the SERVER's, not a stub.
+    """
+    captured = []
+    real_post = requests.post
+
+    def spy(url, *args, **kwargs):
+        response = real_post(url, *args, **kwargs)
+        if "/__aimock/" in url:
+            captured.append((url, response))
+        return response
+
+    monkeypatch.setattr(requests, "post", spy)
+    return captured
+
+
+def test_reset_targets_the_canonical_route_not_the_deprecated_alias(aimock, monkeypatch):
+    """reset() must POST /__aimock/reset, which carries no deprecation signal.
+
+    Both routes perform the same full reset, so a functional assertion cannot
+    tell them apart.  The deprecation signal can: the alias returns
+    ``deprecated``/``deprecation`` in the body and a ``Deprecation`` header,
+    the canonical route returns neither.
+    """
+    captured = _capture_control_posts(monkeypatch)
+    aimock.reset()
+
+    assert len(captured) == 1
+    url, response = captured[0]
+    assert url.endswith("/__aimock/reset")
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body == {"reset": True}
+    assert "deprecated" not in body
+    assert "deprecation" not in body
+    assert "Deprecation" not in response.headers
+
+    # Anchor the discriminator: the alias DOES signal deprecation, so the
+    # assertions above genuinely distinguish the two routes rather than
+    # passing for both.
+    alias = requests.post(f"{aimock.base_url}/__aimock/reset/fixtures", timeout=5)
+    assert alias.status_code == 200
+    alias_body = alias.json()
+    assert alias_body["deprecated"] is True
+    # The discriminating substring: a self-referential message would read
+    # "use POST /__aimock/reset/fixtures (full reset)".  A bare
+    # "POST /__aimock/reset" check would be satisfied by that too.
+    assert "use POST /__aimock/reset (full reset)" in alias_body["deprecation"]
+    assert alias.headers["Deprecation"] == "true"
+
+
+def test_reset_fixtures_is_a_deprecation_free_alias_for_reset(aimock, monkeypatch):
+    """reset_fixtures() delegates to reset(), so it too uses /__aimock/reset."""
+    aimock.on_message("test", {"content": "response"})
+
+    captured = _capture_control_posts(monkeypatch)
+    aimock.reset_fixtures()
+
+    assert len(captured) == 1
+    url, response = captured[0]
+    assert url.endswith("/__aimock/reset")
+    assert response.json() == {"reset": True}
+    assert "Deprecation" not in response.headers
+
+    # ...and it still performs the full reset its name promises.
+    r = requests.post(
+        f"{aimock.base_url}/v1/chat/completions",
+        json={"model": "gpt-4", "messages": [{"role": "user", "content": "test"}]},
+    )
+    assert r.status_code == 404
+
+
 def test_reset_journal_preserves_fixtures(aimock):
     """reset_journal() clears the journal but leaves fixtures intact."""
     aimock.on_message("hello", {"content": "Hi there!"})

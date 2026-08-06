@@ -2236,8 +2236,8 @@ async function proxyOpenRouterVideoRecordPoll(args: {
       // upstream fetch was in flight (everything below the fetch is
       // synchronous, so the first poll to resume wins atomically). Relay
       // without persisting a duplicate fixture or re-registering it.
-      // This identity check ALSO covers a fixtures reset landing during the
-      // upstream fetch: performFixturesReset clears the job map, so a
+      // This identity check ALSO covers a full reset landing during the
+      // upstream fetch: performFullReset clears the job map, so a
       // cleared world fails the check and the stale failure fixture never
       // pollutes the next world's fixtures array — valid because everything
       // from here to persistFixture below is synchronous (no interleaving
@@ -2504,11 +2504,10 @@ async function captureOpenRouterVideoRecordFixture(args: {
       ...(capturedB64 !== undefined ? { b64: capturedB64 } : {}),
       ...(cost !== undefined ? { cost } : {}),
     };
-    // World-generation guard: a fixtures reset (POST
-    // /__aimock/reset/fixtures) landing during the multi-second capture
-    // above clears BOTH the fixtures array and the job map
-    // (performFixturesReset) — so map identity is a valid proxy for "same
-    // world": if `jobs.get(key)` no longer returns this job, the world this
+    // World-generation guard: a full reset (POST /__aimock/reset) landing
+    // during the multi-second capture above clears BOTH the fixtures array
+    // and the job map (performFullReset) — so map identity is a valid proxy
+    // for "same world": if `jobs.get(key)` no longer returns this job, the world this
     // capture belongs to is gone and persisting would push a stale fixture
     // into the NEXT world's array (and write a file the new world never
     // asked for). Checked immediately before persistFixture with no await

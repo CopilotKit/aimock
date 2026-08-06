@@ -3927,7 +3927,7 @@ describe("OpenRouter video record — round 4 CR", () => {
     await waitUntil(() => upstream!.counts.content === 1);
 
     // The world resets mid-capture: fixtures array cleared, job map cleared.
-    const reset = await fetch(`${m.url}/__aimock/reset/fixtures`, { method: "POST" });
+    const reset = await fetch(`${m.url}/__aimock/reset`, { method: "POST" });
     expect(reset.status).toBe(200);
     await reset.arrayBuffer();
 
@@ -4369,7 +4369,7 @@ describe("OpenRouter video record — round 5 CR", () => {
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "reset mid submit" }),
     });
     await sleep(150); // the upstream submit is in flight
-    const reset = await fetch(`${m.url}/__aimock/reset/fixtures`, { method: "POST" });
+    const reset = await fetch(`${m.url}/__aimock/reset`, { method: "POST" });
     expect(reset.status).toBe(200);
     await reset.arrayBuffer();
 
