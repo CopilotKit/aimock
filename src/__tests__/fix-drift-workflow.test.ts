@@ -34,10 +34,20 @@
  * step green. The repo ships no YAML dependency and this suite adds none; an
  * actionlint run in CI covers structural validity separately.
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { afterAll, describe, it, expect, vi } from "vitest";
 
@@ -851,9 +861,11 @@ const MAPFILE_SHIM = [
  *
  * So run the decision rather than reading it. `git` answers `rev-parse` and
  * `diff --name-only` from `headSha`/`diffFiles`; `gh pr list` answers the
- * `--state open` self-heal listing and the `--state all --search` dedup listing
- * separately, because pointing one selector at the other listing is itself a
- * defect this file guards.
+ * self-heal candidate listing and the body-keyed dedup listing separately,
+ * because pointing one selector at the other listing is itself a defect this
+ * file guards. The two are told apart by `--search`, NOT by `--state`: both are
+ * `--state all` now that the marker repair has to reach the CLOSED PR that
+ * records a rejection, and only the dedup listing is body-keyed.
  */
 function observePersistStep(
   step: Step,
@@ -898,8 +910,8 @@ function observePersistStep(
       [
         `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
         'case "$*" in',
-        '  "pr list --state open"*) cat "$GH_OPEN_JSON" ;;',
-        '  "pr list --state all"*) cat "$GH_ALL_JSON" ;;',
+        '  *"--search"*) cat "$GH_ALL_JSON" ;;',
+        '  "pr list --state open"*|"pr list --state all"*) cat "$GH_OPEN_JSON" ;;',
         "esac",
         "exit 0",
       ].join("\n"),
@@ -978,6 +990,218 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
       throw new Error(`${step.name}: assembling MSG failed (${res.status}): ${res.stderr}`);
     }
     return readFileSync(outFile, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EXECUTE either PR-OPEN step, whole, against a real git repo and a scripted `gh`.
+//
+// These two steps hold every dedup and rejection decision in the workflow, and
+// each is several hundred lines of bash and jq. Re-deriving those decisions in
+// TypeScript is what produced the bulk of this PR's review findings: a mirror
+// that called itself verbatim while modelling a superseded gate. So the body is
+// RUN, as written, and only the two things that reach outside the runner are
+// stubbed — `gh`, and `git push`. Everything else is real: a real repository with
+// a real base commit and a real diff, and the real `jq`.
+//
+// What comes back is what the runner would see: the step's exit status, its
+// `$GITHUB_OUTPUT`, every `gh` invocation in order, and the body text of every
+// `gh pr edit`. A guard that stands down is then visible as the ABSENCE of a
+// `pr create` call rather than inferred from a substring.
+// ---------------------------------------------------------------------------
+interface PrStepRun {
+  stepExit: number;
+  outputs: Record<string, string>;
+  stdio: string;
+  /** Every `gh` invocation, argv-joined, in call order. */
+  ghCalls: string[];
+  /** PR number -> the body text `gh pr edit --body-file` was handed. */
+  edits: Record<string, string>;
+  /** Did the step get as far as opening a PR? */
+  created: boolean;
+  /** Did the step get as far as pushing a branch? */
+  pushed: boolean;
+}
+
+/** A PR in the scenario's repository, in `gh pr list --json`'s own shape. */
+interface PrFixture {
+  number: number;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  headRefName: string;
+  body: string;
+  files?: { path: string }[];
+  author?: { login: string };
+}
+
+interface PrStepScenario {
+  changesetKey: string;
+  /** Files the sync committed on top of the base commit (path -> contents). */
+  committed?: Record<string, string>;
+  /**
+   * The repository's PRs — ONE population, from which each `gh pr list` response is
+   * DERIVED by the flags that query actually passes.
+   *
+   * Deliberately not "what each query returns": handing a `--state open` query a
+   * CLOSED PR is how a test convinces itself the self-heal can see a closed
+   * rejection when the real gh never would. Both item-4 guards below passed
+   * against unfixed code until this was derived instead of dictated.
+   */
+  prs?: PrFixture[];
+  /** What the post-create `--json url,number,headRefOid --jq …` lookup prints. */
+  matchOut?: string;
+}
+
+const REAL_GIT = (() => {
+  const r = spawnSync("/usr/bin/env", ["which", "git"], { encoding: "utf-8" });
+  const p = (r.stdout ?? "").trim();
+  if (!p) throw new Error("no git on PATH — this suite executes the real PR-open step bodies");
+  return p;
+})();
+
+function observePrStep(
+  stepId: "pr" | "needs_human_pr",
+  sc: PrStepScenario,
+  src: string = wf,
+): PrStepRun {
+  const dir = mkdtempSync(join(tmpdir(), "fix-drift-pr-"));
+  try {
+    const repo = join(dir, "repo");
+    const bin = join(dir, "bin");
+    const fix = join(dir, "fix");
+    const edits = join(dir, "edits");
+    for (const d of [repo, bin, fix, edits]) mkdirSync(d, { recursive: true });
+
+    const git = (...argv: string[]): void => {
+      const r = spawnSync(REAL_GIT, argv, {
+        cwd: repo,
+        encoding: "utf-8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+      });
+      if (r.status !== 0) throw new Error(`git ${argv.join(" ")} failed: ${r.stderr}`);
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t.test");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "seed.txt"), "seed\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    const baseSha = spawnSync(REAL_GIT, ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf-8",
+    }).stdout.trim();
+    // The sync's own commit: the note file(s) and/or the registry edit this run
+    // produced. `git diff --name-only "$BASE_SHA" HEAD` in the step then reads it.
+    if (sc.committed && Object.keys(sc.committed).length > 0) {
+      for (const [rel, contents] of Object.entries(sc.committed)) {
+        const abs = join(repo, rel);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, contents);
+      }
+      git("add", "-A");
+      git("commit", "-q", "-m", "sync");
+    }
+
+    // Each response DERIVED from the one population, the way gh would derive it.
+    const prs = sc.prs ?? [];
+    writeFileSync(join(fix, "open.json"), JSON.stringify(prs.filter((p) => p.state === "OPEN")));
+    writeFileSync(join(fix, "all.json"), JSON.stringify(prs));
+    // `--search "<key> in:body"` is a BODY-keyed index: it cannot match a PR whose
+    // body no longer contains the key. That is half of the mechanism by which a
+    // human's edit loses a rejection, so the stub must model it, not skip it.
+    writeFileSync(
+      join(fix, "search.json"),
+      JSON.stringify(prs.filter((p) => p.body.includes(sc.changesetKey))),
+    );
+    writeFileSync(join(fix, "match.out"), sc.matchOut ?? "");
+    const calls = join(dir, "gh-calls.log");
+    writeFileSync(calls, "");
+
+    // `git`: real, except `push`, which is the one call that leaves the machine.
+    writeFileSync(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "push" ]; then',
+        `  printf 'PUSH %s\\n' "$*" >> ${JSON.stringify(calls)}`,
+        "  exit 0",
+        "fi",
+        `exec ${JSON.stringify(REAL_GIT)} "$@"`,
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // `gh`: dispatches on the flags the two steps actually pass. An unrecognised
+    // invocation exits non-zero rather than returning something plausible — the
+    // steps all fail CLOSED on a gh fault, so a stub that guessed would hide a
+    // divergence between this scenario and the body's real call shape.
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> ${JSON.stringify(calls)}`,
+        'ARGS="$*"',
+        'case "$ARGS" in',
+        `  "pr list"*headRefOid*) cat ${JSON.stringify(join(fix, "match.out"))}; exit 0;;`,
+        `  "pr list"*--search*) cat ${JSON.stringify(join(fix, "search.json"))}; exit 0;;`,
+        `  "pr list"*"--state all"*) cat ${JSON.stringify(join(fix, "all.json"))}; exit 0;;`,
+        `  "pr list"*"--state open"*) cat ${JSON.stringify(join(fix, "open.json"))}; exit 0;;`,
+        '  "pr edit"*)',
+        '    N="$3"; shift 3; BF=""',
+        '    while [ $# -gt 0 ]; do case "$1" in --body-file) BF="$2"; shift;; esac; shift; done',
+        `    [ -n "$BF" ] && cp "$BF" ${JSON.stringify(edits)}/"$N".md`,
+        "    exit 0;;",
+        '  "pr create"*) exit 0;;',
+        "esac",
+        'echo "gh stub: unhandled invocation: $ARGS" >&2',
+        "exit 64",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    // The post-create lookup sleeps 10s between six attempts; a scenario that
+    // resolves on the first attempt never reaches it, and this keeps the ones
+    // that deliberately do not from costing a minute.
+    writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const step = stepById(stepId, src);
+    const outFile = join(dir, "github_output");
+    writeFileSync(outFile, "");
+    const script = join(dir, "step.sh");
+    writeFileSync(script, runOf(step));
+    const res = spawnSync("/bin/bash", [script], {
+      cwd: repo,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        GH_TOKEN: "stub-token",
+        BASE_SHA: baseSha,
+        RUN_ID: "9999",
+        CHANGESET_KEY: sc.changesetKey,
+        GITHUB_OUTPUT: outFile,
+        RUNNER_TEMP: dir,
+      },
+    });
+    const outputs: Record<string, string> = {};
+    for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+      const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+      if (m) outputs[m[1]] = m[2];
+    }
+    const ghCalls = readFileSync(calls, "utf-8").split("\n").filter(Boolean);
+    const editBodies: Record<string, string> = {};
+    for (const f of readdirSync(edits)) {
+      editBodies[f.replace(/\.md$/, "")] = readFileSync(join(edits, f), "utf-8");
+    }
+    return {
+      stepExit: res.status ?? -1,
+      outputs,
+      stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      ghCalls,
+      edits: editBodies,
+      created: ghCalls.some((c) => c.startsWith("pr create")),
+      pushed: ghCalls.some((c) => c.startsWith("PUSH ")),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1668,6 +1892,132 @@ describe("fix-drift.yml — the LLM freewriter + anti-cheat predicate are GONE",
 // above), so both the permissions and the stale comment are dead and must be
 // removed.
 // ---------------------------------------------------------------------------
+// The ONE unpinned executable in the job: `sh <(curl https://ollama.com/install.sh)`.
+//
+// Every `uses:` here is pinned by commit SHA and `pnpm install --frozen-lockfile`
+// is pinned by the lockfile's integrity hashes, but that URL is MUTABLE, and the
+// step used to run six steps after an app token with `contents: write` +
+// `pull-requests: write` was minted into the job. Two independent properties are
+// asserted, because neither alone closes it: the code runs BEFORE the token
+// exists, and the bytes are verified before `sh` sees them (a compromised script
+// that cannot read the token can still plant a `git`/`gh`/`node` on PATH for the
+// later steps that hold it).
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the unpinned install script cannot reach the app token", () => {
+  const OLLAMA_STEP = "Provision Ollama daemon (drift-sync-check re-collect gate)";
+
+  /**
+   * EXECUTE the provisioning step's `run:` body with `curl` serving `served` bytes.
+   *
+   * Only `curl` and `sh` are stubbed — the verification itself (sha256sum, the
+   * comparison, the exit) is the workflow's own code, run as written. `sh` records
+   * that it was reached, which is the question that matters: a step that "fails"
+   * AFTER handing the file to a shell has not refused anything.
+   */
+  const observeProvision = (
+    served: string,
+    expectedSha256?: string,
+  ): { stepExit: number; shRan: boolean; stdio: string } => {
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-ollama-"));
+    try {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      const servedFile = join(dir, "served");
+      writeFileSync(servedFile, served);
+      const shMarker = join(dir, "sh-ran");
+      // -o <path> is the only curl form this step uses for the download; the
+      // readiness poll (`curl -sf http://127.0.0.1:11434/...`) has no -o and must
+      // simply fail so the wait loop falls through.
+      writeFileSync(
+        join(bin, "curl"),
+        [
+          "#!/bin/sh",
+          'out=""',
+          'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift;; esac; shift; done',
+          `[ -n "$out" ] || exit 7`,
+          `cat ${JSON.stringify(servedFile)} > "$out"`,
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      writeFileSync(join(bin, "sh"), `#!/bin/sh\ntouch ${JSON.stringify(shMarker)}\n`, {
+        mode: 0o755,
+      });
+      for (const noop of ["ollama", "sleep"])
+        writeFileSync(join(bin, noop), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const step = stepByName(OLLAMA_STEP);
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(step.env)) env[k] = v;
+      if (expectedSha256 !== undefined) env.OLLAMA_INSTALL_SHA256 = expectedSha256;
+      const res = spawnSync("/bin/bash", [script], {
+        cwd: dir,
+        encoding: "utf-8",
+        env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH ?? ""}`, RUNNER_TEMP: dir },
+      });
+      return {
+        stepExit: res.status ?? -1,
+        shRan: existsSync(shMarker),
+        stdio: `${res.stdout ?? ""}${res.stderr ?? ""}`,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("the install script runs BEFORE the app token is minted, not after", () => {
+    const names = steps().map((s) => s.id ?? s.name ?? "");
+    const ollamaIdx = names.indexOf(OLLAMA_STEP);
+    const tokenIdx = names.indexOf("app-token");
+    expect(ollamaIdx, "no Ollama provisioning step found").toBeGreaterThan(-1);
+    expect(tokenIdx, "no app-token step found").toBeGreaterThan(-1);
+    expect(
+      ollamaIdx,
+      "the unpinned install script executes while an app token with contents:write and " +
+        "pull-requests:write is already live in the job",
+    ).toBeLessThan(tokenIdx);
+  });
+
+  it("the pin is a real sha256 the step actually compares the download against", () => {
+    const step = stepByName(OLLAMA_STEP);
+    expect(
+      step.env.OLLAMA_INSTALL_SHA256 ?? "",
+      "the step declares no pinned digest, so there is nothing to verify against",
+    ).toMatch(/^[0-9a-f]{64}$/);
+    // …and the comparison must be against the DOWNLOAD, not against a constant
+    // recomputed from itself.
+    expect(codeOf(step)).toMatch(/sha256sum "\$SCRIPT"/);
+  });
+
+  it("TAMPERED bytes are REFUSED before `sh` ever sees the file (EXECUTED)", () => {
+    const obs = observeProvision("#!/bin/sh\n# attacker-substituted payload\nexit 0\n");
+    expect(
+      obs.shRan,
+      "the workflow handed a script whose bytes do NOT match the pin to `sh` — this is " +
+        "arbitrary third-party code executing as the runner user, and every later step in " +
+        "the job holds a write-scoped app token it can reach through PATH",
+    ).toBe(false);
+    expect(obs.stepExit, "the step concluded successfully on a tampered download").not.toBe(0);
+    expect(obs.stdio).toContain("does not match its pinned sha256");
+  });
+
+  it("POSITIVE CONTROL: bytes that DO match the pin are executed (the gate is not just 'always refuse')", () => {
+    // The digest is computed from the served bytes here rather than shipping a
+    // 15KB copy of the real script: the property under test is that a MATCH
+    // proceeds, and without this the refusal above is satisfied by a step that
+    // never runs anything at all.
+    const good = "#!/bin/sh\n# the reviewed upstream script\nexit 0\n";
+    const sha = createHash("sha256").update(good).digest("hex");
+    const obs = observeProvision(good, sha);
+    expect(
+      obs.shRan,
+      "a download matching its pin was refused, so provisioning can never run",
+    ).toBe(true);
+    expect(obs.stepExit, obs.stdio).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("fix-drift.yml — FF2: dead checks/statuses permissions are removed", () => {
   it("no permissions block, at either scope, grants checks: read or statuses: read", () => {
     // Deliberately spans from the WORKFLOW-level `permissions:` through to
@@ -2237,7 +2587,11 @@ describe("fix-drift.yml — needs-human notes are PERSISTED (pushed + PR'd), not
     // empty list. Scoped to the DEDUP region (between the git-diff scan and the
     // branch it pushes): the PR-body writer further down loops over the same
     // variable, so a whole-body match stayed green with the dedup loop gutted.
-    const scanIdx = body.search(/^\s*mapfile -t COMMITTED < <\(git diff --name-only /m);
+    // Anchored on the git-diff invocation that PRODUCES the note list, not on
+    // the bash construct that consumes it: keyed on `mapfile` this went red on a
+    // behaviour-preserving swap to a portable `read` loop, which is a test
+    // measuring an implementation choice instead of the fact it cares about.
+    const scanIdx = body.search(/git diff --name-only "\$BASE_SHA" HEAD/);
     const branchIdx = body.search(/^\s*BRANCH="/m);
     expect(scanIdx, "the persist step never lists the notes this run committed").toBeGreaterThan(
       -1,
@@ -2322,15 +2676,16 @@ describe("fix-drift.yml — G#3: PR-open paths de-dup on a STABLE changeset key 
     expect(persist.env.CHANGESET_KEY).toBe("${{ steps.sync.outputs.changeset_key }}");
     const body = codeOf(persist);
     expect(body).toContain("drift-changeset: ${CHANGESET_KEY}");
-    // CRITICAL: the changeset-key dedup guard must appear BEFORE the
-    // `mapfile ... NOTES` scan. Pre-fix, the ONLY dedup lived inside the
-    // per-note for-loop, reachable only when a note file was in the diff —
-    // exactly what the empty-NOTES mixed run bypasses.
+    // CRITICAL: the changeset-key dedup guard must appear BEFORE the committed-
+    // note scan. Pre-fix, the ONLY dedup lived inside the per-note for-loop,
+    // reachable only when a note file was in the diff — exactly what the
+    // empty-NOTES mixed run bypasses. Anchored on the git-diff invocation that
+    // produces the note list rather than on the bash builtin that reads it.
     const guardIdx = body.indexOf("drift-changeset: ${CHANGESET_KEY}");
-    const mapfileIdx = body.indexOf("mapfile -t COMMITTED");
+    const noteScanIdx = body.search(/git diff --name-only "\$BASE_SHA" HEAD/);
     expect(guardIdx).toBeGreaterThan(-1);
-    expect(mapfileIdx).toBeGreaterThan(-1);
-    expect(guardIdx).toBeLessThan(mapfileIdx);
+    expect(noteScanIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(noteScanIdx);
   });
 
   it("the ok-applied Push+PR step ALSO de-dups on the changeset key (a never-auto-merged applied edit deserves exactly ONE open PR, re-findable across daily re-fires)", () => {
@@ -2385,10 +2740,11 @@ describe("fix-drift.yml — drift-sync-check-log artifact matches DRIFT.md's cla
 
   it("DRIFT.md documents the ONLY way out of a rejection-suppressed changeset", () => {
     // Closing a drift-sync PR suppresses that changeset permanently, and the
-    // self-heal lists `--state open` only so it never touches the closed PR. The
-    // Slack notice names the escape hatch, but a maintainer reading the docs must
-    // find it too — this is the one instruction whose absence leaves a drifted
-    // registry with no discoverable recovery.
+    // self-heal now REPAIRS the marker on that closed PR, so deleting it from the
+    // body is not a way out either. The Slack notice names the one escape hatch,
+    // but a maintainer reading the docs must find it too — this is the one
+    // instruction whose absence leaves a drifted registry with no discoverable
+    // recovery.
     const driftMd = readFileSync(resolve(__dirname, "../../DRIFT.md"), "utf-8");
     expect(driftMd, "DRIFT.md does not say that closing a PR rejects the changeset").toMatch(
       /CLOSED[\s\S]{0,200}reject/i,
@@ -2834,13 +3190,21 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
       const listing = ghListFor(code, "MANAGED", st.name!);
       expect(
         listing,
-        `${st.name}: the marker-repair candidate listing is not a plain --state open query`,
-      ).toContain("--state open");
-      expect(
-        listing,
         `${st.name}: the candidate listing for the marker repair uses --search, whose ` +
           "body-keyed index cannot see the very body being repaired",
       ).not.toContain("--search");
+      // …and it must reach CLOSED PRs. A closed PR's body is where a human's
+      // REJECTION of a changeset is recorded, and that is the body most likely to be
+      // edited (writing down why you declined). `--state open` here meant the one
+      // marker whose loss is PERMANENT — the dedup listing is body-keyed and cannot
+      // find it either — was the one marker the repair could never reach, so the
+      // workflow re-proposed the rejected changeset every morning. The state
+      // NARROWING that keeps this safe lives in the selection below, not in the query.
+      expect(
+        listing,
+        `${st.name}: the marker-repair candidate listing cannot see CLOSED PRs, so a human ` +
+          "editing the closed PR that records a rejection destroys that rejection for good",
+      ).toContain("--state all");
 
       // (b) The repair LOOP must iterate the selected candidates. Redirecting its
       // `done` from anything else (`printf ''`) leaves the self-healer entirely
@@ -4495,4 +4859,408 @@ describe("fix-drift.yml — every outcome reaches a human EXACTLY once", () => {
     ).not.toEqual(failed);
     expect(skipped).toMatch(/SKIPPED/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The two PR-open steps, EXECUTED whole, on the run shapes their guards decide.
+//
+// Every assertion below reads an observation from `observePrStep`: the real
+// several-hundred-line bash-and-jq body, run against a real repository and a
+// scripted `gh`. "The step stood down" is the ABSENCE of a `pr create` call, not
+// a substring of the source.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not when read", () => {
+  const BOT = { login: "app/copilotkit-devops-bot" };
+  const NOTE = "drift-proposals/openai-mythical-1.new-family.md";
+  const REGISTRY = "src/__tests__/drift/model-registry.ts";
+  /** This run's key: nothing anywhere proposes it yet. */
+  const KEY = "1111222233334444";
+  /** An EARLIER run's key, carried by a PR that is already open. */
+  const OLD_KEY = "9999aaaabbbbcccc";
+
+  it("CANARY: the harness really runs the body — a clean run pushes and opens exactly one PR", () => {
+    // Without this, every "the step stood down" assertion below is also satisfied
+    // by a harness that cannot get the body to do anything at all.
+    for (const [id, matchOut] of [
+      ["needs_human_pr", '{"url":"https://x/pr/1","number":1}'],
+      ["pr", '{"url":"https://x/pr/2","number":2}'],
+    ] as const) {
+      const r = observePrStep(id, {
+        changesetKey: KEY,
+        committed: { [NOTE]: "note\n" },
+        matchOut,
+      });
+      expect(r.stepExit, `${id}: ${r.stdio}`).toBe(0);
+      expect(r.pushed, `${id} pushed no branch`).toBe(true);
+      expect(
+        r.ghCalls.filter((c) => c.startsWith("pr create")),
+        `${id}`,
+      ).toHaveLength(1);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // A per-NOTE overlap must not decide the whole RUN.
+  //
+  // The mixed run: drift-sync mechanically applied a registry edit AND deferred a
+  // different family to a human. Its note is already proposed by a PR from an
+  // EARLIER run — whose outcome set was different, so it hashes to a different
+  // changeset key and the primary guard legitimately does not fire. The per-note
+  // guard then matched that note and `exit 0`'d the entire step, so the registry
+  // edit was committed locally, never pushed, and re-detected identically every
+  // morning: proposed to nobody, for ever.
+  //
+  // Control only reaches that loop AFTER the primary changeset guard has declined,
+  // which means no open PR carries this run's changeset — so the run's content is
+  // by construction un-proposed and standing down always loses it. That is why
+  // the remedy is to remove the stand-down rather than to narrow it.
+  // -------------------------------------------------------------------------
+  const mixedRunWhoseNoteIsAlreadyProposed = (): PrStepRun =>
+    observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      // BOTH halves: the applied registry edit, and the deferred note.
+      committed: { [REGISTRY]: "// mechanically edited\n", [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 42,
+          url: "https://x/pr/42",
+          state: "OPEN",
+          headRefName: `drift-needs-human/2026-07-01-8888-${OLD_KEY}`,
+          body: `earlier proposal\n<!-- drift-changeset: ${OLD_KEY} -->\n<!-- drift-proposal-note: ${NOTE} -->\n`,
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/51","number":51}',
+    });
+
+  it("a mixed run whose NOTE is already proposed still proposes its REGISTRY EDIT", () => {
+    const r = mixedRunWhoseNoteIsAlreadyProposed();
+    expect(
+      r.created,
+      "the per-note guard matched one note and `exit 0`'d the whole step, so the registry " +
+        "edit committed by this run was never pushed and no PR proposes it — and the next " +
+        "cron run re-detects it and stands down again, every morning, indefinitely. " +
+        `stdio: ${r.stdio}`,
+    ).toBe(true);
+    expect(r.pushed, "nothing was pushed, so there is no branch for a PR to be opened from").toBe(
+      true,
+    );
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("…and it SAYS why two open PRs now carry the same note", () => {
+    // The overlap is real and worth reporting — two PRs carrying one note looks
+    // exactly like the duplicate-PR bug this workflow exists to prevent. What is
+    // removed is the stand-down, not the telling.
+    const r = mixedRunWhoseNoteIsAlreadyProposed();
+    expect(r.stdio).toContain("::warning::");
+    expect(r.stdio).toContain(NOTE);
+    expect(r.stdio).toContain("#42");
+  });
+
+  it("NEGATIVE CONTROL: a re-fire of the SAME changeset still opens no second PR", () => {
+    // The dedup that actually matters is the changeset-keyed one, and removing the
+    // per-note stand-down must not weaken it. Same scenario, except the open PR
+    // carries THIS run's key.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [REGISTRY]: "// mechanically edited\n", [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 42,
+          url: "https://x/pr/42",
+          state: "OPEN",
+          headRefName: `drift-needs-human/2026-07-01-8888-${KEY}`,
+          body: `<!-- drift-changeset: ${KEY} -->\n<!-- drift-proposal-note: ${NOTE} -->\n`,
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+    });
+    expect(
+      r.created,
+      "a daily re-fire of a changeset an open PR already proposes opened a SECOND PR — " +
+        `unbounded duplicate-PR spam. stdio: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.pushed).toBe(false);
+    expect(r.outputs.number).toBe("42");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // A REJECTION lives in a closed PR's body, so a human editing that body loses it.
+  //
+  // Closing a drift PR rejects its changeset, and the record of that decision is
+  // the `<!-- drift-changeset: <key> -->` marker in the CLOSED PR's body. Two
+  // things then conspire: the dedup listing finds closed PRs with
+  // `--search "<key> in:body"`, which cannot match a body the key was deleted
+  // from; and the marker self-heal that exists precisely to repair deleted markers
+  // listed `--state open`, so it never saw the closed PR either. The rejection was
+  // gone for good and the bot re-proposed the same changeset every morning.
+  //
+  // The head branch ends in "-<changeset key>" and a PR's head branch cannot be
+  // renamed, so the closed PR is still identifiable body-independently. The
+  // candidacy filter is UNCHANGED — the population widens from OPEN to
+  // OPEN-or-CLOSED, and every candidate still has to carry this run's key in its
+  // branch, which is what keeps a human's `fix/drift-<slug>` branch out.
+  // -------------------------------------------------------------------------
+  const humanEditedTheRejection = (stepId: "pr" | "needs_human_pr"): PrStepRun => {
+    const branch =
+      stepId === "pr"
+        ? `fix/drift-2026-07-01-8888-${KEY}`
+        : `drift-needs-human/2026-07-01-8888-${KEY}`;
+    const closed: PrFixture = {
+      number: 77,
+      url: "https://x/pr/77",
+      state: "CLOSED",
+      headRefName: branch,
+      // A human rewrote the body and the machine marker went with it.
+      body: "Rejecting this — we are keeping the family.\n",
+      files: [{ path: NOTE }],
+      author: BOT,
+    };
+    return observePrStep(stepId, {
+      changesetKey: KEY,
+      committed: stepId === "pr" ? { [REGISTRY]: "// edited\n" } : { [NOTE]: "note\n" },
+      // ONE population. The self-heal only sees this closed PR once it asks for
+      // closed PRs, and the body-keyed dedup search cannot find a body the key was
+      // deleted from — both facts are derived, not asserted here.
+      prs: [closed],
+      matchOut: '{"url":"https://x/pr/52","number":52}',
+    });
+  };
+
+  for (const stepId of ["pr", "needs_human_pr"] as const) {
+    it(`${stepId}: a human editing the CLOSED PR's body does not resurrect the rejected changeset`, () => {
+      const r = humanEditedTheRejection(stepId);
+      expect(
+        r.created,
+        "the human REJECTED this changeset by closing its PR, then edited that PR's body — " +
+          "and the workflow re-proposed the identical changeset, as it would again every " +
+          `morning. stdio: ${r.stdio}`,
+      ).toBe(false);
+      expect(r.outputs.rejected, "the run published no rejection at all").toBe("77");
+      // …the repair is REAL: the marker went back onto the closed PR, appended to
+      // the human's prose rather than replacing it.
+      expect(Object.keys(r.edits)).toContain("77");
+      expect(r.edits["77"]).toContain(`<!-- drift-changeset: ${KEY} -->`);
+      expect(
+        r.edits["77"],
+        "the repair overwrote the human's own prose instead of appending to it",
+      ).toContain("Rejecting this — we are keeping the family.");
+      expect(r.stepExit, r.stdio).toBe(0);
+    });
+  }
+
+  it("needs_human_pr: the widened self-heal does NOT touch a MERGED PR either", () => {
+    // The needs-human step admits CLOSED through its own `select_state`, and that
+    // predicate is the only thing keeping MERGED out. Without this, relaxing it to
+    // `true` — admitting every state — changes nothing observable.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 88,
+          url: "https://x/pr/88",
+          state: "MERGED",
+          headRefName: `drift-needs-human/2026-07-01-8888-${KEY}`,
+          body: "merged, body since rewritten\n",
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/54","number":54}',
+    });
+    expect(Object.keys(r.edits), "a MERGED PR's body was rewritten").toEqual([]);
+    expect(r.outputs.rejected ?? "", "a MERGED PR was read as a human rejection").toBe("");
+    expect(r.created, r.stdio).toBe(true);
+  });
+
+  it("needs_human_pr: admitting CLOSED does not let the closed BACKLOG wedge the daily cron", () => {
+    // The narrowing that matters: CLOSED is admitted through the branch-key anchor
+    // ONLY. The note-path anchor is the one that runs the fail-closed changed-file
+    // audit — a bot PR whose file list came back TRUNCATED at gh's 100-file ceiling
+    // is treated as "cannot prove the note is absent" and hard-fails the step. That
+    // is right for an OPEN PR (it might really be proposing this note) and wrong for
+    // the accumulated closed backlog, where a single fat closed PR would red the cron
+    // every morning for ever.
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 66,
+          url: "https://x/pr/66",
+          state: "CLOSED",
+          // A bot drift branch, but NOT this run's key — so anchor (a) misses and
+          // only the note-path anchor could select it.
+          headRefName: `drift-needs-human/2026-01-09-4242-${OLD_KEY}`,
+          body: "closed long ago\n",
+          files: Array.from({ length: 100 }, (_, i) => ({ path: `f${i}.ts` })),
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/55","number":55}',
+    });
+    expect(
+      r.stepExit,
+      "a CLOSED bot PR with a truncated file list wedged the step, so the daily cron reds " +
+        `on the closed backlog and no drift is ever proposed again. stdio: ${r.stdio}`,
+    ).toBe(0);
+    expect(r.created, r.stdio).toBe(true);
+    expect(Object.keys(r.edits)).toEqual([]);
+  });
+
+  it("the widened self-heal does NOT touch a MERGED PR (an accepted decision is not a rejection)", () => {
+    // Widening OPEN to OPEN-or-CLOSED must not reach a merged PR: gh reports one
+    // as MERGED, it is an ACCEPTED decision, and appending machine markers to it
+    // would be a write to a PR no guard here consults.
+    const r = observePrStep("pr", {
+      changesetKey: KEY,
+      committed: { [REGISTRY]: "// edited\n" },
+      prs: [
+        {
+          number: 88,
+          url: "https://x/pr/88",
+          state: "MERGED",
+          headRefName: `fix/drift-2026-07-01-8888-${KEY}`,
+          body: "merged, body since rewritten\n",
+          files: [],
+          author: BOT,
+        },
+      ],
+      matchOut: '{"url":"https://x/pr/53","number":53}',
+    });
+    expect(Object.keys(r.edits), "a MERGED PR's body was rewritten").toEqual([]);
+    expect(r.outputs.rejected ?? "", "a MERGED PR was read as a human rejection").toBe("");
+    expect(r.created, r.stdio).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The payload actually goes OVER THE WIRE, to a socket that records it.
+//
+// Every other guard in this suite stubs `curl` with `#!/bin/sh; exit N`, so the
+// question "would Slack accept and render this?" has only ever been answered from
+// the value of `$MSG` and the text of the `curl` line. The flags, the method, the
+// header, and the JSON body have never been exercised. So point `SLACK_WEBHOOK` at
+// a local HTTP server and run the real `curl` — the request that arrives is the
+// request Slack would receive.
+//
+// This is NOT proof that Slack RENDERS it as intended: nothing here has ever
+// reached Slack, and only a real webhook can close that. What it does close is
+// everything between the `MSG=` assignment and the socket.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — every alert's payload is POSTed, and arrives as valid JSON", () => {
+  interface Captured {
+    method: string;
+    contentType: string;
+    body: string;
+  }
+
+  const postToLocalSink = async (
+    step: Step,
+  ): Promise<{ requests: Captured[]; outputs: Record<string, string>; stdio: string }> => {
+    const requests: Captured[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        requests.push({
+          method: req.method ?? "",
+          contentType: String(req.headers["content-type"] ?? ""),
+          body: Buffer.concat(chunks).toString("utf-8"),
+        });
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+      });
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    const addr = server.address();
+    if (addr === null || typeof addr === "string") throw new Error("sink did not bind a port");
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-sink-"));
+    try {
+      const outFile = join(dir, "github_output");
+      writeFileSync(outFile, "");
+      const script = join(dir, "step.sh");
+      writeFileSync(script, runOf(step));
+      const env: Record<string, string> = {};
+      // Non-empty placeholders for every declared key, so `set -u` is satisfied and
+      // each message takes its content-bearing branch — the same convention
+      // `assembleSlackMessage` uses.
+      for (const key of Object.keys(step.env)) env[key] = `<${key}>`;
+      env.SLACK_WEBHOOK = `http://127.0.0.1:${addr.port}/services/T/B/x`;
+      // `spawn`, NOT `spawnSync`. The sink is served by THIS process's event loop,
+      // and a synchronous spawn blocks it — so curl connects, nothing ever answers,
+      // and the step dies on `--max-time 15` having "sent no request". The first
+      // version of this test did exactly that on all six steps, which is the whole
+      // argument for running the thing instead of reasoning about it.
+      const res = await new Promise<{ stdout: string; stderr: string }>((ok) => {
+        const child = spawn("/bin/bash", [script], {
+          cwd: dir,
+          env: { ...process.env, ...env, GITHUB_OUTPUT: outFile, RUNNER_TEMP: dir },
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf-8")));
+        child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf-8")));
+        child.on("close", () => ok({ stdout, stderr }));
+      });
+      const outputs: Record<string, string> = {};
+      for (const line of readFileSync(outFile, "utf-8").split("\n")) {
+        const m = /^([A-Za-z0-9_]+)=(.*)$/.exec(line);
+        if (m) outputs[m[1]] = m[2];
+      }
+      return { requests, outputs, stdio: `${res.stdout ?? ""}${res.stderr ?? ""}` };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((ok) => server.close(() => ok()));
+    }
+  };
+
+  it("PREMISE: there are Slack-posting steps to exercise", () => {
+    expect(slackSteps().length).toBeGreaterThan(0);
+  });
+
+  for (const step of slackSteps()) {
+    it(`${step.name}: the real curl delivers exactly one POST of valid JSON`, async () => {
+      const obs = await postToLocalSink(step);
+      expect(
+        obs.requests,
+        `${step.name} sent no request at all — the curl line does not reach the webhook it ` +
+          `was handed. stdio: ${obs.stdio}`,
+      ).toHaveLength(1);
+      const req = obs.requests[0];
+      expect(req.method).toBe("POST");
+      expect(req.contentType).toContain("application/json");
+      // Slack rejects a body that is not an object with a `text`, and a payload
+      // assembled with an unquoted `$MSG` produces exactly that.
+      const parsed: unknown = JSON.parse(req.body);
+      expect(typeof parsed).toBe("object");
+      const text = (parsed as { text?: unknown }).text;
+      expect(typeof text, `${step.name}: the payload carries no string \`text\``).toBe("string");
+      expect((text as string).length).toBeGreaterThan(0);
+      // The M2 property, now measured ON THE WIRE rather than on `$MSG`: a REAL
+      // newline, never the two characters backslash-n, which Slack renders literally.
+      expect(
+        text as string,
+        `${step.name}: the delivered message has no real newline — every line Slack shows ` +
+          "will be run together, or a literal \\n will appear in the channel",
+      ).toContain("\n");
+      expect(
+        req.body,
+        `${step.name}: the JSON encodes a literal backslash-n, which Slack renders as the ` +
+          "two characters rather than a line break",
+      ).not.toContain("\\\\n");
+      // And the delivery receipt the catch-all stands down for is published — here
+      // by a POST that genuinely happened, not by a stub returning 0.
+      expect(
+        obs.outputs.posted,
+        `${step.name}: the POST succeeded but the step published no proof of delivery, so ` +
+          "the end-of-job catch-all cannot tell this alert landed",
+      ).toBe("true");
+    });
+  }
 });
