@@ -863,9 +863,11 @@ const MAPFILE_SHIM = [
  * `diff --name-only` from `headSha`/`diffFiles`; `gh pr list` answers the
  * self-heal candidate listing and the body-keyed dedup listing separately,
  * because pointing one selector at the other listing is itself a defect this
- * file guards. The two are told apart by `--search`, NOT by `--state`: both are
- * `--state all` now that the marker repair has to reach the CLOSED PR that
- * records a rejection, and only the dedup listing is body-keyed.
+ * file guards. They are told apart by the SEARCH QUERY, not by `--state`: all of
+ * them are `--state all` now that the marker repair has to reach the CLOSED PR
+ * that records a rejection. Only `<key> in:body` is body-keyed; `is:unmerged` is
+ * the self-heal's own view, narrowed server-side so merged PRs cannot spend its
+ * `--limit` window, and is answered from the same source as the plain listing.
  */
 function observePersistStep(
   step: Step,
@@ -910,6 +912,12 @@ function observePersistStep(
       [
         `printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}`,
         'case "$*" in',
+        // `is:unmerged` is the SELF-HEAL's listing, not the dedup one, so it is
+        // answered from the same source as the plain state listing. Ordered ahead
+        // of the generic `--search` arm, which would otherwise hand the self-heal
+        // the body-keyed dedup population and quietly change what these scenarios
+        // are testing.
+        '  *"is:unmerged"*) cat "$GH_OPEN_JSON" ;;',
         '  *"--search"*) cat "$GH_ALL_JSON" ;;',
         '  "pr list --state open"*|"pr list --state all"*) cat "$GH_OPEN_JSON" ;;',
         "esac",
@@ -1115,6 +1123,13 @@ function observePrStep(
       join(fix, "search.json"),
       JSON.stringify(prs.filter((p) => p.body.includes(sc.changesetKey))),
     );
+    // `is:unmerged` is a STATE predicate, not a body one: it matches the whole
+    // unmerged population — every OPEN and every CLOSED-never-merged PR — and a
+    // MERGED PR can never crowd one out of the window.
+    writeFileSync(
+      join(fix, "unmerged.json"),
+      JSON.stringify(prs.filter((p) => p.state !== "MERGED")),
+    );
     writeFileSync(join(fix, "match.out"), sc.matchOut ?? "");
     const calls = join(dir, "gh-calls.log");
     writeFileSync(calls, "");
@@ -1142,11 +1157,22 @@ function observePrStep(
         "#!/bin/sh",
         `printf '%s\\n' "$*" >> ${JSON.stringify(calls)}`,
         'ARGS="$*"',
+        // `--limit` TRUNCATES, and the truncation is the whole point. Real gh
+        // returns the NEWEST n PRs matching the query and drops the rest
+        // silently — no flag, no warning, no count. A stub that hands back the
+        // entire population regardless of `--limit` cannot tell a saturated
+        // window from a healthy one, so every guard reading a saturated listing
+        // "passes" here while returning a false negative on the real repo.
+        // Newest-first by PR number is gh's own default listing order.
+        "LIMIT=30; prev=''",
+        'for a in "$@"; do [ "$prev" = "--limit" ] && LIMIT="$a"; prev="$a"; done',
+        'serve() { jq -c --argjson n "$LIMIT" \'sort_by(-.number)[:$n]\' "$1"; }',
         'case "$ARGS" in',
         `  "pr list"*headRefOid*) cat ${JSON.stringify(join(fix, "match.out"))}; exit 0;;`,
-        `  "pr list"*--search*) cat ${JSON.stringify(join(fix, "search.json"))}; exit 0;;`,
-        `  "pr list"*"--state all"*) cat ${JSON.stringify(join(fix, "all.json"))}; exit 0;;`,
-        `  "pr list"*"--state open"*) cat ${JSON.stringify(join(fix, "open.json"))}; exit 0;;`,
+        `  "pr list"*"is:unmerged"*) serve ${JSON.stringify(join(fix, "unmerged.json"))}; exit 0;;`,
+        `  "pr list"*--search*) serve ${JSON.stringify(join(fix, "search.json"))}; exit 0;;`,
+        `  "pr list"*"--state all"*) serve ${JSON.stringify(join(fix, "all.json"))}; exit 0;;`,
+        `  "pr list"*"--state open"*) serve ${JSON.stringify(join(fix, "open.json"))}; exit 0;;`,
         '  "pr edit"*)',
         '    N="$3"; shift 3; BF=""',
         '    while [ $# -gt 0 ]; do case "$1" in --body-file) BF="$2"; shift;; esac; shift; done',
@@ -2879,7 +2905,19 @@ describe("fix-drift.yml — the needs-human alert always names a PR", () => {
         `${step}: \`${call}\` has no --limit. gh pr list defaults to 30, so once 30 ` +
           "newer PRs exist an already-proposed PR falls out of the window, the dedup " +
           "misses it, and the workflow opens a duplicate",
-      ).toMatch(/--limit \d+/);
+      ).toMatch(/--limit (?:\d+|"\$\{PR_LIST_LIMIT\}")/);
+    }
+    // A limit spelled as a VARIABLE has to resolve to a number in the step that
+    // uses it. `set -u` would catch an unset one loudly, but a limit bound to
+    // something non-numeric would not: `--limit ''` is how gh's default of 30
+    // comes back through a spelling that still reads as explicit here.
+    for (const st of steps()) {
+      const code = codeOf(st);
+      if (!code.includes('--limit "${PR_LIST_LIMIT}"')) continue;
+      expect(
+        code,
+        `${st.name}: uses --limit "\${PR_LIST_LIMIT}" but never binds PR_LIST_LIMIT to a number`,
+      ).toMatch(/^\s*PR_LIST_LIMIT=\d+\s*$/m);
     }
   });
 });
@@ -3411,8 +3449,17 @@ describe("fix-drift.yml — dedup survives a human body edit and a CLOSED PR", (
         '--search "${CHANGESET_KEY} in:body"',
       );
       expect(listing, `${st.name}: the dedup listing has no explicit --limit`).toContain(
-        "--limit 200",
+        '--limit "${PR_LIST_LIMIT}"',
       );
+      // …and the window it gets is AUDITED. A listing that comes back full is
+      // truncated, and a truncated dedup listing answers "not proposed" / "not
+      // rejected" for a PR that exists. Without this the audit can be deleted
+      // from one of the two steps and nothing anywhere reds.
+      expect(
+        code,
+        `${st.name}: the dedup listing is never checked for saturation, so a full ` +
+          "window is read as a complete answer",
+      ).toContain('assert_listing_complete "changeset-keyed dedup listing');
       // `state` must be REQUESTED, or `.state` is null on every entry and both the
       // CLOSED and the OPEN selectors are dead for every PR at once.
       expect(
@@ -5052,6 +5099,140 @@ describe("fix-drift.yml — the PR-open steps decide correctly when RUN, not whe
       expect(r.stepExit, r.stdio).toBe(0);
     });
   }
+
+  // -------------------------------------------------------------------------
+  // The rejection lookup must not be crowded out of its own `--limit` window.
+  //
+  // The self-heal listing above is what makes a rejection survive a body edit,
+  // and it was a PLAIN `--state all --limit 200` — a client-side state filter
+  // over a server-side window that EVERY PR in the repo competes for. Measured
+  // on CopilotKit/aimock on 2026-08-05: `--state all --limit 200` came back with
+  // exactly 200 PRs, 184 of them MERGED and discarded by the jq, and the window
+  // reached only as far back as #125. The repo has 26 unmerged-closed PRs; that
+  // listing could see 14. Twelve closed PRs were ALREADY invisible to it, with
+  // no error, no warning and no truncation flag — and MERGED is the population
+  // that grows every day. The rejection lookup does not degrade when the window
+  // fills, it INVERTS: "no closed PR carries this key" is what the step reads,
+  // and re-proposing the rejected changeset every morning is what it then does.
+  //
+  // `--state closed` is NOT the remedy and this was measured too: gh maps it to
+  // CLOSED-or-MERGED, and the same query returned 186 merged against 14 closed.
+  // -------------------------------------------------------------------------
+  it("a rejection is still found once MERGED PRs have filled the listing window", () => {
+    // The exact scenario above — a human closed #77 to reject this changeset,
+    // then rewrote its body and the marker went with it — except the repo has
+    // since merged 200 newer PRs. Nothing about the rejection changed; only the
+    // number of merged PRs sitting in front of it did.
+    const closed: PrFixture = {
+      number: 77,
+      url: "https://x/pr/77",
+      state: "CLOSED",
+      headRefName: `fix/drift-2026-07-01-8888-${KEY}`,
+      body: "Rejecting this — we are keeping the family.\n",
+      files: [{ path: NOTE }],
+      author: BOT,
+    };
+    const merged: PrFixture[] = Array.from({ length: 200 }, (_, i) => ({
+      number: 1000 + i,
+      url: `https://x/pr/${1000 + i}`,
+      state: "MERGED" as const,
+      headRefName: `renovate/dep-${i}`,
+      body: "unrelated\n",
+      files: [],
+      author: { login: "renovate[bot]" },
+    }));
+    const r = observePrStep("pr", {
+      changesetKey: KEY,
+      committed: { [REGISTRY]: "// edited\n" },
+      prs: [closed, ...merged],
+      matchOut: '{"url":"https://x/pr/56","number":56}',
+    });
+    expect(
+      r.created,
+      "200 merged PRs pushed the CLOSED rejection out of the dedup listing's window, so the " +
+        "step could not see that a human had already rejected this exact changeset and " +
+        "re-proposed it — which it then does every morning, silently, for ever. The window " +
+        `is spent on MERGED PRs no guard here even consults. stdio: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.outputs.rejected, "the run published no rejection at all").toBe("77");
+    expect(r.edits["77"] ?? "", "the rejection marker was never repaired").toContain(
+      `<!-- drift-changeset: ${KEY} -->`,
+    );
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("needs_human_pr: a rejection survives a full window there too", () => {
+    // The needs-human step carries its own copy of the listing, so a fix applied
+    // to only one of the two leaves the other saturating exactly as before.
+    const merged: PrFixture[] = Array.from({ length: 200 }, (_, i) => ({
+      number: 1000 + i,
+      url: `https://x/pr/${1000 + i}`,
+      state: "MERGED" as const,
+      headRefName: `renovate/dep-${i}`,
+      body: "unrelated\n",
+      files: [],
+      author: { login: "renovate[bot]" },
+    }));
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "note\n" },
+      prs: [
+        {
+          number: 77,
+          url: "https://x/pr/77",
+          state: "CLOSED",
+          headRefName: `drift-needs-human/2026-07-01-8888-${KEY}`,
+          body: "Rejecting this — we are keeping the family.\n",
+          files: [{ path: NOTE }],
+          author: BOT,
+        },
+        ...merged,
+      ],
+      matchOut: '{"url":"https://x/pr/57","number":57}',
+    });
+    expect(
+      r.created,
+      "the needs-human step re-proposed a changeset a human had rejected, because merged " +
+        `PRs had filled its dedup listing's window. stdio: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.outputs.rejected, "the run published no rejection at all").toBe("77");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("a listing that comes back FULL is REFUSED, not decided on", () => {
+    // The narrowing above buys headroom; it does not make the window infinite.
+    // So the remaining case — the unmerged population itself reaching the limit —
+    // must be LOUD. A truncated listing has the same shape and the same exit code
+    // as a complete one, so "found nothing" and "could not look" would otherwise
+    // share an encoding, which is the defect this whole guard exists to remove.
+    // 200 unmerged PRs, none of them this changeset's: the honest answer is "I
+    // cannot tell", and the step must not open a PR on it.
+    const unmerged: PrFixture[] = Array.from({ length: 200 }, (_, i) => ({
+      number: 2000 + i,
+      url: `https://x/pr/${2000 + i}`,
+      state: (i % 2 === 0 ? "OPEN" : "CLOSED") as "OPEN" | "CLOSED",
+      headRefName: `feature/x-${i}`,
+      body: "unrelated\n",
+      files: [],
+      author: { login: "someone" },
+    }));
+    for (const [id, committed] of [
+      ["pr", { [REGISTRY]: "// edited\n" }],
+      ["needs_human_pr", { [NOTE]: "note\n" }],
+    ] as const) {
+      const r = observePrStep(id, { changesetKey: KEY, committed, prs: unmerged });
+      expect(
+        r.stepExit,
+        `${id}: the listing came back full — and therefore truncated — and the step decided ` +
+          `on it anyway instead of failing. stdio: ${r.stdio}`,
+      ).not.toBe(0);
+      expect(r.stdio).toContain("came back FULL at its --limit");
+      expect(
+        r.created,
+        `${id}: a PR was opened off a listing that could not be proven complete`,
+      ).toBe(false);
+    }
+  });
 
   it("needs_human_pr: the widened self-heal does NOT touch a MERGED PR either", () => {
     // The needs-human step admits CLOSED through its own `select_state`, and that
