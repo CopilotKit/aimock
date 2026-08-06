@@ -1287,9 +1287,10 @@ jobs:
             echo "## Needs a human decision (drift-sync)"
             echo ""
             echo "The deterministic, zero-LLM drift-sync found a model-family change it must"
-            echo "NOT auto-apply (a genuinely new/unclassified family, a still-referenced"
-            echo "deprecation, or a registry structural mismatch). It wrote the note file(s)"
-            echo "below and opened this PR so the decision is REACHABLE in the repo."
+            echo "NOT auto-apply (a genuinely new/unclassified family, a deprecation —"
+            echo "still-referenced or zero-reference — or a registry structural mismatch). It"
+            echo "wrote the note file(s) below and opened this PR so the decision is REACHABLE"
+            echo "in the repo."
             echo ""
             echo "> **Not auto-merged — a human decides.** For a *new-family* note: set the"
             echo "> note's decision line to \`Decision: include\` (to classify it) or delete the"
@@ -1545,7 +1546,7 @@ jobs:
           # A REAL newline — see the cancellation alert above for why a
           # double-quoted "\n" renders literally in Slack instead.
           NL=$'\n'
-          echo "::error::drift-sync found a genuinely-new model family or a still-referenced deprecation — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
+          echo "::error::drift-sync found a genuinely-new model family or a deprecation it must not apply itself — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::SLACK_WEBHOOK not set — cannot send needs-human alert"
             exit 1
