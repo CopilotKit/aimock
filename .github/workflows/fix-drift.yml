@@ -54,8 +54,8 @@ jobs:
       # daemon the Ollama leg would spuriously quarantine/error on a missing host
       # instead of behaving as it does under test-drift.yml's own daily run.
       #
-      # THIS RUNS FIRST, AND THE SCRIPT IS CHECKSUM-PINNED. Both halves matter and
-      # neither alone is sufficient.
+      # THIS RUNS FIRST, AND EVERY BYTE IT EXECUTES IS CHECKSUM-PINNED. Both
+      # halves matter and neither alone is sufficient.
       #
       # `sh <(curl …)` of a MUTABLE URL is arbitrary third-party code executing as
       # the runner user, and it used to sit six steps after the app token was
@@ -66,34 +66,66 @@ jobs:
       # setup step instead of before it, which is strictly better for a job with
       # `timeout-minutes: 30`.
       #
-      # But reordering alone does not close it. A compromised script can plant a
+      # But reordering alone does not close it. A compromised payload can plant a
       # `git`, `gh` or `node` earlier on PATH, or write a shell rc, and every later
-      # step — the ones that DO hold the token — would execute it. So the bytes are
-      # verified against a sha256 reviewed at the URL, and a mismatch is a hard
-      # `exit 1` before `sh` ever sees the file. Everything else in this job's
-      # third-party surface is already pinned: every `uses:` by commit SHA, and
-      # `pnpm install --frozen-lockfile` by the lockfile's own integrity hashes.
-      # This was the one unpinned executable in the job.
+      # step — the ones that DO hold the token — would execute it.
       #
-      # WHEN THIS FAILS: Ollama published a new install.sh. Read the diff at
-      # https://ollama.com/install.sh, then re-pin OLLAMA_INSTALL_SHA256 below to
-      # the digest the error message prints. The failure is loud and alerted (the
-      # end-of-job catch-all covers the infra/setup window), never silent — an
-      # unverified script must not run just because verifying it was inconvenient.
+      # ollama.com/install.sh IS NOT USED, and pinning it was not enough. Its own
+      # bytes can be pinned, but the script then streams
+      # `https://ollama.com/download/ollama-linux-<arch>.tar.zst` — a mutable,
+      # unversioned URL carrying no digest — straight into `sudo tar -x` under
+      # /usr/local, so a SECOND unpinned payload plants root-owned binaries on
+      # PATH just as effectively as the script could. It cannot be fixed in place
+      # either: the script pipes that download through `zstd -d` into `tar`, so it
+      # never holds the file and has nothing to verify. (On a GPU host it also adds
+      # NVIDIA CUDA apt/yum repos and runs `$PACKAGE_MANAGER -y install` — more
+      # unpinned root execution this job has no use for.)
+      #
+      # So the release artifact is fetched DIRECTLY and verified before anything
+      # unpacks it: one URL, pinned to an immutable release tag, whose bytes must
+      # match a reviewed sha256 or the step hard-`exit 1`s before `tar` runs. The
+      # tarball is the whole product — `bin/ollama` plus `lib/ollama/*` — and this
+      # step already ran `ollama serve` itself rather than using the systemd unit
+      # install.sh sets up, so nothing else in that script was load-bearing here.
+      #
+      # Every other byte this job executes is already pinned: each `uses:` by
+      # commit SHA, and `pnpm install --frozen-lockfile` by the lockfile's own
+      # integrity hashes. With this, nothing in the job runs code it has not
+      # verified.
+      #
+      # WHEN THIS FAILS: Ollama cut a new release, or an artifact was rebuilt.
+      # Pick the version at https://github.com/ollama/ollama/releases, take
+      # `ollama-linux-amd64.tar.zst`'s digest from that release's own
+      # `sha256sum.txt`, and update BOTH values below together. The failure is loud
+      # and alerted (the end-of-job catch-all covers the infra/setup window), never
+      # silent — unverified bytes must not be unpacked as root just because
+      # verifying them was inconvenient.
       - name: Provision Ollama daemon (drift-sync-check re-collect gate)
         env:
-          # sha256 of https://ollama.com/install.sh, 15902 bytes, reviewed 2026-08-05.
-          OLLAMA_INSTALL_SHA256: 25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f
+          # ollama-linux-amd64.tar.zst from the v0.32.6 release, 1420686963 bytes.
+          # Digest agreed on 2026-08-05 by three independent sources: the release's
+          # sha256sum.txt, the GitHub release API's own asset `digest` field, and
+          # sha256 of the downloaded bytes.
+          OLLAMA_VERSION: v0.32.6
+          OLLAMA_TARBALL_SHA256: dec2fa50d24e6868ca3c4c977d69d059399372105f951a9acc320a5a79aadcfc
         run: |
           set -euo pipefail
-          SCRIPT="${RUNNER_TEMP}/ollama-install.sh"
-          curl -fsSL https://ollama.com/install.sh -o "$SCRIPT"
-          ACTUAL="$(sha256sum "$SCRIPT" | cut -d' ' -f1)"
-          if [ "$ACTUAL" != "${OLLAMA_INSTALL_SHA256}" ]; then
-            echo "::error::ollama.com/install.sh does not match its pinned sha256 — REFUSING to execute it. Expected ${OLLAMA_INSTALL_SHA256}, got ${ACTUAL}. Review the script at that URL and re-pin OLLAMA_INSTALL_SHA256 in .github/workflows/fix-drift.yml if the change is legitimate."
+          # Fail on a MISSING decompressor rather than discovering it mid-pipe,
+          # where `tar` would be handed a truncated stream as root.
+          if ! command -v zstd >/dev/null 2>&1; then
+            echo "::error::zstd is not installed on this runner, so the pinned Ollama tarball cannot be unpacked. Install zstd before this step."
             exit 1
           fi
-          sh "$SCRIPT"
+          TARBALL="${RUNNER_TEMP}/ollama-linux-amd64.tar.zst"
+          curl -fsSL "https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst" -o "$TARBALL"
+          ACTUAL="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "${OLLAMA_TARBALL_SHA256}" ]; then
+            echo "::error::the Ollama ${OLLAMA_VERSION} tarball does not match its pinned sha256 — REFUSING to unpack it as root. Expected ${OLLAMA_TARBALL_SHA256}, got ${ACTUAL}. Check the release's sha256sum.txt and re-pin OLLAMA_VERSION/OLLAMA_TARBALL_SHA256 in .github/workflows/fix-drift.yml if the change is legitimate."
+            exit 1
+          fi
+          # Only now, on bytes that matched. The archive is `bin/ollama` +
+          # `lib/ollama/*`, so /usr/local puts the binary on the default PATH.
+          zstd -d -c "$TARBALL" | sudo tar -xf - -C /usr/local
           ollama serve > /tmp/ollama-serve.log 2>&1 &
           for _ in $(seq 1 30); do
             if curl -sf http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
@@ -495,9 +527,11 @@ jobs:
           # Identity must be body-INDEPENDENT, since a body-keyed lookup cannot
           # find a PR whose body lost the key: the head branch ends in
           # "-<changeset key>", and renaming a branch closes any open PR whose head
-          # it is, so for an open PR that suffix is fixed. Listed with a plain
-          # state-filtered query, never `--search`, whose index is body-keyed AND
-          # lags an edit by minutes.
+          # it is, so for an open PR that suffix is fixed. Never listed with a
+          # `<key> in:body` search: that index is BODY-keyed and lags an edit by
+          # minutes, so it is blind to precisely the deletion this repair exists
+          # for. (`is:unmerged` below is a STATE predicate and carries neither
+          # property — see the window note.)
           #
           # `--state all`, NOT `--state open`, and the repair then scoped to OPEN or
           # CLOSED. A CLOSED PR carrying this marker is how a human REJECTS a
@@ -518,7 +552,53 @@ jobs:
           # decision, never a pending proposal and never a rejection, so no guard
           # here consults it and appending machine markers to it would be a write
           # with no reader.
-          if ! MANAGED="$(gh pr list --state all --limit 200 \
+          #
+          # ---- THE WINDOW IS PART OF THE ANSWER --------------------------------
+          # `--limit N` is not "up to N", it is a WINDOW: gh returns the newest N
+          # rows matching the query and drops the rest with no flag, no warning
+          # and no count. The `--state` filter above is applied CLIENT-side by the
+          # jq below, so a plain `--state all` listing spends its whole window on
+          # every PR this repo has — renovate, human, bot — and the merged ones,
+          # which no guard in this step consults, crowd out the ones that decide.
+          #
+          # Measured on this repo on 2026-08-05: `--state all --limit 200` came
+          # back FULL, 184 of the 200 MERGED, reaching back only as far as #125.
+          # The repo had 26 unmerged-closed PRs and this listing could see 14 —
+          # twelve were ALREADY outside the window. A closed drift PR that ages
+          # out the same way does not make this step cautious, it makes it wrong:
+          # "no closed PR carries this key" is what it reads, so it re-proposes a
+          # changeset a human REJECTED, every morning, exactly the bug the widened
+          # state filter exists to fix, restored silently by a window nobody
+          # watched.
+          #
+          # So the merged population is excluded SERVER-side by a second listing.
+          # `--search "is:unmerged"` is a STATE predicate, not a body one: unlike
+          # `<key> in:body` it cannot be defeated by the very body edit this
+          # self-heal is here to repair, and a PR closed moments ago matches it
+          # under either indexed state (open is unmerged too). Same measurement:
+          # it returned the complete unmerged population, 28 rows, back to #1.
+          # `--state closed` is NOT a substitute — gh maps it to CLOSED-or-MERGED
+          # and that query returned 186 merged against 14 closed, just as full.
+          #
+          # The plain listing is UNIONED rather than replaced. It is the one view
+          # that needs no search index at all, so it stays as the index-free
+          # floor; the unmerged listing supplies the aged-out closed PRs it can no
+          # longer reach. Neither is trusted alone, and plain entries win on
+          # collision so nothing this step already saw today can change under it.
+          PR_LIST_LIMIT=200
+          # SATURATION IS A FAULT, NOT A RESULT. A truncated listing is
+          # indistinguishable from a complete one — same shape, same exit code —
+          # and every guard downstream reads "absent" where the honest answer is
+          # "did not look". A listing that comes back FULL cannot be proven
+          # complete, so it is REFUSED rather than believed: fail-closed and loud
+          # beats a duplicate PR nobody can explain.
+          assert_listing_complete() {
+            if [ "$(printf '%s' "$2" | jq 'length')" -ge "${PR_LIST_LIMIT}" ]; then
+              echo "::error::the ${1} came back FULL at its --limit of ${PR_LIST_LIMIT}, so it is TRUNCATED and every PR older than the newest ${PR_LIST_LIMIT} is invisible to it. Answering a dedup or rejection lookup from a truncated listing reports 'not proposed' / 'not rejected' for a PR that exists, which opens a duplicate PR or re-proposes a changeset a human rejected. Refusing to decide on it — narrow the query or raise --limit in .github/workflows/fix-drift.yml."
+              exit 1
+            fi
+          }
+          if ! MANAGED="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
             --json number,url,state,body,headRefName 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove the dedup marker it owns is still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
             exit 1
@@ -527,6 +607,23 @@ jobs:
             echo "::error::gh pr list returned a non-array payload — refusing to self-heal markers against it: ${MANAGED}"
             exit 1
           fi
+          if ! UNMERGED="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
+            --search "is:unmerged" --json number,url,state,body,headRefName 2>&1)"; then
+            echo "::error::gh pr list (is:unmerged) failed, so this run cannot see the closed PRs that carry human rejections and would re-propose a rejected changeset — refusing: ${UNMERGED}"
+            exit 1
+          fi
+          if ! printf '%s' "$UNMERGED" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list (is:unmerged) returned a non-array payload — refusing to self-heal markers against it: ${UNMERGED}"
+            exit 1
+          fi
+          # Only the unmerged listing is audited for saturation: the plain one is
+          # EXPECTED to be full (merged PRs alone exceed the limit) and is not
+          # relied on for completeness — that is exactly why it is unioned with a
+          # query whose population is bounded by the repo's unmerged PRs.
+          assert_listing_complete "unmerged-PR listing this step's marker self-heal reads" "$UNMERGED"
+          MANAGED="$(jq -cn --argjson a "$MANAGED" --argjson b "$UNMERGED" \
+            '($a | map(.number)) as $seen
+             | $a + [$b[] | . as $p | select(($seen | index($p.number)) == null)]')"
           MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" '
             map(select((.state == "OPEN" or .state == "CLOSED")
                        and (.headRefName | test("^fix/drift-"))
@@ -581,9 +678,11 @@ jobs:
           # which repairs only live PRs): a CLOSED proposal is a REJECTION this
           # guard has to see, or closing a PR to reject it earns an identical one
           # the next morning, daily, forever. `--search` narrows server-side on the
-          # changeset key, so widening the state filter cannot let closed PRs crowd
-          # the older matching PR out of the `--limit` window.
-          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+          # changeset key, so — unlike the self-heal listing above — a merged PR
+          # cannot spend a slot here and widening the state filter cannot crowd the
+          # older matching PR out of the `--limit` window. The audit below holds
+          # that reasoning to account rather than assuming it.
+          if ! ALL_PRS="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
             --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove changeset ${CHANGESET_KEY} is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
@@ -592,14 +691,15 @@ jobs:
             echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
-          # Fold the self-heal's own (search-index-free) view in. `--search` above
-          # is index-backed and lags a body edit by minutes, so a PR whose marker
-          # this step just restored is very likely STILL absent from ALL_PRS —
-          # dropping it here would re-open exactly the duplicate the repair just
-          # prevented. Union rather than replace: ALL_PRS is the only source of
-          # CLOSED (human-rejected) PRs, which the `--state open` self-heal list
-          # cannot see. Self-heal entries win on collision — they carry the
-          # post-repair body.
+          assert_listing_complete "changeset-keyed dedup listing for ${CHANGESET_KEY}" "$ALL_PRS"
+          # Fold the self-heal's own view in. `--search "<key> in:body"` is a
+          # BODY-keyed index and lags an edit by minutes, so a PR whose marker this
+          # step just restored is very likely STILL absent from ALL_PRS — dropping
+          # it here would re-open exactly the duplicate the repair just prevented.
+          # Union rather than replace, in both directions: ALL_PRS reaches PRs the
+          # self-heal's branch-key anchor never selects, and the self-heal reaches
+          # the closed PRs whose body no longer contains the key at all. Self-heal
+          # entries win on collision — they carry the post-repair body.
           ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
             '($b | map(.number)) as $healed
              | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
@@ -862,9 +962,10 @@ jobs:
           #       hashes to a DIFFERENT changeset key: (a) cannot match it, the
           #       changeset guard legitimately does not fire, and the per-note
           #       marker is the ONLY thing standing between it and a duplicate PR.
-          # Listed with a plain state-filtered query, never `--search`: that index
-          # is body-keyed AND lags an edit by minutes, so it cannot see a body this
-          # step is about to repair.
+          # Never listed with a `<key> in:body` search: that index is BODY-keyed
+          # AND lags an edit by minutes, so it cannot see a body this step is about
+          # to repair. (`is:unmerged` below is a STATE predicate and carries
+          # neither property — see the window note.)
           #
           # `--state all`, not `--state open`, for the reason spelled out on the
           # ok-applied step above: a CLOSED PR's body is where a human's REJECTION of
@@ -882,7 +983,39 @@ jobs:
           # (see bot_managed below). Dropping it from this field list silently
           # narrows candidacy back to keyed branches, so the presence check below
           # fails closed on it rather than letting coverage quietly shrink.
-          if ! MANAGED="$(gh pr list --state all --limit 200 \
+          #
+          # ---- THE WINDOW IS PART OF THE ANSWER --------------------------------
+          # Same window defect, same remedy, as the ok-applied step above; the two
+          # steps each carry their own listing, so a fix applied to one of them
+          # leaves the other saturating exactly as before. `--limit N` is a WINDOW:
+          # gh returns the newest N rows and drops the rest with no flag, no
+          # warning and no count, and this listing's `--state` filter is applied
+          # CLIENT-side by the jq below, so merged PRs no guard here consults spend
+          # the window that decides. Measured on this repo on 2026-08-05:
+          # `--state all --limit 200` came back FULL, 184 of 200 MERGED, reaching
+          # back only to #125, with twelve of the repo's 26 unmerged-closed PRs
+          # ALREADY outside it. A rejection that ages out that way reads as "never
+          # rejected" and gets re-proposed every morning, silently.
+          #
+          # `--search "is:unmerged"` is a STATE predicate: no merged PR can spend a
+          # slot, it is not defeated by the body edit this self-heal repairs, and a
+          # just-closed PR matches under either indexed state. It returned the
+          # complete unmerged population, 28 rows, back to #1. `--state closed` is
+          # NOT a substitute — gh maps it to CLOSED-or-MERGED (186 merged against
+          # 14 closed on the same measurement). The plain listing is UNIONED, not
+          # replaced: it is the index-free floor, and plain entries win on
+          # collision.
+          PR_LIST_LIMIT=200
+          # SATURATION IS A FAULT, NOT A RESULT — a truncated listing is
+          # indistinguishable from a complete one, and the guards below then read
+          # "absent" where the honest answer is "did not look". Refuse it.
+          assert_listing_complete() {
+            if [ "$(printf '%s' "$2" | jq 'length')" -ge "${PR_LIST_LIMIT}" ]; then
+              echo "::error::the ${1} came back FULL at its --limit of ${PR_LIST_LIMIT}, so it is TRUNCATED and every PR older than the newest ${PR_LIST_LIMIT} is invisible to it. Answering a dedup or rejection lookup from a truncated listing reports 'not proposed' / 'not rejected' for a PR that exists, which opens a duplicate PR or re-proposes a changeset a human rejected. Refusing to decide on it — narrow the query or raise --limit in .github/workflows/fix-drift.yml."
+              exit 1
+            fi
+          }
+          if ! MANAGED="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
             --json number,url,state,body,headRefName,files,author 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove the dedup markers it owns are still intact on the PRs it manages — refusing to risk a duplicate: ${MANAGED}"
             exit 1
@@ -891,6 +1024,23 @@ jobs:
             echo "::error::gh pr list returned a non-array payload — refusing to self-heal markers against it: ${MANAGED}"
             exit 1
           fi
+          if ! UNMERGED="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
+            --search "is:unmerged" --json number,url,state,body,headRefName,files,author 2>&1)"; then
+            echo "::error::gh pr list (is:unmerged) failed, so this run cannot see the closed PRs that carry human rejections and would re-propose a rejected changeset — refusing: ${UNMERGED}"
+            exit 1
+          fi
+          if ! printf '%s' "$UNMERGED" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::gh pr list (is:unmerged) returned a non-array payload — refusing to self-heal markers against it: ${UNMERGED}"
+            exit 1
+          fi
+          # Only the unmerged listing is audited: the plain one is EXPECTED to be
+          # full (merged PRs alone exceed the limit) and is not relied on for
+          # completeness — which is exactly why it is unioned with a query whose
+          # population is bounded by the repo's unmerged PRs.
+          assert_listing_complete "unmerged-PR listing this step's marker self-heal reads" "$UNMERGED"
+          MANAGED="$(jq -cn --argjson a "$MANAGED" --argjson b "$UNMERGED" \
+            '($a | map(.number)) as $seen
+             | $a + [$b[] | . as $p | select(($seen | index($p.number)) == null)]')"
           # `has("author")`, not "the login is non-empty": gh always emits every key
           # it was asked for, so an ABSENT key means the `--json` list above (or
           # gh's payload shape) changed and half of bot_managed's coverage went with
@@ -1111,9 +1261,11 @@ jobs:
           # to "set `Decision: include` … or close to reject", so a dedup view that
           # cannot see a CLOSED PR turns following that instruction into a brand-new
           # identical PR the next morning, and every morning after. `--search`
-          # narrows server-side on the changeset key, so widening the state filter
-          # cannot push the older matching PR out of the window.
-          if ! ALL_PRS="$(gh pr list --state all --limit 200 \
+          # narrows server-side on the changeset key, so — unlike the self-heal
+          # listing above — a merged PR cannot spend a slot here and widening the
+          # state filter cannot push the older matching PR out of the window. The
+          # audit below holds that reasoning to account rather than assuming it.
+          if ! ALL_PRS="$(gh pr list --state all --limit "${PR_LIST_LIMIT}" \
             --search "${CHANGESET_KEY} in:body" --json number,url,body,state 2>&1)"; then
             echo "::error::gh pr list failed, so this run cannot prove this decision is not already proposed — refusing to open a possibly-duplicate PR: ${ALL_PRS}"
             exit 1
@@ -1122,10 +1274,12 @@ jobs:
             echo "::error::gh pr list returned a non-array payload — refusing to dedup against it: ${ALL_PRS}"
             exit 1
           fi
-          # Fold the self-heal's own (search-index-free) view in, exactly as the
-          # ok-applied path above does and for the same reason: the `--search` index
-          # lags a body edit, so a PR whose marker this step just restored is likely
-          # still absent here, while ALL_PRS is the only source of CLOSED PRs.
+          assert_listing_complete "changeset-keyed dedup listing for ${CHANGESET_KEY}" "$ALL_PRS"
+          # Fold the self-heal's own view in, exactly as the ok-applied path above
+          # does and for the same reason: the `<key> in:body` index lags a body
+          # edit, so a PR whose marker this step just restored is likely still
+          # absent here, while the self-heal reaches the closed PRs whose body no
+          # longer contains the key at all.
           ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
             '($b | map(.number)) as $healed
              | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
@@ -1369,9 +1523,12 @@ jobs:
       # CLOSED, and both suppress it for good: the closure is permanent and the
       # needs-human alert is additionally gated on `rejected == ''`. Enacted with
       # `exit 0` alone, such a run is byte-identical to a quiet day — the encoding
-      # collision the rest of this workflow exists to break — and it has no recovery
-      # path either, because the marker self-heal lists `--state open` only and so
-      # never touches the closed PR.
+      # collision the rest of this workflow exists to break. And the suppression is
+      # now SELF-REPAIRING: the marker self-heal above reaches closed PRs, so
+      # deleting the marker from the closed PR's body does not un-suppress the
+      # changeset, it just gets the marker written back on the next run. That makes
+      # naming the real way out mandatory rather than merely helpful — the one
+      # route a human would reach for first is the one route that no longer works.
       #
       # So the re-PROPOSAL is suppressed and the TELLING is not: this names the
       # closing PR and the two ways back out. It does NOT fail the job — a respected
