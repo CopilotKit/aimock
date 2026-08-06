@@ -1244,9 +1244,23 @@ describe("LLMock", () => {
       mock.addFixture(first).addFixture(second);
       await mock.start();
 
+      // Counts are per-testId, so drive BOTH the default scope and a named
+      // one — a reset that only clears the default sentinel would strand
+      // every other tenant mid-sequence.
+      const asTenant = (msg: string) =>
+        fetch(`${mock!.url}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-test-id": "tenant-a" },
+          body: JSON.stringify(chatBody(msg, false)),
+        }).then((r) => r.text());
+
       expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
       expect((await post(mock.url, chatBody("seq"))).data).toContain("SECOND");
       expect(mock.journal.getFixtureMatchCount(first)).toBe(2);
+
+      expect(await asTenant("seq")).toContain("FIRST");
+      expect(await asTenant("seq")).toContain("SECOND");
+      expect(mock.journal.getFixtureMatchCount(first, "tenant-a")).toBe(2);
 
       mock.reset();
       // Re-add the SAME fixture objects — counts are keyed by object identity,
@@ -1254,7 +1268,102 @@ describe("LLMock", () => {
       mock.addFixture(first).addFixture(second);
 
       expect(mock.journal.getFixtureMatchCount(first)).toBe(0);
+      expect(mock.journal.getFixtureMatchCount(first, "tenant-a")).toBe(0);
       expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
+      expect(await asTenant("seq")).toContain("FIRST");
+    });
+
+    // The documented divergence from the HTTP reset: these three stores are
+    // in-process only, so nothing but this test guards them.
+    it("clears search, rerank and moderation fixtures", async () => {
+      mock = new LLMock();
+      mock.onSearch("weather", [
+        { title: "Weather Report", url: "https://example.com/weather", content: "Sunny today" },
+      ]);
+      mock.onRerank("machine learning", [{ index: 0, relevance_score: 0.99 }]);
+      mock.onModerate("violent", { flagged: true, categories: { violence: true } });
+      await mock.start();
+
+      const search = async () =>
+        JSON.parse(
+          (await postTo(mock!.url, "/search", { query: "What is the weather?" })).data,
+        ) as {
+          results: unknown[];
+        };
+      const rerank = async () =>
+        JSON.parse(
+          (
+            await postTo(mock!.url, "/v2/rerank", {
+              query: "What is machine learning?",
+              documents: ["ML is a subset of AI"],
+              model: "rerank-v3.5",
+            })
+          ).data,
+        ) as { results: unknown[] };
+      const moderate = async () =>
+        JSON.parse(
+          (await postTo(mock!.url, "/v1/moderations", { input: "This is violent content" })).data,
+        ) as { results: Array<{ flagged: boolean }> };
+
+      expect((await search()).results).toHaveLength(1);
+      expect((await rerank()).results).toHaveLength(1);
+      expect((await moderate()).results[0].flagged).toBe(true);
+
+      mock.reset();
+
+      // A cleared fixture store yields an empty/unflagged response, not an error.
+      expect((await search()).results).toHaveLength(0);
+      expect((await rerank()).results).toHaveLength(0);
+      expect((await moderate()).results[0].flagged).toBe(false);
+    });
+
+    // performFullReset takes a null target before start(). The process-global
+    // stores must still be cleared on that path.
+    it("clears process-global state even when called before start()", async () => {
+      // Seed the global fal stores and the Gemini counters through a first,
+      // fully-started instance, then stop it.
+      const seeder = new LLMock();
+      seeder.onFalAudio("drum loop", { audio: "SGVsbG8=", format: "mp3" });
+      seeder.onMessage("hello", { content: "Hi there!" });
+      await seeder.start();
+      const envelope = (await (
+        await fetch(`${seeder.url}/fal/queue/submit/fal-ai/stable-audio`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: "drum loop" }),
+        })
+      ).json()) as { request_id: string };
+      await postTo(seeder.url, "/v1beta/interactions", {
+        model: "gemini-2.5-flash",
+        input: "hello",
+        stream: false,
+      });
+      await seeder.stop();
+
+      // A brand-new, NEVER-STARTED instance resets the process-global state.
+      const unstarted = new LLMock();
+      unstarted.onMessage("x", { content: "y" });
+      unstarted.reset();
+      expect(unstarted.getFixtures()).toHaveLength(0);
+
+      // Observe through a fresh server: the seeded fal job is gone and the
+      // Gemini interaction counter restarted.
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(404);
+      const interaction = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      expect(interaction.id).toBe("aimock-int-0");
     });
   });
 

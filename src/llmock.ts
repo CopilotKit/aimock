@@ -434,6 +434,19 @@ export class LLMock {
    * also cleared here. Those are registered through this class only — the
    * control API has no route that creates them, so the HTTP reset can neither
    * reach nor observe them.
+   *
+   * NOT ALL OF THIS IS PER-INSTANCE. `performFullReset` clears module-global
+   * state as well: the Gemini interaction and event-id counters
+   * (`resetInteractionCounter` / `resetEventIdCounter` in
+   * `./gemini-interactions.js`) and the fal.ai job/queue maps (`falJobs`,
+   * `falQueueStates`). With two `LLMock` instances live in one process,
+   * `a.reset()` rewinds the Gemini id sequence that `b` is mid-way through —
+   * `b` then re-emits `aimock-int-0` / `evt_1`, ids it has already handed
+   * out — and drops `b`'s in-flight fal jobs. Give each instance its own
+   * process (or its own vitest worker) if that matters.
+   *
+   * The global stores are cleared even before `start()`, when there is no
+   * server instance to reset.
    */
   reset(): this {
     this.searchFixtures.length = 0;

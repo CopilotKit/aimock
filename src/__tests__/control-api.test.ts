@@ -195,15 +195,19 @@ describe("/__aimock control API", () => {
       ];
       instance = await createServer(fixtures);
 
-      // Make a request to populate journal
+      // Make a request to populate the journal AND the fixture's match-count.
       await httpRequest(`${instance.url}/v1/chat/completions`, "POST", chatRequest("hello"));
       expect(instance.journal.size).toBeGreaterThan(0);
+      const fixture = fixtures[0];
+      expect(instance.journal.getFixtureMatchCount(fixture)).toBeGreaterThan(0);
 
       const res = await httpRequest(`${instance.url}/__aimock/reset`, "POST");
       expect(res.status).toBe(200);
       expect(JSON.parse(res.body)).toMatchObject({ reset: true });
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
+      // The name of this test promises match counts — assert them.
+      expect(instance.journal.getFixtureMatchCount(fixture)).toBe(0);
     });
   });
 
@@ -320,10 +324,12 @@ describe("/__aimock control API", () => {
       };
       expect(body.reset).toBe(true);
       expect(body.deprecated).toBe(true);
-      expect(typeof body.deprecation).toBe("string");
-      // Points callers at the canonical route, not back at itself.
-      expect(body.deprecation).toContain("POST /__aimock/reset");
-      expect(body.deprecation).not.toContain("use POST /__aimock/reset/fixtures");
+      // Points callers at the canonical route, not back at itself. Asserting
+      // the whole string: any substring of it that mentions "/__aimock/reset"
+      // is also present in a message that points back at /reset/fixtures.
+      expect(body.deprecation).toBe(
+        "POST /__aimock/reset/fixtures is deprecated; use POST /__aimock/reset (full reset) or POST /__aimock/reset/journal (journal only)",
+      );
 
       // Back-compat: the alias still performs the same full reset.
       expect(fixtures.length).toBe(0);

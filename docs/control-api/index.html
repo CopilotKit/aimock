@@ -143,9 +143,15 @@
           "
         >
           <strong style="color: var(--warning)">Pick the narrower route</strong> &mdash;
-          <code>POST /__aimock/reset</code> wipes the loaded fixtures along with everything else, so
-          every subsequent request returns <code>no_fixture_match</code> until you load fixtures
-          again. If all you want is a clean read between test runs, use
+          <code>POST /__aimock/reset</code> wipes the loaded fixtures along with everything else,
+          and what happens to the next request then depends on the mode. In replay mode it returns
+          <code>no_fixture_match</code>; in strict mode it returns <code>503</code>; but
+          <strong
+            >in record mode, with a provider key configured, an unmatched request is proxied to the
+            real provider</strong
+          >
+          &mdash; so a full reset mid-recording means live upstream calls and real spend, not an
+          error. If all you want is a clean read between test runs, use
           <code>POST /__aimock/reset/journal</code> &mdash; it leaves your fixtures intact.
         </div>
 
