@@ -704,6 +704,41 @@ function observeAlertPost(
 }
 
 /**
+ * A shell word that reads ONE variable: `$V`, `${V}`, `${V:-…}`, and any of
+ * those double-quoted.
+ *
+ * Deliberately loose about the quoting (`"$V` matches too). The sweep below
+ * reading a SUPERSET is the safe direction — a spurious state is one more state
+ * the body has to deliver in, whereas a spelling the sweep fails to recognise is
+ * a state NOBODY tests, which is the whole defect class this helper exists for.
+ */
+const SH_VAR_WORD = String.raw`"?\$\{?[A-Za-z_][A-Za-z0-9_]*(?::-[^}"\s]*)?\}?"?`;
+
+/** A shell word standing for a value: quoted either way, or bare. */
+const SH_VALUE_WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|)\]]+)`;
+
+/** The variable NAME inside an {@link SH_VAR_WORD} match. */
+const shVarName = (word: string): string | null =>
+  /^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)/.exec(word)?.[1] ?? null;
+
+const shUnquote = (word: string): string => word.replace(/^(["'])([\s\S]*)\1$/, "$2");
+
+/**
+ * ONE value that matches a shell pattern — a `case` arm, or the unquoted
+ * right-hand side of `[[ … == … ]]`, which bash reads as a glob rather than as
+ * a literal.
+ *
+ * `ok-*)` is every bit as much a comparand as `ok-applied)`, so it gets a
+ * witness (`ok-`) instead of being dropped. `null` where there is no cheap
+ * witness: a bracket class, and the bare `*)` catch-all — which distinguishes
+ * nothing, being the fall-through the base state already drives.
+ */
+function shPatternWitness(pattern: string): string | null {
+  if (/[[\]]/.test(pattern)) return null;
+  return pattern.replace(/\\(.)/g, "$1").replace(/\*/g, "").replace(/\?/g, "x") || null;
+}
+
+/**
  * Every (env var, value) state the step's OWN body distinguishes, read out of
  * the artifact.
  *
@@ -713,10 +748,16 @@ function observeAlertPost(
  * stood the catch-all down with nothing delivered, and both harnesses fed a
  * value (`""`, `<SYNC_REASON>`) that no comparison in the body matches.
  *
- * So the domain comes from the comparisons the body itself makes: every literal
- * an `env:`-declared variable is compared against, plus the empty string for
- * every variable tested with `-z`/`-n`. A branch added later extends the swept
- * domain by existing, which is what a fixture list cannot do.
+ * So the domain comes from the comparisons the body itself makes: every value an
+ * `env:`-declared variable is compared against, plus the empty string for every
+ * variable tested with `-z`/`-n`. A branch added later extends the swept domain
+ * by existing, which is what a fixture list cannot do — but only for the
+ * spellings this reads, so it reads every spelling bash accepts rather than the
+ * one the artifact happens to use today. `==` is a synonym the `[` builtin
+ * takes, `case` is how a multi-way branch is normally written, and neither
+ * shellcheck nor actionlint flags either: a maintainer reaching for one of them
+ * would have left the tested domain without a single tool saying so, and a
+ * stand-down hiding behind it would have been invisible here.
  *
  * `SLACK_WEBHOOK` is excluded: an empty webhook is the ONE state in which these
  * bodies are entitled not to POST, and it has its own guard.
@@ -725,17 +766,48 @@ function envStatesFrom(step: Step): Array<{ label: string; env: Record<string, s
   const body = runOf(step);
   const declared = new Set(Object.keys(step.env));
   const states = new Map<string, Record<string, string>>();
-  const add = (name: string, value: string): void => {
+  const add = (name: string | null, value: string | null): void => {
+    if (name === null || value === null) return;
     if (!declared.has(name) || name === "SLACK_WEBHOOK") return;
     states.set(`${name}=${JSON.stringify(value)}`, { [name]: value });
   };
+  // An equality test, in every spelling: `=`, `==` (the `[` builtin's synonym)
+  // or `!=`; the variable braced or not; the comparand double-quoted, single-
+  // quoted or bare. `[[ … ]]` needs nothing extra — the INNER bracket satisfies
+  // `\[`, and the inner `]` satisfies `\]`.
   for (const m of body.matchAll(
-    /\[\s+"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-)?\}"\s+(?:=|!=)\s+"([^"]*)"\s+\]/g,
+    new RegExp(String.raw`\[\s+(${SH_VAR_WORD})\s+(?:==?|!=)\s+(${SH_VALUE_WORD})\s+\]`, "g"),
   )) {
-    add(m[1], m[2]);
+    // `[ "$A" = "$B" ]` compares two variables and so names no value at all.
+    if (m[2].includes("$")) continue;
+    add(
+      shVarName(m[1]),
+      m[2].startsWith('"') ? shUnquote(m[2]) : shPatternWitness(shUnquote(m[2])),
+    );
   }
-  for (const m of body.matchAll(/\[\s+-[zn]\s+"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-)?\}"\s+\]/g)) {
-    add(m[1], "");
+  for (const m of body.matchAll(new RegExp(String.raw`\[\s+-[zn]\s+(${SH_VAR_WORD})\s+\]`, "g"))) {
+    add(shVarName(m[1]), "");
+  }
+  // `case "$V" in a | b-*) … ;; esac` — every arm names a value the body
+  // distinguishes exactly as an equality test does.
+  for (const m of body.matchAll(
+    new RegExp(String.raw`\bcase\s+(${SH_VAR_WORD})\s+in\b([\s\S]*?)\besac\b`, "g"),
+  )) {
+    const name = shVarName(m[1]);
+    for (const arm of m[2].split(";;")) {
+      // The arm's patterns run to its first `)`; everything after that is the
+      // code the arm runs, which may contain `)` of its own.
+      const close = arm.indexOf(")");
+      if (close === -1) continue;
+      for (const pattern of arm
+        .slice(0, close)
+        .replace(/^\s*\(/, "")
+        .split("|")) {
+        const word = pattern.trim();
+        if (!word || word.includes("$")) continue;
+        add(name, shPatternWitness(shUnquote(word)));
+      }
+    }
   }
   return [
     { label: "every declared value present", env: {} },
@@ -3660,6 +3732,53 @@ describe("fix-drift.yml — fail-silent repairs a revert must not be able to pas
         gate,
         `the alert-state sweep does not read ${want} out of the gate alert's own body, so ` +
           "that branch is never executed and an early stand-down hiding behind it is invisible",
+      ).toContain(want);
+    }
+    // …and it reads a comparand however it is SPELLED, not only the way the
+    // artifact happens to spell it today. Each row below is a real stand-down
+    // (`case "${SYNC_REASON}" in ok-applied) echo "posted=true"; exit 1 ;;
+    // esac`) that this file passed 130/130 on, actionlint clean: one keystroke
+    // outside the swept spelling and the zero-Slack window is open again with
+    // every assertion green. The bodies use none of these forms today, so the
+    // artifact cannot demonstrate the property — these do.
+    const spellings = (line: string): string[] =>
+      envStatesFrom({ ...stepById("alert_cancelled"), run: line }).map((s) => s.label);
+    for (const [want, how, line] of [
+      [
+        'SYNC_REASON="ok-applied"',
+        "`==`, the synonym `[` accepts for `=`",
+        'if [ "${SYNC_REASON}" == "ok-applied" ]; then :; fi',
+      ],
+      [
+        'SYNC_REASON="ok-applied"',
+        "an unbraced `$VAR`",
+        'if [ "$SYNC_REASON" = "ok-applied" ]; then :; fi',
+      ],
+      [
+        'SYNC_REASON="ok-applied"',
+        "a bare, unquoted comparand",
+        'if [ "${SYNC_REASON}" = ok-applied ]; then :; fi',
+      ],
+      [
+        'SYNC_REASON="ok applied"',
+        "a single-quoted comparand",
+        `if [ "\${SYNC_REASON}" = 'ok applied' ]; then :; fi`,
+      ],
+      [
+        'SYNC_REASON="ok-applied"',
+        "a `case` arm",
+        'case "${SYNC_REASON}" in needs-human | ok-applied) : ;; esac',
+      ],
+      [
+        'SYNC_REASON="ok-applied"',
+        "a GLOBBED `case` arm",
+        'case "${SYNC_REASON}" in ok-applied*) : ;; esac',
+      ],
+    ] as const) {
+      expect(
+        spellings(line),
+        `the sweep does not read a comparand written as ${how}, so a body branching that ` +
+          "way is driven in one fixture state only and an early stand-down behind it never runs",
       ).toContain(want);
     }
     // …and it reaches the empty-string states a `-z`/`-n` test distinguishes,
