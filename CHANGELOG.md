@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-### Deprecated
-
-- `POST /__aimock/reset/fixtures` — now a deprecated alias for `POST /__aimock/reset`. The name promised a fixtures-only reset while it always performed the full reset, so `/reset` is the honest route and the deprecation moves onto the alias: it still performs the same full reset but emits a `Deprecation: true` response header, `deprecated` / `deprecation` fields in the body, and a log warning. Use `POST /__aimock/reset` for a full reset, `POST /__aimock/reset/journal` for a journal-only one, or `DELETE /__aimock/fixtures` to clear fixtures and nothing else.
-  - The alias's **reset semantics are unchanged** — it clears exactly what it always did, so existing callers keep working. Its **response body is additively extended**: it now carries `deprecated` and `deprecation` alongside `reset`, plus the `Deprecation: true` header. A caller asserting strict equality on the old `{ "reset": true }` body will need to relax that assertion; a caller reading `body.reset` is unaffected.
-
 ### Changed
 
 - `POST /__aimock/reset` is now the canonical full reset and returns a plain `{ "reset": true }` with no deprecation header or body fields. `POST /__aimock/reset/journal` is unaffected.
@@ -14,6 +9,11 @@
   - **Behavior change for multi-instance in-process users:** `reset()` now also clears state that is MODULE-GLOBAL, not per-instance — the Gemini interaction and event-id counters, and the fal.ai job/queue maps. With two `LLMock` instances live in one process, `a.reset()` rewinds the Gemini id sequence that instance `b` is mid-way through, so `b` re-emits `aimock-int-0` / `evt_1` — ids it has already handed out — and drops `b`'s in-flight fal jobs. The fal maps were already global before this change; the counters are newly reached. Give each instance its own process (or its own vitest worker) if that matters.
 - `aimock-pytest`: `AIMockServer.reset()` and `.reset_fixtures()` now call `POST /__aimock/reset`. Both already performed a full reset, so the observable behavior is unchanged.
   - **This does not yet avoid the deprecation warning.** `_version.py` pins `AIMOCK_VERSION = "1.38.0"`, and on that published server `/reset` is still the deprecated alias — so the client trips a deprecation on every reset until the pin moves. **Release follow-up (required):** bump `AIMOCK_VERSION` to the first npm release containing this change before publishing the next `aimock-pytest`. Until then the client is deprecation-clean only against a server built from this branch.
+
+### Deprecated
+
+- `POST /__aimock/reset/fixtures` — now a deprecated alias for `POST /__aimock/reset`. The name promised a fixtures-only reset while it always performed the full reset, so `/reset` is the honest route and the deprecation moves onto the alias: it still performs the same full reset but emits a `Deprecation: true` response header, `deprecated` / `deprecation` fields in the body, and a log warning. Use `POST /__aimock/reset` for a full reset, `POST /__aimock/reset/journal` for a journal-only one, or `DELETE /__aimock/fixtures` to clear fixtures and nothing else.
+  - The alias's **reset semantics are unchanged** — it clears exactly what it always did, so existing callers keep working. Its **response body is additively extended**: it now carries `deprecated` and `deprecation` alongside `reset`, plus the `Deprecation: true` header. A caller asserting strict equality on the old `{ "reset": true }` body will need to relax that assertion; a caller reading `body.reset` is unaffected.
 
 ## [1.38.0] - 2026-08-03
 

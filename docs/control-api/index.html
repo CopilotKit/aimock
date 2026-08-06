@@ -144,8 +144,9 @@
         >
           <strong style="color: var(--warning)">Pick the narrower route</strong> &mdash;
           <code>POST /__aimock/reset</code> wipes the loaded fixtures along with everything else,
-          and what happens to the next request then depends on the mode. In replay mode it returns
-          <code>no_fixture_match</code>; in strict mode it returns <code>503</code>; but
+          and what happens to the next request then depends on the mode. In replay mode it fails
+          with <code>404</code>, and in strict mode with <code>503</code> &mdash; both carry
+          <code>code: "no_fixture_match"</code>. But
           <strong
             >in record mode, with a provider key configured, an unmatched request is proxied to the
             real provider</strong

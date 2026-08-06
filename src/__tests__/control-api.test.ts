@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import type { Fixture, ChatCompletionRequest } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -272,19 +272,8 @@ describe("/__aimock control API", () => {
       expect(instance.journal.getFixtureMatchCount(fixtures[0])).toBe(countBefore);
     });
 
-    it("POST /__aimock/reset/fixtures is a deprecated alias that still performs a full reset", async () => {
-      const fixtures: Fixture[] = [
-        { match: { userMessage: "hello" }, response: { content: "Hi" } },
-      ];
-      instance = await createServer(fixtures);
-
-      const res = await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
-      expect(res.status).toBe(200);
-      const body = JSON.parse(res.body);
-      expect(body).toMatchObject({ reset: true, deprecated: true });
-      expect(typeof body.deprecation).toBe("string");
-      expect(fixtures.length).toBe(0);
-    });
+    // The alias's deprecation signal and its full-reset behaviour are covered
+    // together, and more strictly, by "full-reset deprecation direction" below.
   });
 
   describe("full-reset deprecation direction", () => {
@@ -334,6 +323,26 @@ describe("/__aimock control API", () => {
       // Back-compat: the alias still performs the same full reset.
       expect(fixtures.length).toBe(0);
       expect(instance.journal.size).toBe(0);
+    });
+
+    // The log warning is the third documented deprecation signal, alongside
+    // the header and the body fields. The suite defaults to logLevel silent,
+    // so the level has to be raised for the warning to reach console.warn.
+    it("logs a deprecation warning for the alias and stays silent for the canonical route", async () => {
+      instance = await createServer([], { logLevel: "warn" });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await httpRequest(`${instance.url}/__aimock/reset`, "POST");
+        expect(warn).not.toHaveBeenCalled();
+
+        await httpRequest(`${instance.url}/__aimock/reset/fixtures`, "POST");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0].join(" ")).toContain(
+          "POST /__aimock/reset/fixtures is deprecated; use /__aimock/reset or /__aimock/reset/journal",
+        );
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

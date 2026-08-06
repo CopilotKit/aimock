@@ -1326,19 +1326,25 @@ describe("LLMock", () => {
       seeder.onFalAudio("drum loop", { audio: "SGVsbG8=", format: "mp3" });
       seeder.onMessage("hello", { content: "Hi there!" });
       await seeder.start();
-      const envelope = (await (
-        await fetch(`${seeder.url}/fal/queue/submit/fal-ai/stable-audio`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: "drum loop" }),
-        })
-      ).json()) as { request_id: string };
-      await postTo(seeder.url, "/v1beta/interactions", {
-        model: "gemini-2.5-flash",
-        input: "hello",
-        stream: false,
-      });
-      await seeder.stop();
+      // The file-level afterEach only stops `mock`, so this handle is ours to
+      // close on every path.
+      let envelope: { request_id: string };
+      try {
+        envelope = (await (
+          await fetch(`${seeder.url}/fal/queue/submit/fal-ai/stable-audio`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: "drum loop" }),
+          })
+        ).json()) as { request_id: string };
+        await postTo(seeder.url, "/v1beta/interactions", {
+          model: "gemini-2.5-flash",
+          input: "hello",
+          stream: false,
+        });
+      } finally {
+        await seeder.stop();
+      }
 
       // A brand-new, NEVER-STARTED instance resets the process-global state.
       const unstarted = new LLMock();
@@ -1364,6 +1370,20 @@ describe("LLMock", () => {
         ).data,
       ) as { id: string };
       expect(interaction.id).toBe("aimock-int-0");
+    });
+
+    it("re-zeroes the aimock_fixtures_loaded gauge", async () => {
+      mock = new LLMock({ metrics: true });
+      mock.onMessage("a", { content: "1" });
+      mock.onMessage("b", { content: "2" });
+      await mock.start();
+
+      const scrape = async () => (await fetch(`${mock!.url}/metrics`)).text();
+      expect(await scrape()).toContain("aimock_fixtures_loaded{} 2");
+
+      mock.reset();
+
+      expect(await scrape()).toContain("aimock_fixtures_loaded{} 0");
     });
   });
 
