@@ -232,7 +232,10 @@ def test_reset_targets_the_canonical_route_not_the_deprecated_alias(aimock, monk
     assert alias.status_code == 200
     alias_body = alias.json()
     assert alias_body["deprecated"] is True
-    assert "POST /__aimock/reset" in alias_body["deprecation"]
+    # The discriminating substring: a self-referential message would read
+    # "use POST /__aimock/reset/fixtures (full reset)".  A bare
+    # "POST /__aimock/reset" check would be satisfied by that too.
+    assert "use POST /__aimock/reset (full reset)" in alias_body["deprecation"]
     assert alias.headers["Deprecation"] == "true"
 
 
