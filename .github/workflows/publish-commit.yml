@@ -17,4 +17,24 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: npx pkg-pr-new publish
+      # `pnpm exec`, NOT `npx`. This step used to be `npx pkg-pr-new publish`,
+      # and `pkg-pr-new` was in neither package.json nor pnpm-lock.yaml — so npx
+      # resolved the `latest` dist-tag at run time and executed whatever bytes
+      # the registry served, with no integrity check of any kind. That is a
+      # live arbitrary-code-execution seam on every PR: a malicious publish or a
+      # registry/account compromise lands attacker code inside this job. It is
+      # also the ONLY `npx` target in this repo that is not already a
+      # devDependency (`tsx` and `vitest`, the others, resolve from the tree).
+      #
+      # `pkg-pr-new` is now an EXACT-pinned devDependency, so the
+      # `pnpm install --frozen-lockfile` above has already verified its tarball
+      # against the reviewed sha512 in pnpm-lock.yaml — substituted bytes fail
+      # the install with ERR_PNPM_TARBALL_INTEGRITY and this step never runs.
+      # `pnpm exec` then runs THOSE verified bytes out of node_modules and
+      # fetches nothing. Do not reintroduce `npx` here.
+      #
+      # WHEN THIS FAILS: pkg-pr-new cut a new release and you want it. Bump the
+      # exact version in package.json's devDependencies and regenerate the
+      # lockfile (`pnpm install`) so a reviewed integrity hash lands in the
+      # diff. Do not widen the specifier to a range to avoid that review.
+      - run: pnpm exec pkg-pr-new publish
