@@ -1041,6 +1041,119 @@ describe("LLMock", () => {
       // clearFixtures alone should not throw before start
       expect(mock.clearFixtures()).toBe(mock);
     });
+
+    // reset() must be the in-process equivalent of POST /__aimock/reset. These
+    // exercise the stores the in-process path used to leave behind.
+    it("clears Veo and Grok video job state — pre-reset poll ids stop resolving", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "veo clip", endpoint: "video" },
+        response: {
+          video: { id: "veo_reset", status: "completed", url: "https://files.example/v.mp4" },
+        },
+      });
+      mock.addFixture({
+        match: { userMessage: "grok clip", endpoint: "video" },
+        response: {
+          video: { id: "vid_grok_reset", status: "completed", url: "https://cdn.x.ai/v.mp4" },
+        },
+      });
+      await mock.start();
+
+      const veoSubmit = (await (
+        await fetch(`${mock.url}/v1beta/models/veo-3.1-generate-preview:predictLongRunning`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instances: [{ prompt: "veo clip" }] }),
+        })
+      ).json()) as { name: string };
+      expect(typeof veoSubmit.name).toBe("string");
+
+      const grokSubmit = (await (
+        await fetch(`${mock.url}/v1/videos/generations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "grok-imagine-video", prompt: "grok clip" }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof grokSubmit.request_id).toBe("string");
+
+      // Both jobs resolve while they are still in the maps.
+      expect((await fetch(`${mock.url}/v1beta/${veoSubmit.name}`)).status).toBe(200);
+      expect((await fetch(`${mock.url}/v1/videos/${grokSubmit.request_id}`)).status).toBe(200);
+
+      mock.reset();
+
+      expect((await fetch(`${mock.url}/v1beta/${veoSubmit.name}`)).status).toBe(404);
+      expect((await fetch(`${mock.url}/v1/videos/${grokSubmit.request_id}`)).status).toBe(404);
+    });
+
+    it("rewinds the Gemini interaction-id counter", async () => {
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+
+      const first = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      const second = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      // The counter really did advance, so a rewind is observable.
+      expect(first.id).not.toBe(second.id);
+
+      mock.reset();
+      mock.onMessage("hello", { content: "Hi there!" });
+
+      const afterReset = JSON.parse(
+        (
+          await postTo(mock.url, "/v1beta/interactions", {
+            model: "gemini-2.5-flash",
+            input: "hello",
+            stream: false,
+          })
+        ).data,
+      ) as { id: string };
+      expect(afterReset.id).toBe("aimock-int-0");
+    });
+
+    it("rewinds the Gemini interactions event-id counter", async () => {
+      mock = new LLMock();
+      mock.onMessage("hello", { content: "Hi there!" });
+      await mock.start();
+
+      // Burn some event ids on a streaming interaction.
+      await postTo(mock.url, "/v1beta/interactions", {
+        model: "gemini-2.5-flash",
+        input: "hello",
+        stream: true,
+      });
+
+      mock.reset();
+      mock.onMessage("hello", { content: "Hi there!" });
+
+      const res = await postTo(mock.url, "/v1beta/interactions", {
+        model: "gemini-2.5-flash",
+        input: "hello",
+        stream: true,
+      });
+      const firstEventLine = res.data.split("\n").find((l) => l.startsWith("data: "));
+      expect(firstEventLine).toBeDefined();
+      const firstEvent = JSON.parse(firstEventLine!.slice(6)) as { event_id: string };
+      expect(firstEvent.event_id).toBe("evt_1");
+    });
   });
 
   describe("baseUrl getter", () => {
