@@ -2236,8 +2236,8 @@ async function proxyOpenRouterVideoRecordPoll(args: {
       // upstream fetch was in flight (everything below the fetch is
       // synchronous, so the first poll to resume wins atomically). Relay
       // without persisting a duplicate fixture or re-registering it.
-      // This identity check ALSO covers a fixtures reset landing during the
-      // upstream fetch: performFixturesReset clears the job map, so a
+      // This identity check ALSO covers a full reset landing during the
+      // upstream fetch: performFullReset clears the job map, so a
       // cleared world fails the check and the stale failure fixture never
       // pollutes the next world's fixtures array — valid because everything
       // from here to persistFixture below is synchronous (no interleaving

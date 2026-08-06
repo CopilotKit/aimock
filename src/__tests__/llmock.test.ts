@@ -1154,6 +1154,108 @@ describe("LLMock", () => {
       const firstEvent = JSON.parse(firstEventLine!.slice(6)) as { event_id: string };
       expect(firstEvent.event_id).toBe("evt_1");
     });
+
+    it("clears Sora video state — a pre-reset video id stops resolving", async () => {
+      mock = new LLMock();
+      mock.addFixture({
+        match: { userMessage: "sora clip", endpoint: "video" },
+        response: {
+          video: { id: "video_sora_reset", status: "completed", url: "https://s/v.mp4" },
+        },
+      });
+      await mock.start();
+
+      const created = (await (
+        await fetch(`${mock.url}/v1/videos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "sora-2", prompt: "sora clip" }),
+        })
+      ).json()) as { id: string };
+      expect(typeof created.id).toBe("string");
+      expect((await fetch(`${mock.url}/v1/videos/${created.id}`)).status).toBe(200);
+
+      mock.reset();
+
+      const after = await fetch(`${mock.url}/v1/videos/${created.id}`);
+      expect(after.status).toBe(404);
+      expect(((await after.json()) as { error: { type: string } }).error.type).toBe("not_found");
+    });
+
+    it("clears fal.ai audio queue jobs — a pre-reset request_id stops resolving", async () => {
+      mock = new LLMock();
+      mock.onFalAudio("drum loop", { audio: "SGVsbG8=", format: "mp3" });
+      await mock.start();
+
+      const envelope = (await (
+        await fetch(`${mock.url}/fal/queue/submit/fal-ai/stable-audio`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: "drum loop" }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof envelope.request_id).toBe("string");
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(200);
+
+      mock.reset();
+
+      expect(
+        (await fetch(`${mock.url}/fal/queue/requests/${envelope.request_id}/status`)).status,
+      ).toBe(404);
+    });
+
+    it("clears fal.ai general queue state — a pre-reset request_id stops resolving", async () => {
+      mock = new LLMock();
+      mock.onFalQueue(/flux/, { images: [{ url: "https://example.com/cat.png" }] });
+      await mock.start();
+
+      const falHeaders = { "x-fal-target-host": "queue.fal.run" };
+      const envelope = (await (
+        await fetch(`${mock.url}/fal/fal-ai/flux/dev`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...falHeaders },
+          body: JSON.stringify({ input: { prompt: "a cat" } }),
+        })
+      ).json()) as { request_id: string };
+      expect(typeof envelope.request_id).toBe("string");
+      const statusUrl = `${mock.url}/fal/fal-ai/flux/dev/requests/${envelope.request_id}/status`;
+      expect((await fetch(statusUrl, { headers: falHeaders })).status).toBe(200);
+
+      mock.reset();
+
+      expect((await fetch(statusUrl, { headers: falHeaders })).status).toBe(404);
+    });
+
+    // The full reset clears journal ENTRIES *and* per-test fixture
+    // match-counts. Only the latter carries sequence position, so a reset that
+    // used clearEntries() would leave sequenced fixtures parked mid-sequence.
+    it("clears fixture match-counts, rewinding sequence position", async () => {
+      const first = {
+        match: { userMessage: "seq", sequenceIndex: 0 },
+        response: { content: "FIRST" },
+      };
+      const second = {
+        match: { userMessage: "seq", sequenceIndex: 1 },
+        response: { content: "SECOND" },
+      };
+      mock = new LLMock();
+      mock.addFixture(first).addFixture(second);
+      await mock.start();
+
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("SECOND");
+      expect(mock.journal.getFixtureMatchCount(first)).toBe(2);
+
+      mock.reset();
+      // Re-add the SAME fixture objects — counts are keyed by object identity,
+      // so a surviving count would still be attached to them.
+      mock.addFixture(first).addFixture(second);
+
+      expect(mock.journal.getFixtureMatchCount(first)).toBe(0);
+      expect((await post(mock.url, chatBody("seq"))).data).toContain("FIRST");
+    });
   });
 
   describe("baseUrl getter", () => {

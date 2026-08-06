@@ -124,10 +124,11 @@
           <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video and
           fal.ai jobs, plus the Gemini interaction and event-id counters), the
           <strong>fixture match-counts</strong> (sequence position), and the
-          <strong>request journal</strong> (recorded requests). There are two reset routes:
+          <strong>request journal</strong> (recorded requests). Two routes clear it:
           <code>POST /__aimock/reset</code> clears all of it, and
           <code>POST /__aimock/reset/journal</code> clears only the recorded requests and leaves
-          everything else intact.
+          everything else intact. A third, <code>POST /__aimock/reset/fixtures</code>, is a
+          deprecated alias for the full reset.
         </p>
 
         <div
