@@ -344,6 +344,16 @@ export const deprecatedFamilies: Record<Provider, Set<string>> = {
   ]),
   anthropic: familySet("anthropic", [
     // drift-sync appends recorded deprecations here.
+    "claude-3-5-haiku", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-3-5-sonnet", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-3-7-sonnet", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-3-haiku", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-3-opus", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-3-sonnet", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-haiku-4", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-opus-4", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
+    "claude-opus-4-1", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin
+    "claude-sonnet-4", // DEPRECATED 2026-08-07 (drift-sync): absent from live /models; still referenced in aimock source — mock retained
   ]),
   gemini: familySet("gemini", [
     // drift-sync appends recorded deprecations here.
