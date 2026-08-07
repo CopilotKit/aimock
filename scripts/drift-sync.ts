@@ -39,6 +39,7 @@ import { normalizeModelFamily } from "../src/__tests__/drift/model-family.js";
 import {
   includeFamilies,
   isClassifiedFamily,
+  isRecordedDeprecation,
   NON_MODEL_TOKENS,
 } from "../src/__tests__/drift/model-registry.js";
 import {
@@ -338,14 +339,19 @@ export function addChangelogEntry(report: DriftReport, version: string): void {
 //
 //   - DEPRECATION (classified − live, via a mirror of C4's
 //     `detectDeprecatedFamilies`): a family aimock mocks that a healthy live
-//     listing no longer contains. Either way the registry is NOT touched — both
-//     legs route to a family-keyed dedup note file under `drift-proposals/`,
-//     because `includeFamilies`'s membership is checksum-pinned and re-pinning
-//     it is a reviewed human decision (see the removal probe in
-//     `runDriftSyncCore` for the full argument):
-//       * zero-reference (nothing in aimock's own source still names it) → a
-//         note PROPOSING the removal, naming the exact two-file edit to make.
-//       * still-referenced → a note recording that a human must decide at all.
+//     listing no longer contains. A provider-confirmed deprecation is a FACT,
+//     not a decision — the provider's own listing already says the family is
+//     gone — so it NEVER routes to a human. It is RECORDED, mechanically, as a
+//     new literal in `deprecatedFamilies[provider]` (model-registry.ts),
+//     comment-marked with the date and whether aimock's own source still
+//     references it. The mock is left FUNCTIONING: `includeFamilies` is not
+//     touched, so every fixture and builder for that family keeps serving, and
+//     `includeFamilies`'s checksum pin stays green. Recording is what stops the
+//     same deprecation being re-derived as novel drift every morning.
+//     Dropping a retired family from aimock altogether stays a human's job (it
+//     needs the `logic-pin.test.ts` re-pin the sync's own changed-file
+//     allowlist forbids it from making) — but it is optional cleanup, not an
+//     alert, and nothing is broken while it is undone.
 //   - ADDITION (a genuinely new, UNCLASSIFIED family — matches no include,
 //     exclude, `-preview`, or Gemma rule): NEVER auto-classified. Routed to a
 //     human via the same dedup note-file mechanism. Only once a human edits
@@ -399,6 +405,7 @@ export function detectDeprecatedFamiliesForSync(
   provider: Provider,
   opts: {
     isReferenced?: (family: string, provider: Provider) => boolean;
+    isRecorded?: (family: string, provider: Provider) => boolean;
     minListingSize?: number;
   } = {},
 ): DeprecationCheckResult {
@@ -423,9 +430,17 @@ export function detectDeprecatedFamiliesForSync(
   // checked BEFORE `isReferenced`: a forward-looking family legitimately has no
   // source reference either (aimock hasn't built its fixture yet), so relying
   // on "still referenced" alone can't distinguish it from a genuine retirement.
+  // Drop retirements already RECORDED in `deprecatedFamilies` (model-registry.ts).
+  // The provider's listing is not going to start containing them again, so
+  // re-deriving them is the same news every morning forever — the ledger exists
+  // precisely so the second sighting is silent. Same shape, and the same
+  // reasoning, as the forward-looking filter above; the difference is only which
+  // direction the family is missing IN.
+  const isRecorded = opts.isRecorded ?? isRecordedDeprecation;
   const missing = [...classified]
     .filter((family) => !liveFamilies.has(family))
     .filter((family) => !isForwardLookingFamily(family, provider))
+    .filter((family) => !isRecorded(family, provider))
     .sort();
   const isReferenced = opts.isReferenced ?? isFamilyStillReferenced;
 
@@ -458,11 +473,13 @@ export function unclassifiedFamiliesForSync(modelIds: string[], provider: Provid
 /** Must match `scripts/drift-sync-check.ts`'s `ALLOWED_PREFIXES`. */
 export const DRIFT_PROPOSALS_DIR = "drift-proposals";
 
-export type ProposalKind =
-  | "new-family"
-  | "still-referenced-deprecation"
-  | "zero-reference-deprecation"
-  | "registry-structural-mismatch";
+/**
+ * The two things drift-sync genuinely cannot decide alone. Deprecations are
+ * deliberately NOT here: a provider-confirmed retirement is a fact drift-sync
+ * records mechanically (see `deprecatedFamilies` in model-registry.ts), so it
+ * never produces a note and never pages anyone.
+ */
+export type ProposalKind = "new-family" | "registry-structural-mismatch";
 export type ProposalDecision = "pending" | "include";
 
 /** Family-keyed dedup path — re-firing the same alert always resolves to the SAME path. */
@@ -472,14 +489,7 @@ export function proposalNoteRelPath(
   kind: ProposalKind,
 ): string {
   const slug = family.replace(/[^a-z0-9.-]+/gi, "-");
-  const kindSlug =
-    kind === "new-family"
-      ? "new-family"
-      : kind === "registry-structural-mismatch"
-        ? "structural-mismatch"
-        : kind === "zero-reference-deprecation"
-          ? "deprecated-unreferenced"
-          : "deprecated-referenced";
+  const kindSlug = kind === "new-family" ? "new-family" : "structural-mismatch";
   return `${DRIFT_PROPOSALS_DIR}/${provider}-${slug}-${kindSlug}.md`;
 }
 
@@ -499,11 +509,7 @@ export function renderProposalNote(
   const title =
     kind === "new-family"
       ? "New / unclassified model family"
-      : kind === "registry-structural-mismatch"
-        ? "Registry structural mismatch — mechanical edit could not be applied"
-        : kind === "zero-reference-deprecation"
-          ? "Deprecated zero-reference model family — removal PROPOSED, not applied"
-          : "Deprecated-but-still-referenced model family";
+      : "Registry structural mismatch — mechanical edit could not be applied";
   const lines = [
     `# ${title}: ${family}`,
     "",
@@ -525,40 +531,23 @@ export function renderProposalNote(
       "",
     );
   }
-  if (kind === "zero-reference-deprecation") {
-    lines.push(
-      "## How to apply",
-      "",
-      `1. Delete the \`"${family}"\` entry from \`includeFamilies.${provider}\` in`,
-      `   \`${MODEL_REGISTRY_REL_PATH}\`.`,
-      `2. Re-pin \`DATA_FROZEN["includeFamilies.${provider}"]\` in`,
-      "   `src/__tests__/drift/logic-pin.test.ts` with the new membership checksum.",
-      "3. Delete this note file.",
-      "",
-      "All three belong in ONE reviewed commit: step 1 without step 2 leaves the",
-      "membership pin red, and step 2 without step 1 is a silent canary-silencing edit.",
-      "That deliberate, reviewed re-pin is a decision the pin reserves for a human, which",
-      "is exactly why drift-sync proposes this removal instead of applying it.",
-      "",
-    );
-  }
   return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
 // Mechanical registry edits — AST-LOCATED (via the real TypeScript parser, not
 // a hand-rolled regex/lexer scan) then applied as a single-line text splice.
-// The parser is used only to unambiguously find the exact line of the exact
-// string-literal element inside `includeFamilies[provider]` /
-// `excludeFamilies[provider]`'s array literal (or the array's closing-bracket
-// line, for an insert) — the mutation itself is a trivial whole-line
-// replace/insert, never a partial-token or multi-line reformat, so it cannot
-// silently mangle an adjacent grouping comment or a sibling entry.
+// The parser is used only to unambiguously find the array literal inside
+// `includeFamilies[provider]` / `excludeFamilies[provider]` /
+// `deprecatedFamilies[provider]` and the exact line of its closing bracket —
+// the mutation itself is a trivial whole-line insert, never a partial-token or
+// multi-line reformat, so it cannot silently mangle an adjacent grouping
+// comment or a sibling entry.
 // ---------------------------------------------------------------------------
 
 export const MODEL_REGISTRY_REL_PATH = "src/__tests__/drift/model-registry.ts";
 
-type RegistrySetName = "includeFamilies" | "excludeFamilies";
+type RegistrySetName = "includeFamilies" | "excludeFamilies" | "deprecatedFamilies";
 
 interface FamilySetLocation {
   /** family literal text -> 0-based source line index of that literal's own line. */
@@ -605,7 +594,7 @@ function locateFamilySetArray(
   if (!target) return null;
 
   const elementLines = new Map<string, number>();
-  let elementIndent = "    ";
+  let elementIndent: string | null = null;
   for (const el of target.elements) {
     if (ts.isStringLiteral(el)) {
       const { line, character } = sf.getLineAndCharacterOfPosition(el.getStart(sf));
@@ -614,6 +603,17 @@ function locateFamilySetArray(
     }
   }
   const { line: arrayEndLine } = sf.getLineAndCharacterOfPosition(target.getEnd());
+  if (elementIndent === null) {
+    // An array with no string element yet — `deprecatedFamilies`'s three
+    // comment-seeded arrays on the day the ledger is empty. There is no sibling
+    // entry to copy an indent from, so derive it from the array's own opening
+    // line (`  <provider>: familySet("<provider>", [`) plus one 2-space level.
+    // Cosmetic only: the repo's prettier pre-commit hook normalizes it either
+    // way, and the AST locator does not care.
+    const { line: arrayStartLine } = sf.getLineAndCharacterOfPosition(target.getStart(sf));
+    const openIndent = sourceText.split("\n")[arrayStartLine]?.match(/^(\s*)/)?.[1] ?? "";
+    elementIndent = `${openIndent}  `;
+  }
   return { elementLines, arrayEndLine, elementIndent };
 }
 
@@ -624,47 +624,11 @@ export interface RegistryEditResult {
   /**
    * True when the AST locator could NOT find the target array literal in
    * `model-registry.ts` (structural mismatch). This is distinct from a benign
-   * no-op (family already-absent for a remove / already-present for an add):
-   * a locator miss means a real add/remove could not be applied and MUST be
-   * routed to a human — never collapsed into a silent, clean no-op (G#1).
+   * no-op (the family is already present, so there is nothing to add): a
+   * locator miss means a real edit could not be applied and MUST be routed to
+   * a human — never collapsed into a silent, clean no-op (G#1).
    */
   locatorMiss?: boolean;
-}
-
-/** Comment-marked removal of `family` from `exportName[provider]`. Never touches any other line. */
-export function removeFamilyLiteralInSource(
-  sourceText: string,
-  exportName: RegistrySetName,
-  provider: Provider,
-  family: string,
-  reasonComment: string,
-): RegistryEditResult {
-  const loc = locateFamilySetArray(sourceText, exportName, provider);
-  if (!loc) {
-    return {
-      changed: false,
-      text: sourceText,
-      detail: `could not locate ${exportName}.${provider} array in model-registry.ts (structural mismatch — routing to human)`,
-      locatorMiss: true,
-    };
-  }
-  const lineIdx = loc.elementLines.get(family);
-  if (lineIdx === undefined) {
-    return {
-      changed: false,
-      text: sourceText,
-      detail: `"${family}" is not present in ${exportName}.${provider} — nothing to remove`,
-    };
-  }
-  const lines = sourceText.split("\n");
-  const indentMatch = lines[lineIdx].match(/^(\s*)/);
-  const indent = indentMatch ? indentMatch[1] : loc.elementIndent;
-  lines[lineIdx] = `${indent}// ${reasonComment}`;
-  return {
-    changed: true,
-    text: lines.join("\n"),
-    detail: `removed "${family}" from ${exportName}.${provider} (comment-marked)`,
-  };
 }
 
 /** Mechanical, comment-marked addition of `family` to `exportName[provider]`. */
@@ -745,11 +709,9 @@ export interface SyncCoreDeps {
 }
 
 export type FamilyAction =
-  | "removed"
+  | "deprecation-recorded"
   | "added"
   | "needs-human-new-family"
-  | "needs-human-still-referenced"
-  | "needs-human-zero-reference"
   | "needs-human-structural-mismatch"
   | "no-op";
 
@@ -820,125 +782,74 @@ export function runDriftSyncCore(
       skipped.push({ provider: input.provider, reason: dep.reason });
     } else {
       for (const cand of dep.candidates) {
-        if (!cand.stillReferenced) {
-          // The removal is computed but NOT persisted — a PROBE, deliberately.
-          //
-          // `includeFamilies[provider]`'s membership is checksum-pinned in
-          // `logic-pin.test.ts` (`DATA_FROZEN`), and gate-2 re-runs that whole
-          // file over the edited tree. So a persisted mechanical removal always
-          // reds its own gate: `pin-check-failed` -> `revertFiles([...touched])`
-          // -> the registry edit AND every needs-human note written that run are
-          // wiped -> `reason=gate-failed`, no PR of any class. OBSERVED against
-          // this repo's own frozen healthy anthropic wave. drift-sync cannot
-          // repair that itself either: `drift-sync-check`'s changed-file
-          // allowlist is `model-registry.ts` + `drift-proposals/` ONLY, so it is
-          // forbidden from touching the pin — and the pin's own message reserves
-          // the re-pin for "a deliberate, reviewed" human decision. A run that
-          // silently destroyed its own notes to attempt an edit that can never be
-          // kept is strictly worse than not attempting it.
-          //
-          // So a zero-reference deprecation routes to a note like every other
-          // decision drift-sync is not authorised to take alone. The registry is
-          // never mutated, the notes always survive, and the note spells out the
-          // two-file removal a human applies in one reviewed commit.
-          //
-          // The probe is still RUN because its verdict is load-bearing: it is
-          // what distinguishes "the literal is there and a removal is well-formed"
-          // from `locatorMiss` (the registry's structure moved — a real fault with
-          // its own route) and from a clean no-op.
-          const probe = removeFamilyLiteralInSource(
-            registrySource,
-            "includeFamilies",
+        // A PROVIDER-CONFIRMED DEPRECATION IS A FACT, NOT A DECISION.
+        //
+        // The provider's own /models listing already says the family is gone.
+        // There is nothing here for a human to weigh, so this must never page
+        // one — it used to route BOTH legs (zero-reference and still-referenced)
+        // to a needs-human note, which made an unattended cron go red and email
+        // the repo owner every morning to "decide" ten retirements Anthropic had
+        // already announced by deleting them from its catalog.
+        //
+        // The mechanical action is to RECORD the retirement in
+        // `deprecatedFamilies[provider]`, not to act on it:
+        //
+        //   * The mock KEEPS SERVING. `includeFamilies` is untouched, so every
+        //     builder and fixture for the family still answers. Users pin
+        //     retired model ids in their own test suites for years; the upstream
+        //     catalog shrinking is not a reason to break them, and a silent
+        //     removal would. It also keeps `includeFamilies`'s membership
+        //     checksum pin green, so the edit survives gate-2 — a persisted
+        //     REMOVAL never could (the pin reds, `revertFiles` wipes the run, no
+        //     PR of any class; observed).
+        //   * The recording is what makes it stop. `detectDeprecatedFamiliesForSync`
+        //     filters recorded families out of its candidate set, so tomorrow's
+        //     run is quiet instead of re-deriving the same list forever.
+        //
+        // `stillReferenced` no longer chooses a ROUTE — both legs record — it
+        // only annotates the recorded line, because "nothing references this any
+        // more" is the one fact that tells a human the optional cleanup (drop it
+        // from `includeFamilies` + re-pin, in one reviewed commit) is safe.
+        const referenceNote = cand.stillReferenced
+          ? "still referenced in aimock source — mock retained"
+          : "no remaining aimock reference — droppable from includeFamilies in a reviewed re-pin";
+        const edit = addFamilyLiteralInSource(
+          registrySource,
+          "deprecatedFamilies",
+          cand.provider,
+          cand.family,
+          `DEPRECATED ${stamp} (drift-sync): absent from live /models; ${referenceNote}`,
+        );
+        if (edit.changed) {
+          registrySource = edit.text;
+          registryChanged = true;
+          outcomes.push({
+            provider: cand.provider,
+            family: cand.family,
+            action: "deprecation-recorded",
+            detail: `"${cand.family}" is absent from the live /models listing — recorded in deprecatedFamilies.${cand.provider} (${referenceNote})`,
+          });
+        } else if (edit.locatorMiss) {
+          // G#1: the AST locator could not find deprecatedFamilies[provider] in
+          // model-registry.ts. A real deprecation could not be recorded — this
+          // must route to a human, NEVER collapse into a silent clean no-op.
+          const smPath = proposalNoteRelPath(
             cand.provider,
             cand.family,
-            `REMOVED ${stamp} (drift-sync): "${cand.family}" no longer in live /models, zero-reference`,
-          );
-          if (probe.changed) {
-            const zrPath = proposalNoteRelPath(
-              cand.provider,
-              cand.family,
-              "zero-reference-deprecation",
-            );
-            ensureProposalNote(
-              deps,
-              zrPath,
-              () =>
-                renderProposalNote(
-                  cand.provider,
-                  cand.family,
-                  "zero-reference-deprecation",
-                  `"${cand.family}" no longer appears in the live /models listing and nothing in ` +
-                    `aimock's own source still references it, so removing it from ` +
-                    `includeFamilies.${cand.provider} is mechanically safe. drift-sync does not ` +
-                    `apply it: that set's membership is checksum-pinned, and re-pinning is a ` +
-                    `reviewed human decision the sync's own changed-file allowlist forbids it ` +
-                    `from making.`,
-                  stamp,
-                ),
-              touchedFiles,
-            );
-            outcomes.push({
-              provider: cand.provider,
-              family: cand.family,
-              action: "needs-human-zero-reference",
-              detail: `"${cand.family}" is deprecated and zero-reference — removal proposed to a human (${zrPath})`,
-            });
-          } else if (probe.locatorMiss) {
-            // G#1: the AST locator could not find includeFamilies[provider] in
-            // model-registry.ts. A real deprecation could not be applied — this
-            // must route to a human, NEVER collapse into a silent clean no-op.
-            const smPath = proposalNoteRelPath(
-              cand.provider,
-              cand.family,
-              "registry-structural-mismatch",
-            );
-            ensureProposalNote(
-              deps,
-              smPath,
-              () =>
-                renderProposalNote(
-                  cand.provider,
-                  cand.family,
-                  "registry-structural-mismatch",
-                  `A zero-reference deprecation was detected for "${cand.family}" but drift-sync ` +
-                    `could not locate the includeFamilies.${cand.provider} array literal in ` +
-                    `${MODEL_REGISTRY_REL_PATH} — the registry's structure changed. A human must ` +
-                    `apply the removal (or fix the locator).`,
-                  stamp,
-                ),
-              touchedFiles,
-            );
-            outcomes.push({
-              provider: cand.provider,
-              family: cand.family,
-              action: "needs-human-structural-mismatch",
-              detail: `${probe.detail} (${smPath})`,
-            });
-          } else {
-            outcomes.push({
-              provider: cand.provider,
-              family: cand.family,
-              action: "no-op",
-              detail: probe.detail,
-            });
-          }
-        } else {
-          const notePath = proposalNoteRelPath(
-            cand.provider,
-            cand.family,
-            "still-referenced-deprecation",
+            "registry-structural-mismatch",
           );
           ensureProposalNote(
             deps,
-            notePath,
+            smPath,
             () =>
               renderProposalNote(
                 cand.provider,
                 cand.family,
-                "still-referenced-deprecation",
-                "This family no longer appears in the live /models listing, but aimock's " +
-                  "own source still references it (builders, DEFAULT_MODELS, or fixtures). " +
-                  "drift-sync never silently removes a still-referenced family.",
+                "registry-structural-mismatch",
+                `A deprecation was detected for "${cand.family}" but drift-sync could not locate ` +
+                  `the deprecatedFamilies.${cand.provider} array literal in ` +
+                  `${MODEL_REGISTRY_REL_PATH} — the registry's structure changed. A human must ` +
+                  `record the deprecation (or fix the locator).`,
                 stamp,
               ),
             touchedFiles,
@@ -946,8 +857,15 @@ export function runDriftSyncCore(
           outcomes.push({
             provider: cand.provider,
             family: cand.family,
-            action: "needs-human-still-referenced",
-            detail: `"${cand.family}" is deprecated but still referenced in source — routed to human (${notePath})`,
+            action: "needs-human-structural-mismatch",
+            detail: `${edit.detail} (${smPath})`,
+          });
+        } else {
+          outcomes.push({
+            provider: cand.provider,
+            family: cand.family,
+            action: "no-op",
+            detail: edit.detail,
           });
         }
       }
@@ -1367,7 +1285,9 @@ function commitSyncChanges(outcome: SyncCoreOutcome): boolean {
     (f) => f === MODEL_REGISTRY_REL_PATH || f.startsWith(`${DRIFT_PROPOSALS_DIR}/`),
   );
   if (changed.length === 0) return false;
-  const applied = outcome.outcomes.filter((o) => o.action === "removed" || o.action === "added");
+  const applied = outcome.outcomes.filter(
+    (o) => o.action === "added" || o.action === "deprecation-recorded",
+  );
   const summary =
     applied.length > 0
       ? applied.map((o) => `${o.action} ${o.provider}/${o.family}`).join(", ")

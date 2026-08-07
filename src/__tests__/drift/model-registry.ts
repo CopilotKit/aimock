@@ -294,6 +294,75 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
 };
 
 /**
+ * Families a healthy live `/models` listing NO LONGER CONTAINS — the provider
+ * retired them. Appended MECHANICALLY by `scripts/drift-sync.ts` on the morning
+ * it first observes the absence, one entry per family, comment-marked with the
+ * date and whether aimock's own source still references it.
+ *
+ * WHY THIS EXISTS. A provider-confirmed deprecation is a FACT, not a decision:
+ * the provider's own listing already says the family is gone, so there is
+ * nothing for a human to decide and no reason to page one. But the detector is
+ * a pure `includeFamilies − live` diff, so without somewhere to WRITE the fact
+ * down it re-derives the same ten deprecations every single morning, forever.
+ * This set is that ledger, and `isRecordedDeprecation` is what takes a recorded
+ * family out of the candidate set (see `detectDeprecatedFamiliesForSync` in
+ * `scripts/drift-sync.ts` — the same shape as the `isForwardLookingFamily`
+ * filter beside it).
+ *
+ * RECORDING IS NOT REMOVING, DELIBERATELY. A family recorded here STAYS in
+ * `includeFamilies` and aimock KEEPS MOCKING IT. Users' tests pin retired model
+ * ids for years, and dropping a mocked family would break them; the upstream
+ * catalog shrinking is not a reason for aimock's to. So this set records what
+ * the PROVIDER did, never what aimock serves — nothing on the serving path may
+ * read it (asserted in `model-registry.test.ts`).
+ *
+ * IT IS NOT A CLASSIFICATION SET. `isClassifiedFamily` does not consult it, so
+ * an entry here can neither classify a family nor silence a new-family alert.
+ * Its only effect is to stop re-recording a deprecation already recorded.
+ *
+ * DELIBERATELY NOT MEMBERSHIP-PINNED in `logic-pin.test.ts`, unlike
+ * `includeFamilies`/`excludeFamilies`/`FORWARD_LOOKING_FAMILIES`. Pinning it
+ * would make every mechanical append fail drift-sync's own gate-2 (the pin
+ * re-assert) and revert itself — the pin and the ledger are mutually exclusive
+ * by construction. That costs nothing, because the one-line silencing edit a
+ * pin defends against has no target here: this set gates no alert a human ever
+ * sees. The invariant that DOES matter is enforced as a test instead —
+ * `deprecatedFamilies[p] ⊆ includeFamilies[p]`, i.e. only a family aimock
+ * actually mocks can be recorded as retired.
+ *
+ * CLEANING UP (optional, human, never automatic). Once nothing references a
+ * recorded family, it may be dropped from aimock entirely: delete it from BOTH
+ * `includeFamilies[provider]` and this set, then re-pin
+ * `DATA_FROZEN["includeFamilies.<provider>"]` in `logic-pin.test.ts`. All three
+ * edits belong in ONE reviewed commit — the re-pin is exactly the deliberate
+ * human decision the pin exists to force, which is why drift-sync never makes
+ * it. Nothing breaks if it is never done; the family just keeps being mocked.
+ */
+export const deprecatedFamilies: Record<Provider, Set<string>> = {
+  openai: familySet("openai", [
+    // drift-sync appends recorded deprecations here.
+  ]),
+  anthropic: familySet("anthropic", [
+    // drift-sync appends recorded deprecations here.
+  ]),
+  gemini: familySet("gemini", [
+    // drift-sync appends recorded deprecations here.
+  ]),
+};
+
+/**
+ * True when `family`'s retirement has already been recorded in
+ * {@link deprecatedFamilies} — i.e. the provider's listing dropped it, the fact
+ * is written down, and re-detecting it is noise rather than news.
+ *
+ * Deliberately separate from {@link isClassifiedFamily}: classification decides
+ * whether a LIVE family is drift, this decides whether a MISSING family is news.
+ */
+export function isRecordedDeprecation(family: string, provider: Provider): boolean {
+  return deprecatedFamilies[provider].has(family);
+}
+
+/**
  * aimock "provider mode" names: internal routing names that reuse a real
  * upstream provider key but are NOT model ids any provider's `/models` endpoint
  * exposes. Provider-agnostic allowlist so both the drift check and the builder
