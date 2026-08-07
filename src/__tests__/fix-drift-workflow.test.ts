@@ -5569,3 +5569,186 @@ describe("fix-drift.yml — every alert's payload is POSTed, and arrives as vali
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// A PR LISTING MUST NEVER TRAVEL THROUGH argv.
+//
+// On 2026-08-06 and 2026-08-07 this cron died at 07:05Z and 06:34Z with
+//
+//   /home/runner/work/_temp/….sh: line 150: /usr/bin/jq: Argument list too long
+//   ##[error]Process completed with exit code 126.
+//
+// at the marker self-heal's `jq -cn --argjson a "$MANAGED" --argjson b
+// "$UNMERGED"`. Linux caps a SINGLE argument at MAX_ARG_STRLEN — 128 KiB, fixed
+// at 32 pages — INDEPENDENTLY of the far larger total ARG_MAX (2 MiB on the
+// runner, measured). Both listings were over that cap on their own (988 KB and
+// 182 KB on 2026-08-07), so no amount of total-size headroom would have saved
+// it and trimming one operand would not have either.
+//
+// The guards below EXECUTE both PR-open step bodies against a population shaped
+// like this repo's real one, so they answer "does the step survive today's data"
+// rather than "does the source mention --slurpfile". They are deliberately
+// platform-agnostic: the fixture is sized past the per-argument cap on Linux AND
+// past the total ARG_MAX on macOS, so the RED is the same red on a dev box and
+// on the runner.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — no PR listing is passed through argv (E2BIG killed this cron twice)", () => {
+  const BOT = { login: "app/copilotkit-devops-bot" };
+  const HUMAN = { login: "octocat" };
+  const REGISTRY = "src/__tests__/drift/model-registry.ts";
+  const NOTE = "drift-proposals/2026-08-07-new-family.md";
+  const KEY = "1111222233334444";
+  const MATCH = '{"url":"https://x/pr/900","number":900}';
+
+  /**
+   * The shape `gh pr list` returns for THIS repo, measured 2026-08-07:
+   * `--state all --limit 200` comes back FULL at 200, of which only 26 are
+   * unmerged. Bodies are sized so the whole listing clears 1 MB, as the real one
+   * does — that is what makes the argv route fail, and a fixture of a dozen tiny
+   * PRs is exactly the fixture that let this ship.
+   */
+  const productionShapedPopulation = (): PrFixture[] => {
+    const body = `## drift-sync report\n\n${"filler line to size this body realistically\n".repeat(140)}`;
+    return Array.from({ length: 200 }, (_, i) => {
+      const number = 400 - i;
+      // 10 unmerged (well under the 200 limit, so `assert_listing_complete`
+      // passes — as it does in production), the rest MERGED.
+      const state: PrFixture["state"] = i < 5 ? "OPEN" : i < 10 ? "CLOSED" : "MERGED";
+      return {
+        number,
+        url: `https://x/pr/${number}`,
+        state,
+        headRefName: `feature/unrelated-${number}`,
+        body,
+        files: [{ path: `src/whatever-${number}.ts` }],
+        author: HUMAN,
+      };
+    });
+  };
+
+  const cases: Array<{ id: "pr" | "needs_human_pr"; committed: Record<string, string> }> = [
+    { id: "pr", committed: { [REGISTRY]: "// edited\n" } },
+    { id: "needs_human_pr", committed: { [NOTE]: "# needs human\n" } },
+  ];
+
+  for (const { id, committed } of cases) {
+    it(`${id}: survives a ~1 MB PR listing instead of dying with exit 126`, () => {
+      const prs = productionShapedPopulation();
+      const listingBytes = JSON.stringify(prs).length;
+      expect(
+        listingBytes,
+        "the fixture is too small to reach either platform's argv ceiling, so this guard " +
+          "cannot fail and proves nothing about the bug it exists for",
+      ).toBeGreaterThan(1_100_000);
+
+      const r = observePrStep(id, { changesetKey: KEY, committed, prs, matchOut: MATCH });
+
+      expect(
+        r.stdio,
+        `${id}: a PR listing still reaches jq through the argument vector — execve fails E2BIG ` +
+          "and the step dies before jq runs, which is the daily red of 2026-08-06/07",
+      ).not.toContain("Argument list too long");
+      expect(
+        r.stepExit,
+        `${id}: exited ${r.stepExit} on a production-shaped PR listing — 126 is the E2BIG ` +
+          `signature. Output: ${r.stdio}`,
+      ).toBe(0);
+      // …and the step did its JOB on that listing, rather than surviving by
+      // reading nothing: an exit 0 that opened no PR is not a fix.
+      expect(r.created, `${id}: survived the big listing but opened no PR: ${r.stdio}`).toBe(true);
+    });
+  }
+
+  it("a SATURATED 200-of-200 plain listing is not itself a refusal (the audit is on is:unmerged)", () => {
+    // Claim under test, and the reason fixing the E2BIG is enough to make the
+    // cron GREEN rather than merely fail differently: `assert_listing_complete`
+    // is applied to the `is:unmerged` listing and to the changeset-keyed search,
+    // NOT to the plain `--state all` one — which is EXPECTED to saturate,
+    // because merged PRs alone exceed the limit. On 2026-08-07 the real repo
+    // measured 200-of-200 plain and 26 unmerged, so the audit does not fire.
+    const prs = productionShapedPopulation();
+    expect(prs.length, "the plain listing must be saturated for this to test anything").toBe(200);
+    expect(
+      prs.filter((p) => p.state !== "MERGED").length,
+      "the unmerged listing must stay well under the limit, as it does in production",
+    ).toBeLessThan(200);
+
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "# needs human\n" },
+      prs,
+      matchOut: MATCH,
+    });
+    expect(
+      r.stdio,
+      "a saturated PLAIN listing now refuses the run, so the cron trades an E2BIG for a " +
+        "truncation refusal and is still red every morning",
+    ).not.toContain("came back FULL at its --limit");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("the file-routed union keeps the union's SEMANTICS — `$a[0]`, not `$a`", () => {
+    // `--slurpfile` binds an ARRAY OF THE FILE'S JSON VALUES, so a file holding
+    // one array binds `[[…]]`. Swapping `--argjson a` for `--slurpfile a`
+    // without rewriting every `$a` to `$a[0]` changes what the filter compares,
+    // and the self-heal then matches nothing — the same duplicate-PR failure the
+    // union exists to prevent, arrived at from the other side. This asserts the
+    // union still does its job: a PR reachable ONLY through the is:unmerged
+    // listing (CLOSED, so it carries a human REJECTION) is still seen.
+    const rejected: PrFixture = {
+      number: 77,
+      url: "https://x/pr/77",
+      state: "CLOSED",
+      headRefName: `drift-needs-human/2026-07-01-4242-${KEY}`,
+      body: `a human rejected this\n<!-- drift-changeset: ${KEY} -->\n`,
+      files: [{ path: NOTE }],
+      author: BOT,
+    };
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "# needs human\n" },
+      prs: [...productionShapedPopulation(), rejected],
+      matchOut: MATCH,
+    });
+    expect(
+      r.created,
+      "the closed REJECTION reachable only through the is:unmerged half of the union was lost, " +
+        `so this run re-proposed a changeset a human already refused: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.outputs.rejected, r.stdio).toBe("77");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("no `--arg`/`--argjson` in the whole file carries a gh-derived listing", () => {
+    // The site that crashed was simply the first one the needs-human path
+    // reached. This is a CLASS: every unbounded payload is one merged PR away
+    // from being the next 06:34Z red, so sweep the file rather than the line.
+    const unbounded = [
+      "MANAGED",
+      "UNMERGED",
+      "ALL_PRS",
+      "OPEN_PRS",
+      "REASSERTED",
+      "MINE",
+      "PR_JSON",
+    ];
+    const offenders: string[] = [];
+    for (const [i, line] of wf.split("\n").entries()) {
+      if (/^\s*#/.test(line)) continue;
+      for (const v of unbounded) {
+        if (new RegExp(`--argjson\\s+\\w+\\s+"\\$\\{?${v}\\b`).test(line)) {
+          offenders.push(`${i + 1}: ${line.trim()}`);
+        }
+        if (new RegExp(`--arg\\s+\\w+\\s+"\\$\\{?${v}\\b`).test(line)) {
+          offenders.push(`${i + 1}: ${line.trim()}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      "an unbounded gh-derived payload is being passed to jq through the argument vector — " +
+        "Linux kills that at 128 KiB per argument with E2BIG and exit 126, whatever the total " +
+        `ARG_MAX is. Route it through --slurpfile/--rawfile or stdin:\n${offenders.join("\n")}`,
+    ).toEqual([]);
+  });
+});
