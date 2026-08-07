@@ -991,6 +991,12 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
       [...lines.slice(0, last + 1), `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`].join("\n"),
     );
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    // The runner ALWAYS provides RUNNER_TEMP, and the gate-failure alert reads
+    // the failing step's recorded exit code and stderr out of it. Leaving it
+    // unset here is the harness under-modelling the runner, not a defect in the
+    // step: under `set -u` an unset RUNNER_TEMP aborts a body the real runner
+    // executes fine. A caller that cares what is IN that directory overrides it.
+    env.RUNNER_TEMP = dir;
     // Non-empty placeholders for everything the step declares, so `set -u` is
     // satisfied and each message takes its content-bearing branch.
     for (const key of Object.keys(step.env)) env[key] = `<${key}>`;
@@ -5750,5 +5756,129 @@ describe("fix-drift.yml — no PR listing is passed through argv (E2BIG killed t
         "Linux kills that at 128 KiB per argument with E2BIG and exit 126, whatever the total " +
         `ARG_MAX is. Route it through --slurpfile/--rawfile or stdin:\n${offenders.join("\n")}`,
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE ALERT QUOTES THE FAILURE; IT DOES NOT ENUMERATE GUESSES.
+//
+// The gate-failure alert named a step and then appended a hand-written list of
+// the causes someone had imagined for it. For two consecutive mornings it
+// published "push rejected, gh pr create error, or PR-match polling exhausted"
+// while the step had actually died with `jq: Argument list too long` and exit
+// 126 — none of the three. A plausible wrong cause is worse than none: it sends
+// triage at the push credential and hides the defect for as long as it takes
+// someone to open the raw log.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the gate-failure alert reports the real exit code and stderr", () => {
+  const alertStep = (): Step => stepById("alert_gate");
+
+  /** Plant the status a failing PR step would have recorded, and read the alert. */
+  const alertWith = (
+    stepId: string,
+    record: { rc?: string; err?: string } | null,
+    envOverride: Record<string, string>,
+  ): string => {
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-alert-"));
+    try {
+      if (record) {
+        const status = join(dir, "drift-step-status");
+        mkdirSync(status, { recursive: true });
+        if (record.rc !== undefined) writeFileSync(join(status, `${stepId}.rc`), `${record.rc}\n`);
+        writeFileSync(join(status, `${stepId}.err`), record.err ?? "");
+      }
+      return assembleSlackMessage(alertStep(), { ...envOverride, RUNNER_TEMP: dir });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const E2BIG =
+    "/home/runner/work/_temp/77c15c9e.sh: line 150: /usr/bin/jq: Argument list too long";
+
+  it("names the ACTUAL exit code and stderr of the failing persist step", () => {
+    const msg = alertWith(
+      "needs_human_pr",
+      { rc: "126", err: `some earlier noise\n${E2BIG}\n` },
+      {
+        SYNC_REASON: "needs-human",
+        NEEDS_HUMAN_PR_OUTCOME: "failure",
+        ASSERT_OUTCOME: "skipped",
+        GIT_PUSH_CFG_OUTCOME: "success",
+        PR_OUTCOME: "skipped",
+      },
+    );
+    expect(msg, `the alert does not report the step's real exit code: ${msg}`).toContain("126");
+    expect(msg, `the alert does not quote the step's real stderr: ${msg}`).toContain(
+      "Argument list too long",
+    );
+    expect(
+      msg,
+      "the alert still publishes a hand-written list of imagined causes — the exact text that " +
+        `misnamed runs 31079603526 and 31154443828: ${msg}`,
+    ).not.toContain("push rejected, gh pr create error, or PR-match polling exhausted");
+  });
+
+  it("names the ACTUAL exit code and stderr of the failing ok-applied PR step", () => {
+    const msg = alertWith(
+      "pr",
+      { rc: "128", err: "fatal: could not read Username for 'https://github.com'\n" },
+      {
+        SYNC_REASON: "ok-applied",
+        PR_OUTCOME: "failure",
+        NEEDS_HUMAN_PR_OUTCOME: "skipped",
+        ASSERT_OUTCOME: "success",
+        GIT_PUSH_CFG_OUTCOME: "success",
+      },
+    );
+    expect(msg, msg).toContain("128");
+    expect(msg, msg).toContain("could not read Username");
+  });
+
+  it("says so when NO status was recorded, rather than inventing a cause", () => {
+    // A step killed before its own prologue ran leaves no record. "I do not
+    // know" is a usable triage signal; a guess is not.
+    const msg = alertWith("needs_human_pr", null, {
+      SYNC_REASON: "needs-human",
+      NEEDS_HUMAN_PR_OUTCOME: "failure",
+      ASSERT_OUTCOME: "skipped",
+      GIT_PUSH_CFG_OUTCOME: "success",
+      PR_OUTCOME: "skipped",
+    });
+    expect(msg, msg).toContain("NO exit code was recorded");
+  });
+
+  it("an EMPTY stderr is reported AS empty, not rendered as nothing at all", () => {
+    // The failure this catches is the alert going contentless again: with no
+    // default for the stderr line, a step that died writing nothing to stderr
+    // produces "exited 1; last stderr: " and the reader learns nothing. Mutation
+    // -tested by deleting the `${last:-…}` default, which turns this red.
+    const msg = alertWith(
+      "needs_human_pr",
+      { rc: "1", err: "" },
+      {
+        SYNC_REASON: "needs-human",
+        NEEDS_HUMAN_PR_OUTCOME: "failure",
+        ASSERT_OUTCOME: "skipped",
+        GIT_PUSH_CFG_OUTCOME: "success",
+        PR_OUTCOME: "skipped",
+      },
+    );
+    expect(msg, msg).toContain("the step wrote nothing to stderr");
+  });
+
+  it("both PR steps actually RECORD the status the alert reads", () => {
+    // The alert's evidence is only as real as the prologue that writes it: if a
+    // step stops recording, every arm above degrades to "NO exit code was
+    // recorded" and the alert is contentless again — silently.
+    for (const id of ["pr", "needs_human_pr"] as const) {
+      const code = codeOf(stepById(id));
+      expect(code, `${id}: records no exit code for the gate-failure alert to quote`).toContain(
+        `${id}.rc`,
+      );
+      expect(code, `${id}: captures no stderr for the gate-failure alert to quote`).toContain(
+        `${id}.err`,
+      );
+    }
   });
 });
