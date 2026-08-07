@@ -1289,12 +1289,10 @@ export function computeChangesetKey(outcome: SyncCoreOutcome): string {
   return createHash("sha256").update(entries.join("\n")).digest("hex").slice(0, 16);
 }
 
-/** Stage + commit exactly the sync core's own touched files (never a catch-all `git add`). */
-function commitSyncChanges(outcome: SyncCoreOutcome): boolean {
-  const changed = getChangedFiles().filter(
-    (f) => f === MODEL_REGISTRY_REL_PATH || f.startsWith(`${DRIFT_PROPOSALS_DIR}/`),
-  );
-  if (changed.length === 0) return false;
+export function buildSyncCommitMessage(outcome: SyncCoreOutcome): {
+  subject: string;
+  body: string;
+} {
   const applied = outcome.outcomes.filter(
     (o) => o.action === "added" || o.action === "deprecation-recorded",
   );
@@ -1302,12 +1300,18 @@ function commitSyncChanges(outcome: SyncCoreOutcome): boolean {
     applied.length > 0
       ? applied.map((o) => `${o.action} ${o.provider}/${o.family}`).join(", ")
       : "needs-human note file(s)";
+  return { subject: `fix(drift-sync): mechanical model-family sync (${summary})`, body: "" };
+}
+
+/** Stage + commit exactly the sync core's own touched files (never a catch-all `git add`). */
+function commitSyncChanges(outcome: SyncCoreOutcome): boolean {
+  const changed = getChangedFiles().filter(
+    (f) => f === MODEL_REGISTRY_REL_PATH || f.startsWith(`${DRIFT_PROPOSALS_DIR}/`),
+  );
+  if (changed.length === 0) return false;
+  const { subject, body } = buildSyncCommitMessage(outcome);
   execFileSafe("git", ["add", ...changed]);
-  execFileSafe("git", [
-    "commit",
-    "-m",
-    `fix(drift-sync): mechanical model-family sync (${summary})`,
-  ]);
+  execFileSafe("git", ["commit", ...(body ? ["-m", subject, "-m", body] : ["-m", subject])]);
   return true;
 }
 
