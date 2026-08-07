@@ -691,6 +691,14 @@ export interface SyncCheckResultLike {
 
 export interface SyncCoreDeps {
   isReferenced?: (family: string, provider: Provider) => boolean;
+  /**
+   * "Has this retirement already been written down?" Defaults to the real
+   * ledger (`isRecordedDeprecation` over `deprecatedFamilies`). Injectable
+   * because the real one reads the COMPILED registry module while the core
+   * edits registry SOURCE TEXT, so a test cannot otherwise observe a second run
+   * seeing the first run's record.
+   */
+  isRecorded?: (family: string, provider: Provider) => boolean;
   readRegistrySource: () => string;
   writeRegistrySource: (text: string) => void;
   readProposalNote: (relPath: string) => string | null;
@@ -777,6 +785,7 @@ export function runDriftSyncCore(
     // --- Deprecation half: classified − live (C4's algorithm, mirrored). ---
     const dep = detectDeprecatedFamiliesForSync(input.liveModelIds, input.provider, {
       isReferenced: deps.isReferenced,
+      isRecorded: deps.isRecorded,
     });
     if (dep.status === "skipped") {
       skipped.push({ provider: input.provider, reason: dep.reason });
