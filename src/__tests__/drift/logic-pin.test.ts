@@ -35,6 +35,20 @@
  *
  * Keep both lists exact. A guard whose own inventory is wrong is a false
  * record: it invites the reader to assume a surface is covered when it is not.
+ *
+ * DELIBERATELY NOT FROZEN — `model-registry.ts`'s `deprecatedFamilies`.
+ * DO NOT ADD IT. That set is the ledger `scripts/drift-sync.ts` APPENDS to,
+ * unattended, every time a provider retires a family aimock mocks, and
+ * `drift-sync-check`'s gate-2 re-runs this very file over the edited tree — so
+ * a pin on it would red on the sync's own append, revert it, and leave the
+ * deprecation to be re-derived and re-reverted every morning forever. The pin
+ * and the ledger cannot both exist. Nothing is lost by leaving it out: a pin
+ * defends against a one-line SILENCING edit, and an entry in `deprecatedFamilies`
+ * silences no alert a human ever sees (it is not consulted by
+ * `isClassifiedFamily`, so it cannot classify a live family or suppress a
+ * new-family alert — it only stops a deprecation already recorded from being
+ * re-recorded). Its invariants are asserted behaviourally in
+ * `model-registry.test.ts` instead.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";

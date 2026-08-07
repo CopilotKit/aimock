@@ -54,7 +54,36 @@ import {
   type Provider,
 } from "../../scripts/drift-sync.js";
 import { detectDeprecatedFamilies, unclassifiedFamilies } from "./drift/text-drift.js";
-import { includeFamilies } from "./drift/model-registry.js";
+import { includeFamilies, deprecatedFamilies } from "./drift/model-registry.js";
+import { FORWARD_LOOKING_FAMILIES } from "./drift/deprecation-detector.js";
+
+/**
+ * `count` anthropic families that stand in for GENUINELY RETIRED ones in these
+ * fixtures: classified INCLUDE, not forward-looking, and not already in the
+ * recorded-deprecation ledger — so BOTH detectors really do report them and the
+ * comparison is not between two empty lists.
+ *
+ * DERIVED, NEVER HARD-CODED. `deprecatedFamilies` grows unattended (drift-sync
+ * appends to it the morning a provider retires a family), so a literal
+ * `claude-3-opus` stops being a valid stand-in the moment the sync records it:
+ * the mirror then correctly drops it and the fixture's premise silently
+ * evaporates. Observed — recording anthropic's ten 2026-08-07 retirements broke
+ * three fixtures in this file at once. Throws rather than going vacuous.
+ */
+function unrecordedAnthropicFamilies(count: number): string[] {
+  const usable = [...includeFamilies.anthropic].filter(
+    (f) => !deprecatedFamilies.anthropic.has(f) && !FORWARD_LOOKING_FAMILIES.anthropic.has(f),
+  );
+  if (usable.length < count) {
+    throw new Error(
+      `need ${count} anthropic families that are neither forward-looking nor already recorded ` +
+        `as deprecated, but only ${usable.length} remain (${usable.join(", ")}). These fixtures ` +
+        `need families both detectors will actually report; pick a different provider rather ` +
+        `than deleting the assertion.`,
+    );
+  }
+  return usable.slice(0, count);
+}
 
 /**
  * The two families to drop from a live listing so the resulting `missing` set
@@ -234,13 +263,20 @@ describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence
     // faithful for an ordinary retirement.
     const anthropicProvider: Provider = "anthropic";
     const allAnthropic = [...includeFamilies.anthropic];
-    const genuinelyRetired = "claude-3-opus";
+    const [genuinelyRetired] = unrecordedAnthropicFamilies(1);
     const liveFamiliesList = allAnthropic.filter((f) => f !== genuinelyRetired);
     const liveIds = [...liveFamiliesList, ...liveFamiliesList.map((f) => `${f}-2025-01-01`)];
 
-    expect(detectDeprecatedFamiliesForSync(liveIds, anthropicProvider)).toEqual(
-      detectDeprecatedFamilies(liveIds, anthropicProvider),
-    );
+    const syncResult = detectDeprecatedFamiliesForSync(liveIds, anthropicProvider);
+    expect(syncResult).toEqual(detectDeprecatedFamilies(liveIds, anthropicProvider));
+    // Pin what "identical" means here, so the equivalence cannot be satisfied
+    // by both copies going equally empty — which is exactly what a ledgered or
+    // forward-looking stand-in would produce.
+    expect(syncResult.status).toBe("checked");
+    if (syncResult.status !== "checked") {
+      throw new Error("expected 'checked' for a listing well above the fail-closed floor");
+    }
+    expect(syncResult.candidates.map((c) => c.family)).toContain(genuinelyRetired);
   });
 
   it("detectDeprecatedFamilies: the sync mirror's forward-looking-family exclusion is an INTENTIONAL, bounded divergence from the canonical detector", () => {
@@ -266,7 +302,7 @@ describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence
     // check whether that filter was accidentally removed.
     const anthropicProvider: Provider = "anthropic";
     const allAnthropic = [...includeFamilies.anthropic];
-    const genuinelyRetired = "claude-3-opus";
+    const [genuinelyRetired] = unrecordedAnthropicFamilies(1);
     const forwardLooking = "claude-fable-5";
     const liveFamiliesList = allAnthropic.filter(
       (f) => f !== genuinelyRetired && f !== forwardLooking,
@@ -294,5 +330,73 @@ describe("drift-sync mirror ≡ text-drift.ts source (classification equivalence
     // listing — this is not a general drift between the two detectors.
     expect(syncFamilies).toContain(genuinelyRetired);
     expect(canonicalFamilies).toContain(genuinelyRetired);
+  });
+
+  it("detectDeprecatedFamilies: the sync mirror's ALREADY-RECORDED exclusion is a second INTENTIONAL, bounded divergence", () => {
+    // The sibling of the forward-looking divergence above, and the same
+    // layering: DETECTION vs POLICY. The canonical detector reports every
+    // classified family missing from the live listing, every time. The sync
+    // mirror additionally drops the ones whose retirement is already WRITTEN
+    // DOWN in `deprecatedFamilies` (model-registry.ts) — because acting on a
+    // deprecation is a one-time mechanical record, and re-deriving it on the
+    // next daily cron is noise, not news.
+    //
+    // `deprecatedFamilies` is EMPTY in the committed registry (drift-sync fills
+    // it in production), so the divergence is driven through the mirror's
+    // injectable `isRecorded` seam rather than by mutating shared module state.
+    // Without the injection the two agree — which is the bound: the mirror
+    // drops recorded families and NOTHING else.
+    //
+    // Do NOT "fix" a future failure here by deleting the `isRecorded` filter
+    // from drift-sync.ts to make the two identical again — that reinstates the
+    // daily re-derivation of every already-recorded retirement, which is the
+    // whole defect this filter removes.
+    const anthropicProvider: Provider = "anthropic";
+    const allAnthropic = [...includeFamilies.anthropic];
+    const [alreadyRecorded, freshlyRetired] = unrecordedAnthropicFamilies(2);
+    const liveFamiliesList = allAnthropic.filter(
+      (f) => f !== alreadyRecorded && f !== freshlyRetired && f !== "claude-fable-5",
+    );
+    const liveIds = [...liveFamiliesList, ...liveFamiliesList.map((f) => `${f}-2025-01-01`)];
+
+    const canonicalResult = detectDeprecatedFamilies(liveIds, anthropicProvider);
+    // Both mirror calls drive `isRecorded` explicitly, so the REAL ledger (which
+    // grows on its own) cannot decide the outcome either way: the only thing
+    // separating these two results is the predicate.
+    const withoutLedger = detectDeprecatedFamiliesForSync(liveIds, anthropicProvider, {
+      isRecorded: () => false,
+    });
+    const withLedger = detectDeprecatedFamiliesForSync(liveIds, anthropicProvider, {
+      isRecorded: (family) => family === alreadyRecorded,
+    });
+
+    expect(canonicalResult.status).toBe("checked");
+    expect(withoutLedger.status).toBe("checked");
+    expect(withLedger.status).toBe("checked");
+    if (
+      canonicalResult.status !== "checked" ||
+      withoutLedger.status !== "checked" ||
+      withLedger.status !== "checked"
+    ) {
+      throw new Error("expected all three results to be 'checked' for this fixture");
+    }
+
+    const canonicalFamilies = canonicalResult.candidates.map((c) => c.family);
+    const withoutLedgerFamilies = withoutLedger.candidates.map((c) => c.family);
+    const withLedgerFamilies = withLedger.candidates.map((c) => c.family);
+
+    // Un-recorded, the mirror agrees with the canonical detector on BOTH
+    // families — so the divergence below is the ledger's doing and nothing else.
+    expect(withoutLedgerFamilies).toContain(alreadyRecorded);
+    expect(canonicalFamilies).toContain(alreadyRecorded);
+
+    // The one intended divergence: recorded => dropped by the mirror, still
+    // reported by the canonical detector.
+    expect(withLedgerFamilies).not.toContain(alreadyRecorded);
+    expect(canonicalFamilies).toContain(alreadyRecorded);
+
+    // Bounded: a retirement that is NOT recorded is still reported by both.
+    expect(withLedgerFamilies).toContain(freshlyRetired);
+    expect(canonicalFamilies).toContain(freshlyRetired);
   });
 });

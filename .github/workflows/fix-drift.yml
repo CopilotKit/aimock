@@ -178,11 +178,15 @@ jobs:
       # drift-sync.ts fetches each provider's live `/models` listing directly (no
       # drift-report.json input needed), diffs it against the frozen
       # `model-registry.ts` classification, and:
-      #   - a zero-reference deprecated family -> mechanical, comment-marked
-      #     removal, gated behind drift-sync-check.ts (allowlist + checksum-pin
-      #     re-assert + clean re-collect) BEFORE the edit is kept, then commits.
-      #   - a still-referenced deprecation, or a genuinely new/unclassified
-      #     family -> NEVER auto-edited; drops a family-keyed dedup note file
+      #   - a deprecated family (of EITHER reference class) -> mechanical,
+      #     comment-marked record in deprecatedFamilies, gated behind
+      #     drift-sync-check.ts (allowlist + checksum-pin re-assert + clean
+      #     re-collect) BEFORE the edit is kept, then commits. The provider's own
+      #     listing already says the family is gone, so this is a fact to write
+      #     down, not a decision to escalate — it NEVER reports needs-human, and
+      #     the mock keeps serving (includeFamilies is untouched).
+      #   - a genuinely new/unclassified family, or a registry structural
+      #     mismatch -> NEVER auto-edited; drops a family-keyed dedup note file
       #     under drift-proposals/ and reports needs-human (the job goes RED
       #     below so a human sees it — and the note is already in the repo on
       #     subsequent runs, so a re-fire is not PR spam).
@@ -1555,10 +1559,9 @@ jobs:
             echo "## Needs a human decision (drift-sync)"
             echo ""
             echo "The deterministic, zero-LLM drift-sync found a model-family change it must"
-            echo "NOT auto-apply (a genuinely new/unclassified family, a deprecation —"
-            echo "still-referenced or zero-reference — or a registry structural mismatch). It"
-            echo "wrote the note file(s) below and opened this PR so the decision is REACHABLE"
-            echo "in the repo."
+            echo "NOT auto-apply (a genuinely new/unclassified family, or a registry"
+            echo "structural mismatch). It wrote the note file(s) below and opened this PR so"
+            echo "the decision is REACHABLE in the repo."
             echo ""
             echo "> **Not auto-merged — a human decides.** For a *new-family* note: set the"
             echo "> note's decision line to \`Decision: include\` (to classify it) or delete the"
@@ -1787,8 +1790,11 @@ jobs:
           fi
           echo "recorded the suppression ack on PR #${CLOSED_PR} — the delivered notice is not re-posted"
 
-      # Alert: the sync found a genuinely-new family or a still-referenced
-      # deprecation — the two irreducible human decisions. The note was persisted by
+      # Alert: the sync found a genuinely-new family, or could not locate the
+      # registry array it had to edit — the two irreducible human decisions. A
+      # DEPRECATION is deliberately not one of them: the provider's own listing
+      # already reports it, so drift-sync records it mechanically and this alert
+      # never fires for one. The note was persisted by
       # the step above (a distinct PR was opened, or the note was already in the repo
       # / already proposed in an open PR — no PR spam). This alert fires the job RED
       # so a human sees it in CI status too.
@@ -1817,7 +1823,7 @@ jobs:
           # A REAL newline — see the cancellation alert above for why a
           # double-quoted "\n" renders literally in Slack instead.
           NL=$'\n'
-          echo "::error::drift-sync found a genuinely-new model family or a deprecation it must not apply itself — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
+          echo "::error::drift-sync found a genuinely-new model family, or a registry structural mismatch it must not repair itself — needs a human decision (see the needs-human PR / drift-proposals/*.md)"
           if [ -z "${SLACK_WEBHOOK:-}" ]; then
             echo "::error::SLACK_WEBHOOK not set — cannot send needs-human alert"
             exit 1
@@ -1832,7 +1838,7 @@ jobs:
           else
             WHERE="No open PR carries this decision (the note may not have been persisted, or its PR was merged/closed). See the drift-sync-log artifact and \`drift-proposals/\`."
           fi
-          MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family or a still-referenced deprecated family was found. ${WHERE}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          MSG="🧭 *Drift sync — needs a human decision* — a new/unclassified model family, or a registry structural mismatch, was found. ${WHERE}${NL}Run: https://github.com/${REPO}/actions/runs/${RUN_ID}"
           PAYLOAD="$(jq -n --arg text "$MSG" '{text: $text}')"
           # Bounded: `--max-time` so a hung POST cannot burn the job's (or a
           # cancellation's) whole budget, and a small bounded `--retry` so a single

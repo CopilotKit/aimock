@@ -10,24 +10,24 @@
  * RED (observed before this module existed): `scripts/drift-sync.ts` exported
  * only the C1 git/branch/commit/PR plumbing (todayStamp, exec, getChangedFiles,
  * buildPrBody, gatedCommitFiles, ...) — none of `runDriftSyncCore`,
- * `detectDeprecatedFamiliesForSync`, `removeFamilyLiteralInSource`, etc.
- * existed, so a live churn scenario (a new classified model, or a retired
- * family) had NO mechanical sync path at all: the only remediation route was
- * the LLM freewriter. Verbatim capture of that RED state (this test file
- * against the pre-C2 module) is in the slot's final report.
+ * `detectDeprecatedFamiliesForSync`, `addFamilyLiteralInSource`, etc. existed,
+ * so a live churn scenario (a new classified model, or a retired family) had NO
+ * mechanical sync path at all: the only remediation route was the LLM
+ * freewriter. Verbatim capture of that RED state (this test file against the
+ * pre-C2 module) is in the slot's final report.
  */
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 
-import { includeFamilies } from "./drift/model-registry.js";
-import { MIN_LISTING_SIZE } from "./drift/deprecation-detector.js";
+import { includeFamilies, deprecatedFamilies } from "./drift/model-registry.js";
+import { MIN_LISTING_SIZE, FORWARD_LOOKING_FAMILIES } from "./drift/deprecation-detector.js";
 import {
   detectDeprecatedFamiliesForSync,
   unclassifiedFamiliesForSync,
-  removeFamilyLiteralInSource,
   addFamilyLiteralInSource,
   proposalNoteRelPath,
   parseProposalDecision,
@@ -65,8 +65,82 @@ function fixtureRegistrySource(): string {
     '    "gemini-2.5-flash",',
     "  ]),",
     "};",
+    // The recorded-deprecation ledger, in the shape the real file ships it:
+    // three EMPTY arrays held open by a comment. Empty is the shape that
+    // matters — it is the only one where the insert has no sibling element to
+    // copy an indent from, and it is what the real registry looks like on the
+    // first morning a provider retires anything.
+    "export const deprecatedFamilies = {",
+    '  openai: set("openai", [',
+    "    // drift-sync appends recorded deprecations here.",
+    "  ]),",
+    '  anthropic: set("anthropic", [',
+    "    // drift-sync appends recorded deprecations here.",
+    "  ]),",
+    '  gemini: set("gemini", [',
+    "    // drift-sync appends recorded deprecations here.",
+    "  ]),",
+    "};",
   ];
   return lines.join("\n");
+}
+
+/**
+ * `count` anthropic families that stand in for GENUINELY RETIRED ones: each is
+ * classified INCLUDE, not forward-looking, and not already in the recorded
+ * deprecation ledger — so the sync mirror's `missing` set really does report it.
+ *
+ * DERIVED, NEVER HARD-CODED, and that is load-bearing. `deprecatedFamilies`
+ * GROWS on its own: drift-sync appends to it unattended the morning a provider
+ * retires a family. A fixture pinned to a literal `claude-3-opus` silently
+ * stops being a valid stand-in the moment the sync records that family — the
+ * mirror then (correctly) drops it, and the fixture asserts on an empty
+ * candidate list. Observed: recording anthropic's ten 2026-08-07 retirements
+ * broke four tests across this file and the mirror-equivalence guard at once.
+ * Throws loudly rather than letting a fixture go quietly vacuous.
+ */
+function unrecordedAnthropicFamilies(count: number): string[] {
+  const usable = [...includeFamilies.anthropic].filter(
+    (f) => !deprecatedFamilies.anthropic.has(f) && !FORWARD_LOOKING_FAMILIES.anthropic.has(f),
+  );
+  if (usable.length < count) {
+    throw new Error(
+      `need ${count} anthropic families that are neither forward-looking nor already recorded ` +
+        `as deprecated, but only ${usable.length} remain (${usable.join(", ")}). These fixtures ` +
+        `need a family the deprecation detector will actually report; pick a different provider ` +
+        `rather than deleting the assertion.`,
+    );
+  }
+  return usable.slice(0, count);
+}
+
+/**
+ * Re-parse an edited registry source and read back `exportName[provider]`'s
+ * array members, using the TypeScript parser DIRECTLY rather than the sync's own
+ * `locateFamilySetArray`. Deliberately independent: an edit that lands in the
+ * wrong array — or produces text that no longer parses — has to be visible to
+ * something other than the code that made it. `toEqual` on the member list is
+ * order-sensitive, so an append that lands in the wrong position shows up too.
+ */
+function parsedFamilyArray(sourceText: string, exportName: string, provider: string): string[] {
+  const sf = ts.createSourceFile("registry.ts", sourceText, ts.ScriptTarget.Latest, true);
+  for (const stmt of sf.statements) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const decl of stmt.declarationList.declarations) {
+      if (!ts.isIdentifier(decl.name) || decl.name.text !== exportName) continue;
+      if (!decl.initializer || !ts.isObjectLiteralExpression(decl.initializer)) continue;
+      for (const prop of decl.initializer.properties) {
+        if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) continue;
+        if (prop.name.text !== provider) continue;
+        const init = prop.initializer;
+        if (!ts.isCallExpression(init) || !ts.isArrayLiteralExpression(init.arguments[1])) continue;
+        return init.arguments[1].elements
+          .filter(ts.isStringLiteral)
+          .map((el: ts.StringLiteral) => el.text);
+      }
+    }
+  }
+  throw new Error(`could not parse ${exportName}.${provider} out of the edited source`);
 }
 
 /** In-memory fake fs + gate for runDriftSyncCore — no real disk/git touched. */
@@ -160,11 +234,10 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
   // missing from the same listing must still be proposed normally.
   it("a forward-looking family (claude-fable-5) absent from live is NEVER proposed for removal, while a genuinely-retired sibling still is", () => {
     const allAnthropic = [...includeFamilies.anthropic];
+    const [retired] = unrecordedAnthropicFamilies(1);
     // Live listing omits BOTH claude-fable-5 (forward-looking, not launched)
-    // AND claude-3-opus (stand-in for a genuinely retired family).
-    const liveFamilies = allAnthropic.filter(
-      (f) => f !== "claude-fable-5" && f !== "claude-3-opus",
-    );
+    // AND a genuinely-retired stand-in.
+    const liveFamilies = allAnthropic.filter((f) => f !== "claude-fable-5" && f !== retired);
     const liveIds = [...liveFamilies, ...liveFamilies.map((f) => `${f}-20250101`)];
     const result = detectDeprecatedFamiliesForSync(liveIds, "anthropic", {
       isReferenced: () => false,
@@ -172,7 +245,7 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
     expect(result.status).toBe("checked");
     if (result.status !== "checked") return;
     const families = result.candidates.map((c) => c.family).sort();
-    expect(families).toEqual(["claude-3-opus"]);
+    expect(families).toEqual([retired]);
   });
 });
 
@@ -361,39 +434,7 @@ describe("unclassifiedFamiliesForSync (mirrors C4's unclassifiedFamilies)", () =
 // Mechanical registry edits — AST-located, single-line surgery.
 // ---------------------------------------------------------------------------
 
-describe("removeFamilyLiteralInSource / addFamilyLiteralInSource", () => {
-  it("removes an existing family, comment-marking the line, touching nothing else", () => {
-    const src = fixtureRegistrySource();
-    const result = removeFamilyLiteralInSource(
-      src,
-      "includeFamilies",
-      "openai",
-      "gpt-4o",
-      "TEST-REMOVE",
-    );
-    expect(result.changed).toBe(true);
-    expect(result.text).not.toContain('"gpt-4o"');
-    expect(result.text).toContain("// TEST-REMOVE");
-    // Every other seeded family is untouched.
-    for (const f of includeFamilies.openai) {
-      if (f === "gpt-4o") continue;
-      expect(result.text).toContain(`"${f}"`);
-    }
-  });
-
-  it("no-ops when the family is not present (never mangles the file)", () => {
-    const src = fixtureRegistrySource();
-    const result = removeFamilyLiteralInSource(
-      src,
-      "includeFamilies",
-      "openai",
-      "zzz-not-real",
-      "x",
-    );
-    expect(result.changed).toBe(false);
-    expect(result.text).toBe(src);
-  });
-
+describe("addFamilyLiteralInSource", () => {
   it("adds a new family literal, comment-marked", () => {
     const src = fixtureRegistrySource();
     const result = addFamilyLiteralInSource(
@@ -405,6 +446,10 @@ describe("removeFamilyLiteralInSource / addFamilyLiteralInSource", () => {
     );
     expect(result.changed).toBe(true);
     expect(result.text).toContain('"gpt-live", // TEST-ADD');
+    // Every seeded family is untouched.
+    for (const f of includeFamilies.openai) {
+      expect(result.text).toContain(`"${f}"`);
+    }
   });
 
   it("no-ops when the family is already present (never duplicates)", () => {
@@ -413,16 +458,37 @@ describe("removeFamilyLiteralInSource / addFamilyLiteralInSource", () => {
     expect(result.changed).toBe(false);
   });
 
+  it("writes into an EMPTY, comment-only array — the ledger's day-one shape", () => {
+    // The empty array is the case with no sibling element to copy an indent
+    // from, and it is exactly the shape `deprecatedFamilies` ships in. An
+    // insert that lands one line early here would splice ABOVE the
+    // `provider: set(...)` line and produce a file that does not parse.
+    const src = fixtureRegistrySource();
+    const result = addFamilyLiteralInSource(
+      src,
+      "deprecatedFamilies",
+      "anthropic",
+      "claude-3-5-sonnet",
+      "DEPRECATED",
+    );
+    expect(result.changed).toBe(true);
+    expect(result.text).toContain('    "claude-3-5-sonnet", // DEPRECATED');
+    // It landed INSIDE deprecatedFamilies.anthropic, not in includeFamilies and
+    // not in a sibling provider: the array it went into must now parse with the
+    // family as a member.
+    expect(parsedFamilyArray(result.text, "deprecatedFamilies", "anthropic")).toEqual([
+      "claude-3-5-sonnet",
+    ]);
+    expect(parsedFamilyArray(result.text, "deprecatedFamilies", "openai")).toEqual([]);
+    expect(parsedFamilyArray(result.text, "deprecatedFamilies", "gemini")).toEqual([]);
+    expect(parsedFamilyArray(result.text, "includeFamilies", "anthropic")).toEqual([
+      "claude-3-5-sonnet",
+    ]);
+  });
+
   it("the edited text is still syntactically valid TypeScript (parser round-trip)", () => {
     const src = fixtureRegistrySource();
-    const removed = removeFamilyLiteralInSource(src, "includeFamilies", "openai", "gpt-4o", "r");
-    const added = addFamilyLiteralInSource(
-      removed.text,
-      "includeFamilies",
-      "openai",
-      "gpt-live",
-      "a",
-    );
+    const added = addFamilyLiteralInSource(src, "includeFamilies", "openai", "gpt-live", "a");
     // A further edit against the already-edited text must still locate the
     // array correctly — proves the AST-based locator survives a prior edit.
     const secondAdd = addFamilyLiteralInSource(
@@ -434,6 +500,15 @@ describe("removeFamilyLiteralInSource / addFamilyLiteralInSource", () => {
     );
     expect(secondAdd.changed).toBe(true);
     expect(secondAdd.text).toContain('"gpt-live-2"');
+    // Two successive appends into the SAME empty array must both land, and the
+    // second must not be fooled by the first's trailing comment.
+    const one = addFamilyLiteralInSource(src, "deprecatedFamilies", "openai", "gpt-4o", "d1");
+    const two = addFamilyLiteralInSource(one.text, "deprecatedFamilies", "openai", "gpt-4", "d2");
+    expect(two.changed).toBe(true);
+    expect(parsedFamilyArray(two.text, "deprecatedFamilies", "openai")).toEqual([
+      "gpt-4o",
+      "gpt-4",
+    ]);
   });
 });
 
@@ -461,11 +536,15 @@ describe("proposal notes", () => {
     expect(parseProposalDecision("Decision: include")).toBe("include");
   });
 
-  it("renderProposalNote never generates a Decision line for a deprecation note", () => {
+  it("renderProposalNote never generates a Decision line for a structural mismatch", () => {
+    // `Decision: include` is the new-family approval marker the NEXT run acts
+    // on. A structural mismatch has nothing to approve — the registry's shape
+    // moved and a human has to look — so offering the marker there would invite
+    // an "approval" that authorises nothing.
     const note = renderProposalNote(
       "openai",
       "gpt-4o",
-      "still-referenced-deprecation",
+      "registry-structural-mismatch",
       "detail",
       "2026-07-22",
     );
@@ -492,85 +571,63 @@ describe("runDriftSyncCore", () => {
     expect(runSyncCheck).not.toHaveBeenCalled();
   });
 
-  it("RED->GREEN (deprecation, zero-reference): removal PROPOSED to a human, registry never touched", () => {
-    const { deps, registry, notes, runSyncCheck, writeRegistrySource } = makeFakeDeps({
+  /** A healthy openai listing that is missing exactly `absent`. */
+  function listingMissing(absent: string[]): string[] {
+    const live = [...includeFamilies.openai].filter((f) => !absent.includes(f));
+    return [...live, ...live.map((f) => `${f}-2025-01-01`)];
+  }
+
+  it("RED->GREEN (deprecation, zero-reference): RECORDED mechanically, no human paged", () => {
+    const { deps, registry, notes, runSyncCheck, writeProposalNote } = makeFakeDeps({
       isReferenced: () => false,
     });
-    const allButGpt4o = [...includeFamilies.openai].filter((f) => f !== "gpt-4o");
-    const liveIds = [...allButGpt4o, ...allButGpt4o.map((f) => `${f}-2025-01-01`)];
-    const inputs: ProviderChurnInput[] = [{ provider: "openai", liveModelIds: liveIds }];
+    const inputs: ProviderChurnInput[] = [
+      { provider: "openai", liveModelIds: listingMissing(["gpt-4o"]) },
+    ];
 
     const outcome = runDriftSyncCore(inputs, deps);
 
-    // RED (pre-fix): this applied the removal to `includeFamilies` and reported
-    // OK_APPLIED. Against the REAL gate that is a lie — `includeFamilies`'s
-    // membership is checksum-pinned in logic-pin.test.ts, gate-2 re-runs that
-    // file, and the pin reds on the very edit the gate is validating. The run
-    // then reverted the registry AND every needs-human note written alongside it
-    // and reported gate-failed: no PR, nothing delivered, a red cron every day.
+    // RED (observed, production run 31218975992 on 2026-08-07): a deprecation
+    // — of EITHER reference class — produced a `needs-human-*` outcome, so the
+    // run reported `reason=needs-human`, exited 1, opened a
+    // `drift-needs-human/*` PR and Slack-alerted the repo owner to "decide" a
+    // retirement the provider had already published. Ten of them in one
+    // morning, every morning.
     expect(outcome.outcomes).toContainEqual(
       expect.objectContaining({
         provider: "openai",
         family: "gpt-4o",
-        action: "needs-human-zero-reference",
+        action: "deprecation-recorded",
       }),
     );
-    expect(outcome.ok).toBe(false);
-    expect(outcome.reason).toBe(SyncCoreReason.NEEDS_HUMAN);
-    // The registry is not mutated at all, so there is no edit to gate.
-    expect(writeRegistrySource).not.toHaveBeenCalled();
-    expect(registry.text).toContain('"gpt-4o",');
-    expect(runSyncCheck).not.toHaveBeenCalled();
-    expect(notes.has(`${DRIFT_PROPOSALS_DIR}/openai-gpt-4o-deprecated-unreferenced.md`)).toBe(true);
-  });
-
-  it("the zero-reference note names BOTH edits a human must make — the literal AND its pin", () => {
-    // A note that says only "remove the family" sends the human into a red
-    // logic-pin.test.ts with no explanation. The re-pin is not incidental: it is
-    // the reviewed decision the pin exists to force, and the reason drift-sync
-    // proposes the removal rather than applying it.
-    const { deps, notes } = makeFakeDeps({ isReferenced: () => false });
-    const allButGpt4o = [...includeFamilies.openai].filter((f) => f !== "gpt-4o");
-    const liveIds = [...allButGpt4o, ...allButGpt4o.map((f) => `${f}-2025-01-01`)];
-
-    runDriftSyncCore([{ provider: "openai", liveModelIds: liveIds }], deps);
-
-    const note = notes.get(`${DRIFT_PROPOSALS_DIR}/openai-gpt-4o-deprecated-unreferenced.md`);
-    expect(note).toBeDefined();
-    expect(note).toContain("includeFamilies.openai");
-    expect(note).toContain(MODEL_REGISTRY_REL_PATH);
-    expect(note).toContain('DATA_FROZEN["includeFamilies.openai"]');
-    expect(note).toContain("src/__tests__/drift/logic-pin.test.ts");
-    // Never a Decision line: a deprecation note is not an approval gate the way
-    // a new-family note is — `Decision: include` here would read as authorising
-    // drift-sync to apply the removal on the next run, which it cannot do.
-    expect(note).not.toContain("## Decision");
-  });
-
-  it("a zero-reference deprecation re-fires without spamming a second note", () => {
-    const { deps, writeProposalNote } = makeFakeDeps({ isReferenced: () => false });
-    const allButGpt4o = [...includeFamilies.openai].filter((f) => f !== "gpt-4o");
-    const liveIds = [...allButGpt4o, ...allButGpt4o.map((f) => `${f}-2025-01-01`)];
-    const inputs: ProviderChurnInput[] = [{ provider: "openai", liveModelIds: liveIds }];
-
-    runDriftSyncCore(inputs, deps);
-    expect(writeProposalNote).toHaveBeenCalledTimes(1);
-    writeProposalNote.mockClear();
-
-    // The daily cron re-detects the same drift for as long as the note is
-    // un-actioned. Family-keyed path => same file => no second write, no PR spam.
-    const again = runDriftSyncCore(inputs, deps);
+    expect(outcome.outcomes.some((o) => o.action.startsWith("needs-human-"))).toBe(false);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    // Nobody was paged and nothing was proposed: no note file of any kind.
     expect(writeProposalNote).not.toHaveBeenCalled();
-    expect(again.reason).toBe(SyncCoreReason.NEEDS_HUMAN);
+    expect(notes.size).toBe(0);
+
+    // THE MOCK SURVIVES. `includeFamilies` is byte-identical — the family is
+    // still classified, still mocked, still served. Only the ledger grew.
+    expect(parsedFamilyArray(registry.text, "includeFamilies", "openai")).toEqual([
+      ...includeFamilies.openai,
+    ]);
+    expect(parsedFamilyArray(registry.text, "deprecatedFamilies", "openai")).toEqual(["gpt-4o"]);
+    // Zero-reference is recorded in the COMMENT, where it tells a human the
+    // optional cleanup is safe — it no longer selects a different route.
+    expect(registry.text).toContain("no remaining aimock reference");
+
+    // A real registry edit was made, so the real gate DOES run — and with the
+    // live re-collect ON, because this run deferred nothing to a human.
+    expect(runSyncCheck).toHaveBeenCalledTimes(1);
+    expect(runSyncCheck).toHaveBeenCalledWith({ skipRecollect: false });
   });
 
-  it("RED->GREEN (deprecation, STILL-REFERENCED): routed to human, no auto-edit", () => {
-    const { deps, registry, writeProposalNote, runSyncCheck } = makeFakeDeps({
-      isReferenced: () => true,
-    });
-    const allButGpt4o = [...includeFamilies.openai].filter((f) => f !== "gpt-4o");
-    const liveIds = [...allButGpt4o, ...allButGpt4o.map((f) => `${f}-2025-01-01`)];
-    const inputs: ProviderChurnInput[] = [{ provider: "openai", liveModelIds: liveIds }];
+  it("RED->GREEN (deprecation, STILL-REFERENCED): also recorded, and the mock is NOT removed", () => {
+    const { deps, registry, writeProposalNote } = makeFakeDeps({ isReferenced: () => true });
+    const inputs: ProviderChurnInput[] = [
+      { provider: "openai", liveModelIds: listingMissing(["gpt-4o"]) },
+    ];
 
     const outcome = runDriftSyncCore(inputs, deps);
 
@@ -578,22 +635,67 @@ describe("runDriftSyncCore", () => {
       expect.objectContaining({
         provider: "openai",
         family: "gpt-4o",
-        action: "needs-human-still-referenced",
+        action: "deprecation-recorded",
       }),
     );
-    expect(outcome.ok).toBe(false);
-    expect(outcome.reason).toBe(SyncCoreReason.NEEDS_HUMAN);
-    // Registry data itself was NEVER mechanically touched for a still-referenced family.
-    expect(registry.text).toContain('"gpt-4o"');
-    expect(writeProposalNote).toHaveBeenCalledWith(
-      `${DRIFT_PROPOSALS_DIR}/openai-gpt-4o-deprecated-referenced.md`,
-      expect.stringContaining("still references it"),
+    expect(outcome.ok).toBe(true);
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(writeProposalNote).not.toHaveBeenCalled();
+    // The whole point of the still-referenced class: users' suites still call
+    // this model. It stays in includeFamilies, so aimock keeps answering.
+    expect(parsedFamilyArray(registry.text, "includeFamilies", "openai")).toContain("gpt-4o");
+    expect(parsedFamilyArray(registry.text, "deprecatedFamilies", "openai")).toEqual(["gpt-4o"]);
+    expect(registry.text).toContain("still referenced in aimock source — mock retained");
+  });
+
+  it("a recorded deprecation goes QUIET on the next run — the daily cron stops re-deriving it", () => {
+    // The reason the ledger exists at all. Detection is a pure
+    // `includeFamilies − live` diff, so without a written record the same
+    // retirement is rediscovered every morning for ever.
+    const { deps, registry } = makeFakeDeps({
+      isReferenced: () => true,
+      // Model the ledger the FIRST run wrote: the core reads the registry text
+      // it edited, but `isRecordedDeprecation` reads the compiled module, so the
+      // second run's silence has to come from a source the core can see.
+      isRecorded: (family) => registry.text.includes(`"${family}", // DEPRECATED`),
+    });
+    const inputs: ProviderChurnInput[] = [
+      { provider: "openai", liveModelIds: listingMissing(["gpt-4o"]) },
+    ];
+
+    const first = runDriftSyncCore(inputs, deps);
+    expect(first.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(first.outcomes).toHaveLength(1);
+
+    const second = runDriftSyncCore(inputs, deps);
+    expect(second.reason).toBe(SyncCoreReason.OK_NO_CHURN);
+    expect(second.ok).toBe(true);
+    expect(second.outcomes).toEqual([]);
+    // And it was not recorded twice.
+    expect(parsedFamilyArray(registry.text, "deprecatedFamilies", "openai")).toEqual(["gpt-4o"]);
+  });
+
+  it("a whole morning's worth of deprecations records in ONE run, still zero escalations", () => {
+    // The production shape: Anthropic retired ten families at once. Every one
+    // must land in the same mechanical run — not nine plus one escalation.
+    const absent = [...includeFamilies.openai].slice(0, 10);
+    const { deps, registry } = makeFakeDeps({ isReferenced: (f) => f !== absent[0] });
+    const outcome = runDriftSyncCore(
+      [{ provider: "openai", liveModelIds: listingMissing(absent) }],
+      deps,
     );
-    // D-M1: a note-only run has NO registry edit to re-verify, so it is NEVER
-    // gated behind the (recollect-bearing) drift-sync-check — otherwise gate-3
-    // would re-detect the un-actioned family it just routed to a human and
-    // revert the note. The gate is not consulted at all here.
-    expect(runSyncCheck).not.toHaveBeenCalled();
+
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.outcomes.filter((o) => o.action === "deprecation-recorded")).toHaveLength(10);
+    expect(outcome.outcomes.some((o) => o.action.startsWith("needs-human-"))).toBe(false);
+    expect(parsedFamilyArray(registry.text, "deprecatedFamilies", "openai").sort()).toEqual(
+      [...absent].sort(),
+    );
+    // Not one of the ten left includeFamilies.
+    expect(parsedFamilyArray(registry.text, "includeFamilies", "openai")).toEqual([
+      ...includeFamilies.openai,
+    ]);
   });
 
   it("RED->GREEN (genuinely new family, no prior decision): RED alert + single deduped note, no auto-classify", () => {
@@ -687,29 +789,28 @@ describe("runDriftSyncCore", () => {
     expect(revertFiles).toHaveBeenCalledWith([MODEL_REGISTRY_REL_PATH]);
   });
 
-  it("RED->GREEN: a zero-reference deprecation never puts the run's OTHER notes at the gate's mercy", () => {
-    // THE DEFECT, as an invariant. `includeFamilies` membership is checksum-pinned
-    // in logic-pin.test.ts, and gate-2 re-runs that file over the edited tree — so
-    // a PERSISTED mechanical removal is guaranteed to fail its own gate. This gate
-    // models that faithfully (it refuses any registry edit exactly as the real pin
-    // does), while the run ALSO has genuine still-referenced deprecations to
-    // deliver.
+  it("recording a deprecation leaves the includeFamilies checksum pin GREEN", () => {
+    // THE CONSTRAINT THE LEDGER EXISTS TO SATISFY. `includeFamilies`'s
+    // membership is checksum-pinned in logic-pin.test.ts and gate-2 re-runs that
+    // file over the edited tree, so any edit that touches that set fails the
+    // sync's own gate, reverts, and delivers nothing. This gate models the pin
+    // faithfully: it refuses precisely when includeFamilies moved.
     //
-    // RED (pre-fix, OBSERVED against the real gate and the repo's own frozen
-    // healthy 16-id anthropic wave): removal applied -> pin-check-failed ->
-    // revertFiles([...touchedFiles]) wiped the registry edit AND all three notes
-    // -> reason=gate-failed -> no PR of any class, so the eight deprecations the
-    // anthropic floor fix exists to surface were detected and then thrown away,
-    // every morning, behind a gate-failure alert.
-    const runSyncCheck = vi.fn(
-      (): SyncCheckResultLike => ({
-        ok: false,
-        reason: "pin-check-failed",
-        detail: 'Frozen data set "includeFamilies.openai" membership changed',
-      }),
-    );
-    // gpt-4o is zero-reference (the removal candidate); every other absent family
-    // is still referenced (a human note).
+    // RED (the shape this replaced): the sync's answer to a zero-reference
+    // deprecation was to remove the family from includeFamilies, which reddened
+    // exactly this gate — `revertFiles` wiped the edit and every note written
+    // alongside it, `reason=gate-failed`, no PR of any class. Which is why the
+    // pre-fix code did not apply the removal at all and paged a human instead.
+    const runSyncCheck = vi.fn((): SyncCheckResultLike => {
+      const included = parsedFamilyArray(registry.text, "includeFamilies", "openai");
+      return included.length === includeFamilies.openai.size
+        ? { ok: true, reason: "ok", detail: "allowlist + pin ok" }
+        : {
+            ok: false,
+            reason: "pin-check-failed",
+            detail: 'Frozen data set "includeFamilies.openai" membership changed',
+          };
+    });
     const { deps, notes, registry, revertFiles } = makeFakeDeps({
       isReferenced: (family) => family !== "gpt-4o",
       runSyncCheck,
@@ -720,18 +821,15 @@ describe("runDriftSyncCore", () => {
 
     const outcome = runDriftSyncCore([{ provider: "openai", liveModelIds: liveIds }], deps);
 
-    // GREEN: nothing is reverted, because nothing was risked — no registry edit
-    // means the gate is never consulted, and every note survives to become the
-    // one needs-human PR this run is supposed to produce.
-    expect(outcome.reason).toBe(SyncCoreReason.NEEDS_HUMAN);
-    expect(runSyncCheck).not.toHaveBeenCalled();
+    // GREEN: the pin-modelling gate PASSES, so the edit is kept and delivered.
+    expect(outcome.reason).toBe(SyncCoreReason.OK_APPLIED);
+    expect(outcome.ok).toBe(true);
+    expect(runSyncCheck).toHaveBeenCalledTimes(1);
     expect(revertFiles).not.toHaveBeenCalled();
-    expect(registry.text).toContain('"gpt-4o",');
-    expect(notes.size).toBe(dropped.length);
-    for (const family of dropped) {
-      const kind = family === "gpt-4o" ? "deprecated-unreferenced" : "deprecated-referenced";
-      expect(notes.has(`${DRIFT_PROPOSALS_DIR}/openai-${family}-${kind}.md`)).toBe(true);
-    }
+    expect(notes.size).toBe(0);
+    expect(parsedFamilyArray(registry.text, "deprecatedFamilies", "openai").sort()).toEqual(
+      [...dropped].sort(),
+    );
   });
 
   it("a provider whose live listing was skipped (no key / infra error) is recorded, not treated as churn", () => {
@@ -837,8 +935,11 @@ describe("D-M1: recollect gate vs route-to-human invariant", () => {
 
 describe("G#1: locator miss routes to human", () => {
   it("RED->GREEN (deprecation locator miss): writes a note + NEEDS_HUMAN, never a silent no-op", () => {
-    // A registry source the AST locator cannot parse into includeFamilies —
-    // models the real file's structure changing out from under the editor.
+    // A registry source the AST locator cannot parse into deprecatedFamilies —
+    // models the real file's structure changing out from under the editor. A
+    // deprecation that cannot be RECORDED would otherwise be re-derived and
+    // re-dropped every morning in silence, which is the one deprecation shape a
+    // human genuinely has to see.
     const brokenSource = "export const somethingElse = { openai: [] };\n";
     const brokenRegistry = { text: brokenSource };
     const { deps, notes } = makeFakeDeps({

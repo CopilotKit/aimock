@@ -25,10 +25,15 @@
  * relies on, with no live-key dependency.
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeModelFamily } from "./model-family.js";
 import {
   includeFamilies,
   excludeFamilies,
+  deprecatedFamilies,
+  isRecordedDeprecation,
   NON_MODEL_TOKENS,
   isClassifiedFamily,
   PREVIEW_FAMILY,
@@ -58,6 +63,99 @@ describe("model-registry", () => {
         `provider ${provider} has families on both lists: ${overlap.join(", ")}`,
       ).toEqual([]);
     }
+  });
+
+  // ── the recorded-deprecation ledger ───────────────────────────────────────
+  //
+  // `deprecatedFamilies` is the one registry set drift-sync WRITES unattended,
+  // and the one deliberately left out of `logic-pin.test.ts`'s membership
+  // freeze (pinning it would make every append revert itself at gate-2). These
+  // are the invariants that stand in for that pin. See the set's own doc.
+
+  it("a recorded deprecation is always a family aimock actually mocks", () => {
+    for (const provider of ["openai", "anthropic", "gemini"] as const) {
+      const stray = [...deprecatedFamilies[provider]].filter(
+        (f) => !includeFamilies[provider].has(f),
+      );
+      expect(
+        stray,
+        `deprecatedFamilies.${provider} records ${stray.join(", ")}, which ${
+          stray.length === 1 ? "is" : "are"
+        } not in includeFamilies.${provider}. The ledger records the retirement of a family ` +
+          `aimock MOCKS; an entry with no include-side counterpart is either a typo or the ` +
+          `remains of a half-finished cleanup (dropping a family means deleting it from BOTH ` +
+          `sets in the same reviewed commit as the logic-pin re-pin).`,
+      ).toEqual([]);
+    }
+  });
+
+  it("recording a deprecation NEVER unclassifies the family — the mock keeps serving", () => {
+    for (const provider of ["openai", "anthropic", "gemini"] as const) {
+      for (const family of deprecatedFamilies[provider]) {
+        expect(
+          isClassifiedFamily(family, provider),
+          `${provider}/${family} is recorded as deprecated and stopped being classified. ` +
+            `Recording what the PROVIDER retired must never change what aimock serves.`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("isRecordedDeprecation reads the ledger, and only the ledger", () => {
+    // Non-vacuous while the ledger is empty: it pins the predicate's two
+    // directions against a family that IS classified (so a body of `return
+    // isClassifiedFamily(...)`, or `return true`, reddens here) and one that is
+    // in neither set.
+    for (const provider of ["openai", "anthropic", "gemini"] as const) {
+      for (const family of deprecatedFamilies[provider]) {
+        expect(isRecordedDeprecation(family, provider)).toBe(true);
+      }
+      const notRecorded = [...includeFamilies[provider]].filter(
+        (f) => !deprecatedFamilies[provider].has(f),
+      );
+      expect(
+        notRecorded.length,
+        `every ${provider} family is recorded as deprecated — this assertion has nothing left ` +
+          `to prove and must be rewritten`,
+      ).toBeGreaterThan(0);
+      for (const family of notRecorded) {
+        expect(isRecordedDeprecation(family, provider)).toBe(false);
+      }
+      expect(isRecordedDeprecation("zzz-not-a-real-family", provider)).toBe(false);
+    }
+  });
+
+  it("the deprecation ledger never reaches aimock's serving path", () => {
+    // THE ARCHITECTURAL BOUNDARY, as a test. `deprecatedFamilies` records what
+    // the PROVIDER retired; it must never become an input to what aimock
+    // SERVES, or recording a deprecation silently breaks every user whose suite
+    // still pins that model id. aimock's shipped product source is `src/`
+    // outside `src/__tests__/` — server.ts's DEFAULT_MODELS, the per-provider
+    // builders, the routers — so a reference to the ledger appearing anywhere
+    // in it is that boundary being crossed.
+    const srcRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const offenders: string[] = [];
+    const stack = [srcRoot];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        const rel = full.slice(srcRoot.length).replace(/^[/\\]+/, "");
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "dist") continue;
+          if (rel === "__tests__") continue;
+          stack.push(full);
+        } else if (entry.isFile() && /\.tsx?$/.test(entry.name)) {
+          if (readFileSync(full, "utf8").includes("deprecatedFamilies")) offenders.push(rel);
+        }
+      }
+    }
+    expect(
+      offenders,
+      `aimock's product source now references deprecatedFamilies (${offenders.join(", ")}). ` +
+        `The ledger is a record of provider behaviour, not a switch on aimock's own behaviour ` +
+        `— a retired family must keep being mocked.`,
+    ).toEqual([]);
   });
 
   it("seeds are idempotent under normalization (already family keys)", () => {
