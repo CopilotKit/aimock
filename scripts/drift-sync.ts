@@ -1008,8 +1008,8 @@ export function runDriftSyncCore(
   // stayed on the data-only surface and left the frozen classification logic
   // intact. Gate-3 (the live re-collect) only makes sense when this run CLAIMS
   // to have fully resolved the drift — i.e. no family was simultaneously
-  // deferred to a human. In a mixed run (a valid removal PLUS a family routed
-  // to a human), the re-collect would (correctly) still see that deferred
+  // deferred to a human. In a mixed run (a valid registry edit PLUS a family
+  // routed to a human), the re-collect would (correctly) still see that deferred
   // family as residual drift and would wrongly revert the valid edit (D-M1,
   // mixed-run leg), so skip gate-3 and report NEEDS_HUMAN with the edit kept.
   deps.writeRegistrySource(registrySource);
@@ -1266,14 +1266,15 @@ const REAL_SYNC_CORE_DEPS: SyncCoreDeps = {
  * the branch name.
  *
  * WHY not key on the committed note-file paths alone (the workflow's older
- * approach): the D-M1 "mixed run" (a mechanical registry removal of family X
+ * approach): the D-M1 "mixed run" (a mechanical registry edit for family X
  * committed the SAME run a *different* family Y is deferred to a human, Y's
  * note already sitting on `main` from a prior run) commits ONLY the registry
  * edit — no `drift-proposals/*` file — so a note-path key is EMPTY and the
  * dedup is bypassed, re-opening a near-identical PR every daily cron run
  * (unbounded PR-spam). The outcome-derived key is non-empty here (it carries
- * both `removed:openai/X` and `needs-human-…:gemini/Y`) and identical on every
- * re-fire, so the workflow can find the already-open PR and skip.
+ * both `deprecation-recorded:anthropic/X` and `needs-human-…:gemini/Y`) and
+ * identical on every re-fire, so the workflow can find the already-open PR and
+ * skip.
  *
  * A 16-hex-char SHA-256 prefix is used as the marker token: fixed-length, so
  * two distinct changesets can never be substring-confused in the PR-body

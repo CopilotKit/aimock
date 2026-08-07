@@ -5,8 +5,9 @@
  * anti-cheat predicate (`drift-success-predicate.ts`, spec §3/§6).
  *
  * `drift-sync.ts` (C2) never freewrites a fix — it only ever performs one of
- * two deterministic, data-only edits: (a) a zero-reference deprecation
- * removal in `model-registry.ts`, or (b) drop a needs-human dedup note file
+ * two deterministic, data-only edits: (a) append one comment-marked family
+ * literal to a `model-registry.ts` set (a recorded deprecation, or a
+ * human-approved new family), or (b) drop a needs-human dedup note file
  * under `drift-proposals/`. Because the SYNC path can no longer produce an
  * arbitrary diff, verifying it is "real" no longer needs adversarial-intent
  * modeling or TS-diff parsing (the predicate's whole reason for being 916
