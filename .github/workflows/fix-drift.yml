@@ -489,6 +489,24 @@ jobs:
           CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
         run: |
           set -euo pipefail
+          # ---- RECORD WHAT ACTUALLY HAPPENS IN HERE ----------------------------
+          # Actions hands a later step only `outcome` — success/failure/skipped —
+          # so the gate-failure alert below cannot see WHY this step died and used
+          # to print a hand-written list of the causes someone imagined. Persist
+          # the real exit code and the real stderr so it can quote them instead.
+          # Same six lines in the sibling needs-human step; see the alert for the
+          # incident that earned them.
+          #
+          # stderr is captured to a file and REPLAYED to the console on exit
+          # (fd 3 holds the console), so nothing is lost from the job log — it
+          # just lands at the end of the step rather than interleaved. A `tee`
+          # through process substitution would keep the interleaving but races
+          # with step exit, and a truncated last line is the one line this reads.
+          DRIFT_STATUS_DIR="${RUNNER_TEMP}/drift-step-status"
+          mkdir -p "$DRIFT_STATUS_DIR"
+          exec 3>&2
+          exec 2> "${DRIFT_STATUS_DIR}/pr.err"
+          trap 'rc=$?; printf "%s\n" "$rc" > "${DRIFT_STATUS_DIR}/pr.rc"; exec 2>&3; cat "${DRIFT_STATUS_DIR}/pr.err" >&2; exit $rc' EXIT
           # De-dup (idempotent across daily re-fires): the mechanical edit is
           # never auto-merged, so an un-merged drift is re-detected every cron run
           # and would otherwise open a brand-new PR each day. Skip when an open PR
@@ -621,9 +639,35 @@ jobs:
           # relied on for completeness — that is exactly why it is unioned with a
           # query whose population is bounded by the repo's unmerged PRs.
           assert_listing_complete "unmerged-PR listing this step's marker self-heal reads" "$UNMERGED"
-          MANAGED="$(jq -cn --argjson a "$MANAGED" --argjson b "$UNMERGED" \
-            '($a | map(.number)) as $seen
-             | $a + [$b[] | . as $p | select(($seen | index($p.number)) == null)]')"
+          # A PR LISTING MUST NEVER TRAVEL THROUGH argv. Linux caps a SINGLE
+          # argument at MAX_ARG_STRLEN — 128 KiB, fixed at 32 pages and
+          # INDEPENDENT of the far larger total ARG_MAX (2 MiB on the runner) —
+          # so `--argjson a "$MANAGED"` makes execve fail E2BIG, which bash
+          # reports as "Argument list too long" and the step dies with exit 126
+          # before jq runs at all. That is a hard daily red, not a degraded
+          # answer, and it is what killed this cron on 2026-08-06 and 2026-08-07
+          # (runs 31079603526 / 31154443828, both at this same union in the
+          # sibling needs-human step). Measured on this repo 2026-08-07: this
+          # step's plain listing 801 KB and its is:unmerged listing 131 KB —
+          # BOTH over the per-argument cap on their own, so the total is not the
+          # binding constraint and trimming one payload would not have helped.
+          # Lowering --limit is NOT the fix either: the window is load-bearing
+          # (see above), and shrinking it re-opens the silent "not proposed"
+          # answer that duplicate PRs come from.
+          #
+          # `--slurpfile` reads through a file descriptor instead, so size is
+          # bounded by the filesystem, not by execve. It binds an ARRAY OF THE
+          # FILE'S JSON VALUES: a file holding one array binds `[[…]]`, so every
+          # reference is `$a[0]`, never `$a`. Getting that wrong does not error —
+          # it silently compares an array-of-array against PR numbers and matches
+          # nothing, which is the same duplicate-PR failure by another route.
+          MANAGED_FILE="${RUNNER_TEMP}/drift-managed.json"
+          UNMERGED_FILE="${RUNNER_TEMP}/drift-unmerged.json"
+          printf '%s' "$MANAGED" > "$MANAGED_FILE"
+          printf '%s' "$UNMERGED" > "$UNMERGED_FILE"
+          MANAGED="$(jq -cn --slurpfile a "$MANAGED_FILE" --slurpfile b "$UNMERGED_FILE" \
+            '($a[0] | map(.number)) as $seen
+             | $a[0] + [$b[0][] | . as $p | select(($seen | index($p.number)) == null)]')"
           MINE="$(printf '%s' "$MANAGED" | jq -c --arg k "$CHANGESET_KEY" '
             map(select((.state == "OPEN" or .state == "CLOSED")
                        and (.headRefName | test("^fix/drift-"))
@@ -700,9 +744,22 @@ jobs:
           # self-heal's branch-key anchor never selects, and the self-heal reaches
           # the closed PRs whose body no longer contains the key at all. Self-heal
           # entries win on collision — they carry the post-repair body.
-          ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
-            '($b | map(.number)) as $healed
-             | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
+          #
+          # Through FILES, not argv, for the MAX_ARG_STRLEN reason spelled out on
+          # the self-heal union above. Neither operand is bounded: REASSERTED
+          # carries the FULL body of every bot-managed PR it selected (measured
+          # 34 KB across this repo's current bot PRs, against a 60 KB largest
+          # single body and GitHub's 65 KB body ceiling — so three such PRs clear
+          # the 128 KiB cap), and every self-heal APPENDS to a body, so the
+          # payload only grows. This site had not crashed yet purely because the
+          # ok-applied path did not run on the mornings the needs-human one did.
+          ALL_PRS_FILE="${RUNNER_TEMP}/drift-all-prs.json"
+          REASSERTED_FILE="${RUNNER_TEMP}/drift-reasserted.json"
+          printf '%s' "$ALL_PRS" > "$ALL_PRS_FILE"
+          printf '%s' "$REASSERTED" > "$REASSERTED_FILE"
+          ALL_PRS="$(jq -cn --slurpfile a "$ALL_PRS_FILE" --slurpfile b "$REASSERTED_FILE" \
+            '($b[0] | map(.number)) as $healed
+             | [$a[0][] | . as $p | select(($healed | index($p.number)) == null)] + $b[0]')"
           # PRECEDENCE: a still-OPEN PR carrying this marker is a PENDING proposal
           # and WINS, so it is tested BEFORE the closed-rejection test below. A
           # closure is only a rejection once NO open PR still carries the changeset.
@@ -892,6 +949,26 @@ jobs:
           CHANGESET_KEY: ${{ steps.sync.outputs.changeset_key }}
         run: |
           set -euo pipefail
+          # ---- RECORD WHAT ACTUALLY HAPPENS IN HERE ----------------------------
+          # Actions hands a later step only `outcome` — success/failure/skipped —
+          # so the gate-failure alert below cannot see WHY this step died and used
+          # to print a hand-written list of the causes someone imagined. On
+          # 2026-08-06 and 2026-08-07 it printed "push rejected, gh pr create
+          # error, or PR-match polling exhausted" while THIS step had actually
+          # died with `jq: Argument list too long` and exit 126, which is none of
+          # the three. Persist the real exit code and the real stderr so the alert
+          # can quote them. Same six lines in the sibling ok-applied PR step.
+          #
+          # stderr is captured to a file and REPLAYED to the console on exit
+          # (fd 3 holds the console), so nothing is lost from the job log — it
+          # just lands at the end of the step rather than interleaved. A `tee`
+          # through process substitution would keep the interleaving but races
+          # with step exit, and a truncated last line is the one line this reads.
+          DRIFT_STATUS_DIR="${RUNNER_TEMP}/drift-step-status"
+          mkdir -p "$DRIFT_STATUS_DIR"
+          exec 3>&2
+          exec 2> "${DRIFT_STATUS_DIR}/needs_human_pr.err"
+          trap 'rc=$?; printf "%s\n" "$rc" > "${DRIFT_STATUS_DIR}/needs_human_pr.rc"; exec 2>&3; cat "${DRIFT_STATUS_DIR}/needs_human_pr.err" >&2; exit $rc' EXIT
           HEAD_SHA="$(git rev-parse HEAD)"
 
           # An EMPTY key must fail CLOSED rather than fall through to an
@@ -1038,9 +1115,34 @@ jobs:
           # completeness — which is exactly why it is unioned with a query whose
           # population is bounded by the repo's unmerged PRs.
           assert_listing_complete "unmerged-PR listing this step's marker self-heal reads" "$UNMERGED"
-          MANAGED="$(jq -cn --argjson a "$MANAGED" --argjson b "$UNMERGED" \
-            '($a | map(.number)) as $seen
-             | $a + [$b[] | . as $p | select(($seen | index($p.number)) == null)]')"
+          # THIS IS THE LINE THAT KILLED THE CRON on 2026-08-06 and 2026-08-07
+          # (runs 31079603526 / 31154443828, both `jq: Argument list too long`,
+          # exit 126, at script line 150). A PR LISTING MUST NEVER TRAVEL THROUGH
+          # argv: Linux caps a SINGLE argument at MAX_ARG_STRLEN — 128 KiB, fixed
+          # at 32 pages and INDEPENDENT of the far larger total ARG_MAX (2 MiB on
+          # the runner) — so `--argjson a "$MANAGED"` makes execve fail E2BIG and
+          # the step dies before jq runs at all. Measured on this repo
+          # 2026-08-07: this step's plain listing 988 KB and its is:unmerged
+          # listing 182 KB (it also asks for `files` and `author`, so it is the
+          # larger of the two steps' listings) — BOTH over the per-argument cap
+          # on their own, which is why the total was never the binding
+          # constraint. Lowering --limit is NOT the fix: the window is
+          # load-bearing (see above) and shrinking it re-opens the silent "not
+          # proposed" answer that duplicate PRs come from.
+          #
+          # `--slurpfile` reads through a file descriptor instead, so size is
+          # bounded by the filesystem, not by execve. It binds an ARRAY OF THE
+          # FILE'S JSON VALUES: a file holding one array binds `[[…]]`, so every
+          # reference is `$a[0]`, never `$a`. Getting that wrong does not error —
+          # it silently compares an array-of-array against PR numbers and matches
+          # nothing, which is the same duplicate-PR failure by another route.
+          MANAGED_FILE="${RUNNER_TEMP}/drift-managed.json"
+          UNMERGED_FILE="${RUNNER_TEMP}/drift-unmerged.json"
+          printf '%s' "$MANAGED" > "$MANAGED_FILE"
+          printf '%s' "$UNMERGED" > "$UNMERGED_FILE"
+          MANAGED="$(jq -cn --slurpfile a "$MANAGED_FILE" --slurpfile b "$UNMERGED_FILE" \
+            '($a[0] | map(.number)) as $seen
+             | $a[0] + [$b[0][] | . as $p | select(($seen | index($p.number)) == null)]')"
           # `has("author")`, not "the login is non-empty": gh always emits every key
           # it was asked for, so an ABSENT key means the `--json` list above (or
           # gh's payload shape) changed and half of bot_managed's coverage went with
@@ -1280,9 +1382,21 @@ jobs:
           # edit, so a PR whose marker this step just restored is likely still
           # absent here, while the self-heal reaches the closed PRs whose body no
           # longer contains the key at all.
-          ALL_PRS="$(jq -cn --argjson a "$ALL_PRS" --argjson b "$REASSERTED" \
-            '($b | map(.number)) as $healed
-             | [$a[] | . as $p | select(($healed | index($p.number)) == null)] + $b')"
+          #
+          # Through FILES, not argv, for the MAX_ARG_STRLEN reason spelled out on
+          # the self-heal union above. Neither operand is bounded: REASSERTED
+          # carries the FULL body of every bot-managed PR it selected (measured
+          # 34 KB across this repo's current bot PRs, against a 60 KB largest
+          # single body and GitHub's 65 KB body ceiling — so three such PRs clear
+          # the 128 KiB cap), and every self-heal APPENDS to a body, so the
+          # payload only grows.
+          ALL_PRS_FILE="${RUNNER_TEMP}/drift-all-prs.json"
+          REASSERTED_FILE="${RUNNER_TEMP}/drift-reasserted.json"
+          printf '%s' "$ALL_PRS" > "$ALL_PRS_FILE"
+          printf '%s' "$REASSERTED" > "$REASSERTED_FILE"
+          ALL_PRS="$(jq -cn --slurpfile a "$ALL_PRS_FILE" --slurpfile b "$REASSERTED_FILE" \
+            '($b[0] | map(.number)) as $healed
+             | [$a[0][] | . as $p | select(($healed | index($p.number)) == null)] + $b[0]')"
           # Only OPEN PRs can carry a still-pending decision; the guards below
           # keep using this narrowed view.
           OPEN_PRS="$(printf '%s' "$ALL_PRS" | jq -c 'map(select(.state == "OPEN"))')"
@@ -1742,8 +1856,10 @@ jobs:
       # The ok-applied arm is deliberately WIDE — `failure()`, not narrowly
       # `steps.assert.outcome == 'failure'` — because the defense-in-depth Assert
       # step can SUCCEED and a LATER step still fail the job (Push branch + create
-      # PR: a rejected push, a `gh pr create` error, or the head-SHA PR-match polling
-      # loop exhausting its attempts). Narrower, that window leaves reason ==
+      # PR can fail for ANY reason — a rejected push, a `gh pr create` error, an
+      # exhausted head-SHA PR-match poll, or, as on 2026-08-07, an E2BIG inside a
+      # jq call, which is why the alert below quotes evidence instead of guessing
+      # from a list like this one). Narrower, that window leaves reason ==
       # 'ok-applied' (non-empty, so the early-infra catch-all below stays silent) and
       # assert == 'success' (so this alert stays silent too): a silent failure on an
       # unattended daily cron.
@@ -1777,6 +1893,44 @@ jobs:
           # A REAL newline — see the cancellation alert above for why a
           # double-quoted "\n" renders literally in Slack instead.
           NL=$'\n'
+          # ---- QUOTE THE FAILURE, DO NOT ENUMERATE GUESSES ----------------------
+          # This alert used to name a failing step and then append a hand-written
+          # list of the causes someone imagined for it. On 2026-08-06 and
+          # 2026-08-07 (runs 31079603526 / 31154443828) it said "push rejected, gh
+          # pr create error, or PR-match polling exhausted" on two consecutive
+          # mornings while the persist step had actually died with
+          # `/usr/bin/jq: Argument list too long` and exit 126 — an E2BIG in a
+          # marker-self-heal `jq --argjson`, which is none of the three. Naming a
+          # plausible cause is WORSE than naming none: it sends triage at the push
+          # credential and the PR-match poll, and the real defect survives for as
+          # many mornings as it takes someone to open the raw log.
+          #
+          # Both PR steps now record their real exit code and stderr under
+          # RUNNER_TEMP. Report THOSE. A missing record is itself reported as
+          # missing — never smoothed over with a guess.
+          DRIFT_STATUS_DIR="${RUNNER_TEMP}/drift-step-status"
+          step_evidence() {
+            local rc_f="${DRIFT_STATUS_DIR}/$1.rc" err_f="${DRIFT_STATUS_DIR}/$1.err" rc last
+            if [ ! -r "$rc_f" ]; then
+              printf ' — NO exit code was recorded, so it died before its own status prologue ran (a runner-level fault, not a fault in the step body)'
+              return 0
+            fi
+            rc="$(cat "$rc_f")"
+            # An empty stderr makes grep exit 1, and `pipefail` propagates that.
+            # It does NOT currently kill the alert — bash suppresses errexit for a
+            # function body running inside a command substitution, which is the
+            # only way this is called — so `|| true` is belt-and-braces against a
+            # future direct call, not a load-bearing guard, and no test below
+            # claims otherwise. What IS load-bearing is the `${last:-…}` default:
+            # without it an empty stderr renders as nothing at all, and the alert
+            # is contentless again on exactly the runs it exists to report.
+            #
+            # Bounded to 300 chars so one enormous stderr line cannot bloat the
+            # Slack payload (or push `jq -n --arg text` back towards the argv cap
+            # this incident was about).
+            last="$( { grep -v '^[[:space:]]*$' "$err_f" 2>/dev/null || true; } | tail -n 1 | cut -c1-300 )"
+            printf ' — exited %s; last stderr: %s' "$rc" "${last:-(the step wrote nothing to stderr)}"
+          }
           if [ "${SYNC_REASON}" = "sync-crashed" ]; then
             FAILING_STEP="Run deterministic drift sync (drift-sync.ts exited ${SYNC_EXIT_CODE:-?} and the run is UNCLASSIFIABLE — it printed no usable reason= line, or it reported a clean one and then died anyway; see the drift-sync-log artifact)"
           elif [ "${SYNC_REASON}" = "provider-unchecked" ]; then
@@ -1794,7 +1948,7 @@ jobs:
           # (reachable only with the persist step at 'success', which this alert never
           # fires in).
           elif [ "${SYNC_REASON}" = "needs-human" ] && [ "${NEEDS_HUMAN_PR_OUTCOME}" = "failure" ]; then
-            FAILING_STEP="Persist needs-human note + open PR (push rejected, gh pr create error, or PR-match polling exhausted — the needs-human note may not have been persisted)"
+            FAILING_STEP="Persist needs-human note + open PR$(step_evidence needs_human_pr) — the needs-human note may not have been persisted"
           elif [ "${SYNC_REASON}" = "needs-human" ] && [ "${NEEDS_HUMAN_PR_OUTCOME}" = "skipped" ]; then
             FAILING_STEP="Persist needs-human note + open PR was SKIPPED because an EARLIER step failed (it is gated on success()) — the needs-human note was NOT persisted, so the decision is not reachable in the repo"
           elif [ "${ASSERT_OUTCOME}" = "failure" ]; then
@@ -1802,7 +1956,7 @@ jobs:
           elif [ "${GIT_PUSH_CFG_OUTCOME}" = "failure" ]; then
             FAILING_STEP="Configure git for push (the push credential could not be injected, so neither PR path could push)"
           elif [ "${PR_OUTCOME}" = "failure" ]; then
-            FAILING_STEP="Push branch + create PR"
+            FAILING_STEP="Push branch + create PR$(step_evidence pr)"
           else
             # Never contentless: the steps with no `id:` (both artifact uploads)
             # cannot be named, so report the state this alert actually observed

@@ -991,6 +991,12 @@ function assembleSlackMessage(step: Step, envOverride: Record<string, string> = 
       [...lines.slice(0, last + 1), `printf '%s' "$MSG" > ${JSON.stringify(outFile)}`].join("\n"),
     );
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    // The runner ALWAYS provides RUNNER_TEMP, and the gate-failure alert reads
+    // the failing step's recorded exit code and stderr out of it. Leaving it
+    // unset here is the harness under-modelling the runner, not a defect in the
+    // step: under `set -u` an unset RUNNER_TEMP aborts a body the real runner
+    // executes fine. A caller that cares what is IN that directory overrides it.
+    env.RUNNER_TEMP = dir;
     // Non-empty placeholders for everything the step declares, so `set -u` is
     // satisfied and each message takes its content-bearing branch.
     for (const key of Object.keys(step.env)) env[key] = `<${key}>`;
@@ -5568,4 +5574,311 @@ describe("fix-drift.yml — every alert's payload is POSTed, and arrives as vali
       ).toBe("true");
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// A PR LISTING MUST NEVER TRAVEL THROUGH argv.
+//
+// On 2026-08-06 and 2026-08-07 this cron died at 07:05Z and 06:34Z with
+//
+//   /home/runner/work/_temp/….sh: line 150: /usr/bin/jq: Argument list too long
+//   ##[error]Process completed with exit code 126.
+//
+// at the marker self-heal's `jq -cn --argjson a "$MANAGED" --argjson b
+// "$UNMERGED"`. Linux caps a SINGLE argument at MAX_ARG_STRLEN — 128 KiB, fixed
+// at 32 pages — INDEPENDENTLY of the far larger total ARG_MAX (2 MiB on the
+// runner, measured). Both listings were over that cap on their own (988 KB and
+// 182 KB on 2026-08-07), so no amount of total-size headroom would have saved
+// it and trimming one operand would not have either.
+//
+// The guards below EXECUTE both PR-open step bodies against a population shaped
+// like this repo's real one, so they answer "does the step survive today's data"
+// rather than "does the source mention --slurpfile". They are deliberately
+// platform-agnostic: the fixture is sized past the per-argument cap on Linux AND
+// past the total ARG_MAX on macOS, so the RED is the same red on a dev box and
+// on the runner.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — no PR listing is passed through argv (E2BIG killed this cron twice)", () => {
+  const BOT = { login: "app/copilotkit-devops-bot" };
+  const HUMAN = { login: "octocat" };
+  const REGISTRY = "src/__tests__/drift/model-registry.ts";
+  const NOTE = "drift-proposals/2026-08-07-new-family.md";
+  const KEY = "1111222233334444";
+  const MATCH = '{"url":"https://x/pr/900","number":900}';
+
+  /**
+   * The shape `gh pr list` returns for THIS repo, measured 2026-08-07:
+   * `--state all --limit 200` comes back FULL at 200, of which only 26 are
+   * unmerged. Bodies are sized so the whole listing clears 1 MB, as the real one
+   * does — that is what makes the argv route fail, and a fixture of a dozen tiny
+   * PRs is exactly the fixture that let this ship.
+   */
+  const productionShapedPopulation = (): PrFixture[] => {
+    const body = `## drift-sync report\n\n${"filler line to size this body realistically\n".repeat(140)}`;
+    return Array.from({ length: 200 }, (_, i) => {
+      const number = 400 - i;
+      // 10 unmerged (well under the 200 limit, so `assert_listing_complete`
+      // passes — as it does in production), the rest MERGED.
+      const state: PrFixture["state"] = i < 5 ? "OPEN" : i < 10 ? "CLOSED" : "MERGED";
+      return {
+        number,
+        url: `https://x/pr/${number}`,
+        state,
+        headRefName: `feature/unrelated-${number}`,
+        body,
+        files: [{ path: `src/whatever-${number}.ts` }],
+        author: HUMAN,
+      };
+    });
+  };
+
+  const cases: Array<{ id: "pr" | "needs_human_pr"; committed: Record<string, string> }> = [
+    { id: "pr", committed: { [REGISTRY]: "// edited\n" } },
+    { id: "needs_human_pr", committed: { [NOTE]: "# needs human\n" } },
+  ];
+
+  for (const { id, committed } of cases) {
+    it(`${id}: survives a ~1 MB PR listing instead of dying with exit 126`, () => {
+      const prs = productionShapedPopulation();
+      const listingBytes = JSON.stringify(prs).length;
+      expect(
+        listingBytes,
+        "the fixture is too small to reach either platform's argv ceiling, so this guard " +
+          "cannot fail and proves nothing about the bug it exists for",
+      ).toBeGreaterThan(1_100_000);
+
+      const r = observePrStep(id, { changesetKey: KEY, committed, prs, matchOut: MATCH });
+
+      expect(
+        r.stdio,
+        `${id}: a PR listing still reaches jq through the argument vector — execve fails E2BIG ` +
+          "and the step dies before jq runs, which is the daily red of 2026-08-06/07",
+      ).not.toContain("Argument list too long");
+      expect(
+        r.stepExit,
+        `${id}: exited ${r.stepExit} on a production-shaped PR listing — 126 is the E2BIG ` +
+          `signature. Output: ${r.stdio}`,
+      ).toBe(0);
+      // …and the step did its JOB on that listing, rather than surviving by
+      // reading nothing: an exit 0 that opened no PR is not a fix.
+      expect(r.created, `${id}: survived the big listing but opened no PR: ${r.stdio}`).toBe(true);
+    });
+  }
+
+  it("a SATURATED 200-of-200 plain listing is not itself a refusal (the audit is on is:unmerged)", () => {
+    // Claim under test, and the reason fixing the E2BIG is enough to make the
+    // cron GREEN rather than merely fail differently: `assert_listing_complete`
+    // is applied to the `is:unmerged` listing and to the changeset-keyed search,
+    // NOT to the plain `--state all` one — which is EXPECTED to saturate,
+    // because merged PRs alone exceed the limit. On 2026-08-07 the real repo
+    // measured 200-of-200 plain and 26 unmerged, so the audit does not fire.
+    const prs = productionShapedPopulation();
+    expect(prs.length, "the plain listing must be saturated for this to test anything").toBe(200);
+    expect(
+      prs.filter((p) => p.state !== "MERGED").length,
+      "the unmerged listing must stay well under the limit, as it does in production",
+    ).toBeLessThan(200);
+
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "# needs human\n" },
+      prs,
+      matchOut: MATCH,
+    });
+    expect(
+      r.stdio,
+      "a saturated PLAIN listing now refuses the run, so the cron trades an E2BIG for a " +
+        "truncation refusal and is still red every morning",
+    ).not.toContain("came back FULL at its --limit");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("the file-routed union keeps the union's SEMANTICS — `$a[0]`, not `$a`", () => {
+    // `--slurpfile` binds an ARRAY OF THE FILE'S JSON VALUES, so a file holding
+    // one array binds `[[…]]`. Swapping `--argjson a` for `--slurpfile a`
+    // without rewriting every `$a` to `$a[0]` changes what the filter compares,
+    // and the self-heal then matches nothing — the same duplicate-PR failure the
+    // union exists to prevent, arrived at from the other side. This asserts the
+    // union still does its job: a PR reachable ONLY through the is:unmerged
+    // listing (CLOSED, so it carries a human REJECTION) is still seen.
+    const rejected: PrFixture = {
+      number: 77,
+      url: "https://x/pr/77",
+      state: "CLOSED",
+      headRefName: `drift-needs-human/2026-07-01-4242-${KEY}`,
+      body: `a human rejected this\n<!-- drift-changeset: ${KEY} -->\n`,
+      files: [{ path: NOTE }],
+      author: BOT,
+    };
+    const r = observePrStep("needs_human_pr", {
+      changesetKey: KEY,
+      committed: { [NOTE]: "# needs human\n" },
+      prs: [...productionShapedPopulation(), rejected],
+      matchOut: MATCH,
+    });
+    expect(
+      r.created,
+      "the closed REJECTION reachable only through the is:unmerged half of the union was lost, " +
+        `so this run re-proposed a changeset a human already refused: ${r.stdio}`,
+    ).toBe(false);
+    expect(r.outputs.rejected, r.stdio).toBe("77");
+    expect(r.stepExit, r.stdio).toBe(0);
+  });
+
+  it("no `--arg`/`--argjson` in the whole file carries a gh-derived listing", () => {
+    // The site that crashed was simply the first one the needs-human path
+    // reached. This is a CLASS: every unbounded payload is one merged PR away
+    // from being the next 06:34Z red, so sweep the file rather than the line.
+    const unbounded = [
+      "MANAGED",
+      "UNMERGED",
+      "ALL_PRS",
+      "OPEN_PRS",
+      "REASSERTED",
+      "MINE",
+      "PR_JSON",
+    ];
+    const offenders: string[] = [];
+    for (const [i, line] of wf.split("\n").entries()) {
+      if (/^\s*#/.test(line)) continue;
+      for (const v of unbounded) {
+        if (new RegExp(`--argjson\\s+\\w+\\s+"\\$\\{?${v}\\b`).test(line)) {
+          offenders.push(`${i + 1}: ${line.trim()}`);
+        }
+        if (new RegExp(`--arg\\s+\\w+\\s+"\\$\\{?${v}\\b`).test(line)) {
+          offenders.push(`${i + 1}: ${line.trim()}`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      "an unbounded gh-derived payload is being passed to jq through the argument vector — " +
+        "Linux kills that at 128 KiB per argument with E2BIG and exit 126, whatever the total " +
+        `ARG_MAX is. Route it through --slurpfile/--rawfile or stdin:\n${offenders.join("\n")}`,
+    ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE ALERT QUOTES THE FAILURE; IT DOES NOT ENUMERATE GUESSES.
+//
+// The gate-failure alert named a step and then appended a hand-written list of
+// the causes someone had imagined for it. For two consecutive mornings it
+// published "push rejected, gh pr create error, or PR-match polling exhausted"
+// while the step had actually died with `jq: Argument list too long` and exit
+// 126 — none of the three. A plausible wrong cause is worse than none: it sends
+// triage at the push credential and hides the defect for as long as it takes
+// someone to open the raw log.
+// ---------------------------------------------------------------------------
+describe("fix-drift.yml — the gate-failure alert reports the real exit code and stderr", () => {
+  const alertStep = (): Step => stepById("alert_gate");
+
+  /** Plant the status a failing PR step would have recorded, and read the alert. */
+  const alertWith = (
+    stepId: string,
+    record: { rc?: string; err?: string } | null,
+    envOverride: Record<string, string>,
+  ): string => {
+    const dir = mkdtempSync(join(tmpdir(), "fix-drift-alert-"));
+    try {
+      if (record) {
+        const status = join(dir, "drift-step-status");
+        mkdirSync(status, { recursive: true });
+        if (record.rc !== undefined) writeFileSync(join(status, `${stepId}.rc`), `${record.rc}\n`);
+        writeFileSync(join(status, `${stepId}.err`), record.err ?? "");
+      }
+      return assembleSlackMessage(alertStep(), { ...envOverride, RUNNER_TEMP: dir });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const E2BIG =
+    "/home/runner/work/_temp/77c15c9e.sh: line 150: /usr/bin/jq: Argument list too long";
+
+  it("names the ACTUAL exit code and stderr of the failing persist step", () => {
+    const msg = alertWith(
+      "needs_human_pr",
+      { rc: "126", err: `some earlier noise\n${E2BIG}\n` },
+      {
+        SYNC_REASON: "needs-human",
+        NEEDS_HUMAN_PR_OUTCOME: "failure",
+        ASSERT_OUTCOME: "skipped",
+        GIT_PUSH_CFG_OUTCOME: "success",
+        PR_OUTCOME: "skipped",
+      },
+    );
+    expect(msg, `the alert does not report the step's real exit code: ${msg}`).toContain("126");
+    expect(msg, `the alert does not quote the step's real stderr: ${msg}`).toContain(
+      "Argument list too long",
+    );
+    expect(
+      msg,
+      "the alert still publishes a hand-written list of imagined causes — the exact text that " +
+        `misnamed runs 31079603526 and 31154443828: ${msg}`,
+    ).not.toContain("push rejected, gh pr create error, or PR-match polling exhausted");
+  });
+
+  it("names the ACTUAL exit code and stderr of the failing ok-applied PR step", () => {
+    const msg = alertWith(
+      "pr",
+      { rc: "128", err: "fatal: could not read Username for 'https://github.com'\n" },
+      {
+        SYNC_REASON: "ok-applied",
+        PR_OUTCOME: "failure",
+        NEEDS_HUMAN_PR_OUTCOME: "skipped",
+        ASSERT_OUTCOME: "success",
+        GIT_PUSH_CFG_OUTCOME: "success",
+      },
+    );
+    expect(msg, msg).toContain("128");
+    expect(msg, msg).toContain("could not read Username");
+  });
+
+  it("says so when NO status was recorded, rather than inventing a cause", () => {
+    // A step killed before its own prologue ran leaves no record. "I do not
+    // know" is a usable triage signal; a guess is not.
+    const msg = alertWith("needs_human_pr", null, {
+      SYNC_REASON: "needs-human",
+      NEEDS_HUMAN_PR_OUTCOME: "failure",
+      ASSERT_OUTCOME: "skipped",
+      GIT_PUSH_CFG_OUTCOME: "success",
+      PR_OUTCOME: "skipped",
+    });
+    expect(msg, msg).toContain("NO exit code was recorded");
+  });
+
+  it("an EMPTY stderr is reported AS empty, not rendered as nothing at all", () => {
+    // The failure this catches is the alert going contentless again: with no
+    // default for the stderr line, a step that died writing nothing to stderr
+    // produces "exited 1; last stderr: " and the reader learns nothing. Mutation
+    // -tested by deleting the `${last:-…}` default, which turns this red.
+    const msg = alertWith(
+      "needs_human_pr",
+      { rc: "1", err: "" },
+      {
+        SYNC_REASON: "needs-human",
+        NEEDS_HUMAN_PR_OUTCOME: "failure",
+        ASSERT_OUTCOME: "skipped",
+        GIT_PUSH_CFG_OUTCOME: "success",
+        PR_OUTCOME: "skipped",
+      },
+    );
+    expect(msg, msg).toContain("the step wrote nothing to stderr");
+  });
+
+  it("both PR steps actually RECORD the status the alert reads", () => {
+    // The alert's evidence is only as real as the prologue that writes it: if a
+    // step stops recording, every arm above degrades to "NO exit code was
+    // recorded" and the alert is contentless again — silently.
+    for (const id of ["pr", "needs_human_pr"] as const) {
+      const code = codeOf(stepById(id));
+      expect(code, `${id}: records no exit code for the gate-failure alert to quote`).toContain(
+        `${id}.rc`,
+      );
+      expect(code, `${id}: captures no stderr for the gate-failure alert to quote`).toContain(
+        `${id}.err`,
+      );
+    }
+  });
 });
