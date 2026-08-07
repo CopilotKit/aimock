@@ -35,12 +35,16 @@ import {
   runDriftSyncCore,
   computeChangesetKey,
   revertSyncFiles,
+  buildSyncCommitMessage,
+  COMMIT_LINE_MAX_LENGTH,
   SyncCoreReason,
   MODEL_REGISTRY_REL_PATH,
   DRIFT_PROPOSALS_DIR,
   type SyncCoreDeps,
   type ProviderChurnInput,
   type SyncCheckResultLike,
+  type SyncCoreOutcome,
+  type Provider,
 } from "../../scripts/drift-sync.js";
 
 // ---------------------------------------------------------------------------
@@ -1125,5 +1129,90 @@ describe("computeChangesetKey (G#3: stable, date-independent PR-dedup key)", () 
     const { deps } = makeFakeDeps({ isReferenced: () => false });
     const key = computeChangesetKey(runDriftSyncCore(mixedRunInputs(), deps));
     expect(key).toMatch(/^[0-9a-f]{16}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Commit-message bound (the bot's PR must be able to merge unattended).
+//
+// The sync bot's commit is authored by CI with no human in the loop. Its
+// subject used to enumerate every changed family, so it grew without bound:
+// production run 31225520102 (PR #366) emitted a 525-character header, which
+// `commitlint`'s `header-max-length` (100, via @commitlint/config-conventional)
+// rejects — permanently blocking the bot's own PR until a human rewrites the
+// message. These pin the bound at the sizes that matter.
+// ---------------------------------------------------------------------------
+
+function appliedOutcome(n: number, provider: Provider = "anthropic"): SyncCoreOutcome {
+  return {
+    ok: true,
+    reason: SyncCoreReason.OK_APPLIED,
+    detail: "applied",
+    outcomes: Array.from({ length: n }, (_, i) => ({
+      provider,
+      family: `claude-family-${i}`,
+      action: "deprecation-recorded" as const,
+      detail: "recorded",
+    })),
+    skipped: [],
+  };
+}
+
+describe("buildSyncCommitMessage", () => {
+  it.each([1, 2, 10, 50, 500])("keeps the subject within the commitlint bound (n=%i)", (n) => {
+    const { subject } = buildSyncCommitMessage(appliedOutcome(n));
+    expect(subject.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+  });
+
+  it("keeps the subject bounded when every provider changed at once", () => {
+    const outcome = appliedOutcome(0);
+    const providers: Provider[] = ["anthropic", "gemini", "openai"];
+    outcome.outcomes = providers.flatMap((provider) =>
+      Array.from({ length: 30 }, (_, i) => ({
+        provider,
+        family: `family-${i}`,
+        action: "deprecation-recorded" as const,
+        detail: "recorded",
+      })),
+    );
+    const { subject } = buildSyncCommitMessage(outcome);
+    expect(subject.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+    expect(subject).toContain("90 families");
+  });
+
+  it("stays bounded even when a single family name is pathologically long", () => {
+    const outcome = appliedOutcome(1);
+    outcome.outcomes[0].family = "x".repeat(400);
+    const { subject, body } = buildSyncCommitMessage(outcome);
+    expect(subject.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+    for (const line of body.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+    }
+  });
+
+  it("reads naturally for a single change (never '1 changes')", () => {
+    const { subject } = buildSyncCommitMessage(appliedOutcome(1));
+    expect(subject).toContain("1 family:");
+    expect(subject).not.toContain("1 families");
+  });
+
+  it("moves the full per-family detail into the body, one bounded line each", () => {
+    const { body } = buildSyncCommitMessage(appliedOutcome(10));
+    const lines = body.split("\n");
+    expect(lines).toHaveLength(10);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+    }
+    expect(body).toContain("- deprecation-recorded anthropic/claude-family-0");
+    expect(body).toContain("- deprecation-recorded anthropic/claude-family-9");
+  });
+
+  it("keeps the needs-human-only subject unchanged and bodyless", () => {
+    const { subject, body } = buildSyncCommitMessage(appliedOutcome(0));
+    expect(subject).toBe(
+      "fix(drift-sync): mechanical model-family sync (needs-human note file(s))",
+    );
+    expect(subject.length).toBeLessThanOrEqual(COMMIT_LINE_MAX_LENGTH);
+    expect(body).toBe("");
   });
 });

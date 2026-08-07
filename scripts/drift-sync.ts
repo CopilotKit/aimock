@@ -1289,6 +1289,60 @@ export function computeChangesetKey(outcome: SyncCoreOutcome): string {
   return createHash("sha256").update(entries.join("\n")).digest("hex").slice(0, 16);
 }
 
+/**
+ * commitlint's `header-max-length` (and its `body-max-line-length` companion),
+ * both 100 in `@commitlint/config-conventional`, which this repo extends.
+ * Mirrored here as a constant because the sync bot's commit is authored by CI
+ * with no human in the loop: a header over the limit fails the `commitlint`
+ * check on the bot's own PR, which then can NEVER merge without a human
+ * rewriting the message — defeating the automation entirely.
+ */
+export const COMMIT_LINE_MAX_LENGTH = 100;
+
+const SYNC_COMMIT_SUBJECT_PREFIX = "fix(drift-sync): mechanical model-family sync";
+
+/**
+ * Hard-wrap `text` to `max` columns, breaking at a space where one exists in
+ * range and hard-breaking an over-long unbreakable token otherwise. Lossless —
+ * every character survives, only whitespace is re-flowed — so the per-family
+ * detail stays greppable in the log while every emitted line satisfies
+ * `body-max-line-length`.
+ */
+function wrapToWidth(text: string, max: number): string[] {
+  const out: string[] = [];
+  for (const paragraphLine of text.split("\n")) {
+    let rest = paragraphLine;
+    if (rest.length === 0) {
+      out.push("");
+      continue;
+    }
+    while (rest.length > max) {
+      const breakAt = rest.lastIndexOf(" ", max);
+      const cut = breakAt > 0 ? breakAt : max;
+      out.push(rest.slice(0, cut));
+      rest = rest.slice(breakAt > 0 ? cut + 1 : cut);
+    }
+    if (rest.length > 0) out.push(rest);
+  }
+  return out;
+}
+
+/**
+ * Build the sync bot's commit message: a subject BOUNDED at
+ * `COMMIT_LINE_MAX_LENGTH` for ANY number of changes, plus a body carrying the
+ * full per-family detail (the body has no length limit beyond per-line width,
+ * so nothing is lost).
+ *
+ * WHY the subject summarizes rather than enumerates: it used to interpolate
+ * every `<action> <provider>/<family>` pair, so it grew without bound with the
+ * changeset — a real ten-deprecation run (CI run 31225520102, PR #366) produced
+ * a 525-character header and a `commitlint` failure the bot cannot clear on its
+ * own. It degrades by COUNT, not by characters: a chopped-off list would sever
+ * its own trailing `)` mid-token and read as garbage, whereas "N families:
+ * <providers>" stays true and legible at every size. The provider list itself
+ * collapses to a count if naming every provider would ever breach the bound, so
+ * the guarantee holds structurally, not by slicing.
+ */
 export function buildSyncCommitMessage(outcome: SyncCoreOutcome): {
   subject: string;
   body: string;
@@ -1296,11 +1350,27 @@ export function buildSyncCommitMessage(outcome: SyncCoreOutcome): {
   const applied = outcome.outcomes.filter(
     (o) => o.action === "added" || o.action === "deprecation-recorded",
   );
-  const summary =
-    applied.length > 0
-      ? applied.map((o) => `${o.action} ${o.provider}/${o.family}`).join(", ")
-      : "needs-human note file(s)";
-  return { subject: `fix(drift-sync): mechanical model-family sync (${summary})`, body: "" };
+  if (applied.length === 0) {
+    return { subject: `${SYNC_COMMIT_SUBJECT_PREFIX} (needs-human note file(s))`, body: "" };
+  }
+
+  const count = `${applied.length} ${applied.length === 1 ? "family" : "families"}`;
+  const providers = [...new Set(applied.map((o) => o.provider))].sort();
+  // Widest-first, each fallback strictly shorter than the last. The final form
+  // is `<prefix> (<count>)` — 48 characters plus a decimal array length, which
+  // cannot approach 100 — so SOME candidate always satisfies the bound.
+  const candidates = [
+    `${SYNC_COMMIT_SUBJECT_PREFIX} (${count}: ${providers.join(", ")})`,
+    `${SYNC_COMMIT_SUBJECT_PREFIX} (${count} across ${providers.length} providers)`,
+    `${SYNC_COMMIT_SUBJECT_PREFIX} (${count})`,
+  ];
+  const subject =
+    candidates.find((c) => c.length <= COMMIT_LINE_MAX_LENGTH) ?? candidates[candidates.length - 1];
+
+  const body = applied
+    .flatMap((o) => wrapToWidth(`- ${o.action} ${o.provider}/${o.family}`, COMMIT_LINE_MAX_LENGTH))
+    .join("\n");
+  return { subject, body };
 }
 
 /** Stage + commit exactly the sync core's own touched files (never a catch-all `git add`). */
