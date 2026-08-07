@@ -24,7 +24,7 @@ import { join } from "node:path";
 import ts from "typescript";
 
 import { includeFamilies, deprecatedFamilies } from "./drift/model-registry.js";
-import { MIN_LISTING_SIZE } from "./drift/deprecation-detector.js";
+import { MIN_LISTING_SIZE, FORWARD_LOOKING_FAMILIES } from "./drift/deprecation-detector.js";
 import {
   detectDeprecatedFamiliesForSync,
   unclassifiedFamiliesForSync,
@@ -83,6 +83,35 @@ function fixtureRegistrySource(): string {
     "};",
   ];
   return lines.join("\n");
+}
+
+/**
+ * `count` anthropic families that stand in for GENUINELY RETIRED ones: each is
+ * classified INCLUDE, not forward-looking, and not already in the recorded
+ * deprecation ledger — so the sync mirror's `missing` set really does report it.
+ *
+ * DERIVED, NEVER HARD-CODED, and that is load-bearing. `deprecatedFamilies`
+ * GROWS on its own: drift-sync appends to it unattended the morning a provider
+ * retires a family. A fixture pinned to a literal `claude-3-opus` silently
+ * stops being a valid stand-in the moment the sync records that family — the
+ * mirror then (correctly) drops it, and the fixture asserts on an empty
+ * candidate list. Observed: recording anthropic's ten 2026-08-07 retirements
+ * broke four tests across this file and the mirror-equivalence guard at once.
+ * Throws loudly rather than letting a fixture go quietly vacuous.
+ */
+function unrecordedAnthropicFamilies(count: number): string[] {
+  const usable = [...includeFamilies.anthropic].filter(
+    (f) => !deprecatedFamilies.anthropic.has(f) && !FORWARD_LOOKING_FAMILIES.anthropic.has(f),
+  );
+  if (usable.length < count) {
+    throw new Error(
+      `need ${count} anthropic families that are neither forward-looking nor already recorded ` +
+        `as deprecated, but only ${usable.length} remain (${usable.join(", ")}). These fixtures ` +
+        `need a family the deprecation detector will actually report; pick a different provider ` +
+        `rather than deleting the assertion.`,
+    );
+  }
+  return usable.slice(0, count);
 }
 
 /**
@@ -205,11 +234,10 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
   // missing from the same listing must still be proposed normally.
   it("a forward-looking family (claude-fable-5) absent from live is NEVER proposed for removal, while a genuinely-retired sibling still is", () => {
     const allAnthropic = [...includeFamilies.anthropic];
+    const [retired] = unrecordedAnthropicFamilies(1);
     // Live listing omits BOTH claude-fable-5 (forward-looking, not launched)
-    // AND claude-3-opus (stand-in for a genuinely retired family).
-    const liveFamilies = allAnthropic.filter(
-      (f) => f !== "claude-fable-5" && f !== "claude-3-opus",
-    );
+    // AND a genuinely-retired stand-in.
+    const liveFamilies = allAnthropic.filter((f) => f !== "claude-fable-5" && f !== retired);
     const liveIds = [...liveFamilies, ...liveFamilies.map((f) => `${f}-20250101`)];
     const result = detectDeprecatedFamiliesForSync(liveIds, "anthropic", {
       isReferenced: () => false,
@@ -217,7 +245,7 @@ describe("detectDeprecatedFamiliesForSync (mirrors C4's detectDeprecatedFamilies
     expect(result.status).toBe("checked");
     if (result.status !== "checked") return;
     const families = result.candidates.map((c) => c.family).sort();
-    expect(families).toEqual(["claude-3-opus"]);
+    expect(families).toEqual([retired]);
   });
 });
 
