@@ -1,0 +1,93 @@
+{
+  "lastScan": "2026-09-01T07:24:52.208Z",
+  "adopters": [
+    {
+      "repo": "ag-ui-protocol/ag-ui",
+      "missedRuns": 0
+    },
+    {
+      "repo": "atomicstrata/llm-wiki-compiler",
+      "missedRuns": 0
+    },
+    {
+      "repo": "BodhiSearch/BodhiApp",
+      "missedRuns": 0
+    },
+    {
+      "repo": "cacheplane/angular-agent-framework",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ComposioHQ/composio",
+      "missedRuns": 0
+    },
+    {
+      "repo": "cortexkit/magic-context",
+      "missedRuns": 0
+    },
+    {
+      "repo": "deepnote/vscode-deepnote",
+      "missedRuns": 0
+    },
+    {
+      "repo": "karakeep-app/karakeep",
+      "missedRuns": 0
+    },
+    {
+      "repo": "liveloveapp/hashbrown",
+      "missedRuns": 0
+    },
+    {
+      "repo": "marieai/marie-ai",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mastra-ai/mastra",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mattermost/mattermost-plugin-agents",
+      "missedRuns": 0
+    },
+    {
+      "repo": "openclaw/openclaw",
+      "missedRuns": 0
+    },
+    {
+      "repo": "openstory-so/openstory",
+      "missedRuns": 0
+    },
+    {
+      "repo": "selfagency/opilot",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Shubhamsaboo/awesome-llm-apps",
+      "missedRuns": 0
+    },
+    {
+      "repo": "SkillNerds/xskill",
+      "missedRuns": 0
+    },
+    {
+      "repo": "TanStack/ai",
+      "missedRuns": 0
+    },
+    {
+      "repo": "testomatio/explorbot",
+      "missedRuns": 0
+    },
+    {
+      "repo": "thushan/olla",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ysansan98/ant-chat",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Zoo-Code-Org/Zoo-Code",
+      "missedRuns": 0
+    }
+  ]
+}
