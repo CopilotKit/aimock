@@ -1,5 +1,5 @@
 {
-  "lastScan": "2026-09-01T07:24:52.208Z",
+  "lastScan": "2026-09-01T07:49:50.879Z",
   "adopters": [
     {
       "repo": "ag-ui-protocol/ag-ui",
@@ -16,6 +16,14 @@
     {
       "repo": "cacheplane/angular-agent-framework",
       "missedRuns": 0
+    },
+    {
+      "repo": "cacheplane/dawnai",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-09-01T07:49:50.879Z"
     },
     {
       "repo": "ComposioHQ/composio",
