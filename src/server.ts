@@ -114,6 +114,14 @@ import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
+import {
+  handleFineTuningCreate,
+  handleFineTuningList,
+  handleFineTuningRetrieve,
+  handleFineTuningCancel,
+  handleFineTuningEvents,
+  clearFineTuningStore,
+} from "./fine-tuning.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
@@ -255,6 +263,10 @@ const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
 const MODELS_PATH = "/v1/models";
 const REQUESTS_PATH = "/v1/_requests";
+const FINE_TUNING_JOBS_PATH = "/v1/fine_tuning/jobs";
+const FINE_TUNING_ID_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)$/;
+const FINE_TUNING_CANCEL_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/cancel$/;
+const FINE_TUNING_EVENTS_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/events$/;
 
 const DEFAULT_MODELS = [
   "gpt-4",
@@ -346,6 +358,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   fixtures.length = 0;
   falJobs.clear();
   falQueueStates.clear();
+  clearFineTuningStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
@@ -2561,6 +2574,45 @@ export async function createServerWithResolvedAuth(
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
+      return;
+    }
+
+    // Fine-tuning jobs — cancel/events REs before id RE.
+    const ftCancelMatch = pathname.match(FINE_TUNING_CANCEL_RE);
+    if (ftCancelMatch && req.method === "POST") {
+      await handleFineTuningCancel(req, res, ftCancelMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    const ftEventsMatch = pathname.match(FINE_TUNING_EVENTS_RE);
+    if (ftEventsMatch && req.method === "GET") {
+      await handleFineTuningEvents(req, res, ftEventsMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    const ftIdMatch = pathname.match(FINE_TUNING_ID_RE);
+    if (ftIdMatch && req.method === "GET") {
+      await handleFineTuningRetrieve(req, res, ftIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === FINE_TUNING_JOBS_PATH && req.method === "GET") {
+      await handleFineTuningList(req, res, journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === FINE_TUNING_JOBS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleFineTuningCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 

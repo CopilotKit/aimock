@@ -253,6 +253,9 @@ export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
  * server.ts imports its route regexes from this module.
  */
 export const BYTEPLUS_VIDEO_SUBMIT_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks$/;
+export const FINE_TUNING_CANCEL_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/cancel$/;
+export const FINE_TUNING_EVENTS_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/events$/;
+export const FINE_TUNING_ID_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)$/;
 export const BYTEPLUS_VIDEO_STATUS_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks\/([^/]+)$/;
 
 /**
@@ -333,6 +336,11 @@ export function normalizePathLabel(pathname: string): string {
   if (BYTEPLUS_VIDEO_SUBMIT_RE.test(pathname)) {
     return "/contents/generations/tasks";
   }
+
+  if (FINE_TUNING_CANCEL_RE.test(pathname)) return "/v1/fine_tuning/jobs/{id}/cancel";
+  if (FINE_TUNING_EVENTS_RE.test(pathname)) return "/v1/fine_tuning/jobs/{id}/events";
+  if (pathname !== "/v1/fine_tuning/jobs" && FINE_TUNING_ID_RE.test(pathname))
+    return "/v1/fine_tuning/jobs/{id}";
 
   // Static path — return as-is
   return pathname;
