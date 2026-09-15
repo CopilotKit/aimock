@@ -166,7 +166,7 @@ export { writeSSEStream, writeErrorResponse, delay, calculateDelay } from "./sse
 export type { StreamOptions, ErrorResponseOptions } from "./sse-writer.js";
 
 // Chaos
-export { evaluateChaos, applyChaos } from "./chaos.js";
+export { evaluateChaos, applyChaos, applyChaosAsync, resolveChaosLatencyMs } from "./chaos.js";
 export type { ChaosAction } from "./types.js";
 
 // Recorder

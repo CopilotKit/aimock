@@ -537,6 +537,19 @@ export interface ChaosConfig {
   dropRate?: number;
   malformedRate?: number;
   disconnectRate?: number;
+  /**
+   * Deterministic delay (ms) injected before the request is handled.
+   * Applied when > 0 — header > fixture > server precedence, same as rates.
+   * Unlike rates it is not probabilistic: a set latency always fires so
+   * timeout/retry suites get a stable signal. Clamped to [0, 30000].
+   */
+  latencyMs?: number;
+  /**
+   * Probability of a 429 rate-limit rejection with `Retry-After`.
+   * Evaluated after malformed and before disconnect; first hit wins with
+   * the existing drop → malformed → rateLimit → disconnect order.
+   */
+  rateLimitRate?: number;
 }
 
 /**
@@ -569,7 +582,7 @@ export interface ChaosScope {
  */
 export type ChaosDefaults = ChaosConfig | ChaosScope;
 
-export type ChaosAction = "drop" | "malformed" | "disconnect";
+export type ChaosAction = "drop" | "malformed" | "rateLimit" | "disconnect";
 
 // Response factory — allows dynamic fixture responses based on the incoming request
 

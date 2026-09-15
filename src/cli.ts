@@ -54,6 +54,8 @@ Options:
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
       --chaos-disconnect <rate> Probability (0-1) of destroying connection
+      --chaos-ratelimit <rate> Probability (0-1) of 429 with Retry-After
+      --chaos-latency <ms> Delay (0-30000ms) injected before handling
       AIMOCK_API_KEYS  Comma-separated inbound test API keys (environment only)
       --help                Show this help message
 `.trim();
@@ -94,6 +96,8 @@ const { values } = parseArgs({
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
     "chaos-disconnect": { type: "string" },
+    "chaos-ratelimit": { type: "string" },
+    "chaos-latency": { type: "string" },
     "journal-max": { type: "string", default: "1000" },
     "fixture-counts-max": { type: "string", default: "500" },
     help: { type: "boolean", default: false },
@@ -216,8 +220,16 @@ let chaos: ChaosConfig | undefined;
   const dropStr = values["chaos-drop"];
   const malformedStr = values["chaos-malformed"];
   const disconnectStr = values["chaos-disconnect"];
+  const ratelimitStr = values["chaos-ratelimit"];
+  const latencyStr = values["chaos-latency"];
 
-  if (dropStr !== undefined || malformedStr !== undefined || disconnectStr !== undefined) {
+  if (
+    dropStr !== undefined ||
+    malformedStr !== undefined ||
+    disconnectStr !== undefined ||
+    ratelimitStr !== undefined ||
+    latencyStr !== undefined
+  ) {
     chaos = {};
     if (dropStr !== undefined) {
       const val = parseFloat(dropStr);
@@ -242,6 +254,22 @@ let chaos: ChaosConfig | undefined;
         process.exit(1);
       }
       chaos.disconnectRate = val;
+    }
+    if (ratelimitStr !== undefined) {
+      const val = parseFloat(ratelimitStr);
+      if (isNaN(val) || val < 0 || val > 1) {
+        console.error(`Invalid chaos-ratelimit: ${ratelimitStr} (must be 0-1)`);
+        process.exit(1);
+      }
+      chaos.rateLimitRate = val;
+    }
+    if (latencyStr !== undefined) {
+      const val = parseFloat(latencyStr);
+      if (isNaN(val) || val < 0 || val > 30000) {
+        console.error(`Invalid chaos-latency: ${latencyStr} (must be 0-30000)`);
+        process.exit(1);
+      }
+      chaos.latencyMs = val;
     }
   }
 }

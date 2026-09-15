@@ -684,7 +684,13 @@ async function handleControlAPI(
       res.end(JSON.stringify({ error: "Invalid body: expected a JSON object" }));
       return true;
     }
-    const allowed = ["dropRate", "malformedRate", "disconnectRate"] as const;
+    const allowed = [
+      "dropRate",
+      "malformedRate",
+      "disconnectRate",
+      "latencyMs",
+      "rateLimitRate",
+    ] as const;
     for (const key of Object.keys(parsed)) {
       if (!(allowed as readonly string[]).includes(key)) {
         res.writeHead(400, { "Content-Type": "application/json" });
@@ -696,6 +702,17 @@ async function handleControlAPI(
     for (const key of allowed) {
       const value = parsed[key];
       if (value === undefined) continue;
+      if (key === "latencyMs") {
+        if (typeof value !== "number" || Number.isNaN(value) || value < 0 || value > 30000) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({ error: `Invalid '${key}': must be a number between 0 and 30000` }),
+          );
+          return true;
+        }
+        next[key] = value;
+        continue;
+      }
       if (typeof value !== "number" || Number.isNaN(value) || value < 0 || value > 1) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Invalid '${key}': must be a number between 0 and 1` }));
@@ -1214,7 +1231,7 @@ async function handleCompletions(
   const chaosAction = evaluateChaos(fixture, defaults.chaos, req.headers, defaults.logger, req.url);
   const chaosContext = { method, path, headers: flatHeaders, body };
 
-  if (chaosAction === "drop" || chaosAction === "disconnect") {
+  if (chaosAction === "drop" || chaosAction === "disconnect" || chaosAction === "rateLimit") {
     applyChaosAction(
       chaosAction,
       res,
@@ -1854,11 +1871,20 @@ export async function createServerWithResolvedAuth(
       { name: "dropRate", value: options.chaos.dropRate },
       { name: "malformedRate", value: options.chaos.malformedRate },
       { name: "disconnectRate", value: options.chaos.disconnectRate },
+      { name: "rateLimitRate", value: options.chaos.rateLimitRate },
     ];
     for (const { name, value } of chaosRates) {
       if (value !== undefined && (value < 0 || value > 1)) {
         logger.warn(`Chaos ${name} (${value}) is outside 0-1 range — will be clamped at runtime`);
       }
+    }
+    if (
+      options.chaos.latencyMs !== undefined &&
+      (options.chaos.latencyMs < 0 || options.chaos.latencyMs > 30000)
+    ) {
+      logger.warn(
+        `Chaos latencyMs (${options.chaos.latencyMs}) is outside 0-30000 range — will be clamped at runtime`,
+      );
     }
   }
 

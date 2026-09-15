@@ -70,6 +70,8 @@ function resolveChaosConfig(
     if (fixture.chaos.malformedRate !== undefined) base.malformedRate = fixture.chaos.malformedRate;
     if (fixture.chaos.disconnectRate !== undefined)
       base.disconnectRate = fixture.chaos.disconnectRate;
+    if (fixture.chaos.latencyMs !== undefined) base.latencyMs = fixture.chaos.latencyMs;
+    if (fixture.chaos.rateLimitRate !== undefined) base.rateLimitRate = fixture.chaos.rateLimitRate;
   }
 
   // Header overrides everything
@@ -77,6 +79,8 @@ function resolveChaosConfig(
     const dropHeader = rawHeaders["x-aimock-chaos-drop"];
     const malformedHeader = rawHeaders["x-aimock-chaos-malformed"];
     const disconnectHeader = rawHeaders["x-aimock-chaos-disconnect"];
+    const latencyHeader = rawHeaders["x-aimock-chaos-latency"];
+    const rateLimitHeader = rawHeaders["x-aimock-chaos-ratelimit"];
 
     if (typeof dropHeader === "string") {
       const val = parseFloat(dropHeader);
@@ -119,6 +123,34 @@ function resolveChaosConfig(
         base.disconnectRate = Math.min(1, Math.max(0, val));
       }
     }
+    if (typeof latencyHeader === "string") {
+      const val = parseFloat(latencyHeader);
+      if (isNaN(val)) {
+        logger?.warn(`[chaos] x-aimock-chaos-latency: invalid value "${latencyHeader}", ignoring`);
+      } else {
+        if (val < 0 || val > 30000) {
+          logger?.warn(
+            `[chaos] x-aimock-chaos-latency: value ${val} out of range [0,30000], clamping`,
+          );
+        }
+        base.latencyMs = Math.min(30000, Math.max(0, val));
+      }
+    }
+    if (typeof rateLimitHeader === "string") {
+      const val = parseFloat(rateLimitHeader);
+      if (isNaN(val)) {
+        logger?.warn(
+          `[chaos] x-aimock-chaos-ratelimit: invalid value "${rateLimitHeader}", ignoring`,
+        );
+      } else {
+        if (val < 0 || val > 1) {
+          logger?.warn(
+            `[chaos] x-aimock-chaos-ratelimit: value ${val} out of range [0,1], clamping`,
+          );
+        }
+        base.rateLimitRate = Math.min(1, Math.max(0, val));
+      }
+    }
   }
 
   // Clamp all resolved rates to [0, 1] regardless of source.
@@ -128,13 +160,33 @@ function resolveChaosConfig(
     base.malformedRate = Math.min(1, Math.max(0, base.malformedRate));
   if (base.disconnectRate !== undefined)
     base.disconnectRate = Math.min(1, Math.max(0, base.disconnectRate));
+  if (base.rateLimitRate !== undefined)
+    base.rateLimitRate = Math.min(1, Math.max(0, base.rateLimitRate));
+  if (base.latencyMs !== undefined) base.latencyMs = Math.min(30000, Math.max(0, base.latencyMs));
 
   return base;
 }
 
 /**
+ * Resolve the deterministic latency delay (ms) for this request.
+ * Precedence is header > fixture > server, same as the rates. Returns 0
+ * when no latency is configured. Exported so async handlers can await the
+ * delay BEFORE evaluating terminal chaos actions.
+ */
+export function resolveChaosLatencyMs(
+  fixture: Fixture | null,
+  serverDefaults?: ChaosDefaults,
+  rawHeaders?: http.IncomingHttpHeaders,
+  logger?: Logger,
+  url?: string,
+): number {
+  const config = resolveChaosConfig(fixture, serverDefaults, rawHeaders, logger, url);
+  return config.latencyMs ?? 0;
+}
+
+/**
  * Evaluate chaos config and return the triggered action, or null if none.
- * Checks in order: drop, malformed, disconnect — first hit wins.
+ * Checks in order: drop, malformed, rateLimit, disconnect — first hit wins.
  */
 export function evaluateChaos(
   fixture: Fixture | null,
@@ -156,6 +208,13 @@ export function evaluateChaos(
     return "malformed";
   }
   if (
+    config.rateLimitRate !== undefined &&
+    config.rateLimitRate > 0 &&
+    Math.random() < config.rateLimitRate
+  ) {
+    return "rateLimit";
+  }
+  if (
     config.disconnectRate !== undefined &&
     config.disconnectRate > 0 &&
     Math.random() < config.disconnectRate
@@ -164,6 +223,42 @@ export function evaluateChaos(
   }
 
   return null;
+}
+
+/**
+ * Async chaos entrypoint: awaits the deterministic latency delay (when
+ * configured) BEFORE rolling terminal actions. Returns true when a terminal
+ * action fired (caller returns early), false to proceed. Existing sync
+ * `applyChaos` callers are untouched — this is additive.
+ */
+export async function applyChaosAsync(
+  res: http.ServerResponse,
+  fixture: Fixture | null,
+  serverDefaults: ChaosDefaults | undefined,
+  rawHeaders: http.IncomingHttpHeaders,
+  requestUrl: string | undefined,
+  journal: Journal,
+  context: ChaosJournalContext,
+  source: "fixture" | "proxy" | "internal",
+  registry?: MetricsRegistry,
+  logger?: Logger,
+): Promise<boolean> {
+  const delayMs = resolveChaosLatencyMs(fixture, serverDefaults, rawHeaders, logger, requestUrl);
+  if (delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return applyChaos(
+    res,
+    fixture,
+    serverDefaults,
+    rawHeaders,
+    requestUrl,
+    journal,
+    context,
+    source,
+    registry,
+    logger,
+  );
 }
 
 interface ChaosJournalContext {
@@ -254,6 +349,28 @@ export function applyChaosAction(
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{malformed json: <<<chaos>>>");
+      return;
+    }
+    case "rateLimit": {
+      journal.add({
+        ...context,
+        response: { status: 429, fixture, chaosAction: "rateLimit", source },
+      });
+      res.writeHead(429, {
+        "Content-Type": "application/json",
+        "Retry-After": "1",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1",
+      });
+      res.end(
+        JSON.stringify({
+          error: {
+            message: "Chaos: rate limit exceeded",
+            type: "rate_limit_error",
+            code: "chaos_ratelimit",
+          },
+        }),
+      );
       return;
     }
     case "disconnect": {
