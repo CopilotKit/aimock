@@ -114,6 +114,13 @@ import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
+import {
+  handleBatchesCreate,
+  handleBatchesList,
+  handleBatchesRetrieve,
+  handleBatchesCancel,
+  clearBatchStore,
+} from "./batches.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
@@ -255,6 +262,9 @@ const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
 const MODELS_PATH = "/v1/models";
 const REQUESTS_PATH = "/v1/_requests";
+const BATCHES_PATH = "/v1/batches";
+const BATCHES_ID_RE = /^\/v1\/batches\/([^/]+)$/;
+const BATCHES_CANCEL_RE = /^\/v1\/batches\/([^/]+)\/cancel$/;
 
 const DEFAULT_MODELS = [
   "gpt-4",
@@ -346,6 +356,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   fixtures.length = 0;
   falJobs.clear();
   falQueueStates.clear();
+  clearBatchStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
@@ -2561,6 +2572,40 @@ export async function createServerWithResolvedAuth(
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
+      return;
+    }
+
+    // Batches API — cancel RE before id RE (the id RE would swallow /cancel).
+    const batchesCancelMatch = pathname.match(BATCHES_CANCEL_RE);
+    if (batchesCancelMatch && req.method === "POST") {
+      await handleBatchesCancel(req, res, batchesCancelMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    const batchesIdMatch = pathname.match(BATCHES_ID_RE);
+    if (batchesIdMatch && req.method === "GET") {
+      await handleBatchesRetrieve(req, res, batchesIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === BATCHES_PATH && req.method === "GET") {
+      await handleBatchesList(req, res, journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === BATCHES_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleBatchesCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 

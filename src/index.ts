@@ -78,6 +78,14 @@ export { handleRerank } from "./rerank.js";
 export type { RerankResult, RerankFixture } from "./rerank.js";
 export { handleModeration } from "./moderation.js";
 export type { ModerationResult, ModerationFixture } from "./moderation.js";
+export {
+  handleBatchesCreate,
+  handleBatchesList,
+  handleBatchesRetrieve,
+  handleBatchesCancel,
+  clearBatchStore,
+} from "./batches.js";
+export type { BatchObject } from "./batches.js";
 export type { ServiceFixtures } from "./server.js";
 
 // WebSocket
