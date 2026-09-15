@@ -120,6 +120,7 @@ import { handleWebSocketRealtime } from "./ws-realtime.js";
 import { handleWebSocketGeminiLive } from "./ws-gemini-live.js";
 import { Logger } from "./logger.js";
 import { applyChaosAction, evaluateChaos, isChaosScope } from "./chaos.js";
+import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
 import {
   createMetricsRegistry,
   normalizePathLabel,
@@ -493,6 +494,20 @@ async function handleControlAPI(
   if (subPath === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
+    return true;
+  }
+
+  // GET /__aimock/openapi.json — machine-readable route catalog.
+  if (subPath === "/openapi.json" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(buildOpenApiDocument()));
+    return true;
+  }
+
+  // GET /__aimock/routes — flat method+path list for shells.
+  if (subPath === "/routes" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ count: CATALOG_ROUTES.length, routes: CATALOG_ROUTES }));
     return true;
   }
 
