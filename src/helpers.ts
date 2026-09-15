@@ -267,6 +267,35 @@ export function generateId(prefix = "chatcmpl"): string {
   return `${prefix}-${randomBytes(12).toString("base64url")}`;
 }
 
+/**
+ * Resolve the request id for this HTTP request.
+ *
+ * - When the caller sends a well-formed `X-Request-Id` (1-128 chars of
+ *   `A-Za-z0-9-_.:`), it is echoed verbatim so distributed traces correlate.
+ * - Otherwise (absent, empty, too long, or illegal characters) a fresh
+ *   `req-…` id is generated — never trust an attacker-controlled correlation
+ *   value to be a valid log key.
+ *
+ * Returns `{ id, generated }` so access logs can distinguish echoes from
+ * minted ids. The server normalizes `req.headers["x-request-id"]` to the
+ * resolved value, so every downstream `flattenHeaders` journal snapshot
+ * carries it with zero per-handler edits.
+ */
+export function resolveRequestId(rawHeaders: http.IncomingHttpHeaders): {
+  id: string;
+  generated: boolean;
+} {
+  const raw = rawHeaders["x-request-id"];
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof first === "string") {
+    const trimmed = first.trim();
+    if (trimmed.length >= 1 && trimmed.length <= 128 && /^[A-Za-z0-9\-_.:]+$/.test(trimmed)) {
+      return { id: trimmed, generated: false };
+    }
+  }
+  return { id: generateId("req"), generated: true };
+}
+
 export function generateToolCallId(): string {
   return `call_${randomBytes(12).toString("base64url")}`;
 }

@@ -128,6 +128,7 @@ export { handleFal, FalQueueStateMap } from "./fal.js";
 export {
   flattenHeaders,
   generateId,
+  resolveRequestId,
   generateToolCallId,
   generateMessageId,
   generateToolUseId,
