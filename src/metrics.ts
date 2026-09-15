@@ -254,6 +254,8 @@ export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
  */
 export const BYTEPLUS_VIDEO_SUBMIT_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks$/;
 export const BYTEPLUS_VIDEO_STATUS_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks\/([^/]+)$/;
+export const FILES_CONTENT_RE = /^\/v1\/files\/([^/]+)\/content$/;
+export const FILES_ID_RE = /^\/v1\/files\/([^/]+)$/;
 
 /**
  * Normalize parametric API paths to route patterns for use as metric labels.
@@ -332,6 +334,16 @@ export function normalizePathLabel(pathname: string): string {
   }
   if (BYTEPLUS_VIDEO_SUBMIT_RE.test(pathname)) {
     return "/contents/generations/tasks";
+  }
+
+  // Files API: /v1/files/{id} and /v1/files/{id}/content carry random
+  // `file-…` ids — raw paths would mint unbounded label cardinality.
+  // Content before id: the id RE would otherwise swallow the content suffix.
+  if (FILES_CONTENT_RE.test(pathname)) {
+    return "/v1/files/{id}/content";
+  }
+  if (pathname !== "/v1/files" && FILES_ID_RE.test(pathname)) {
+    return "/v1/files/{id}";
   }
 
   // Static path — return as-is

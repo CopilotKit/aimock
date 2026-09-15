@@ -114,6 +114,14 @@ import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
+import {
+  handleFilesCreate,
+  handleFilesList,
+  handleFilesRetrieve,
+  handleFilesContent,
+  handleFilesDelete,
+  clearFileStore,
+} from "./files.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
@@ -255,6 +263,9 @@ const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
 const MODELS_PATH = "/v1/models";
 const REQUESTS_PATH = "/v1/_requests";
+const FILES_PATH = "/v1/files";
+const FILES_ID_RE = /^\/v1\/files\/([^/]+)$/;
+const FILES_CONTENT_RE = /^\/v1\/files\/([^/]+)\/content$/;
 
 const DEFAULT_MODELS = [
   "gpt-4",
@@ -346,6 +357,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   fixtures.length = 0;
   falJobs.clear();
   falQueueStates.clear();
+  clearFileStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
@@ -2561,6 +2573,47 @@ export async function createServerWithResolvedAuth(
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
+      return;
+    }
+
+    // Files API mock — dispatch order matters: content RE → id RE → collection.
+    // The id RE's `[^/]+` would otherwise swallow `/content`, and the
+    // collection exact match must not claim an id path.
+    const filesContentMatch = pathname.match(FILES_CONTENT_RE);
+    if (filesContentMatch && req.method === "GET") {
+      await handleFilesContent(req, res, filesContentMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    const filesIdMatch = pathname.match(FILES_ID_RE);
+    if (filesIdMatch && req.method === "GET") {
+      await handleFilesRetrieve(req, res, filesIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (filesIdMatch && req.method === "DELETE") {
+      await handleFilesDelete(req, res, filesIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === FILES_PATH && req.method === "GET") {
+      const purpose = parsedUrl.searchParams.get("purpose") ?? undefined;
+      await handleFilesList(req, res, journal, defaults, setCorsHeaders, purpose);
+      return;
+    }
+    if (pathname === FILES_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleFilesCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 
