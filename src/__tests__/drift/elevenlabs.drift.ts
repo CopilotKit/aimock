@@ -6,6 +6,8 @@
  * - /v1/music — binary audio with song-id header
  * - /v1/music/stream — chunked binary audio
  * - /v1/music/plan — JSON composition plan
+ * - /v1/text-to-voice/design — JSON voice previews
+ * - /v1/text-to-voice — save a generated preview as a voice
  *
  * Since ElevenLabs returns binary audio (not JSON), drift testing focuses on
  * Content-Type headers, binary payload presence, and JSON plan structure
@@ -46,6 +48,24 @@ const PLAN_FIXTURE: Fixture = {
   response: { content: JSON.stringify({ sections: ["intro", "verse", "chorus"], bpm: 120 }) },
 };
 
+const VOICE_DESIGN_FIXTURE: Fixture = {
+  match: { userMessage: "sea captain", endpoint: "elevenlabs-voice-design" },
+  response: {
+    json: {
+      previews: [
+        {
+          generated_voice_id: "preview_captain",
+          audio_base_64: "SGVsbG8=",
+          media_type: "audio/mpeg",
+          duration_secs: 1.2,
+          language: "en",
+        },
+      ],
+      text: "Ahoy there.",
+    },
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Server lifecycle
 // ---------------------------------------------------------------------------
@@ -53,10 +73,13 @@ const PLAN_FIXTURE: Fixture = {
 let instance: ServerInstance;
 
 beforeAll(async () => {
-  instance = await createServer([SOUND_FIXTURE, MUSIC_FIXTURE, PLAN_FIXTURE], {
-    port: 0,
-    chunkSize: 100,
-  });
+  instance = await createServer(
+    [SOUND_FIXTURE, MUSIC_FIXTURE, PLAN_FIXTURE, VOICE_DESIGN_FIXTURE],
+    {
+      port: 0,
+      chunkSize: 100,
+    },
+  );
 });
 
 afterAll(async () => {
@@ -285,5 +308,96 @@ describe("ElevenLabs drift — music endpoints", () => {
     expect(mockRes.status).toBe(200);
     // Plan endpoint should NOT set song-id header
     expect(mockRes.headers["song-id"]).toBeUndefined();
+  });
+});
+
+describe("ElevenLabs drift — voice design", () => {
+  it("/v1/text-to-voice/design returns JSON previews", async () => {
+    const mockRes = await httpPostBinary(`${instance.url}/v1/text-to-voice/design`, {
+      voice_description: "A weathered sea captain in his sixties, gravelly, unhurried",
+    });
+
+    expect(mockRes.status).toBe(200);
+    expect(mockRes.headers["content-type"]).toContain("application/json");
+
+    const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
+    const sdkShape = extractShape({
+      previews: [
+        {
+          generated_voice_id: "preview_captain",
+          audio_base_64: "SGVsbG8=",
+          media_type: "audio/mpeg",
+          duration_secs: 1.2,
+          language: "en",
+        },
+      ],
+      text: "Ahoy there.",
+    });
+    const mockShape = extractShape(body);
+    const diffs = triangulate(sdkShape, sdkShape, mockShape);
+    const report = formatDriftReport("ElevenLabs /v1/text-to-voice/design", diffs, "elevenlabs");
+
+    expect(
+      diffs.filter((d) => d.severity === "critical"),
+      report,
+    ).toEqual([]);
+  });
+
+  it("/v1/text-to-voice/design missing voice_description returns 400", async () => {
+    const mockRes = await httpPostBinary(`${instance.url}/v1/text-to-voice/design`, {});
+
+    expect(mockRes.status).toBe(400);
+    const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
+    const expectedShape = extractShape({
+      error: {
+        message: "Missing required parameter: 'voice_description'",
+        type: "invalid_request_error",
+      },
+    });
+    const mockShape = extractShape(body);
+    const diffs = triangulate(expectedShape, expectedShape, mockShape);
+    const report = formatDriftReport(
+      "ElevenLabs /v1/text-to-voice/design 400 error",
+      diffs,
+      "elevenlabs",
+    );
+
+    expect(
+      diffs.filter((d) => d.severity === "critical"),
+      report,
+    ).toEqual([]);
+  });
+
+  it("/v1/text-to-voice save returns a voice object with voice_id", async () => {
+    const mockRes = await httpPostBinary(`${instance.url}/v1/text-to-voice`, {
+      voice_name: "Captain",
+      voice_description: "A weathered sea captain in his sixties, gravelly, unhurried",
+      generated_voice_id: "preview_captain",
+    });
+
+    expect(mockRes.status).toBe(200);
+    const body = JSON.parse(mockRes.bodyBuffer.toString("utf8"));
+    expect(body.voice_id).toBe("preview_captain");
+    expect(body.name).toBe("Captain");
+
+    const sdkShape = extractShape({
+      voice_id: "preview_captain",
+      name: "Captain",
+      category: "generated",
+      description: "A weathered sea captain in his sixties, gravelly, unhurried",
+    });
+    const mockShape = extractShape({
+      voice_id: body.voice_id,
+      name: body.name,
+      category: body.category,
+      description: body.description,
+    });
+    const diffs = triangulate(sdkShape, sdkShape, mockShape);
+    const report = formatDriftReport("ElevenLabs /v1/text-to-voice", diffs, "elevenlabs");
+
+    expect(
+      diffs.filter((d) => d.severity === "critical"),
+      report,
+    ).toEqual([]);
   });
 });

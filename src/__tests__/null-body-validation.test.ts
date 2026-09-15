@@ -106,6 +106,14 @@ describe("null JSON body returns 400, not 500", () => {
     await expect400ObjectBody(`${await start()}/v1/sound-generation`);
   });
 
+  test("POST /v1/text-to-voice/design (elevenlabs)", async () => {
+    await expect400ObjectBody(`${await start()}/v1/text-to-voice/design`);
+  });
+
+  test("POST /v1/text-to-voice (elevenlabs)", async () => {
+    await expect400ObjectBody(`${await start()}/v1/text-to-voice`);
+  });
+
   test("POST /v1/chat/completions", async () => {
     await expect400ObjectBody(`${await start()}/v1/chat/completions`);
   });

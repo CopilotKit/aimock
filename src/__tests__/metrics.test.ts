@@ -422,6 +422,10 @@ describe("normalizePathLabel", () => {
     expect(normalizePathLabel("/v1/embeddings")).toBe("/v1/embeddings");
   });
 
+  it("normalizes ElevenLabs voice path", () => {
+    expect(normalizePathLabel("/v1/voices/preview_captain")).toBe("/v1/voices/{voice_id}");
+  });
+
   it("partial match: /model/foo/unknown-op returns as-is", () => {
     expect(normalizePathLabel("/model/foo/unknown-op")).toBe("/model/foo/unknown-op");
   });

@@ -121,6 +121,14 @@ export {
   buildBytePlusMatchText,
 } from "./byteplus-video.js";
 export { handleElevenLabsAudio } from "./elevenlabs-audio.js";
+export {
+  handleElevenLabsVoiceDesign,
+  handleElevenLabsVoiceCreate,
+  handleElevenLabsVoiceGet,
+  handleElevenLabsVoiceDelete,
+  clearElevenLabsVoices,
+  voiceDesignToJson,
+} from "./elevenlabs-voice.js";
 export { handleFalQueue } from "./fal-audio.js";
 export { handleFal, FalQueueStateMap } from "./fal.js";
 
@@ -383,6 +391,8 @@ export type {
   ImageItem,
   ImageResponse,
   AudioResponse,
+  VoiceDesignPreview,
+  VoiceDesignResponse,
   TranscriptionResponse,
   VideoResponse,
   RawJSONResponse,
