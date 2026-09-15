@@ -78,6 +78,17 @@ export { handleRerank } from "./rerank.js";
 export type { RerankResult, RerankFixture } from "./rerank.js";
 export { handleModeration } from "./moderation.js";
 export type { ModerationResult, ModerationFixture } from "./moderation.js";
+export {
+  handleThreadsCreate,
+  handleThreadsRetrieve,
+  handleThreadsDelete,
+  handleThreadMessagesCreate,
+  handleThreadMessagesList,
+  handleThreadRunsCreate,
+  handleThreadRunsRetrieve,
+  clearThreadsStore,
+} from "./threads.js";
+export type { ThreadObject, ThreadMessage, ThreadRun } from "./threads.js";
 export type { ServiceFixtures } from "./server.js";
 
 // WebSocket

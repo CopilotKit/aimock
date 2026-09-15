@@ -114,6 +114,16 @@ import { handleCohere, handleCohereEmbed } from "./cohere.js";
 import { handleSearch, type SearchFixture } from "./search.js";
 import { handleRerank, type RerankFixture } from "./rerank.js";
 import { handleModeration, type ModerationFixture } from "./moderation.js";
+import {
+  handleThreadsCreate,
+  handleThreadsRetrieve,
+  handleThreadsDelete,
+  handleThreadMessagesCreate,
+  handleThreadMessagesList,
+  handleThreadRunsCreate,
+  handleThreadRunsRetrieve,
+  clearThreadsStore,
+} from "./threads.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleWebSocketResponses } from "./ws-responses.js";
 import { handleWebSocketRealtime } from "./ws-realtime.js";
@@ -255,6 +265,11 @@ const HEALTH_PATH = "/health";
 const READY_PATH = "/ready";
 const MODELS_PATH = "/v1/models";
 const REQUESTS_PATH = "/v1/_requests";
+const THREADS_PATH = "/v1/threads";
+const THREADS_ID_RE = /^\/v1\/threads\/([^/]+)$/;
+const THREAD_MESSAGES_RE = /^\/v1\/threads\/([^/]+)\/messages$/;
+const THREAD_RUNS_RE = /^\/v1\/threads\/([^/]+)\/runs$/;
+const THREAD_RUN_RE = /^\/v1\/threads\/([^/]+)\/runs\/([^/]+)$/;
 
 const DEFAULT_MODELS = [
   "gpt-4",
@@ -346,6 +361,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   fixtures.length = 0;
   falJobs.clear();
   falQueueStates.clear();
+  clearThreadsStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
@@ -2561,6 +2577,113 @@ export async function createServerWithResolvedAuth(
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ object: "list", data }));
+      return;
+    }
+
+    // Threads subset — run RE before runs-collection before messages before id.
+    const threadRunMatch = pathname.match(THREAD_RUN_RE);
+    if (threadRunMatch && req.method === "GET") {
+      await handleThreadRunsRetrieve(
+        req,
+        res,
+        threadRunMatch[1],
+        threadRunMatch[2],
+        journal,
+        defaults,
+        setCorsHeaders,
+      );
+      return;
+    }
+    const threadRunsMatch = pathname.match(THREAD_RUNS_RE);
+    if (threadRunsMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleThreadRunsCreate(
+          req,
+          res,
+          raw,
+          threadRunsMatch[1],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+    const threadMessagesMatch = pathname.match(THREAD_MESSAGES_RE);
+    if (threadMessagesMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleThreadMessagesCreate(
+          req,
+          res,
+          raw,
+          threadMessagesMatch[1],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
+      return;
+    }
+    if (threadMessagesMatch && req.method === "GET") {
+      await handleThreadMessagesList(
+        req,
+        res,
+        threadMessagesMatch[1],
+        journal,
+        defaults,
+        setCorsHeaders,
+      );
+      return;
+    }
+    const threadIdMatch = pathname.match(THREADS_ID_RE);
+    if (threadIdMatch && req.method === "GET") {
+      await handleThreadsRetrieve(req, res, threadIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (threadIdMatch && req.method === "DELETE") {
+      await handleThreadsDelete(req, res, threadIdMatch[1], journal, defaults, setCorsHeaders);
+      return;
+    }
+    if (pathname === THREADS_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleThreadsCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Internal error";
+        if (!res.headersSent) {
+          writeErrorResponse(
+            res,
+            500,
+            JSON.stringify({ error: { message: msg, type: "server_error" } }),
+          );
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
+      }
       return;
     }
 

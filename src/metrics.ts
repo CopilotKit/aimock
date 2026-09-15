@@ -253,6 +253,10 @@ export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
  * server.ts imports its route regexes from this module.
  */
 export const BYTEPLUS_VIDEO_SUBMIT_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks$/;
+export const THREADS_ID_RE = /^\/v1\/threads\/([^/]+)$/;
+export const THREAD_MESSAGES_RE = /^\/v1\/threads\/([^/]+)\/messages$/;
+export const THREAD_RUNS_RE = /^\/v1\/threads\/([^/]+)\/runs$/;
+export const THREAD_RUN_RE = /^\/v1\/threads\/([^/]+)\/runs\/([^/]+)$/;
 export const BYTEPLUS_VIDEO_STATUS_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks\/([^/]+)$/;
 
 /**
@@ -333,6 +337,11 @@ export function normalizePathLabel(pathname: string): string {
   if (BYTEPLUS_VIDEO_SUBMIT_RE.test(pathname)) {
     return "/contents/generations/tasks";
   }
+
+  if (THREAD_RUN_RE.test(pathname)) return "/v1/threads/{id}/runs/{runId}";
+  if (THREAD_RUNS_RE.test(pathname)) return "/v1/threads/{id}/runs";
+  if (THREAD_MESSAGES_RE.test(pathname)) return "/v1/threads/{id}/messages";
+  if (pathname !== "/v1/threads" && THREADS_ID_RE.test(pathname)) return "/v1/threads/{id}";
 
   // Static path — return as-is
   return pathname;
