@@ -3,10 +3,12 @@ import { parseArgs } from "node:util";
 import { resolve, basename } from "node:path";
 import { loadConfig, startFromConfig } from "./config-loader.js";
 import { runConvertCli, type ConvertCliDeps } from "./convert.js";
+import { runValidateCli } from "./validate-cli.js";
 
 const HELP = `
 Usage: aimock [options]
        aimock convert <format> <input> [output]
+       aimock validate [--strict] [--json] <file.json> [more.json ...]
 
 Options:
   -c, --config <path>   Path to aimock config JSON file (required)
@@ -17,6 +19,8 @@ Options:
 Subcommands:
   convert               Convert third-party mock configs to aimock format
                         Run "aimock convert --help" for details
+  validate              Validate fixture files offline
+                        Run "aimock validate --help" for details
 `.trim();
 
 export interface AimockCliDeps {
@@ -28,6 +32,11 @@ export interface AimockCliDeps {
   startFromConfigFn?: typeof startFromConfig;
   onReady?: (ctx: { shutdown: () => void }) => void;
   convertDeps?: Partial<ConvertCliDeps>;
+  validateDeps?: {
+    log?: (msg: string) => void;
+    logError?: (msg: string) => void;
+    exit?: (code: number) => void;
+  };
 }
 
 export function runAimockCli(deps: AimockCliDeps = {}): void {
@@ -47,6 +56,17 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
       logError,
       exit,
       ...deps.convertDeps,
+    });
+    return;
+  }
+
+  // Intercept "validate" the same way — it takes file paths, not --config.
+  if (argv[0] === "validate") {
+    runValidateCli({
+      argv: argv.slice(1),
+      log: deps.validateDeps?.log ?? log,
+      logError: deps.validateDeps?.logError ?? logError,
+      exit: deps.validateDeps?.exit ?? exit,
     });
     return;
   }
