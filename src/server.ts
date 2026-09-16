@@ -161,6 +161,67 @@ import {
   CHAOS_FIELDS,
   CHAOS_FIELD_NAMES,
 } from "./chaos.js";
+import { buildOpenApiDocument, CATALOG_ROUTES } from "./openapi.js";
+// Route paths/patterns are the router's single source of truth — shared with
+// the machine-readable catalog (`route-registry.ts` → `openapi.ts`), so the
+// catalog cannot drift from the dispatcher.
+import {
+  COMPLETIONS_PATH,
+  RESPONSES_PATH,
+  REALTIME_PATH,
+  GEMINI_LIVE_PATH,
+  MESSAGES_PATH,
+  EMBEDDINGS_PATH,
+  COHERE_CHAT_PATH,
+  COHERE_EMBED_PATH,
+  SEARCH_PATH,
+  RERANK_PATH,
+  MODERATIONS_PATH,
+  IMAGES_PATH,
+  IMAGES_EDIT_PATH,
+  IMAGES_VARIATIONS_PATH,
+  SPEECH_PATH,
+  TRANSCRIPTIONS_PATH,
+  TRANSLATIONS_PATH,
+  VIDEOS_PATH,
+  GEMINI_PREDICT_RE,
+  ELEVENLABS_SOUND_GENERATION_PATH,
+  ELEVENLABS_TTS_RE,
+  ELEVENLABS_MUSIC_RE,
+  ELEVENLABS_VOICE_DESIGN_PATH,
+  ELEVENLABS_VOICE_CREATE_PATH,
+  ELEVENLABS_VOICE_RE,
+  FAL_QUEUE_SUBMIT_RE,
+  FAL_QUEUE_REQUESTS_RE,
+  FAL_RUN_RE,
+  FAL_PREFIX_RE,
+  GEMINI_INTERACTIONS_PATH,
+  GEMINI_PATH_RE,
+  GEMINI_EMBED_RE,
+  AZURE_DEPLOYMENT_RE,
+  BEDROCK_INVOKE_RE,
+  BEDROCK_STREAM_RE,
+  BEDROCK_CONVERSE_RE,
+  BEDROCK_CONVERSE_STREAM_RE,
+  VERTEX_AI_RE,
+  OLLAMA_CHAT_PATH,
+  OLLAMA_GENERATE_PATH,
+  OLLAMA_EMBEDDINGS_PATH,
+  OLLAMA_EMBED_PATH,
+  OLLAMA_TAGS_PATH,
+  OPENROUTER_VIDEOS_PATH,
+  OPENROUTER_VIDEO_MODELS_PATH,
+  HEALTH_PATH,
+  READY_PATH,
+  MODELS_PATH,
+  REQUESTS_PATH,
+  FILES_PATH,
+  FINE_TUNING_JOBS_PATH,
+  FINE_TUNING_ID_RE,
+  FINE_TUNING_CANCEL_RE,
+  FINE_TUNING_EVENTS_RE,
+  CONTROL_PREFIX,
+} from "./route-registry.js";
 import {
   createMetricsRegistry,
   normalizePathLabel,
@@ -197,36 +258,6 @@ export interface ServerInstance {
   bytePlusVideoJobs: BytePlusVideoJobMap;
 }
 
-const COMPLETIONS_PATH = "/v1/chat/completions";
-const RESPONSES_PATH = "/v1/responses";
-const REALTIME_PATH = "/v1/realtime";
-const GEMINI_LIVE_PATH =
-  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
-const MESSAGES_PATH = "/v1/messages";
-const EMBEDDINGS_PATH = "/v1/embeddings";
-const COHERE_CHAT_PATH = "/v2/chat";
-const COHERE_EMBED_PATH = "/v2/embed";
-const SEARCH_PATH = "/search";
-const RERANK_PATH = "/v2/rerank";
-const MODERATIONS_PATH = "/v1/moderations";
-const IMAGES_PATH = "/v1/images/generations";
-const IMAGES_EDIT_PATH = "/v1/images/edits";
-const IMAGES_VARIATIONS_PATH = "/v1/images/variations";
-const SPEECH_PATH = "/v1/audio/speech";
-const TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions";
-const TRANSLATIONS_PATH = "/v1/audio/translations";
-const VIDEOS_PATH = "/v1/videos";
-const GEMINI_PREDICT_RE = /^\/v1beta\/models\/([^:]+):predict$/;
-const ELEVENLABS_SOUND_GENERATION_PATH = "/v1/sound-generation";
-const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
-const ELEVENLABS_MUSIC_RE = /^\/v1\/music(?:\/(.+))?$/;
-const ELEVENLABS_VOICE_DESIGN_PATH = "/v1/text-to-voice/design";
-const ELEVENLABS_VOICE_CREATE_PATH = "/v1/text-to-voice";
-const ELEVENLABS_VOICE_RE = /^\/v1\/voices\/([^/]+)$/;
-const FAL_QUEUE_SUBMIT_RE = /^\/fal\/queue\/submit\/(.+)$/;
-const FAL_QUEUE_REQUESTS_RE = /^\/fal\/queue\/requests\/(.+)$/;
-const FAL_RUN_RE = /^\/fal\/run\/(.+)$/;
-const FAL_PREFIX_RE = /^\/fal(?:\/.*)?$/;
 const DEFAULT_CHUNK_SIZE = 20;
 
 // OpenAI-compatible endpoint suffixes for path prefix normalization.
@@ -272,45 +303,11 @@ function normalizeCompatPath(pathname: string, logger?: Logger): string {
   return pathname;
 }
 
-const GEMINI_INTERACTIONS_PATH = "/v1beta/interactions";
-const GEMINI_PATH_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
-const GEMINI_EMBED_RE = /^\/v1beta\/models\/([^:]+):embedContent$/;
-const AZURE_DEPLOYMENT_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
-const BEDROCK_INVOKE_RE = /^\/model\/([^/]+)\/invoke$/;
-const BEDROCK_STREAM_RE = /^\/model\/([^/]+)\/invoke-with-response-stream$/;
-const BEDROCK_CONVERSE_RE = /^\/model\/([^/]+)\/converse$/;
-const BEDROCK_CONVERSE_STREAM_RE = /^\/model\/([^/]+)\/converse-stream$/;
-const VERTEX_AI_RE =
-  /^\/v1\/projects\/[^/]+\/locations\/[^/]+\/publishers\/google\/models\/([^/:]+):(generateContent|streamGenerateContent)$/;
-
-const OLLAMA_CHAT_PATH = "/api/chat";
-const OLLAMA_GENERATE_PATH = "/api/generate";
-const OLLAMA_EMBEDDINGS_PATH = "/api/embeddings";
-const OLLAMA_EMBED_PATH = "/api/embed";
-const OLLAMA_TAGS_PATH = "/api/tags";
-
 // OpenRouter async video lifecycle (/api/v1/videos). Dispatch order matters:
 // content RE → models exact → status RE → submit exact. The status RE's
 // `[^/]+` segment would otherwise swallow the `models` listing path. The
 // content/status REs are shared with metrics.ts path-label normalization
 // (imported above).
-const OPENROUTER_VIDEOS_PATH = "/api/v1/videos";
-const OPENROUTER_VIDEO_MODELS_PATH = "/api/v1/videos/models";
-
-const HEALTH_PATH = "/health";
-const READY_PATH = "/ready";
-const MODELS_PATH = "/v1/models";
-const REQUESTS_PATH = "/v1/_requests";
-const FILES_PATH = "/v1/files";
-// FILES_ID_RE / FILES_CONTENT_RE are imported from metrics.js, which is where
-// every other shared route regex lives (OpenRouter/Veo/Grok/BytePlus above).
-// They used to be declared in BOTH files: two copies of a route regex drift,
-// and a dispatch regex that disagrees with the metrics path-label regex means
-// a route serves traffic that the metrics label as something else.
-const FINE_TUNING_JOBS_PATH = "/v1/fine_tuning/jobs";
-const FINE_TUNING_ID_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)$/;
-const FINE_TUNING_CANCEL_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/cancel$/;
-const FINE_TUNING_EVENTS_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/events$/;
 
 const DEFAULT_MODELS = [
   "gpt-4",
@@ -352,8 +349,6 @@ function handleNotFound(res: http.ServerResponse, message: string): void {
 // to manage fixtures, journal, and error injection without restarting the
 // server.
 // ---------------------------------------------------------------------------
-
-const CONTROL_PREFIX = "/__aimock";
 
 /** The complete `GET /__aimock/fixtures` query-param vocabulary; anything else 400s. */
 const FIXTURES_PARAMS: ReadonlySet<string> = new Set(["include"]);
@@ -568,6 +563,20 @@ async function handleControlAPI(
   if (subPath === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
+    return true;
+  }
+
+  // GET /__aimock/openapi.json — machine-readable route catalog.
+  if (subPath === "/openapi.json" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(buildOpenApiDocument()));
+    return true;
+  }
+
+  // GET /__aimock/routes — flat method+path list for shells.
+  if (subPath === "/routes" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ count: CATALOG_ROUTES.length, routes: CATALOG_ROUTES }));
     return true;
   }
 

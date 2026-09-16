@@ -79,6 +79,10 @@ export { handleRerank } from "./rerank.js";
 export type { RerankResult, RerankFixture } from "./rerank.js";
 export { handleModeration } from "./moderation.js";
 export type { ModerationResult, ModerationFixture } from "./moderation.js";
+export { CATALOG_ROUTES, buildOpenApiDocument } from "./openapi.js";
+export type { CatalogRoute } from "./openapi.js";
+export { ROUTE_DEFINITIONS } from "./route-registry.js";
+export type { RouteDefinition } from "./route-registry.js";
 export {
   handleFilesCreate,
   handleFilesList,
