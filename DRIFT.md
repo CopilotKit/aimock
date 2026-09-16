@@ -97,6 +97,7 @@ When a `critical` drift is detected:
    - Ollama Embeddings → `src/ollama.ts` (`/api/embed` + legacy `/api/embeddings` response builder)
    - Cohere Embed → `src/cohere.ts` (`/v2/embed` response builder)
    - ElevenLabs TTS → `src/elevenlabs-audio.ts` (`/v1/text-to-speech/{voice_id}` response builder)
+   - ElevenLabs Voice Design → `src/elevenlabs-voice.ts` (`/v1/text-to-voice/design`, `/v1/text-to-voice`)
 
 2. **Update the builder** — add or modify the field to match the real API shape.
 
@@ -135,6 +136,8 @@ Alongside the 23 core drift tests (20 HTTP response-shape + 3 model deprecation)
 | POST /api/embed, /api/embeddings         | Ollama        | HTTP              | Covered   |
 | POST /v2/embed                           | Cohere        | HTTP              | Covered   |
 | POST /v1/text-to-speech/{voice_id}       | ElevenLabs    | HTTP              | Covered   |
+| POST /v1/text-to-voice/design            | ElevenLabs    | HTTP              | Covered   |
+| POST /v1/text-to-voice                   | ElevenLabs    | HTTP              | Covered   |
 | stream_options.include_usage             | OpenAI        | Streaming feature | Covered   |
 | x-ratelimit-\* / Retry-After 429         | All providers | Response headers  | Covered   |
 

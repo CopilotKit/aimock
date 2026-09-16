@@ -206,6 +206,62 @@
           <div class="code-block-header">CLI <span class="lang-tag">sh</span></div>
           <pre><code>npx -p @copilotkit/aimock llmock --record --provider-openai https://api.openai.com</code></pre>
         </div>
+
+        <h2>ElevenLabs Voice Design</h2>
+        <p>
+          <code>POST /v1/text-to-voice/design</code> returns JSON previews (each with
+          <code>generated_voice_id</code> and <code>audio_base_64</code>). Match on
+          <code>voice_description</code> the same way TTS matches on <code>text</code>.
+          <code>POST /v1/text-to-voice</code> saves a preview as a permanent voice; unmatched saves
+          echo a deterministic <code>voice_id</code> so a following
+          <code>/v1/text-to-speech/{voice_id}</code> call can hit an existing TTS fixture.
+          <code>GET</code> / <code>DELETE /v1/voices/{voice_id}</code> cover slot management (delete
+          is idempotent).
+        </p>
+        <p>
+          Recorded design fixtures embed full MP3s as base64 (usually three previews per call), so
+          they are much larger than JSON-only tapes. Proxy unmatched calls under the existing
+          <code>elevenlabs</code> provider key.
+        </p>
+
+        <div class="code-block">
+          <div class="code-block-header">voice-design.test.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="op">mock</span>.<span class="fn">onElevenLabsVoiceDesign</span>(<span class="str">/sea captain/</span>, {
+  <span class="prop">previews</span>: [
+    {
+      <span class="prop">generated_voice_id</span>: <span class="str">"preview_captain"</span>,
+      <span class="prop">audio_base_64</span>: <span class="str">"SGVsbG8="</span>,
+      <span class="prop">media_type</span>: <span class="str">"audio/mpeg"</span>,
+      <span class="prop">duration_secs</span>: 1.2,
+      <span class="prop">language</span>: <span class="str">"en"</span>,
+    },
+  ],
+  <span class="prop">text</span>: <span class="str">"Ahoy there."</span>,
+});
+
+<span class="kw">const</span> <span class="op">designed</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/text-to-voice/design`</span>, {
+  <span class="prop">method</span>: <span class="str">"POST"</span>,
+  <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+    <span class="prop">voice_description</span>: <span class="str">"A weathered sea captain in his sixties, gravelly, unhurried"</span>,
+    <span class="prop">model_id</span>: <span class="str">"eleven_ttv_v3"</span>,
+    <span class="prop">auto_generate_text</span>: <span class="kw">true</span>,
+  }),
+});
+<span class="kw">const</span> <span class="op">previews</span> = <span class="kw">await</span> <span class="op">designed</span>.<span class="fn">json</span>();
+
+<span class="kw">const</span> <span class="op">saved</span> = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`${mock.url}/v1/text-to-voice`</span>, {
+  <span class="prop">method</span>: <span class="str">"POST"</span>,
+  <span class="prop">headers</span>: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  <span class="prop">body</span>: <span class="type">JSON</span>.<span class="fn">stringify</span>({
+    <span class="prop">voice_name</span>: <span class="str">"Captain"</span>,
+    <span class="prop">voice_description</span>: <span class="str">"A weathered sea captain in his sixties, gravelly, unhurried"</span>,
+    <span class="prop">generated_voice_id</span>: <span class="op">previews</span>.<span class="prop">previews</span>[<span class="num">0</span>].<span class="prop">generated_voice_id</span>,
+  }),
+});
+<span class="kw">const</span> <span class="op">voice</span> = <span class="kw">await</span> <span class="op">saved</span>.<span class="fn">json</span>();
+<span class="comment">// voice.voice_id is stable; use it with onElevenLabsTTS</span></code></pre>
+        </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

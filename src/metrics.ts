@@ -220,6 +220,7 @@ const BEDROCK_RE =
 const GEMINI_RE = /^\/v1beta\/models\/([^:]+):(generateContent|streamGenerateContent)$/;
 const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
 const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
+const ELEVENLABS_VOICE_RE = /^\/v1\/voices\/([^/]+)$/;
 const VERTEX_RE =
   /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
 // Exported: server.ts route dispatch matches the same OpenRouter and OpenAI
@@ -287,6 +288,11 @@ export function normalizePathLabel(pathname: string): string {
   // ElevenLabs TTS: /v1/text-to-speech/{voice_id}
   if (ELEVENLABS_TTS_RE.test(pathname)) {
     return "/v1/text-to-speech/{voice_id}";
+  }
+
+  // ElevenLabs voices: /v1/voices/{voice_id}
+  if (ELEVENLABS_VOICE_RE.test(pathname)) {
+    return "/v1/voices/{voice_id}";
   }
 
   // OpenRouter video: /api/v1/videos/{jobId}[/content] — jobIds are random

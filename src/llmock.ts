@@ -16,6 +16,7 @@ import type {
   ResponseFactory,
   TranscriptionResponse,
   VideoResponse,
+  VoiceDesignResponse,
 } from "./types.js";
 import {
   createServer,
@@ -38,6 +39,7 @@ import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
 import type { ModerationFixture, ModerationResult } from "./moderation.js";
 import { imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
+import { voiceDesignToJson } from "./elevenlabs-voice.js";
 
 export class LLMock {
   private fixtures: Fixture[] = [];
@@ -236,6 +238,13 @@ export class LLMock {
     return this.addFixture({
       match: { userMessage: text, endpoint: "elevenlabs-tts" },
       response,
+    });
+  }
+
+  onElevenLabsVoiceDesign(description: string | RegExp, response: VoiceDesignResponse): this {
+    return this.addFixture({
+      match: { userMessage: description, endpoint: "elevenlabs-voice-design" },
+      response: voiceDesignToJson(response),
     });
   }
 
@@ -464,8 +473,9 @@ export class LLMock {
    * NOT ALL OF THIS IS PER-INSTANCE. `performFullReset` clears module-global
    * state as well: the Gemini interaction and event-id counters
    * (`resetInteractionCounter` / `resetEventIdCounter` in
-   * `./gemini-interactions.js`) and the fal.ai job/queue maps (`falJobs`,
-   * `falQueueStates`). With two `LLMock` instances live in one process,
+   * `./gemini-interactions.js`), the fal.ai job/queue maps (`falJobs`,
+   * `falQueueStates`), and the ElevenLabs Voice Design store
+   * (`clearElevenLabsVoices`). With two `LLMock` instances live in one process,
    * `a.reset()` rewinds the Gemini id sequence that `b` is mid-way through —
    * `b` then re-emits `aimock-int-0` / `evt_1`, ids it has already handed
    * out — and drops `b`'s in-flight fal jobs. Give each instance its own

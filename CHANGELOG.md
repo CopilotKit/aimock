@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **ElevenLabs Voice Design record/replay** — `POST /v1/text-to-voice/design` matches fixtures on `voice_description` (via `onElevenLabsVoiceDesign`), `POST /v1/text-to-voice` saves a preview as a permanent voice with a deterministic `voice_id`, and `GET`/`DELETE /v1/voices/{voice_id}` cover slot management (delete is idempotent). Unmatched design/save calls proxy under the existing `elevenlabs` provider key. Preview fixtures embed `audio_base_64` and are larger than JSON-only tapes (#452)
+
 ### Changed
 
 - Realtime `OpenAI-Beta: realtime=v1` now returns the real sunset rejection, not a session (#461)
