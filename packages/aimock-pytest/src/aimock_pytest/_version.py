@@ -11,4 +11,4 @@ npm publication and verifies that this pin exists before it builds or uploads
 a wheel. Keep it tracking npm releases.
 """
 
-AIMOCK_VERSION = "1.42.0"
+AIMOCK_VERSION = "1.42.1"

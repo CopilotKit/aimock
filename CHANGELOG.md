@@ -1,5 +1,11 @@
 # @copilotkit/aimock
 
+## [1.42.1] - 2026-09-18
+
+### Fixed
+
+- Identify reasoning-first tool streams as assistant messages for MCP Apps (#470).
+
 ## [1.42.0] - 2026-09-13
 
 ### Added
