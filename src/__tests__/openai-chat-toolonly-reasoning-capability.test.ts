@@ -248,3 +248,46 @@ describe("/v1/chat/completions tool-only reasoning capability gating", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("reasoning-first tool streams identify the assistant immediately", () => {
+  for (const ordered of [false, true]) {
+    for (const role of [undefined, "system"]) {
+      it(`starts with the configured role (blocks=${ordered}, role=${role ?? "default"})`, async () => {
+        const toolCall = { name: "get_weather", arguments: '{"city":"SF"}' };
+        const fixture: Fixture = {
+          match: { userMessage: "initial-role" },
+          response: {
+            content: "Checking weather.",
+            toolCalls: [toolCall],
+            reasoning: "Think first.",
+            ...(role !== undefined && { role }),
+            ...(ordered && {
+              blocks: [
+                { type: "text" as const, text: "Checking weather." },
+                { type: "toolCall" as const, ...toolCall },
+              ],
+            }),
+          },
+        };
+        instance = await createServer([fixture], { port: 0, logLevel: "warn", chunkSize: 4 });
+        const res = await httpPost(
+          `${instance.url}/v1/chat/completions`,
+          chatBody("initial-role", "o3-mini", true),
+        );
+        expect(res.status).toBe(200);
+        const events = parseSSEEvents(res.body);
+        expect(events[0].choices?.[0]?.delta).toMatchObject({
+          role: role ?? "assistant",
+          reasoning_content: "Thin",
+        });
+        expect(
+          events
+            .filter((e) => e.choices?.[0]?.delta?.reasoning_content)
+            .slice(1)
+            .every((e) => e.choices?.[0]?.delta?.role === undefined),
+        ).toBe(true);
+        expect(streamToolCallName(res.body)).toBe("get_weather");
+      });
+    }
+  }
+});

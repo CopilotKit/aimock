@@ -1,6 +1,6 @@
 {
   "name": "@copilotkit/aimock",
-  "version": "1.42.0",
+  "version": "1.42.1",
   "description": "Mock infrastructure for AI application testing — point your SDK at one local port and every provider, protocol, and service answers deterministically.",
   "license": "MIT",
   "keywords": [
