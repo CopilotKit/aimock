@@ -1000,8 +1000,15 @@ export async function handleCohere(
 
   // Reject wrong-typed message/tool fields before the converter dereferences
   // them — otherwise the TypeError surfaces as a 500 instead of a 400.
-  const shapeError =
-    validateChatMessages(cohereReq.messages) ?? validateToolsField(cohereReq.tools);
+  let shapeError = validateChatMessages(cohereReq.messages) ?? validateToolsField(cohereReq.tools);
+  if (!shapeError && Array.isArray(cohereReq.tools)) {
+    const nullFunctionIndex = cohereReq.tools.findIndex(
+      (tool) => "function" in tool && tool.function === null,
+    );
+    if (nullFunctionIndex !== -1) {
+      shapeError = `tools[${nullFunctionIndex}].function must be an object`;
+    }
+  }
   if (shapeError) {
     journal.add({
       method: req.method ?? "POST",

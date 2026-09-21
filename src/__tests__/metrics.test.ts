@@ -1158,10 +1158,12 @@ describe("integration: route-aware labels on the live counter", () => {
       req.on("error", reject);
       req.end();
     });
-    expect(status).toBe(500);
+    // URL-construction failures are client errors, still counted before routing.
+    expect(status).toBe(400);
     const res = await httpGet(`${instance.url}/metrics`);
+    expect(res.status).toBe(200);
     expect(res.body).toContain(
-      `aimock_requests_total{method="GET",path="${metricsModule.UNKNOWN_PATH_LABEL}",status="500"} 1`,
+      `aimock_requests_total{method="GET",path="${metricsModule.UNKNOWN_PATH_LABEL}",status="400"} 1`,
     );
   });
 });

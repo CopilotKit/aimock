@@ -695,8 +695,14 @@ export async function handleOllama(
 
   // Reject wrong-typed message/tool fields before the converter dereferences
   // them. A missing/non-array `messages` keeps the historic message below.
-  const chatShapeError =
+  let chatShapeError =
     validateChatMessages(ollamaReq.messages) ?? validateToolsField(ollamaReq.tools);
+  if (!chatShapeError && Array.isArray(ollamaReq.tools)) {
+    const nullFunctionIndex = ollamaReq.tools.findIndex((tool) => tool.function === null);
+    if (nullFunctionIndex !== -1) {
+      chatShapeError = `tools[${nullFunctionIndex}].function must be an object`;
+    }
+  }
   if (chatShapeError) {
     journal.add({
       method: req.method ?? "POST",

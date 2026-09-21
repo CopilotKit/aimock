@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- Fix internal errors for specific malformed provider fields and control fixture inputs, while preserving supported input forms and defaults. `toolName` matching safely skips malformed tools, and `addFixturesFromJSON` explains its array requirement. Multipart parsing distinguishes `name` from `filename`. Invalid HTTP and WebSocket request targets return 400 while retaining existing diagnostics and HTTP journal/CORS behavior (#474)
 - Reasoning-first OpenAI chat streams that combine content and tool calls now include the configured role (default `assistant`) in the first reasoning chunk, for both legacy and block fixtures. This lets LangChain recognize the assistant message and preserves tool calls for LangGraph TypeScript MCP rendering (#470)
 - Journals and metrics now reflect delivered and interrupted responses, preserve request identity across concurrent calls, and keep route labels bounded. One-shot errors are reserved before asynchronous processing and returned to the queue when unserved, preventing duplicate delivery (#466)
 - Nonstreaming OpenAI chat returns authored block text and tools. Across OpenAI, Claude, Gemini, Gemini Interactions, Cohere and Bedrock, text-only blocks now finish normally instead of reporting a tool-call terminal; tool-containing blocks retain their tool outcome (#467)

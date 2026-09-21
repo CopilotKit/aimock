@@ -123,6 +123,11 @@ export class LLMock {
     } else {
       entries = input;
     }
+    if (!Array.isArray(entries)) {
+      throw new TypeError(
+        "addFixturesFromJSON: expected an array of fixture entries; use loadFixtureFile for a {fixtures:[...]} file",
+      );
+    }
     const converted = entries.map((e) => entryToFixture(e, undefined, this.options.live));
     const issues = validateFixtures(converted, this.options.live);
     const errors = issues.filter((i) => i.severity === "error");

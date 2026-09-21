@@ -882,9 +882,19 @@ async function handleControlAPI(
       return true;
     }
 
-    if (!Array.isArray(parsed.fixtures)) {
+    if (parsed === null || !Array.isArray(parsed.fixtures)) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
+      return true;
+    }
+
+    const missingMatchIndex = parsed.fixtures.findIndex(
+      (entry) =>
+        entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.match == null,
+    );
+    if (missingMatchIndex !== -1) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Fixture at index ${missingMatchIndex} is missing match` }));
       return true;
     }
 
@@ -1212,6 +1222,33 @@ async function handleCompletions(
         : JSON.stringify({
             error: {
               message: "Missing required parameter: 'messages'",
+              type: "invalid_request_error",
+              param: null,
+              code: null,
+            },
+          }),
+    );
+    return;
+  }
+
+  const nullMessageIndex = body.messages.findIndex((message) => message === null);
+  if (nullMessageIndex !== -1) {
+    const message = `Invalid request: messages[${nullMessageIndex}] must be an object`;
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      openRouter
+        ? serializeOpenRouterError(400, message)
+        : JSON.stringify({
+            error: {
+              message,
               type: "invalid_request_error",
               param: null,
               code: null,
@@ -2550,8 +2587,8 @@ export async function createServerWithResolvedAuth(
     // Instrument response completion for metrics. The callbacks read pathname
     // via closure after normalizeCompatPath has rewritten it, so metrics
     // record the canonical /v1/... path. Registered BEFORE the URL is parsed:
-    // a request whose `Host` header will not parse is answered 500 by the
-    // top-level catch, and hooking after the parse left that response
+    // a request whose target or `Host` header will not parse is answered 400,
+    // and hooking after the parse would leave that response
     // uncounted. It reaches `normalizePathLabel` with the empty pre-parse
     // pathname and lands in `{unknown}`, like every other pre-routing reject.
     //
@@ -2598,7 +2635,37 @@ export async function createServerWithResolvedAuth(
     }
 
     // Parse the URL pathname (strip query string)
-    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    } catch (err: unknown) {
+      const route = `${req.method ?? "?"} ${req.url ?? "?"}`;
+      const msg = err instanceof Error ? err.message : "Internal error";
+      logger.error(`${route}: ${msg}`);
+      if (err instanceof Error && err.stack) logger.debug(err.stack);
+      try {
+        journal.add({
+          method: req.method ?? "?",
+          path: req.url ?? "?",
+          headers: flattenHeaders(req.headers),
+          body: null,
+          response: { status: 400, fixture: null, source: "internal" },
+        });
+      } catch (jErr) {
+        logger.warn(
+          `${route}: journal write failed after handler error: ${jErr instanceof Error ? jErr.message : String(jErr)}`,
+        );
+      }
+      setCorsHeaders(res);
+      writeErrorResponse(
+        res,
+        400,
+        JSON.stringify({
+          error: { message: "Invalid request target", type: "invalid_request_error" },
+        }),
+      );
+      return;
+    }
     pathname = parsedUrl.pathname;
     // Capture the ORIGINAL path before normalizeCompatPath rewrites it — the
     // OpenRouter `/api/v1/` base is the detection signal and would otherwise be
@@ -4220,7 +4287,15 @@ export async function createServerWithResolvedAuth(
       return;
     }
 
-    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Internal error";
+      defaults.logger.warn(`Unhandled upgrade error: ${msg}`);
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      return;
+    }
     let pathname = parsedUrl.pathname;
 
     if (!validateRequestApiKey(req, resolvedAuth.policy).ok) {
