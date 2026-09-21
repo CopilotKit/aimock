@@ -931,6 +931,13 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
 
         <h2>Loading Fixtures</h2>
 
+        <p>
+          <code>addFixturesFromJSON()</code> accepts an array of fixture entries, either as a JSON
+          string or as a parsed array. Fixture files use the
+          <code>{ "fixtures": [...] }</code> envelope shown above; load those files with
+          <code>loadFixtureFile()</code>.
+        </p>
+
         <h3>From a file</h3>
         <div class="code-block">
           <div class="code-block-header">load-file.ts <span class="lang-tag">ts</span></div>

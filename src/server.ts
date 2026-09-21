@@ -882,9 +882,19 @@ async function handleControlAPI(
       return true;
     }
 
-    if (!Array.isArray(parsed.fixtures)) {
+    if (parsed === null || !Array.isArray(parsed.fixtures)) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
+      return true;
+    }
+
+    const missingMatchIndex = parsed.fixtures.findIndex(
+      (entry) =>
+        entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.match == null,
+    );
+    if (missingMatchIndex !== -1) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Fixture at index ${missingMatchIndex} is missing match` }));
       return true;
     }
 
