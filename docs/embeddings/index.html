@@ -92,6 +92,16 @@
           </li>
         </ul>
 
+        <p>
+          Gemini deterministic fallback uses 768 dimensions when
+          <code>outputDimensionality</code> is absent or <code>null</code>. In this fallback,
+          negative or fractional numbers and nonnumeric strings return HTTP 400 with
+          <code>INVALID_ARGUMENT</code>. This check applies only when fallback generation uses the
+          dimension value. Fixture replay, strict mode, chaos responses, and proxy responses retain
+          their existing behavior. Zero dimensions and existing numeric-string coercion remain
+          supported.
+        </p>
+
         <h2>Unit Test: Fixture-based Embedding</h2>
 
         <div class="code-block">
