@@ -119,6 +119,41 @@ interface InteractionsRequest {
   [key: string]: unknown;
 }
 
+// Check only the containers consumed by the selected input variant. Other
+// values retain their existing normalization, including omitted/numeric input.
+function validateInteractionsInput(input: unknown): string | null {
+  if (!Array.isArray(input)) return null;
+  const first = input[0];
+  if (isJsonObject(first) && "role" in first) {
+    for (const [index, turn] of input.entries()) {
+      if (!isJsonObject(turn)) continue;
+      const blocks = turn.content ?? turn.parts;
+      // Empty strings, falsy values and empty arrays bypass the converter's
+      // filters. Preserve that behavior and the content ?? parts selection.
+      if (typeof blocks === "string" && blocks.length > 0) {
+        const field = turn.content != null ? "content" : "parts";
+        return `input[${index}].${field} must be an array`;
+      }
+    }
+  } else if (
+    !(isJsonObject(first) && typeof first.type === "string" && STEP_TYPES.has(first.type))
+  ) {
+    const nullIndex = input.findIndex((part) => part === null);
+    if (nullIndex !== -1) return `input[${nullIndex}] must be an object`;
+  }
+  return null;
+}
+
+// Preserve tools that the converter ignores; reject only these unsafe reads.
+function validateInteractionsTools(tools: unknown): string | null {
+  if (typeof tools === "string" && tools.length > 0) return "tools must be an array";
+  if (Array.isArray(tools)) {
+    const nullIndex = tools.findIndex((tool) => tool === null);
+    if (nullIndex !== -1) return `tools[${nullIndex}] must be an object`;
+  }
+  return null;
+}
+
 // ─── Input conversion: Interactions → ChatCompletionRequest ───────────────
 
 export function geminiInteractionsToCompletionRequest(
@@ -868,6 +903,25 @@ export async function handleGeminiInteractions(
       JSON.stringify(
         buildInteractionsErrorResponse("Request body must be a JSON object", "INVALID_ARGUMENT"),
       ),
+    );
+    return;
+  }
+
+  const validationError =
+    validateInteractionsInput(interactionsReq.input) ??
+    validateInteractionsTools(interactionsReq.tools);
+  if (validationError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify(buildInteractionsErrorResponse(validationError, "INVALID_ARGUMENT")),
     );
     return;
   }

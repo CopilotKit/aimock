@@ -408,6 +408,55 @@ function buildBedrockStreamToolCallEvents(
 
 // ─── Input conversion: Converse → ChatCompletionRequest ─────────────────────
 
+/** Validate only message fields consumed by the user-message converter. */
+function validateConverseMessages(req: ConverseRequest): string | undefined {
+  for (const [i, message] of req.messages.entries()) {
+    if (message === null) return `Invalid request: messages[${i}] must not be null`;
+    // Unknown roles are intentionally skipped; assistant toolResult is inert.
+    if (message.role !== "user") continue;
+    if (!Array.isArray(message.content)) {
+      return `Invalid request: messages[${i}].content must be an array`;
+    }
+    for (const [j, block] of message.content.entries()) {
+      if (block === null) {
+        return `Invalid request: messages[${i}].content[${j}] must not be null`;
+      }
+      if (block.toolResult && !Array.isArray(block.toolResult.content)) {
+        return `Invalid request: messages[${i}].content[${j}].toolResult.content must be an array`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Validate only system fields consumed by the converter. */
+function validateConverseSystem(req: ConverseRequest): string | undefined {
+  if (req.system && req.system.length > 0) {
+    if (!Array.isArray(req.system)) {
+      return "Invalid request: system must be an array";
+    }
+    for (const [i, block] of req.system.entries()) {
+      if (block === null) return `Invalid request: system[${i}] must not be null`;
+    }
+  }
+  return undefined;
+}
+
+/** Validate only tool fields consumed by the converter. */
+function validateConverseTools(req: ConverseRequest): string | undefined {
+  if (req.toolConfig?.tools && req.toolConfig.tools.length > 0) {
+    if (!Array.isArray(req.toolConfig.tools)) {
+      return "Invalid request: toolConfig.tools must be an array";
+    }
+    for (const [i, tool] of req.toolConfig.tools.entries()) {
+      if (tool?.toolSpec === null) {
+        return `Invalid request: toolConfig.tools[${i}].toolSpec must not be null`;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function converseToCompletionRequest(
   req: ConverseRequest,
   modelId: string,
@@ -739,7 +788,12 @@ export async function handleConverse(
     return;
   }
 
-  if (!converseReq.messages || !Array.isArray(converseReq.messages)) {
+  const messageError = !Array.isArray(converseReq.messages)
+    ? "Invalid request: messages array is required"
+    : (validateConverseMessages(converseReq) ??
+      validateConverseSystem(converseReq) ??
+      validateConverseTools(converseReq));
+  if (messageError) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -752,7 +806,7 @@ export async function handleConverse(
       400,
       JSON.stringify({
         error: {
-          message: "Invalid request: messages array is required",
+          message: messageError,
           type: "invalid_request_error",
         },
       }),
@@ -1080,7 +1134,12 @@ export async function handleConverseStream(
     return;
   }
 
-  if (!converseReq.messages || !Array.isArray(converseReq.messages)) {
+  const messageError = !Array.isArray(converseReq.messages)
+    ? "Invalid request: messages array is required"
+    : (validateConverseMessages(converseReq) ??
+      validateConverseSystem(converseReq) ??
+      validateConverseTools(converseReq));
+  if (messageError) {
     journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1093,7 +1152,7 @@ export async function handleConverseStream(
       400,
       JSON.stringify({
         error: {
-          message: "Invalid request: messages array is required",
+          message: messageError,
           type: "invalid_request_error",
         },
       }),

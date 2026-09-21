@@ -1221,6 +1221,33 @@ async function handleCompletions(
     return;
   }
 
+  const nullMessageIndex = body.messages.findIndex((message) => message === null);
+  if (nullMessageIndex !== -1) {
+    const message = `Invalid request: messages[${nullMessageIndex}] must be an object`;
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? COMPLETIONS_PATH,
+      headers: flattenHeaders(req.headers),
+      body: null,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      openRouter
+        ? serializeOpenRouterError(400, message)
+        : JSON.stringify({
+            error: {
+              message,
+              type: "invalid_request_error",
+              param: null,
+              code: null,
+            },
+          }),
+    );
+    return;
+  }
+
   const method = req.method ?? "POST";
   const path = req.url ?? COMPLETIONS_PATH;
   const flatHeaders = flattenHeaders(req.headers);

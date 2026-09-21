@@ -1305,6 +1305,58 @@ export async function handleResponses(
     return;
   }
 
+  // Guard only shapes consumed by input conversion. Other item fields may be
+  // intentionally ignored, and falsy message content normalizes to empty text.
+  let inputError: string | undefined;
+  if (typeof responsesReq.input !== "string" && !Array.isArray(responsesReq.input)) {
+    inputError = "input must be a string or an array";
+  } else if (Array.isArray(responsesReq.input)) {
+    for (const [index, item] of responsesReq.input.entries()) {
+      if (item === null) {
+        inputError = `input[${index}] must not be null`;
+        break;
+      }
+      if (
+        (item.role === "system" ||
+          item.role === "developer" ||
+          item.role === "user" ||
+          item.role === "assistant") &&
+        item.content &&
+        typeof item.content !== "string" &&
+        !Array.isArray(item.content)
+      ) {
+        inputError = `input[${index}].content must be a string or an array`;
+        break;
+      }
+    }
+  }
+  // Keep the converter's empty/falsy bypass and ignored non-function entries.
+  // Only reject collections that would throw when the converter reads them.
+  let toolsError: string | undefined;
+  if (responsesReq.tools && responsesReq.tools.length !== 0) {
+    if (!Array.isArray(responsesReq.tools)) {
+      toolsError = "tools must be an array";
+    } else if (responsesReq.tools.some((tool) => tool === null)) {
+      toolsError = "tools entries must not be null";
+    }
+  }
+  const validationError = inputError ?? toolsError;
+  if (validationError) {
+    journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: responsesReq,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({ error: { message: validationError, type: "invalid_request_error" } }),
+    );
+    return;
+  }
+
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = responsesToCompletionRequest(responsesReq);
   completionReq._endpointType = "chat";

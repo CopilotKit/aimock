@@ -1313,6 +1313,31 @@ export async function handleMessages(
     // Fall through to existing match/replay behavior.
   }
 
+  // Mirror the converter's consumption gate: inert tools values remain tolerated.
+  // Reject only shapes that would throw while mapping native tool definitions.
+  if (claudeReq.tools && claudeReq.tools.length > 0) {
+    const toolsError = !Array.isArray(claudeReq.tools)
+      ? "tools must be an array"
+      : claudeReq.tools.some((tool) => tool === null)
+        ? "tools entries must not be null"
+        : null;
+    if (toolsError) {
+      journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/v1/messages",
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null },
+      });
+      writeErrorResponse(
+        res,
+        400,
+        JSON.stringify({ error: { message: toolsError, type: "invalid_request_error" } }),
+      );
+      return;
+    }
+  }
+
   // Convert to ChatCompletionRequest for fixture matching
   const completionReq = claudeToCompletionRequest(claudeReq);
   completionReq._context = getContext(req);

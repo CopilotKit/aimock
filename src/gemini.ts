@@ -124,7 +124,20 @@ function validateGeminiBody(req: GeminiRequest): string | null {
       return "systemInstruction.parts must be an array";
     }
   }
-  return validateToolsField(req.tools);
+  const toolsError = validateToolsField(req.tools);
+  if (toolsError) return toolsError;
+  if (Array.isArray(req.tools)) {
+    for (const [toolIndex, tool] of req.tools.entries()) {
+      if (!Array.isArray(tool.functionDeclarations)) continue;
+      const declarationIndex = tool.functionDeclarations.findIndex(
+        (declaration) => declaration === null,
+      );
+      if (declarationIndex !== -1) {
+        return `tools[${toolIndex}].functionDeclarations[${declarationIndex}] must not be null`;
+      }
+    }
+  }
+  return null;
 }
 
 export function geminiToCompletionRequest(
