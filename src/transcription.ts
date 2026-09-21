@@ -67,7 +67,7 @@ export function extractFormField(
     console.warn("extractFormField: no multipart boundary found, using best-effort regex fallback");
     const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const pattern = new RegExp(
-      `Content-Disposition:\\s*form-data;[^\\r\\n]*name="${escaped}"[^\\r\\n]*\\r\\n\\r\\n([^\\r\\n]*)`,
+      `Content-Disposition:\\s*form-data;(?:[^\\r\\n]*;)?\\s*name="${escaped}"[^\\r\\n]*\\r\\n\\r\\n([^\\r\\n]*)`,
       "i",
     );
     const match = raw.match(pattern);
@@ -90,7 +90,9 @@ export function extractFormField(
     const body = part.slice(headerEnd + 4);
 
     // Check if this part's Content-Disposition names the target field
-    const cdMatch = headers.match(/Content-Disposition:\s*form-data;[^\r\n]*name="([^"]+)"/i);
+    const cdMatch = headers.match(
+      /Content-Disposition:\s*form-data;(?:[^\r\n]*;)?\s*name="([^"]+)"/i,
+    );
     if (cdMatch && cdMatch[1] === fieldName) {
       // Return the body value, trimming trailing \r\n from the part boundary
       return body.replace(/\r\n$/, "");
