@@ -423,11 +423,11 @@ describe("classification-logic checksum freeze (Phase-0 anti-silence guard)", ()
 const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   "includeFamilies.openai": {
     members: () => [...includeFamilies.openai].sort(),
-    pin: "65899f85f8a87178b19fdb0be4ea1b37c3f18aabe925733c8d78e1beaf956c8e",
+    pin: "4fa5e70cb8cf20552a093ae0d5528334e212edf4a83802b4bd5117928f53141d",
   },
   "includeFamilies.anthropic": {
     members: () => [...includeFamilies.anthropic].sort(),
-    pin: "3934772426666eb3cc770fe879c53e02b0432368b40b0cdcf8a6d4a6c4cad272",
+    pin: "a1d77e7eb1caa557b41ba46c6bc7918a930d9a7d2ab69f729f3eaedf4a078336",
   },
   "includeFamilies.gemini": {
     members: () => [...includeFamilies.gemini].sort(),
@@ -443,7 +443,7 @@ const DATA_FROZEN: Record<string, { members: () => string[]; pin: string }> = {
   },
   "excludeFamilies.gemini": {
     members: () => [...excludeFamilies.gemini].sort(),
-    pin: "748359a2dc129363e1a3d754c007ec6f1ef7b2a731a2fd58650bdbb62cbf6265",
+    pin: "05cb38dd566f7c271849b58bde68132d23a0b42bf2449267ad8afc39e7fe66ff",
   },
   // The realtime canary's seed sets, previously pinned NOWHERE. An edit to
   // either one was invisible to every guard in the repo: adding a family to
