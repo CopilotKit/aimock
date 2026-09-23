@@ -99,7 +99,7 @@
  */
 
 import type * as http from "node:http";
-import { flattenHeaders, generateId, isJsonObject } from "./helpers.js";
+import { flattenHeaders, generateId, isJsonObject, parseStrictIntegerText } from "./helpers.js";
 import { applyChaosAsync, type ChaosAsyncOutcome } from "./chaos.js";
 import type { ChaosDefaults, JournalBody } from "./types.js";
 import type { Journal } from "./journal.js";
@@ -543,25 +543,6 @@ function singleParam(
 }
 
 /**
- * A plain decimal integer, or null. Deliberately stricter than `Number()`,
- * which also accepts hex (`0x10` → 16), exponent notation (`1e2` → 100), a
- * leading sign (`+5`), a trailing `.0` and surrounding whitespace — none of
- * which is the "integer" the spec's `type: integer` or our own error message
- * describes, and all of which used to be honoured silently at some other
- * number than the one the caller wrote.
- *
- * Kept local rather than shared with the chaos config's own number parsing:
- * that one must accept fractional rates and so goes through `Number()`, which
- * is precisely the behaviour this function exists to refuse. Merging the two
- * would mean widening the lenient one, not renaming this one.
- */
-function parseDecimalInteger(raw: string): number | null {
-  if (!/^\d+$/.test(raw)) return null;
-  const n = Number(raw);
-  return Number.isSafeInteger(n) ? n : null;
-}
-
-/**
  * Cursor page over an array already ordered newest-first, mirroring the
  * `after`/`limit` params both fine-tuning list endpoints accept. `has_more`
  * reports whether anything was left behind, so it is never a constant.
@@ -598,7 +579,7 @@ export function paginate<T extends { id: string }>(
   const rawLimit = readLimit.value;
   let limit = DEFAULT_PAGE_LIMIT;
   if (rawLimit !== null) {
-    const n = parseDecimalInteger(rawLimit);
+    const n = parseStrictIntegerText(rawLimit);
     if (n === null || n < 1 || n > MAX_PAGE_LIMIT) {
       // Quoted from the RAW query text, like the `after` message below, so
       // `?limit=%2B5` is refused as `'%2B5'` rather than as the `'+5'` the

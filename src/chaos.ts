@@ -24,7 +24,7 @@ import type {
 } from "./types.js";
 import { delay, writeErrorResponse } from "./sse-writer.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
-import { describeMatch, resolveTestId } from "./helpers.js";
+import { describeMatch, parseStrictIntegerText, resolveTestId } from "./helpers.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
@@ -120,9 +120,6 @@ export const CHAOS_FIELD_NAMES = Object.keys(CHAOS_FIELDS) as ChaosField[];
  */
 const DECIMAL_RATE = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
 
-/** A non-negative decimal INTEGER — the only shape a millisecond count takes. */
-const DECIMAL_INTEGER = /^\d+$/;
-
 /**
  * The ONE way a chaos number is parsed, whatever its source.
  *
@@ -157,9 +154,18 @@ export function parseChaosNumber(raw: unknown, max: number, integer = false): nu
   if (typeof raw === "number") {
     value = raw;
   } else if (typeof raw === "string") {
-    const text = raw.trim();
-    if (!(integer ? DECIMAL_INTEGER : DECIMAL_RATE).test(text)) return undefined;
-    value = Number(text);
+    // Integer grammar shared with the files/fine-tuning list parsers via
+    // parseStrictIntegerText (helpers.ts); the fractional-rate grammar and
+    // every bound below stay local, so sharing the gate cannot widen them.
+    if (integer) {
+      const n = parseStrictIntegerText(raw.trim());
+      if (n === null) return undefined;
+      value = n;
+    } else {
+      const text = raw.trim();
+      if (!DECIMAL_RATE.test(text)) return undefined;
+      value = Number(text);
+    }
   } else {
     return undefined;
   }

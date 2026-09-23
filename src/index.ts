@@ -198,6 +198,7 @@ export {
   isVideoResponse,
   generateDeterministicEmbedding,
   buildEmbeddingResponse,
+  parseStrictIntegerText,
   FORMAT_TO_CONTENT_TYPE,
   formatToMime,
   strictNoMatchMessage,

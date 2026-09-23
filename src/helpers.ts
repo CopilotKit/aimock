@@ -59,6 +59,27 @@ export function resolveStrictMode(
 }
 
 /**
+ * Strict decimal-integer grammar shared by the query/list parsers that grew
+ * their own local copy on separate branches (files `limit`, fine-tuning
+ * `limit`, chaos integer fields): an unsigned digit run and nothing else — no
+ * sign, no exponent, no radix prefix, no surrounding whitespace (callers that
+ * accept padded input trim before calling).
+ *
+ * Deliberately narrower than `Number()`, which reads `0x10` as 16, `1e3` as
+ * 1000 and strips whitespace and a leading `+`. Returns the value, or `null`
+ * when the text is not a safe integer literal. Range checks and error
+ * messages stay with the callers — this is the grammar gate only, so sharing
+ * it cannot change any surface's accepted range or its 400 text.
+ */
+const STRICT_INTEGER_RE = /^\d+$/;
+
+export function parseStrictIntegerText(text: string): number | null {
+  if (!STRICT_INTEGER_RE.test(text)) return null;
+  const n = Number(text);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
  * Would a fixture miss on this request have been forwarded upstream? This is
  * the ONE rule behind the no-fixture chaos journal `source` label: "proxy"
  * only when record mode has an upstream for THIS provider and strict mode is
