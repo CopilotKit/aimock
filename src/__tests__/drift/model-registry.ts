@@ -105,6 +105,22 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/openai-gpt-6-astra-new-family.md.
     "gpt-6-astra",
+    // gpt-6 named variants (text chat), first listed 2026-09-23 (drift run
+    // 35827604040). The gpt-6 generation of the already-included
+    // `gpt-5.6-luna` / `gpt-5.6-sol`, and siblings of the probe-verified
+    // `gpt-6-astra` above. No name token places them in an excluded cluster
+    // (image / audio / realtime / transcribe / tts / search).
+    //
+    // EVIDENCE LIMIT: classified by lineage, not by a fresh probe — no OpenAI
+    // key was available to repeat the /v1/chat/completions call that decided
+    // `gpt-6-astra`, and /v1/models exposes no capability field. The live
+    // canary is what catches it if that inference is wrong.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/openai-gpt-6-luna-new-family.md and
+    // drift-proposals/openai-gpt-6-sol-new-family.md.
+    "gpt-6-luna",
+    "gpt-6-sol",
     // Codex line (coding chat; text output)
     "gpt-5-codex",
     "gpt-5.1-codex",
@@ -164,6 +180,21 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/anthropic-claude-fable-5-1-new-family.md.
     "claude-fable-5-1",
+    // Claude Opus 5.5, first listed 2026-09-23 (drift run 35827604040). Point
+    // release of the already-included `claude-opus-5`, exactly as
+    // `claude-opus-4-5` is of `claude-opus-4`. Every Claude family on
+    // Anthropic's listing is text chat on /v1/messages; the only anthropic
+    // excludes are retired ids.
+    //
+    // EVIDENCE LIMIT: no /v1/messages probe was run (no Anthropic key was
+    // available), and /v1/models carries no capability field. Same argument as
+    // `claude-opus-5` (72f85f8): on the live listing, base family already
+    // included, and the canary reported exactly ONE unclassified anthropic
+    // family that run.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-opus-5-5-new-family.md.
+    "claude-opus-5-5",
   ]),
   gemini: familySet("gemini", [
     // Gemini 2.0 / 2.5 text families
@@ -440,6 +471,19 @@ export const excludeFamilies: Record<Provider, Set<string>> = {
     // Decision: EXCLUDE, recorded in
     // drift-proposals/gemini-lyria-3.5-new-family.md.
     "lyria-3.5",
+    // Pre-GA moving alias, first listed 2026-09-22 (drift runs 35695604021 and
+    // 35827604040). The id says both things itself: `-preview` (aimock does not
+    // mock preview surfaces — the PREVIEW_FAMILY policy) and `-latest` (a
+    // moving alias, not a stable family — the same policy as
+    // `gemini-flash-latest` / `gemini-flash-lite-latest` / `gemini-pro-latest`
+    // above). Its pinned sibling `antigravity-preview-05` is already
+    // auto-excluded by PREVIEW_FAMILY; this id ends in `-latest`, not `-preview`
+    // or `-preview-<digits>`, so that rule cannot reach it and it must be
+    // enumerated. Not a voice family, so no knownVoiceModelFamilies pairing.
+    //
+    // Decision: EXCLUDE, recorded in
+    // drift-proposals/gemini-antigravity-preview-latest-new-family.md.
+    "antigravity-preview-latest",
     // NOTE: every `-preview` family (gemini-3.x preview tiers, deep-research
     // previews, antigravity-preview-05, computer-use-preview-10, image/tts/robotics
     // previews, lyria/veo/nano-banana previews, gemini-embedding-2-preview, …) is
