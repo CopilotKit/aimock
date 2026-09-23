@@ -349,7 +349,10 @@ const DEFAULT_MODELS = [
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  // Every method the dispatcher serves: PUT is dispatched for
+  // `/fal/queue/requests/{requestId}` (status/cancel/result), so a preflight
+  // that omits it makes browsers refuse that call.
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "*",
   // Response headers are invisible to cross-origin JS unless exposed. The
   // journal's pagination total is a response header (the body stays a bare

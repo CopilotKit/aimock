@@ -353,10 +353,25 @@ describe("GET/POST/DELETE /__aimock/chaos", () => {
     const allowed = String(preflight.headers["access-control-allow-methods"])
       .split(",")
       .map((m) => m.trim());
-    expect(allowed).toEqual(expect.arrayContaining(["GET", "POST", "DELETE"]));
-    // PUT would be the only one in the whole control surface — and is not used.
-    expect(allowed).not.toContain("PUT");
+    expect(allowed).toEqual(expect.arrayContaining(["GET", "POST", "PUT", "DELETE"]));
+    // PUT is unused on the control surface itself (still 404s there) but IS
+    // dispatched for `/fal/queue/requests/{requestId}`, and the preflight
+    // headers are server-wide — omitting it makes browsers refuse that call.
     expect((await request(`${instance.url}/__aimock/chaos`, "PUT", { body: {} })).status).toBe(404);
+    // The fal surface's PUT must survive a browser preflight too.
+    const falPreflight = await request(`${instance.url}/fal/queue/requests/r1`, "OPTIONS", {
+      headers: {
+        Origin: "http://localhost:3000",
+        "Access-Control-Request-Method": "PUT",
+        "Access-Control-Request-Headers": "content-type",
+      },
+    });
+    expect(falPreflight.status).toBe(204);
+    expect(
+      String(falPreflight.headers["access-control-allow-methods"])
+        .split(",")
+        .map((m) => m.trim()),
+    ).toEqual(expect.arrayContaining(["PUT"]));
     // The journal total is a response header, so it must be readable too.
     expect(String(preflight.headers["access-control-expose-headers"])).toContain("X-Total-Count");
   });
