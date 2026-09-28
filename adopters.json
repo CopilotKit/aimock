@@ -1,585 +1,67 @@
 {
-  "lastScan": "2026-09-21T18:17:18.690Z",
+  "generatedAt": "2026-09-28T00:00:00Z",
   "adopters": [
-    {
-      "repo": "affromero/flight-finder",
-      "stars": 156,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "ag-ui-protocol/ag-ui",
-      "stars": 15974,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "agentskillexchange/skills",
-      "stars": 41,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "alpoxdev/openbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "Anmol-Baranwal/aimock-testing",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol",
-        "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ansu86d/copilotkit-llm-mock",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "atomicstrata/llm-wiki-compiler",
-      "stars": 2078,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "azents/azents",
-      "stars": 16,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "BodhiSearch/BodhiApp",
-      "stars": 138,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "botiverse/oar",
-      "stars": 8,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cacheplane/angular-agent-framework",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 2
-    },
-    {
-      "repo": "cacheplane/dawnai",
-      "channels": [
-        "adopter-display"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14T17:02:51.173Z"
-    },
-    {
-      "repo": "cacheplane/threadplane",
-      "stars": 64,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cjcrist/notebooklm-lite",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "ComposioHQ/composio",
-      "stars": 30271,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "corovcam/Universal-Object-Mapping",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "container",
-        "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cortexkit/aft",
-      "stars": 303,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "cortexkit/magic-context",
-      "stars": 2171,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "deepnote/vscode-deepnote",
-      "stars": 46,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "EmberAGI/arbitrum-vibekit",
-      "stars": 53,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "empireX8/ai-companion",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "gagan114662/openbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "galElmalah/claude-mods",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "hamchowderr/mastra-chat-kit",
-      "stars": 5,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "jerelvelarde/angular-research-copilot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "jerelvelarde/copilotkit-engineering-map",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "jerelvelarde/cpk-pm-demo",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "karakeep-app/karakeep",
-      "stars": 29191,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "kendoriddy/plugiq-agentforce",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "knap-ai/knapsack_desktop",
-      "stars": 9,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "liveloveapp/hashbrown",
-      "stars": 723,
-      "isFork": false,
-      "channels": [
-        "package",
-        "npx"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "marieai/marie-ai",
-      "stars": 96,
-      "isFork": false,
-      "channels": [
-        "package",
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "mastra-ai/mastra",
-      "stars": 28239,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "mattermost/mattermost-plugin-agents",
-      "stars": 250,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "mockagents/mockagents",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "Near-One/nomadic-ironclaw",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "octelium/octelium",
-      "stars": 4065,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "openclaw/openclaw",
-      "stars": 390198,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "openstory-so/openstory",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ranst91/remote-skills",
-      "stars": 12,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "rivet-dev/agentos",
-      "stars": 4647,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "rophy/opencode-rc",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "selfagency/agentsy",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "selfagency/opilot",
-      "stars": 90,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "Shubhamsaboo/awesome-llm-apps",
-      "stars": 139287,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "SkillNerds/xskill",
-      "channels": [
-        "adopter-display"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14T17:02:51.173Z"
-    },
-    {
-      "repo": "SkrOYC/langchain-middlewares-callbacks-ts",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "SouvikJoy/clover-platform",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "sshkeda/nudge",
-      "stars": 2,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "supabitapp/supaterm",
-      "stars": 173,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tanaabased/openclaw-agent-system",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "package",
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "TanStack/ai",
-      "stars": 3128,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "technicalpickles/a2a-experiments",
-      "stars": 1,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tercumantanumut/selene",
-      "stars": 167,
-      "isFork": false,
-      "channels": [
-        "symbol"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "testchimphq/testchimp-skills",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 2
-    },
-    {
-      "repo": "testomatio/explorbot",
-      "stars": 78,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "thushan/olla",
-      "stars": 303,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "tmoody1973/openbot",
-      "stars": 0,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-21T00:00:00.000Z"
-    },
-    {
-      "repo": "umyunsang/UMMAYA",
-      "stars": 5,
-      "isFork": false,
-      "channels": [
-        "container"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "usetheokit/theokit-sdk",
-      "stars": 3,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    },
-    {
-      "repo": "ysansan98/ant-chat",
-      "channels": [
-        "adopter-display"
-      ],
-      "missedRuns": 0,
-      "firstSeen": "2026-09-14T17:02:51.173Z"
-    },
-    {
-      "repo": "Zoo-Code-Org/Zoo-Code",
-      "stars": 1878,
-      "isFork": false,
-      "channels": [
-        "package"
-      ],
-      "missedRuns": 0
-    }
+    {"repo":"Shubhamsaboo/awesome-llm-apps","stars":140060,"isFork":false,"channels":["container"]},
+    {"repo":"ComposioHQ/composio","stars":30348,"isFork":false,"channels":["package","npx"]},
+    {"repo":"karakeep-app/karakeep","stars":29328,"isFork":false,"channels":["container"]},
+    {"repo":"mastra-ai/mastra","stars":28393,"isFork":false,"channels":["package"]},
+    {"repo":"ag-ui-protocol/ag-ui","stars":16082,"isFork":false,"channels":["package","npx"]},
+    {"repo":"rivet-dev/agentos","stars":4673,"isFork":false,"channels":["symbol"]},
+    {"repo":"TanStack/ai","stars":3144,"isFork":false,"channels":["package"]},
+    {"repo":"alpic-ai/skybridge","stars":2104,"isFork":false,"channels":["symbol"]},
+    {"repo":"thushan/olla","stars":310,"isFork":false,"channels":["container"]},
+    {"repo":"mattermost/mattermost-plugin-agents","stars":251,"isFork":false,"channels":["container"]},
+    {"repo":"Rikinshah787/opensource-muse","stars":1,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"openclaw/openclaw","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"liveloveapp/hashbrown","stars":0,"isFork":false,"channels":["package","npx"]},
+    {"repo":"cortexkit/aft","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"openstory-so/openstory","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"BodhiSearch/BodhiApp","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"selfagency/opilot","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"testomatio/explorbot","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"selfagency/agentsy","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"atomicstrata/llm-wiki-compiler","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"Zoo-Code-Org/Zoo-Code","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"azents/azents","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"corovcam/Universal-Object-Mapping","stars":0,"isFork":false,"channels":["container","npx"]},
+    {"repo":"jerelvelarde/copilotkit-engineering-map","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"jerelvelarde/angular-research-copilot","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"jerelvelarde/cpk-pm-demo","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"cortexkit/magic-context","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"marieai/marie-ai","stars":0,"isFork":false,"channels":["package","container"]},
+    {"repo":"deepnote/vscode-deepnote","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"tanaabased/openclaw-agent-system","stars":0,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"Near-One/nomadic-ironclaw","stars":0,"isFork":false,"channels":["container"]},
+    {"repo":"Anmol-Baranwal/aimock-testing","stars":0,"isFork":false,"channels":["symbol","npx"]},
+    {"repo":"umyunsang/UMMAYA","stars":0,"isFork":false,"channels":["container"]},
+    {"repo":"agentskillexchange/skills","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"supabitapp/supaterm","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"botiverse/oar","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"gagan114662/openbot","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"tercumantanumut/selene","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"cacheplane/threadplane","stars":0,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"EmberAGI/arbitrum-vibekit","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"hamchowderr/mastra-chat-kit","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"ansu86d/copilotkit-llm-mock","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"affromero/flight-finder","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"ranst91/remote-skills","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"sshkeda/nudge","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"galElmalah/claude-mods","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"mockagents/mockagents","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"rophy/opencode-rc","stars":0,"isFork":false,"channels":["container"]},
+    {"repo":"alpoxdev/openbot","stars":0,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"tmoody1973/openbot","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"kendoriddy/plugiq-agentforce","stars":0,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"SouvikJoy/clover-platform","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"empireX8/ai-companion","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"SkrOYC/langchain-middlewares-callbacks-ts","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"cjcrist/notebooklm-lite","stars":0,"isFork":false,"channels":["container"]},
+    {"repo":"AXT224/openmuse","stars":0,"isFork":false,"channels":["package","symbol"]},
+    {"repo":"galElmalah/claude-queue-plugin","stars":0,"isFork":false,"channels":["package"]},
+    {"repo":"MadonnaMat/intellivault","stars":0,"isFork":false,"channels":["container"]},
+    {"repo":"thomascfoley-stack/carvis-web","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"drexc/Andy-Agent","stars":0,"isFork":false,"channels":["symbol"]},
+    {"repo":"sherhanfsl/copilot","stars":0,"isFork":false,"channels":["package","container"]},
+    {"repo":"OpenBox-AI/openbox-copilotkit-sdk","stars":0,"isFork":false,"channels":["container"]}
   ]
 }
