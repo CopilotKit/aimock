@@ -147,7 +147,13 @@ export function getLastUserText(messages: ChatMessage[]): string | null {
  * starts from index 0.
  */
 function regexTest(re: RegExp, text: string): boolean {
-  return new RegExp(re.source, re.flags).test(text);
+  const savedLastIndex = re.lastIndex;
+  try {
+    re.lastIndex = 0;
+    return re.test(text);
+  } finally {
+    re.lastIndex = savedLastIndex;
+  }
 }
 
 /**
