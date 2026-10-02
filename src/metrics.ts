@@ -5,6 +5,47 @@
  * with Prometheus text exposition format serialization.
  */
 
+import {
+  AZURE_DEPLOYMENT_RE as AZURE_RE,
+  BATCHES_CANCEL_RE,
+  BATCHES_ID_RE,
+  BYTEPLUS_VIDEO_STATUS_RE,
+  BYTEPLUS_VIDEO_SUBMIT_RE,
+  ELEVENLABS_TTS_RE,
+  ELEVENLABS_VOICE_RE,
+  FAL_ROUTE_RE,
+  FILES_CONTENT_RE,
+  FILES_ID_RE,
+  FINE_TUNING_ID_RE,
+  GROK_VIDEO_STATUS_RE,
+  GROK_VIDEO_SUBMIT_PATH,
+  OPENAI_VIDEO_STATUS_RE,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+  VEO_OPERATION_RE,
+  VEO_PREDICT_LRO_RE,
+} from "./route-registry.js";
+
+// Re-exported so existing importers (route tests) keep resolving these
+// against the metrics module. The bindings ARE the registry's — there is
+// exactly one pattern object per route family.
+export {
+  BATCHES_CANCEL_RE,
+  BATCHES_ID_RE,
+  BYTEPLUS_VIDEO_STATUS_RE,
+  BYTEPLUS_VIDEO_SUBMIT_RE,
+  FAL_ROUTE_RE,
+  FILES_CONTENT_RE,
+  FILES_ID_RE,
+  GROK_VIDEO_STATUS_RE,
+  GROK_VIDEO_SUBMIT_PATH,
+  OPENAI_VIDEO_STATUS_RE,
+  OPENROUTER_VIDEO_CONTENT_RE,
+  OPENROUTER_VIDEO_STATUS_RE,
+  VEO_OPERATION_RE,
+  VEO_PREDICT_LRO_RE,
+};
+
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
@@ -214,9 +255,16 @@ export function createMetricsRegistry(): MetricsRegistry {
 // Path normalization for metric labels
 // ---------------------------------------------------------------------------
 
-// Regex patterns for parametric API routes
+// Regex patterns for parametric API routes. The dispatch+labeling patterns
+// shared with server.ts dispatch and the machine-readable catalog are defined
+// in route-registry.ts (single source of truth) and imported above; only
+// labeling-specific patterns are declared here: the Bedrock union, the Looser
+// Vertex shape, the widened Gemini action bucket (+ its allowlists), and the
+// served-or-not namespace cascades below.
 const BEDROCK_RE =
   /^\/model\/([^/]+)\/(invoke|invoke-with-response-stream|converse|converse-stream)$/;
+const VERTEX_RE =
+  /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
 // Gemini `/v1beta/models/{model}:{action}`. The action segment is caller
 // controlled, so only the actions the server routes stay verbatim; anything
 // else collapses to `{action}`. `predictLongRunning` is listed so the Veo
@@ -233,50 +281,9 @@ const GEMINI_ACTIONS = new Set([
   "predictLongRunning",
 ]);
 const GEMINI_MODEL_RE = /^\/v1beta\/models\/([^:/]+)$/;
-const AZURE_RE = /^\/openai\/deployments\/([^/]+)\/(chat\/completions|embeddings)$/;
-const ELEVENLABS_TTS_RE = /^\/v1\/text-to-speech\/([^/]+)$/;
-const ELEVENLABS_VOICE_RE = /^\/v1\/voices\/([^/]+)$/;
-const VERTEX_RE =
-  /^\/v1\/projects\/([^/]+)\/locations\/([^/]+)\/publishers\/google\/models\/([^:]+):(.+)$/;
 // The Vertex `:action` segment is caller controlled exactly as Gemini's is;
 // server.ts routes only these two, so anything else collapses to `{action}`.
 const VERTEX_ACTIONS = new Set(["generateContent", "streamGenerateContent"]);
-// Exported: server.ts route dispatch matches the same OpenRouter and OpenAI
-// video paths.
-export const OPENROUTER_VIDEO_CONTENT_RE = /^\/api\/v1\/videos\/([^/]+)\/content$/;
-export const OPENROUTER_VIDEO_STATUS_RE = /^\/api\/v1\/videos\/([^/]+)$/;
-export const OPENAI_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
-// Exported: server.ts route dispatch matches the same Google Veo and xAI Grok
-// video paths. Veo submit (`:predictLongRunning`) is anchored so it never
-// collides with the bare Gemini `:predict` route; Veo operations live in a
-// fresh `/v1beta/operations/...` namespace. Grok submit is an exact literal
-// path; Grok status reuses the OpenAI `/v1/videos/{id}` shape (the dispatch
-// guards `id !== "generations"` and the job-map lookup disambiguates Sora).
-export const VEO_PREDICT_LRO_RE = /^\/v1beta\/models\/([^:]+):predictLongRunning$/;
-export const VEO_OPERATION_RE = /^\/v1beta\/(operations\/.+)$/;
-export const GROK_VIDEO_SUBMIT_PATH = "/v1/videos/generations";
-export const GROK_VIDEO_STATUS_RE = /^\/v1\/videos\/([^/]+)$/;
-
-/**
- * BytePlus Ark (Seedance) async video task routes. The `/api/v3` prefix is
- * ENUMERATED rather than wildcarded: Ark's data-plane base carries it, but a
- * client may point `baseURL` at a bare aimock root instead, so both forms must
- * route. A tolerant `(?:\/[^?]*)?` prefix would additionally claim
- * `/fal/contents/generations/tasks` — and these routes dispatch in the
- * pre-rewrite band, ~1,100 lines ahead of every fal branch, so it would take
- * that path away from the fal proxy. Enumerating the one real prefix also
- * blocks a doubled suffix from matching the status RE.
- *
- * Declared here (not in server.ts) because normalizePathLabel below consumes
- * them, matching the existing OpenRouter/Veo/Grok route-regex edge where
- * server.ts imports its route regexes from this module.
- */
-export const BYTEPLUS_VIDEO_SUBMIT_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks$/;
-export const BYTEPLUS_VIDEO_STATUS_RE = /^(?:\/api\/v3)?\/contents\/generations\/tasks\/([^/]+)$/;
-export const BATCHES_CANCEL_RE = /^\/v1\/batches\/([^/]+)\/cancel$/;
-export const BATCHES_ID_RE = /^\/v1\/batches\/([^/]+)$/;
-export const FILES_CONTENT_RE = /^\/v1\/files\/([^/]+)\/content$/;
-export const FILES_ID_RE = /^\/v1\/files\/([^/]+)$/;
 
 /**
  * Closed namespaces beyond fine-tuning. Each prefix below is entered by prefix
@@ -296,11 +303,10 @@ export const FILES_ID_RE = /^\/v1\/files\/([^/]+)$/;
  *   shapes; any other depth collapses to the namespace's `{other}`.
  */
 /**
- * The fal.ai route shape, shared with server.ts so the label rule cannot
- * drift from the route rule: a bare `/fal` is routed, so it is labelled here
- * rather than falling through to `{unknown}`.
+ * The fal.ai route shape (`FAL_ROUTE_RE`, imported from route-registry.ts so
+ * the label rule cannot drift from the route rule): a bare `/fal` is routed,
+ * so it is labelled here rather than falling through to `{unknown}`.
  */
-export const FAL_ROUTE_RE = /^\/fal(?:\/.*)?$/;
 const FAL_QUEUE_REQUEST_RE = /^\/fal\/queue\/requests\/[^/]+(?:\/([^/]+))?$/;
 const FAL_MIRROR_REQUEST_RE = /^\/fal\/.+\/requests\/[^/]+(?:\/([^/]+))?$/;
 const FAL_REQUEST_SUBRESOURCES = new Set(["status", "cancel", "stream"]);
@@ -401,6 +407,8 @@ const CONTROL_PATHS = new Set([
   "/__aimock/reset/journal",
   "/__aimock/reset/fixtures",
   "/__aimock/error",
+  "/__aimock/openapi.json",
+  "/__aimock/routes",
 ]);
 const CONTROL_OTHER_LABEL = "/__aimock/{other}";
 
@@ -451,7 +459,9 @@ export const DESTROYED_STATUS_LABEL = "destroyed";
  * matter what is requested; an un-collapsed tail would leave the hole open to
  * a typo or a fuzzer.
  *
- * Not exported: server.ts routes fine-tuning with its own private REs.
+ * Not exported: server.ts dispatches fine-tuning jobs from the same
+ * route-registry.ts bindings (`FINE_TUNING_JOBS_PATH`, `FINE_TUNING_ID_RE`,
+ * `FINE_TUNING_CANCEL_RE`, `FINE_TUNING_EVENTS_RE`).
  */
 const FINE_TUNING_PREFIX = "/v1/fine_tuning/";
 const FINE_TUNING_STATIC_PATHS = new Set([
@@ -461,7 +471,6 @@ const FINE_TUNING_STATIC_PATHS = new Set([
 ]);
 const FINE_TUNING_SUBRESOURCE_RE = /^\/v1\/fine_tuning\/jobs\/[^/]+\/([^/]+)$/;
 const FINE_TUNING_SUBRESOURCES = new Set(["cancel", "events", "pause", "resume", "checkpoints"]);
-const FINE_TUNING_ID_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)$/;
 const FINE_TUNING_PERMISSION_ID_RE = /^\/v1\/fine_tuning\/checkpoints\/[^/]+\/permissions\/[^/]+$/;
 const FINE_TUNING_CHECKPOINT_SUBRESOURCE_RE = /^\/v1\/fine_tuning\/checkpoints\/[^/]+\/([^/]+)$/;
 const FINE_TUNING_CHECKPOINT_SUBRESOURCES = new Set(["permissions"]);
