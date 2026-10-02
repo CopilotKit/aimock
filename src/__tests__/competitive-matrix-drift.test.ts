@@ -94,10 +94,16 @@ const CASES: DriftCase[] = [
     outcome: { kind: "throw", entity: "VidaiMock" },
   },
   {
+    // VidaiMock's migration page has no AWS Bedrock row, so no page changes
+    // whatever the live cells show.
     name: "row-less-only detection",
     drift: (html) => html,
-    features: [["mock-llm", { "AWS Bedrock": true }]],
-    outcome: { kind: "report", heading: ROWLESS_HEADING, row: "| mock-llm | AWS Bedrock |" },
+    features: [["VidaiMock", { "AWS Bedrock": true }]],
+    outcome: {
+      kind: "report",
+      heading: ROWLESS_HEADING,
+      row: "| VidaiMock | AWS Bedrock | no row |",
+    },
   },
   {
     name: "row-less-only detection for a competitor with no migration-page row",

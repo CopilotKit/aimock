@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +18,7 @@ import {
   applyChanges,
   classifyNoCell,
   runMatrixUpdate,
+  COMPETITOR_MIGRATION_PAGES,
   type DetectedChange,
 } from "../../scripts/update-competitive-matrix.js";
 
@@ -270,6 +279,11 @@ describe("a no-cell the flip cannot place fails the whole run", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "cm-nocell-run-"));
     mkdirSync(join(root, "docs"), { recursive: true });
+    // The run reads every scanned competitor's migration page.
+    for (const rel of Object.values(COMPETITOR_MIGRATION_PAGES)) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      copyFileSync(resolve(REPO_ROOT, rel), join(root, rel));
+    }
     let html = withCell(HOMEPAGE, "Claude Messages API", "mock-llm", '<td class="no">No</td>');
     html = withCell(
       html,

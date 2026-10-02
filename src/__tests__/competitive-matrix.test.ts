@@ -121,7 +121,7 @@ describe("migration page table update logic", () => {
     );
   });
 
-  it("returns no changes when no table is found", () => {
+  it("throws when no table is found", () => {
     const noTableHtml = "<html><body><p>No table here</p></body></html>";
     const features: Record<string, boolean> = {
       "WebSocket APIs": true,
@@ -130,10 +130,7 @@ describe("migration page table update logic", () => {
       "Structured output / JSON mode": false,
     };
 
-    const { html, changes } = updateMigrationPage(noTableHtml, "TestComp", features, 5);
-
-    expect(html).toBe(noTableHtml);
-    expect(changes).toHaveLength(0);
+    expect(() => updateMigrationPage(noTableHtml, "TestComp", features, 5)).toThrow(/table/i);
   });
 
   it("handles endpoint-table class as well as comparison-table", () => {

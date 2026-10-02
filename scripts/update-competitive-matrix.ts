@@ -5,9 +5,9 @@
  *
  * Fetches competitor READMEs and package.json files from GitHub, extracts
  * feature signals via keyword matching, and updates the comparison table in
- * docs/index.html when evidence of new capabilities is found. A competitor's
- * migration page is updated only when that competitor has an applied
- * homepage change.
+ * docs/index.html when evidence of new capabilities is found. Every scanned
+ * competitor's migration page is updated from the same detections, and the
+ * detections that no page can hold are listed in the summary.
  *
  * Usage:
  *   npx tsx scripts/update-competitive-matrix.ts                        # update in place
@@ -49,7 +49,7 @@ export interface DetectedChange {
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-const COMPETITORS: Competitor[] = [
+export const COMPETITORS: readonly Competitor[] = [
   { name: "VidaiMock", repo: "vidaiUK/VidaiMock" },
   { name: "mock-llm", repo: "dwmkerr/mock-llm" },
   { name: "piyook/llm-mock", repo: "piyook/llm-mock" },
@@ -65,7 +65,11 @@ export const FEATURE_RULES = [
   },
   {
     rowLabel: "Responses API SSE",
-    keywords: ["responses", "/v1/responses", "response.create"],
+    // Evidence of the Responses API itself. The plain word "responses" is
+    // ordinary English, and the Realtime event "response.create" is not the
+    // Responses API. "v1/responses" has no leading slash so it also matches
+    // inside a URL such as localhost:8100/v1/responses.
+    keywords: ["v1/responses", "responses api", "responses\\.create"],
   },
   {
     rowLabel: "Claude Messages API",
@@ -273,14 +277,12 @@ export type RuleLabel = (typeof FEATURE_RULES)[number]["rowLabel"];
 
 /**
  * Rules that intentionally have no row in the docs/index.html matrix, with the
- * reason. A detection of one of these rules never causes a page update by
- * itself: runMatrixUpdate() lists every row-less detection in the summary and
- * the log for manual follow-up. A migration page is updated only for a
- * competitor that also has an applied homepage change; that update applies
- * all of the competitor's detections (runMatrixUpdate passes the competitor's
- * full feature map to updateMigrationPage). Every
- * other rule must name a real homepage row; the run fails if one does not, so
- * a renamed row cannot silently stop the scan.
+ * reason. A detection of one of these rules never changes the homepage:
+ * runMatrixUpdate() lists every row-less detection in the summary and the log
+ * for manual follow-up, with what the competitor's migration page did with it
+ * (the page is updated when it has a row for the rule). Every other rule must
+ * name a real homepage row; the run fails if one does not, so a renamed row
+ * cannot silently stop the scan.
  */
 export const MATRIX_ROWLESS_RULES: Partial<Record<RuleLabel, string>> = {
   "Realtime GA protocol": "The homepage folds Realtime into the WebSocket APIs row.",
@@ -306,7 +308,11 @@ export function isRowlessRule(label: string): boolean {
   return Object.hasOwn(MATRIX_ROWLESS_RULES, label);
 }
 
-/** Maps competitor display names to their migration page paths (relative to docs/) */
+/**
+ * Maps each competitor display name to its migration page path, relative to
+ * the repository root. Every competitor in COMPETITORS must have one: the run
+ * fails when a scanned competitor has no page, or its page is missing.
+ */
 export const COMPETITOR_MIGRATION_PAGES: Record<string, string> = {
   VidaiMock: "docs/migrate-from-vidaimock/index.html",
   "mock-llm": "docs/migrate-from-mock-llm/index.html",
@@ -470,107 +476,246 @@ export function countProviders(text: string): number {
 }
 
 // ── Migration Page Updating ─────────────────────────────────────────────────
+//
+// Migration page tables use a different format than the index.html matrix:
+// - "Yes" cells: <td style="color: var(--accent)">&#10003;</td>
+// - "No" cells:  <td style="color: var(--error)">&#10007;</td>
+// Their row labels are more descriptive than the homepage's, so each rule
+// names its migration-page labels in buildMigrationRowPatterns, and a row that
+// combines several capabilities is listed in MIGRATION_COMBINED_ROWS.
+
+/** The comparison table of a migration page (both class names are in use). */
+const MIGRATION_TABLE_RE = /<table class="(?:comparison-table|endpoint-table)">([\s\S]*?)<\/table>/;
+
+/** The migration-page markup for a "yes" cell. */
+const MIGRATION_YES_CELL = '<td style="color: var(--accent)">&#10003;</td>';
 
 /**
- * Updates a migration page's comparison table cells from the "no" state
- * (&#10007;) to the "yes" state (&#10003;) when a feature is detected.
- *
- * Migration page tables use a different format than the index.html matrix:
- * - "Yes" cells: <td style="color: var(--accent)">&#10003;</td>
- * - "No" cells:  <td style="color: var(--error)">&#10007;</td>
- *
- * The function also updates numeric provider claims in both table cells and
- * prose text (e.g., "5 providers" -> "8 providers").
+ * Migration-page rows that combine several capabilities, with the rules each
+ * one covers. One detection must not mark the whole row as supported, so such
+ * a row is never flipped: a detection whose cell there shows "no" is listed
+ * for a manual check instead.
  */
-/**
- * Finds the 0-based <td> index of a competitor's column in a migration-page
- * table by matching the <th> header text to the competitor name. The <th> list
- * includes the leading "Capability" header at index 0, which aligns with the
- * leading label <td> in each body row, so the returned index can be used
- * directly against a row's <td> list. Matching is case-insensitive and
- * bidirectional-substring so header text ("Mokksy") resolves against the
- * competitor key ("mokksy/ai-mocks", whose leading token "mokksy" matches the
- * "Mokksy" header). Returns -1 when no column matches.
- *
- * Matching is intentionally token-aware rather than loose-substring: a plain
- * bidirectional `includes` would wrongly match the "aimock" header against the
- * "VidaiMock" competitor (the string "vidaimock" contains "aimock").
- */
-function findMigrationCompetitorColumn(tableHtml: string, competitorName: string): number {
-  const thRegex = /<th[^>]*>([\s\S]*?)<\/th>/g;
-  const thTexts: string[] = [];
-  let thM: RegExpExecArray | null;
-  while ((thM = thRegex.exec(tableHtml)) !== null) {
-    thTexts.push(thM[1].trim());
-  }
-  const comp = competitorName.toLowerCase();
-  const compToken = comp.split("/")[0]; // "mokksy/ai-mocks" -> "mokksy"
-  return thTexts.findIndex((t) => {
-    const h = t.toLowerCase();
-    return h.length > 0 && (h === comp || h === compToken || h.includes(comp));
-  });
+export const MIGRATION_COMBINED_ROWS: Readonly<Record<string, readonly RuleLabel[]>> = {
+  "Azure OpenAI / Vertex AI / Ollama / Cohere": ["Azure OpenAI"],
+  "AWS Bedrock / Azure / Vertex AI / Ollama / Cohere": ["AWS Bedrock", "Azure OpenAI"],
+  "Docker / Helm": ["Docker image", "Helm chart"],
+  "MCP / A2A / AG-UI / Vector": ["AG-UI event mocking"],
+  "MCP / A2A / AG-UI / Vector mocking": ["AG-UI event mocking"],
+};
+
+/** What updateMigrationPage did with one detected rule on one row. */
+export type MigrationRowStatus =
+  /** The competitor's cell showed "no" and now shows "yes". */
+  | "flipped"
+  /** The competitor's cell does not show "no"; nothing to change. */
+  | "not-no"
+  /** The row combines several capabilities and the cell shows "no": check by hand. */
+  | "combined-row"
+  /** The cell shows "no" in a shape the scan cannot flip: check by hand. */
+  | "unsupported-no-cell"
+  /** The page has no row for the rule. */
+  | "no-row";
+
+export interface MigrationRowOutcome {
+  /** The FEATURE_RULES label of the detection. */
+  rule: string;
+  /** The plain-text row label, or null when the page has no row for the rule. */
+  row: string | null;
+  /** True when the row is in MIGRATION_COMBINED_ROWS. */
+  combined: boolean;
+  status: MigrationRowStatus;
 }
 
+/** One body row of a migration-page table. */
+interface MigrationRow {
+  /** Plain-text label (the first cell, character references decoded). */
+  label: string;
+  cells: RowCell[];
+}
+
+/** A migration page's comparison table, checked and read. */
+interface MigrationTable {
+  /** The whole <table>...</table> HTML. */
+  full: string;
+  /** The competitor's cell index within each row. */
+  colIdx: number;
+  rows: MigrationRow[];
+}
+
+/** Plain text of a cell: tags removed, character references decoded. */
+function cellText(inner: string): string {
+  return decodeHTML(inner.replace(/<[^>]*>/g, "")).trim();
+}
+
+/**
+ * Finds the 0-based cell index of a competitor's column in a migration-page
+ * table by matching the <thead> header cell text to the competitor name.
+ * Header cells are the <th> and <td> cells inside <thead>; the leading
+ * "Capability" header (or an empty corner cell) is index 0 and aligns with
+ * the label cell of each body row, so the returned index can be used directly
+ * against a row's cells. Matching is case-insensitive and token-aware: header
+ * text "Mokksy" matches the competitor key "mokksy/ai-mocks" by its leading
+ * token, while the "aimock" header does not match "VidaiMock" (a plain
+ * substring test would). Returns -1 when no column matches, and -2 when more
+ * than one does.
+ */
+function findMigrationCompetitorColumn(tableHtml: string, competitorName: string): number {
+  const thead = tableHtml.match(/<thead\b[^>]*>([\s\S]*?)<\/thead>/)?.[1] ?? "";
+  const headers = splitRowCells(thead).map((cell) => cellText(cell.inner).toLowerCase());
+  const comp = competitorName.toLowerCase();
+  const compToken = comp.split("/")[0]; // "mokksy/ai-mocks" -> "mokksy"
+  const matches = headers
+    .map((h, i) => (h.length > 0 && (h === comp || h === compToken || h.includes(comp)) ? i : -1))
+    .filter((i) => i >= 0);
+  if (matches.length > 1) return -2;
+  return matches[0] ?? -1;
+}
+
+/**
+ * Reads a migration page's comparison table. Throws when the page has no
+ * table, no <thead> or <tbody>, no column (or more than one) for the
+ * competitor, a colspan cell, a body row whose cell count does not match the
+ * header, or two rows with the same label: the scan would otherwise skip the
+ * page, or change the wrong cell, without a report.
+ */
+function readMigrationTable(html: string, competitorName: string): MigrationTable {
+  const tableMatch = html.match(MIGRATION_TABLE_RE);
+  if (!tableMatch) {
+    throw new Error(
+      'The migration page has no <table class="comparison-table"> or "endpoint-table".',
+    );
+  }
+  const [full, inner] = tableMatch;
+  const thead = inner.match(/<thead\b[^>]*>([\s\S]*?)<\/thead>/)?.[1];
+  const tbody = inner.match(/<tbody\b[^>]*>([\s\S]*?)<\/tbody>/)?.[1];
+  if (thead === undefined || tbody === undefined) {
+    throw new Error("The migration page table has no <thead> or no <tbody>.");
+  }
+  const headerCells = splitRowCells(thead);
+  if (headerCells.some((cell) => COLSPAN_RE.test(cell.open))) {
+    throw new Error(
+      "The migration page table header has a colspan cell. colspan is not supported: " +
+        "give each column its own header cell.",
+    );
+  }
+  const colIdx = findMigrationCompetitorColumn(full, competitorName);
+  if (colIdx === -2) {
+    throw new Error(`The migration page table has more than one column for ${competitorName}.`);
+  }
+  if (colIdx <= 0) {
+    throw new Error(`The migration page table has no column for ${competitorName}.`);
+  }
+
+  const rows: MigrationRow[] = [];
+  const labels = new Set<string>();
+  for (const tr of tbody.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)) {
+    const cells = splitRowCells(tr[1]);
+    if (cells.length === 0) continue;
+    const label = rowLabelText(cells[0]);
+    assertRowMatchesHeader(label, cells, headerCells.length, "Migration page table");
+    if (labels.has(label)) {
+      throw new Error(`Duplicate row label in the migration page table: "${label}".`);
+    }
+    labels.add(label);
+    rows.push({ label, cells });
+  }
+  return { full, colIdx, rows };
+}
+
+/**
+ * Classifies a migration-page cell. "flippable" is the page's "no" cell (a
+ * lone cross in an error-colored cell). A cell with any other "no" sign (a
+ * cross, an error color, a `no` class, or text that starts with "No") is
+ * "unsupported", so it is reported rather than taken as "yes".
+ */
+function classifyMigrationCell(cell: RowCell): "flippable" | "not-no" | "unsupported" {
+  const isError = /var\(--error\)/.test(cell.open);
+  const saysNo =
+    isError ||
+    countMatches(cell.inner, CROSS_RE) > 0 ||
+    NO_CLASS_RE.test(cell.open) ||
+    NO_CLASS_RE.test(cell.inner) ||
+    /^no\b/i.test(cellText(cell.inner));
+  if (!saysNo) return "not-no";
+  const loneCross = new RegExp(String.raw`^\s*${CROSS_SRC}\s*$`, "i").test(cell.inner);
+  return isError && loneCross ? "flippable" : "unsupported";
+}
+
+/**
+ * Updates a competitor's migration page from its detections: each detected
+ * rule's row (see buildMigrationRowPatterns) whose competitor cell shows the
+ * page's "no" cell is flipped to "yes". Rows in MIGRATION_COMBINED_ROWS are
+ * never flipped. Also raises numeric provider claims (see
+ * updateProviderCounts).
+ *
+ * Returns the updated HTML, one change line per flipped row or provider
+ * claim, and one outcome per detected rule and matching row (or one "no-row"
+ * outcome when the page has no row for the rule), in FEATURE_RULES order.
+ * Throws when the page's table cannot be read (see readMigrationTable).
+ */
 export function updateMigrationPage(
   html: string,
   competitorName: string,
   features: Record<string, boolean>,
   providerCount: number,
-): { html: string; changes: string[] } {
-  let result = html;
+): { html: string; changes: string[]; outcomes: MigrationRowOutcome[] } {
+  const table = readMigrationTable(html, competitorName);
   const changes: string[] = [];
+  const outcomes: MigrationRowOutcome[] = [];
+  const flips = new Set<string>(); // row labels to flip
 
-  // Find the comparison table (class="comparison-table" or class="endpoint-table")
-  const tableMatch = result.match(
-    /<table class="(?:comparison-table|endpoint-table)">([\s\S]*?)<\/table>/,
-  );
-  if (!tableMatch) {
-    return { html: result, changes };
+  for (const rule of FEATURE_RULES) {
+    if (!features[rule.rowLabel]) continue;
+    const labels = buildMigrationRowPatterns(rule.rowLabel);
+    let found = false;
+    for (const row of table.rows) {
+      const combined =
+        Object.hasOwn(MIGRATION_COMBINED_ROWS, row.label) &&
+        MIGRATION_COMBINED_ROWS[row.label].includes(rule.rowLabel);
+      if (!combined && !labels.includes(row.label)) continue;
+      found = true;
+      const shape = classifyMigrationCell(row.cells[table.colIdx]);
+      let status: MigrationRowStatus;
+      if (shape === "not-no") status = "not-no";
+      else if (combined) status = "combined-row";
+      else if (shape === "unsupported") status = "unsupported-no-cell";
+      else {
+        status = "flipped";
+        flips.add(row.label);
+      }
+      outcomes.push({ rule: rule.rowLabel, row: row.label, combined, status });
+    }
+    if (!found)
+      outcomes.push({ rule: rule.rowLabel, row: null, combined: false, status: "no-row" });
   }
 
-  // Locate the competitor's column by header name (NOT by assuming it is the
-  // first data column) so the correct cell flips even when an intervening
-  // column (e.g. aimock) precedes it.
-  const compColIdx = findMigrationCompetitorColumn(tableMatch[0], competitorName);
-
-  // Update feature cells: find rows where the competitor column shows &#10007;
-  // and the feature was detected.
-  if (compColIdx >= 0) {
-    for (const rule of FEATURE_RULES) {
-      if (!features[rule.rowLabel]) continue;
-
-      // Migration tables have different row labels than the index matrix.
-      // We look for rows that conceptually match the feature rule.
-      const rowPatterns = buildMigrationRowPatterns(rule.rowLabel);
-      for (const rowPat of rowPatterns) {
-        const rowRegex = new RegExp(`<tr>\\s*<td>${escapeRegex(rowPat)}</td>[\\s\\S]*?</tr>`);
-        const rowMatch = result.match(rowRegex);
-        if (!rowMatch) continue;
-
-        const fullRow = rowMatch[0];
-        let tdIdx = 0;
-        let flipped = false;
-        const newRow = fullRow.replace(/<td[^>]*>[\s\S]*?<\/td>/g, (tdMatch) => {
-          const currentIdx = tdIdx++;
-          if (
-            currentIdx === compColIdx &&
-            /var\(--error\)/.test(tdMatch) &&
-            tdMatch.includes("&#10007;")
-          ) {
-            flipped = true;
-            return `<td style="color: var(--accent)">&#10003;</td>`;
-          }
-          return tdMatch;
-        });
-
-        if (flipped) {
-          // Function-form replacement keeps newRow literal (a $ / $& / $1 in the
-          // surrounding HTML must not be interpreted by String.replace).
-          result = result.replace(fullRow, () => newRow);
-          changes.push(`${competitorName}: ${rowPat} ✗ -> ✓`);
-        }
-      }
-    }
+  let result = html;
+  if (flips.size > 0) {
+    const newTable = table.full.replace(
+      /(<tbody\b[^>]*>)([\s\S]*?)(<\/tbody>)/,
+      (_m, tbodyOpen: string, tbodyInner: string, tbodyClose: string) =>
+        tbodyOpen +
+        tbodyInner.replace(
+          /(<tr\b[^>]*>)([\s\S]*?)(<\/tr>)/g,
+          (trMatch, trOpen: string, trInner: string, trClose: string) => {
+            const cells = splitRowCells(trInner);
+            if (cells.length === 0) return trMatch;
+            const label = rowLabelText(cells[0]);
+            if (!flips.has(label)) return trMatch;
+            let idx = 0;
+            const newInner = trInner.replace(/<(th|td)\b[^>]*>[\s\S]*?<\/\1>/g, (cell) =>
+              idx++ === table.colIdx ? MIGRATION_YES_CELL : cell,
+            );
+            changes.push(`${competitorName}: ${label} ✗ -> ✓`);
+            return trOpen + newInner + trClose;
+          },
+        ) +
+        tbodyClose,
+    );
+    // Function-form replacement keeps the HTML literal (a $ / $& / $1 in the
+    // table must not be interpreted by String.replace).
+    result = html.replace(table.full, () => newTable);
   }
 
   // Update provider count claims in the competitor column of the table
@@ -579,12 +724,13 @@ export function updateMigrationPage(
     result = updateProviderCounts(result, competitorName, providerCount, changes);
   }
 
-  return { html: result, changes };
+  return { html: result, changes, outcomes };
 }
 
 /**
  * Builds possible row label strings that a migration page might use for a given
  * feature rule. Migration pages use more descriptive labels than the index matrix.
+ * Rows that combine several capabilities are in MIGRATION_COMBINED_ROWS instead.
  */
 export function buildMigrationRowPatterns(rowLabel: string): string[] {
   const patterns = [rowLabel];
@@ -600,6 +746,7 @@ export function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Structured output / JSON mode": ["Structured output / JSON mode", "Structured output"],
     "Sequential / stateful responses": ["Sequential responses"],
     "Docker image": ["Docker"],
+    "Helm chart": ["Kubernetes / Helm"],
     "CLI server": ["CLI"],
     "Request journal": ["Request journal"],
     "Drift detection": ["Drift detection"],
@@ -694,15 +841,18 @@ export function updateProviderCounts(
 
   // Strategy 2: Replace provider counts in prose paragraphs/sentences that
   // explicitly mention the competitor by name.
+  // The text before the number is lazy and the number may not follow a digit,
+  // so the whole number is read: a greedy prefix would leave only the last
+  // digit ("12 providers" read as 2). The count is only ever raised.
   const prosePattern = new RegExp(
-    `(<[^>]*>[^<]*${escapedName}[^<]*)(\\d+)\\+?\\s*(?:LLM\\s*)?providers?`,
+    `(<[^>]*>[^<]*?${escapedName}[^<]*?)(?<!\\d)(\\d+)\\+?\\s*(?:LLM\\s*)?providers?`,
     "gi",
   );
-  result = result.replace(prosePattern, (match, prefix, numStr) => {
+  result = result.replace(prosePattern, (match, prefix: string, numStr: string) => {
     const currentCount = parseInt(numStr, 10);
     if (detectedCount > currentCount) {
       changes.push(`${competitorName}: provider count ${currentCount} -> ${detectedCount} (prose)`);
-      return match.replace(/(\d+)\+?\s*(?:LLM\s*)?providers?/, `${detectedCount} providers`);
+      return `${prefix}${detectedCount} providers`;
     }
     return match;
   });
@@ -811,20 +961,26 @@ function parseHeaderColumns(tableHtml: string): (string | null)[] {
  * not reach with no cell, so their detections would be dropped without a
  * report; a row with more cells has cells that belong to no column.
  *
- * colspan is rejected, not expanded: each homepage cell must belong to exactly
- * one column, so a flip changes the mark of one competitor only. parse and
- * apply both call this, so they agree on which rows they accept.
+ * colspan is rejected, not expanded: each cell must belong to exactly one
+ * column, so a flip changes the mark of one competitor only. parse and apply
+ * both call this, so they agree on which rows they accept. Migration pages use
+ * it too, with `table` naming the page's table in the message.
  */
-function assertRowMatchesHeader(rowLabel: string, cells: RowCell[], columnCount: number): void {
+function assertRowMatchesHeader(
+  rowLabel: string,
+  cells: RowCell[],
+  columnCount: number,
+  table = "Homepage matrix",
+): void {
   if (cells.some((cell) => COLSPAN_RE.test(cell.open))) {
     throw new Error(
-      `Homepage matrix row "${rowLabel}" has a colspan cell. colspan is not supported: ` +
+      `${table} row "${rowLabel}" has a colspan cell. colspan is not supported: ` +
         "give each column its own cell.",
     );
   }
   if (cells.length !== columnCount) {
     throw new Error(
-      `Homepage matrix row "${rowLabel}" has ${cells.length} cells but the header has ` +
+      `${table} row "${rowLabel}" has ${cells.length} cells but the header has ` +
         `${columnCount} columns. Give the row one cell per column.`,
     );
   }
@@ -1304,12 +1460,45 @@ export interface MigrationPageChange {
 export interface RowlessDetection {
   competitor: string;
   capability: string;
+  /** What the competitor's migration page did with it (see migrationStatusText). */
+  migrationPage?: string;
+}
+
+/**
+ * A detection whose migration-page cell shows "no" but that the run does not
+ * flip: the row combines several capabilities, or the cell is in a shape the
+ * scan cannot flip. The summary lists it for a manual check.
+ */
+export interface MigrationManualCheck {
+  /** Migration page path relative to the repo root */
+  page: string;
+  competitor: string;
+  capability: string;
+  /** The plain-text row label on the migration page. */
+  row: string;
+  reason: "combined-row" | "unsupported-no-cell";
+}
+
+/** One outcome as summary text, e.g. `"AWS Bedrock" ✗ -> ✓` or `no row`. */
+export function migrationStatusText(outcome: MigrationRowOutcome): string {
+  switch (outcome.status) {
+    case "no-row":
+      return "no row";
+    case "flipped":
+      return `"${outcome.row}" ✗ -> ✓`;
+    case "not-no":
+      return `"${outcome.row}" does not show no`;
+    case "combined-row":
+      return `"${outcome.row}" combines several capabilities: check by hand`;
+    case "unsupported-no-cell":
+      return `"${outcome.row}" shows no in a cell the scan cannot flip: check by hand`;
+  }
 }
 
 /**
  * Builds the markdown summary. The homepage section lists the changes that
- * were applied; the migration-page, row-less and fetch warning sections
- * follow it when non-empty. Unplaced changes never reach the summary:
+ * were applied; the migration-page, manual-check, row-less and fetch warning
+ * sections follow it when non-empty. Unplaced changes never reach the summary:
  * writeMatrixUpdate throws before writing one.
  *
  * fetchWarnings are optional-source fetches that failed while the run went
@@ -1322,6 +1511,7 @@ export function formatSummary(
   migrationChanges: MigrationPageChange[] = [],
   rowless: RowlessDetection[] = [],
   fetchWarnings: FetchFailure[] = [],
+  manualChecks: MigrationManualCheck[] = [],
 ): string {
   let md: string;
 
@@ -1337,9 +1527,9 @@ export function formatSummary(
     // anything below needs attention.
     if (incompleteHeadline !== "") {
       md = incompleteHeadline;
-    } else if (migrationChanges.length === 0 && rowless.length === 0) {
+    } else if (migrationChanges.length === 0 && rowless.length === 0 && manualChecks.length === 0) {
       md = "No competitive matrix changes detected this week.\n";
-    } else if (rowless.length > 0) {
+    } else if (rowless.length > 0 || manualChecks.length > 0) {
       md =
         "No homepage competitive matrix changes this week. Detections below need a manual check.\n";
     } else {
@@ -1393,16 +1583,35 @@ export function formatSummary(
     md += "\n" + lines.join("\n");
   }
 
+  if (manualChecks.length > 0) {
+    const lines = [
+      "## Migration Page Rows To Check By Hand",
+      "",
+      "The competitor's cell in these rows shows no, but the scan does not flip it: " +
+        "a combined row covers several capabilities, and an unsupported cell is not in the page's usual cross shape.",
+      "",
+      "| Page | Competitor | Capability | Row | Reason |",
+      "| --- | --- | --- | --- | --- |",
+    ];
+    for (const m of manualChecks) {
+      lines.push(`| \`${m.page}\` | ${m.competitor} | ${m.capability} | ${m.row} | ${m.reason} |`);
+    }
+    lines.push("");
+    md += "\n" + lines.join("\n");
+  }
+
   if (rowless.length > 0) {
     const lines = [
       "## Row-Less Detections (Manual Follow-Up)",
       "",
-      "These rules have no homepage row, so they never update a page by themselves. Check them by hand.",
+      "These rules have no homepage row. The last column says what the competitor's migration page did with each. Check them by hand.",
       "",
-      "| Competitor | Capability |",
-      "| --- | --- |",
+      "| Competitor | Capability | Migration page |",
+      "| --- | --- | --- |",
     ];
-    for (const r of rowless) lines.push(`| ${r.competitor} | ${r.capability} |`);
+    for (const r of rowless) {
+      lines.push(`| ${r.competitor} | ${r.capability} | ${r.migrationPage ?? "not checked"} |`);
+    }
     lines.push("");
     md += "\n" + lines.join("\n");
   }
@@ -1450,12 +1659,13 @@ function writeSummary(
   migrationChanges: MigrationPageChange[],
   rowless: RowlessDetection[],
   fetchWarnings: FetchFailure[],
+  manualChecks: MigrationManualCheck[],
   written: string[],
 ): void {
   writeOrReport(
     summaryPath,
     summaryPath,
-    formatSummary(changes, migrationChanges, rowless, fetchWarnings),
+    formatSummary(changes, migrationChanges, rowless, fetchWarnings, manualChecks),
     written,
   );
   console.log(`\nSummary written to ${summaryPath}`);
@@ -1497,6 +1707,8 @@ export interface MatrixUpdateOptions {
   rowless?: RowlessDetection[];
   /** Failed optional-source fetches; the summary lists them as warnings. */
   fetchWarnings?: FetchFailure[];
+  /** Migration-page detections to list in the summary for a manual check. */
+  manualChecks?: MigrationManualCheck[];
 }
 
 /**
@@ -1516,6 +1728,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
   const migrationUpdates = opts.migrationUpdates ?? [];
   const rowless = opts.rowless ?? [];
   const fetchWarnings = opts.fetchWarnings ?? [];
+  const manualChecks = opts.manualChecks ?? [];
   const pageChanges = (mu: MigrationPageUpdate): MigrationPageChange[] =>
     mu.changes.map((change) => ({ page: mu.relPath, change }));
 
@@ -1549,6 +1762,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
         migrationUpdates.flatMap(pageChanges),
         rowless,
         fetchWarnings,
+        manualChecks,
         [],
       );
     }
@@ -1570,7 +1784,15 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
   }
 
   if (summaryPath) {
-    writeSummary(summaryPath, applied, writtenMigrationChanges, rowless, fetchWarnings, written);
+    writeSummary(
+      summaryPath,
+      applied,
+      writtenMigrationChanges,
+      rowless,
+      fetchWarnings,
+      manualChecks,
+      written,
+    );
   }
   return applied;
 }
@@ -1735,44 +1957,53 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
   // 3. Compute homepage changes
   const changes = computeChanges(html, matrix, competitorFeatures);
 
-  // 4. Collect the row-less detections. They never update a page by
-  // themselves; the summary and the log list them for manual follow-up.
-  const rowless: RowlessDetection[] = [];
-  for (const [compName, features] of competitorFeatures) {
-    for (const label of Object.keys(features)) {
-      if (features[label] && isRowlessRule(label)) {
-        rowless.push({ competitor: compName, capability: label });
-      }
-    }
-  }
-
-  // 5. Compute migration-page updates, only for competitors with an applied
-  // homepage change. When any change is unapplied, no migration page is
-  // computed at all (the guard below); writeMatrixUpdate then throws on it.
-  const { applied, unapplied } = applyChanges(html, changes);
-  const migrationCompetitors = new Set(
-    unapplied.length === 0 ? applied.map((ch) => ch.competitor) : [],
-  );
+  // 4. Compute the migration-page updates for every scanned competitor, from
+  // all of its detections. A page the run cannot read fails the run here,
+  // before any file is written.
   const migrationUpdates: MigrationPageUpdate[] = [];
   const migrationChanges: MigrationPageChange[] = [];
+  const manualChecks: MigrationManualCheck[] = [];
+  const outcomesByCompetitor = new Map<string, MigrationRowOutcome[]>();
 
-  for (const compName of migrationCompetitors) {
-    const migrationPageRelPath = COMPETITOR_MIGRATION_PAGES[compName];
+  for (const [compName, features] of competitorFeatures) {
+    const migrationPageRelPath = Object.hasOwn(COMPETITOR_MIGRATION_PAGES, compName)
+      ? COMPETITOR_MIGRATION_PAGES[compName]
+      : undefined;
     if (!migrationPageRelPath) {
-      console.log(`  No migration page mapped for ${compName}, skipping.`);
-      continue;
+      throw new Error(
+        `No migration page is mapped for ${compName}. Add it to COMPETITOR_MIGRATION_PAGES.`,
+      );
     }
     const migrationPagePath = resolve(repoRoot, migrationPageRelPath);
     if (!existsSync(migrationPagePath)) {
-      console.log(`  Migration page not found: ${migrationPagePath}, skipping.`);
-      continue;
+      throw new Error(`Migration page for ${compName} not found: ${migrationPageRelPath}.`);
     }
-    const result = updateMigrationPage(
-      readFileSync(migrationPagePath, "utf-8"),
-      compName,
-      competitorFeatures.get(compName) ?? {},
-      competitorProviderCounts.get(compName) ?? 0,
-    );
+    let result: ReturnType<typeof updateMigrationPage>;
+    try {
+      result = updateMigrationPage(
+        readFileSync(migrationPagePath, "utf-8"),
+        compName,
+        features,
+        competitorProviderCounts.get(compName) ?? 0,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Cannot update ${migrationPageRelPath} for ${compName}: ${reason}`, {
+        cause: err,
+      });
+    }
+    outcomesByCompetitor.set(compName, result.outcomes);
+    for (const o of result.outcomes) {
+      if (o.row !== null && (o.status === "combined-row" || o.status === "unsupported-no-cell")) {
+        manualChecks.push({
+          page: migrationPageRelPath,
+          competitor: compName,
+          capability: o.rule,
+          row: o.row,
+          reason: o.status,
+        });
+      }
+    }
     if (result.changes.length > 0) {
       migrationUpdates.push({
         path: migrationPagePath,
@@ -1786,8 +2017,30 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
     }
   }
 
+  // 5. Collect the row-less detections, with what the migration page did
+  // with each. They never change the homepage; the summary and the log list
+  // them for manual follow-up.
+  const rowless: RowlessDetection[] = [];
+  for (const [compName, features] of competitorFeatures) {
+    for (const label of Object.keys(features)) {
+      if (features[label] && isRowlessRule(label)) {
+        const outcomes = (outcomesByCompetitor.get(compName) ?? []).filter((o) => o.rule === label);
+        rowless.push({
+          competitor: compName,
+          capability: label,
+          migrationPage: outcomes.map(migrationStatusText).join("; ") || "no row",
+        });
+      }
+    }
+  }
+
   // 6. Report
-  if (changes.length === 0 && migrationChanges.length === 0 && rowless.length === 0) {
+  if (
+    changes.length === 0 &&
+    migrationChanges.length === 0 &&
+    rowless.length === 0 &&
+    manualChecks.length === 0
+  ) {
     console.log("\nNo changes detected. Competitive matrix is up to date.");
   } else if (changes.length === 0) {
     console.log("\nNo homepage matrix changes detected.");
@@ -1800,6 +2053,12 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
   if (migrationChanges.length > 0) {
     console.log(`${migrationChanges.length} migration page change(s) detected:`);
     for (const mc of migrationChanges) console.log(`  ${mc.page}: ${mc.change}`);
+  }
+  if (manualChecks.length > 0) {
+    console.log(`${manualChecks.length} migration page row(s) to check by hand:`);
+    for (const m of manualChecks) {
+      console.log(`  ${m.page}: ${m.competitor} / ${m.capability}: "${m.row}" (${m.reason})`);
+    }
   }
   if (rowless.length > 0) {
     console.log(`${rowless.length} row-less detection(s) to check by hand (no homepage row):`);
@@ -1819,6 +2078,7 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
     migrationUpdates,
     rowless,
     fetchWarnings,
+    manualChecks,
   });
 }
 

@@ -60,8 +60,8 @@ const MIGRATION: MigrationPageChange[] = [
 ];
 
 const ROWLESS: RowlessDetection[] = [
-  { competitor: "mock-llm", capability: "Helm chart" },
-  { competitor: "VidaiMock", capability: "CLI server" },
+  { competitor: "mock-llm", capability: "Helm chart", migrationPage: '"Kubernetes / Helm" ✗ -> ✓' },
+  { competitor: "VidaiMock", capability: "CLI server", migrationPage: "no row" },
 ];
 
 describe("competitive-matrix summary fixtures", () => {
@@ -163,8 +163,10 @@ describe("formatSummary", () => {
     expect(headings(md)).toEqual([APPLIED_HEADING, MIGRATION_HEADING, ROWLESS_HEADING]);
 
     const lines = section(md, ROWLESS_HEADING);
-    expect(lines).toContain("| Competitor | Capability |");
-    expect(dataRows(lines)).toEqual(ROWLESS.map((r) => `| ${r.competitor} | ${r.capability} |`));
+    expect(lines).toContain("| Competitor | Capability | Migration page |");
+    expect(dataRows(lines)).toEqual(
+      ROWLESS.map((r) => `| ${r.competitor} | ${r.capability} | ${r.migrationPage} |`),
+    );
 
     // Row-less detections never appear in the applied table
     const applied = section(md, APPLIED_HEADING).join("\n");
@@ -212,7 +214,7 @@ describe("no summary reports unplaced changes", () => {
           docsPath,
           summaryPath,
           dryRun,
-          rowless: [{ competitor: "mock-llm", capability: "Helm chart" }],
+          rowless: [{ competitor: "mock-llm", capability: "Helm chart", migrationPage: "no row" }],
         }),
       ).toThrow(/2 of 2 computed change\(s\) could not be placed/);
       expect(existsSync(summaryPath)).toBe(false);

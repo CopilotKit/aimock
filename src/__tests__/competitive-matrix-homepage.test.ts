@@ -597,10 +597,10 @@ describe("row labels are plain text, not raw HTML", () => {
 });
 
 // Rules with no homepage row (MATRIX_ROWLESS_RULES) never produce a homepage
-// change. Their detections are reported for manual follow-up and never cause a
-// page update by themselves: a migration page is updated only for a
-// competitor that also has an applied homepage change. These tests run the
-// apply step on copies of the real homepage and the real migration pages.
+// change. Their detections are reported for manual follow-up, and they still
+// update the competitor's migration page when it has a row for them. These
+// tests run the apply step on copies of the real homepage and the real
+// migration pages.
 describe("row-less detections on the real homepage and migration pages", () => {
   let root: string;
   let logged: string[];
@@ -683,9 +683,9 @@ describe("row-less detections on the real homepage and migration pages", () => {
     });
   }
 
-  it("reports a row-less-only detection and changes no migration page", () => {
+  it("flips the migration page for a row-less detection and still reports it", () => {
     // No homepage row for the rule. The migration page copy gets a cross, so
-    // a page update would show as a flip whatever the live cell shows.
+    // the flip shows whatever the live cell shows.
     expect(isRowlessRule("AWS Bedrock")).toBe(true);
     expect(parseCurrentMatrix(HOMEPAGE).rows.has("AWS Bedrock")).toBe(false);
     setMockLlmCell("AWS Bedrock", CROSS);
@@ -694,26 +694,14 @@ describe("row-less detections on the real homepage and migration pages", () => {
     run(new Map([["mock-llm", { "AWS Bedrock": true }]]));
 
     expect(read("docs/index.html")).toBe(HOMEPAGE);
-    expect(readAllPages()).toEqual(before);
+    expect(migrationCell(read(MOCK_LLM_PAGE), "AWS Bedrock")).toBe(CHECK);
+    for (const [rel, html] of before) if (rel !== MOCK_LLM_PAGE) expect(read(rel), rel).toBe(html);
     const md = read("summary.md");
-    expect(md).not.toContain("## Migration Page Changes");
+    expect(summarySection(md, "## Migration Page Changes")).toContain(
+      "mock-llm: AWS Bedrock ✗ -> ✓",
+    );
     expect(summarySection(md, ROWLESS_HEADING)).toContain("| mock-llm | AWS Bedrock |");
     expect(rowlessLogLines()).toEqual(["mock-llm / AWS Bedrock"]);
-  });
-
-  it("changes no migration page for a detection whose homepage cell is already yes", () => {
-    // The false positive: mock-llm's homepage Responses API cell is already
-    // yes, while its migration page copy is set to a cross.
-    const homepageRow = parseCurrentMatrix(HOMEPAGE).rows.get("Responses API SSE")!;
-    expect(homepageRow.get("mock-llm")).toContain('class="yes"');
-    setMockLlmCell("OpenAI Responses API", CROSS);
-    const before = readAllPages();
-
-    run(new Map([["mock-llm", { "Responses API SSE": true }]]));
-
-    expect(read("docs/index.html")).toBe(HOMEPAGE);
-    expect(readAllPages()).toEqual(before);
-    expect(logged.join("\n")).toContain("No changes detected. Competitive matrix is up to date.");
   });
 
   it("reports a row-less detection that no page has a row for", () => {
@@ -771,7 +759,7 @@ describe("row-less detections on the real homepage and migration pages", () => {
 
     expect(readAllPages()).toEqual(before);
     expect(read("docs/index.html")).toBe(HOMEPAGE);
-    expect(logged.join("\n")).not.toMatch(/migration page change/);
+    expect(logged.join("\n")).toContain(`${MOCK_LLM_PAGE}: mock-llm: AWS Bedrock ✗ -> ✓`);
     expect(rowlessLogLines()).toEqual(["mock-llm / AWS Bedrock"]);
   });
 });
