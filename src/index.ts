@@ -13,6 +13,13 @@ export {
   normalizeResponse,
 } from "./fixture-loader.js";
 export type { ValidationRef, ValidationResult } from "./fixture-loader.js";
+export { FixtureLoadError } from "./fixture-loader.js";
+export type { FixtureLoadErrorJSON } from "./fixture-loader.js";
+export {
+  loadFixtureFileWithServices,
+  loadFixturesFromDirWithServices,
+} from "./fixture-loader-services.js";
+export type { FixturesWithServices } from "./fixture-loader-services.js";
 
 // Logger
 export { Logger } from "./logger.js";
@@ -269,6 +276,37 @@ export type {
   MCPPromptResult,
   MCPSession,
 } from "./mcp-types.js";
+export { MCP_FAKE_ERROR_CODES } from "./types.js";
+export type {
+  McpFakeScope,
+  McpFakeDeepReadonly,
+  McpFakeAnnotations,
+  McpFakeIcon,
+  McpFakeResourceContents,
+  McpFakeContentBlock,
+  McpFakeFullResult,
+  McpFakeStructuredResult,
+  McpFakeResult,
+  McpFakeCallMatch,
+  McpFakeCallAnswer,
+  McpFakeCall,
+  McpFakeTool,
+  McpFakeBlock,
+  McpFakeUndeclaredPolicy,
+  McpFakeIdentity,
+  McpFakeSource,
+  McpFakeOutcome,
+  McpFakeErrorCode,
+} from "./types.js";
+export { McpFakesAddError } from "./mcp-fakes.js";
+export type {
+  McpFakesAddErrorJSON,
+  McpFakeIssue,
+  McpFakeAddOrigin,
+  McpFakeAddResult,
+  McpFakeBlockSnapshot,
+  McpFakeDeclaredEntry,
+} from "./mcp-fakes.js";
 
 // Vector
 export { VectorMock } from "./vector-mock.js";

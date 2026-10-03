@@ -1,7 +1,8 @@
 import * as http from "node:http";
-import type { Mountable } from "./types.js";
+import type { McpFakeSource, Mountable } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { MetricsRegistry } from "./metrics.js";
+import type { Logger } from "./logger.js";
 import type {
   MCPMockOptions,
   MCPToolDefinition,
@@ -12,7 +13,24 @@ import type {
   MCPContent,
   MCPSession,
 } from "./mcp-types.js";
-import { createMCPRequestHandler, type MCPState } from "./mcp-handler.js";
+import {
+  createMCPRequestHandler,
+  describeMcpIdentity,
+  newMCPRequestRecord,
+  type McpDecodeFallback,
+  type McpFakeEvent,
+  type MCPMessageRecord,
+  type MCPRequestRecord,
+  type MCPState,
+} from "./mcp-handler.js";
+import {
+  MCP_FAKES_DEFAULT_TEST_ID,
+  McpFakeStore,
+  type McpFakeAddOrigin,
+  type McpFakeAddResult,
+  type McpFakeBlockSnapshot,
+} from "./mcp-fakes.js";
+import { build, fixed, msg, plainText, quote } from "./message-text.js";
 import { flattenHeaders, readBody } from "./helpers.js";
 
 export class MCPMock implements Mountable {
@@ -30,9 +48,21 @@ export class MCPMock implements Mountable {
     }
   > = new Map();
   private sessions: Map<string, MCPSession> = new Map();
+  /** This mount's fakes; kept across `reset()` so the id counters are never rewound. */
+  private fakes = new McpFakeStore();
+  /** Fake blocks loaded since the last clear. */
+  private fakeBlocks = 0;
+  /**
+   * Decode fallbacks already reported (L2), per live session: one key per
+   * field and source, plus one for undecodable query names. Dropped when the
+   * session is deleted.
+   */
+  private decodeWarned = new Map<string, Set<string>>();
   private server: http.Server | null = null;
   private journal: Journal | null = null;
   private registry: MetricsRegistry | null = null;
+  /** Mount logger for L1, L2 and L10; none (lines dropped) until `setLogger`. */
+  private logger: Logger | null = null;
   private options: MCPMockOptions;
   private requestHandler: ReturnType<typeof createMCPRequestHandler>;
 
@@ -78,6 +108,52 @@ export class MCPMock implements Mountable {
     return this;
   }
 
+  // ---- Configuration: MCP fakes ----
+
+  /**
+   * Load MCP fakes from code: one `mcpFakes` value (a block, or an array of
+   * blocks), in the fixture-file shape, validated here. One run-time addition
+   * (`code#<n>` entry ids). Always appends. Returns the shadowed-entry
+   * warnings; on any bad block throws one `McpFakesAddError` and adds nothing.
+   */
+  loadFakes(blocks: unknown): McpFakeAddResult {
+    const sources: McpFakeSource[] = Array.isArray(blocks)
+      ? blocks.map((raw: unknown, blockIndex) => ({ source: "code", blockIndex, raw }))
+      : [{ source: "code", blockIndex: null, raw: blocks }];
+    return this.addMcpFakes(sources, { kind: "code" });
+  }
+
+  addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult {
+    const result = this.fakes.add(blocks, origin);
+    this.fakeBlocks += blocks.length;
+    return result;
+  }
+
+  /**
+   * The blocks on this mount that apply to `testId` and `context` (spec 6.5,
+   * I9), with every entry id and its consumed state for that test id. `null`
+   * means "none sent". Read-only: the result is deeply frozen.
+   */
+  fakesSnapshot(
+    testId: string | null = null,
+    context: string | null = null,
+  ): readonly McpFakeBlockSnapshot[] {
+    return this.fakes.snapshot(testId, context);
+  }
+
+  clearMcpFakes(): void {
+    this.fakes.clear();
+    this.fakeBlocks = 0;
+  }
+
+  resetScenarioState(testId?: string): void {
+    this.fakes.resetState(testId);
+  }
+
+  setLogger(logger: Logger): void {
+    this.logger = logger;
+  }
+
   // ---- Mountable interface ----
 
   async handleRequest(
@@ -85,17 +161,67 @@ export class MCPMock implements Mountable {
     res: http.ServerResponse,
     pathname: string,
   ): Promise<boolean> {
-    // Only handle POST and DELETE to the root of the mount
+    // Off the mount root: not this mount's request (fall through).
     if (pathname !== "/" && pathname !== "") {
       return false;
     }
-    if (req.method !== "POST" && req.method !== "DELETE") {
+    // B1: a GET on the mount root is 405. Any other method but POST and
+    // DELETE falls through to the next route, as on origin/main.
+    if (req.method === "GET") {
+      this.answerMethodNotAllowed(req, res);
+      return true;
+    }
+    if (!isServedMethod(req.method)) {
       return false;
     }
+    await this.serve(req, res, mountPathOf(req.url, pathname), false);
+    return true;
+  }
 
-    const body = await readBody(req);
+  /**
+   * Serve one request, in both modes (mounted: a POST or DELETE on the mount
+   * root; standalone: any method but GET on any path): count it, run the
+   * handler, journal it. A throw from the mount's own code is logged with the
+   * identity resolved so far, answered 500 and journaled with its message,
+   * never left to a generic catch.
+   */
+  private async serve(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    mount: string,
+    standalone: boolean,
+  ): Promise<void> {
+    const record = newMCPRequestRecord();
+    try {
+      const body = await readBody(req);
+      this.countRequest(req, body);
+      await this.requestHandler(req, res, body, mount, record);
+      this.journalRequest(req, res, record);
+    } catch (err) {
+      const thrown = err instanceof Error ? err.message : String(err);
+      const who = record.identity
+        ? describeMcpIdentity(record.identity)
+        : msg`no identity resolved`;
+      const line = build(
+        msg`MCPMock request error (${who}, mount ${plainText(mount)}): ${plainText(thrown)}`,
+      );
+      // W5: the standalone server always prints the error, as on origin/main,
+      // even when the mount also has a server's (possibly silent) logger.
+      // Mounted, it goes to the server's logger, as origin/main's route error did.
+      if (standalone || !this.logger) console.error(line);
+      else this.logger.error(line);
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("Internal server error");
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+      this.journalRequest(req, res, record, thrown);
+    }
+  }
 
-    // Extract JSON-RPC method for metrics (skip for DELETE — no JSON-RPC body)
+  /** `aimock_mcp_requests_total` by JSON-RPC method (`session/delete` for DELETE). */
+  private countRequest(req: http.IncomingMessage, body: string): void {
     if (this.registry) {
       if (req.method === "DELETE") {
         this.registry.incrementCounter("aimock_mcp_requests_total", { method: "session/delete" });
@@ -112,22 +238,17 @@ export class MCPMock implements Mountable {
         }
       }
     }
+  }
 
-    await this.requestHandler(req, res, body);
-
-    // Journal the request after the handler completes
-    if (this.journal) {
-      this.journal.add({
-        method: req.method ?? "POST",
-        path: req.url ?? "/",
-        headers: flattenHeaders(req.headers),
-        body: null,
-        service: "mcp",
-        response: { status: res.statusCode, fixture: null },
-      });
-    }
-
-    return true;
+  /**
+   * B1: answer 405 (`Allow: POST, DELETE`), journaled. Mounted, this is a GET
+   * on the mount root; standalone, a GET on any path.
+   */
+  private answerMethodNotAllowed(req: http.IncomingMessage, res: http.ServerResponse): void {
+    res.writeHead(405, { "Content-Type": "application/json", Allow: "POST, DELETE" });
+    res.end(JSON.stringify({ error: build(msg`Method not allowed: use POST or DELETE`) }));
+    req.resume();
+    this.journalRequest(req, res, null);
   }
 
   health(): { status: string; [key: string]: unknown } {
@@ -142,6 +263,8 @@ export class MCPMock implements Mountable {
 
   setJournal(journal: Journal): void {
     this.journal = journal;
+    // I5: the fakes' test-id cap follows the journal's (`0` = unbounded).
+    this.fakes.setMaxTestIds(journal.fixtureCountsMaxTestIdsCap);
   }
 
   setRegistry(registry: MetricsRegistry): void {
@@ -159,44 +282,20 @@ export class MCPMock implements Mountable {
     const port = this.options.port ?? 0;
 
     return new Promise((resolve, reject) => {
+      // The standalone server serves every path, as it always has: every
+      // method but GET goes to the MCP handler on any path. B1: a GET on any
+      // path is 405 (`Allow: POST, DELETE`) and journaled, so the SDK's
+      // optional GET SSE stream is declined, not mishandled.
       const srv = http.createServer((req, res) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (chunk: Buffer) => chunks.push(chunk));
-        req.on("end", () => {
-          const body = Buffer.concat(chunks).toString();
-
-          this.requestHandler(req, res, body)
-            .then(() => {
-              if (this.journal) {
-                this.journal.add({
-                  method: req.method ?? "POST",
-                  path: req.url ?? "/",
-                  headers: flattenHeaders(req.headers),
-                  body: null,
-                  service: "mcp",
-                  response: { status: res.statusCode, fixture: null },
-                });
-              }
-            })
-            .catch((err) => {
-              console.error("MCPMock request error:", err);
-              if (!res.headersSent) {
-                res.writeHead(500);
-                res.end("Internal server error");
-              } else if (!res.writableEnded) {
-                res.end();
-              }
-              if (this.journal) {
-                this.journal.add({
-                  method: req.method ?? "POST",
-                  path: req.url ?? "/",
-                  headers: flattenHeaders(req.headers),
-                  body: null,
-                  service: "mcp",
-                  response: { status: res.statusCode, fixture: null },
-                });
-              }
-            });
+        if (req.method === "GET") {
+          this.answerMethodNotAllowed(req, res);
+          return;
+        }
+        // serve() catches the request's own errors; this is only a logger
+        // that threw while reporting one.
+        this.serve(req, res, "/", true).catch((err: unknown) => {
+          console.error("MCPMock request error:", err);
+          if (!res.writableEnded) res.end();
         });
       });
 
@@ -241,11 +340,106 @@ export class MCPMock implements Mountable {
     this.resources.clear();
     this.prompts.clear();
     this.sessions.clear();
+    this.decodeWarned.clear();
+    // R8: fakes and their consumption state go; the id counters stay.
+    this.clearMcpFakes();
     this.requestHandler = this.buildHandler();
     return this;
   }
 
   // ---- Internal ----
+
+  /**
+   * The journal entries of one handled request (B2, B3): one per JSON-RPC
+   * message (each element of a batch), or one with no body when the request
+   * carried none that was read; none without a journal (W5). `error` is what
+   * the mount's own code threw while serving it.
+   */
+  private journalRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    record: MCPRequestRecord | null,
+    error?: string,
+  ): void {
+    if (!this.journal) return;
+    const messages: MCPMessageRecord[] = record?.messages.length
+      ? record.messages
+      : [{ body: null, mcpFake: null, error: null }];
+    for (const message of messages) {
+      const failed = message.error ?? error;
+      this.journal.add({
+        method: req.method ?? "POST",
+        path: req.url ?? "/",
+        headers: flattenHeaders(req.headers),
+        body: message.body,
+        service: "mcp",
+        ...(record?.identity
+          ? {
+              testId: record.identity.testId ?? MCP_FAKES_DEFAULT_TEST_ID,
+              context: record.identity.context,
+            }
+          : {}),
+        response: {
+          status: res.statusCode,
+          fixture: null,
+          ...(message.mcpFake ? { mcpFake: message.mcpFake } : {}),
+          ...(failed !== undefined && failed !== null ? { error: failed } : {}),
+        },
+      });
+    }
+  }
+
+  /**
+   * Side channels of a fake outcome (9.3): the failure metric and the L1 /
+   * L10 line. A claim that threw (`internal_error`) is counted and logged
+   * like a failure, under `MCP_FAKE_INTERNAL_ERROR`.
+   */
+  private onFakeEvent(evt: McpFakeEvent): void {
+    if (evt.kind === "answered") return;
+    this.registry?.incrementCounter("aimock_mcp_fake_failures_total", { code: evt.code });
+    if (!this.logger) return;
+    const where = msg`mount ${plainText(evt.mount)}`;
+    // "not declared", "internal error"; the other kinds are one word.
+    const kind = evt.kind.replace("_", " ");
+    const line =
+      evt.kind === "evicted"
+        ? msg`MCP-FAKE: evicted testId ${quote(evt.testId)} (cap ${evt.cap}) for tools/call ${plainText(evt.tool)} (${where})`
+        : msg`MCP-FAKE: ${fixed(kind)} for tools/call ${plainText(evt.tool)} (${describeMcpIdentity(evt.identity)}, ${where}): ${plainText(evt.message)}`;
+    this.logger.error(build(line));
+  }
+
+  /**
+   * L2: one warning per session for each identity field and source whose
+   * value is not valid percent-encoding (H1), naming that source and value,
+   * and one for query names that are not valid percent-encoding.
+   */
+  private onDecodeFallback(sessionId: string, fallback: McpDecodeFallback): void {
+    let warned = this.decodeWarned.get(sessionId);
+    if (!warned) {
+      warned = new Set();
+      this.decodeWarned.set(sessionId, warned);
+    }
+    const key = fallback.kind === "names" ? "names" : `${fallback.field}:${fallback.source}`;
+    if (warned.has(key)) return;
+    warned.add(key);
+    const session = quote(sessionId);
+    if (fallback.kind === "names") {
+      const one = fallback.count === 1;
+      this.logger?.warn(
+        build(
+          msg`MCP-FAKE: ${fallback.count} query parameter ${fixed(one ? "name" : "names")} on session ${session} ${fixed(one ? "is" : "are")} not valid percent-encoding; ${fixed(one ? "it matches" : "they match")} no identity field`,
+        ),
+      );
+      return;
+    }
+    const label = DECODE_LABELS[fallback.field][fallback.source];
+    const fate = fallback.used ? "it is used as sent" : "it is ignored (the header value is used)";
+    this.logger?.warn(
+      build(
+        msg`MCP-FAKE: ${fixed(label)} value ${quote(fallback.raw)} on session ${session} is not valid percent-encoding; ${fixed(fate)}`,
+      ),
+    );
+  }
 
   private buildHandler() {
     const state: MCPState = {
@@ -254,7 +448,35 @@ export class MCPMock implements Mountable {
       resources: this.resources,
       prompts: this.prompts,
       sessions: this.sessions,
+      fakes: this.fakes,
+      hasFakes: () => this.fakeBlocks > 0,
+      onFakeEvent: (evt) => this.onFakeEvent(evt),
+      onDecodeFallback: (sessionId, fallback) => this.onDecodeFallback(sessionId, fallback),
+      onSessionClosed: (sessionId) => void this.decodeWarned.delete(sessionId),
     };
     return createMCPRequestHandler(state);
   }
+}
+
+/** B1: the only methods the mounted mount root serves; every other one is 405. */
+function isServedMethod(method: string | undefined): boolean {
+  return method === "POST" || method === "DELETE";
+}
+
+/** The L2 label of each identity field's header and query source. */
+const DECODE_LABELS = {
+  testId: { header: "X-Test-Id header", query: "?testId= query parameter" },
+  context: { header: "X-AIMock-Context header", query: "?context= query parameter" },
+} as const;
+
+/**
+ * The path a mount is served at (I9): the request path without the
+ * sub-path the server handed the mount (`/mcp` for `/mcp` or `/mcp/`), `/`
+ * at the root.
+ */
+function mountPathOf(url: string | undefined, subPath: string): string {
+  const full = new URL(url ?? "/", "http://mount.invalid").pathname;
+  const sub = subPath === "" ? "/" : subPath;
+  const mount = full.endsWith(sub) ? full.slice(0, full.length - sub.length) : full;
+  return mount === "" ? "/" : mount;
 }

@@ -196,6 +196,8 @@
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.30.0",
     "@google/genai": "^1.0.0",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "entities": "^7.0.1",

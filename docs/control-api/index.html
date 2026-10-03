@@ -95,7 +95,14 @@
             <tr>
               <td><code>DELETE</code></td>
               <td><code>/__aimock/fixtures</code></td>
-              <td>Clear all fixtures</td>
+              <td>Clear all fixtures and MCP fakes</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/mcp/fakes</code></td>
+              <td>
+                The MCP fakes that apply to a test id and context, with each entry&rsquo;s state
+              </td>
             </tr>
             <tr>
               <td><code>POST</code></td>
@@ -103,7 +110,7 @@
               <td>
                 Full reset: fixtures, journal entries, fixture match-counts (sequence position),
                 video + fal.ai job state, the Files store, the Gemini interaction / event-id
-                counters, every runtime chaos override and the chaos warning latch
+                counters, every runtime chaos override, the chaos warning latch and all MCP fakes
               </td>
             </tr>
             <tr>
@@ -142,9 +149,9 @@
         <h2>Reset Routes</h2>
         <p>
           aimock keeps several kinds of in-memory state between requests: the loaded
-          <strong>fixtures</strong>, the per-provider <strong>generation state</strong> (video and
-          fal.ai jobs, plus the Gemini interaction and event-id counters), the
-          <strong>fixture match-counts</strong> (sequence position), and the
+          <strong>fixtures</strong> and <strong>MCP fakes</strong>, the per-provider
+          <strong>generation state</strong> (video and fal.ai jobs, plus the Gemini interaction and
+          event-id counters), the <strong>fixture match-counts</strong> (sequence position), and the
           <strong>request journal</strong> (recorded requests). Two routes clear it:
           <code>POST /__aimock/reset</code> clears all of it &mdash; including every runtime chaos
           override, per-test and untagged alike, which reverts the server to the chaos config it was
@@ -190,7 +197,8 @@
           the untagged baseline, reverting to the construction-time chaos config), and this server's
           latch of once-per-value <code>[chaos]</code> rejection warnings so the next request
           reports them again. It also clears the <a href="/files">Files API</a> store
-          (<code>clearFileStore</code>).
+          (<code>clearFileStore</code>) and unloads every MCP fake (see
+          <a href="#reset-effects-on-mcp-fakes">Reset effects on MCP fakes</a>).
         </p>
         <div class="code-block">
           <div class="code-block-header">Full reset <span class="lang-tag">shell</span></div>
@@ -308,8 +316,11 @@
               <td><code>testId</code></td>
               <td>Exact</td>
               <td>
-                Resolved per entry as the server resolves it: the <code>X-Test-Id</code> header,
-                else <code>?testId=</code> in the recorded path
+                Resolved per entry. An MCP entry stores the test id that its mount resolved: the
+                decoded <code>X-Test-Id</code> header, else the decoded <code>?testId=</code> on the
+                MCP URL, else the id bound to the session at <code>initialize</code>. That stored id
+                is used. Other entries use the <code>X-Test-Id</code> header, else
+                <code>?testId=</code> in the recorded path
               </td>
             </tr>
             <tr>
@@ -411,6 +422,37 @@
           <code>"fixtures"</code> array of fixtures to register. Returns the number of fixtures
           added.
         </p>
+        <p>
+          The body may also carry an <code>mcpFakes</code> key, in the same form as in a fixture
+          file (see <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>). Then
+          <code>"fixtures"</code> is optional, and the response is
+          <code>{ "added": &lt;LLM fixtures&gt;, "mcpFakesAdded": &lt;blocks&gt; }</code>. A request
+          without <code>mcpFakes</code> gets <code>{ "added": n }</code> as before. Each block goes
+          to the MCP mount at its <code>mount</code> path; when no mount serves that path, aimock
+          mounts an <code>MCPMock</code> there. The whole body is checked first. If any block is
+          invalid, or its path is held by a mount that is not an <code>MCPMock</code>, the response
+          is <code>400 {"error":"Validation failed","details":[...]}</code> with one detail per
+          error, and nothing is added, LLM fixtures included.
+        </p>
+        <p>
+          Add the fakes of a fixture file (here
+          <a href="/mcp-mock#closed-world"><code>account/read-only.json</code></a
+          >, which has no LLM fixtures). Blocks added this way get the block id
+          <code>control-api#&lt;n&gt;</code>.
+        </p>
+        <div class="code-block" data-sample="control-api/post-fakes.sh">
+          <div class="code-block-header">Add MCP fakes <span class="lang-tag">shell</span></div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/fixtures \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d @account/read-only.json</code></pre>
+        </div>
+        <div class="code-block" data-sample="control-api/post-fakes.response.json">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"added"</span>: <span class="num">0</span>,
+  <span class="prop">"mcpFakesAdded"</span>: <span class="num">1</span>
+}</code></pre>
+        </div>
         <div class="code-block">
           <div class="code-block-header">Add fixtures <span class="lang-tag">shell</span></div>
           <pre><code>$ curl -X POST http://localhost:4010/__aimock/fixtures \
@@ -424,8 +466,9 @@
 
         <h3>DELETE /__aimock/fixtures</h3>
         <p>
-          Clears all registered fixtures. Generation state and the journal are left untouched. To
-          clear everything at once, use <code>/__aimock/reset</code> instead.
+          Clears all registered fixtures and every MCP fake on every mount. Generation state and the
+          journal are left untouched. To clear everything at once, use
+          <code>/__aimock/reset</code> instead.
         </p>
         <div class="code-block">
           <div class="code-block-header">Clear fixtures <span class="lang-tag">shell</span></div>
@@ -435,6 +478,80 @@
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>{ <span class="prop">"cleared"</span>: <span class="kw">true</span> }</code></pre>
         </div>
+
+        <h3 id="mcp-fakes">GET /__aimock/mcp/fakes</h3>
+        <p>
+          Read-only: for each MCP mount, the <code>mcpFakes</code> blocks that apply to a test id
+          and context, with every entry&rsquo;s id and whether it is used for that test id. Use it
+          at the end of a test to check that every declared fake was used. Query parameters:
+          <code>testId</code>, <code>context</code> and <code>mount</code> (a mount path; default:
+          all MCP mounts), all optional. An empty value counts as not sent. Any other query
+          parameter is rejected with <code>400</code>, and a <code>mount</code> with no MCP mock
+          gets <code>404</code>.
+        </p>
+        <p>
+          The response is <code>{ "testId", "context", "mounts": [{ "mount", "blocks" }] }</code>.
+          Each block has <code>blockId</code>, <code>source</code>, <code>mount</code>,
+          <code>scope</code>, <code>undeclaredTools</code>, <code>evicted</code> (true when the
+          test-id cap dropped this test id&rsquo;s state) and <code>tools</code>. Each tool has a
+          <code>name</code> and <code>entries</code>, and each entry has <code>id</code>,
+          <code>args</code> or <code>anyArgs</code>, and <code>consumed</code>.
+        </p>
+        <p>
+          After the request above and one <code>get_account</code> call in the test
+          <code>account › read only</code> (the test id is percent-encoded in the URL):
+        </p>
+        <div class="code-block" data-sample="control-api/get-fakes.sh">
+          <div class="code-block-header">List MCP fakes <span class="lang-tag">shell</span></div>
+          <pre><code>curl <span class="str">"http://localhost:4010/__aimock/mcp/fakes?testId=account%20%E2%80%BA%20read%20only"</span></code></pre>
+        </div>
+        <div class="code-block" data-sample="control-api/get-fakes.response.json">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"testId"</span>: <span class="str">"account › read only"</span>,
+  <span class="prop">"context"</span>: <span class="kw">null</span>,
+  <span class="prop">"mounts"</span>: [
+    {
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"blocks"</span>: [
+        {
+          <span class="prop">"blockId"</span>: <span class="str">"control-api#1"</span>,
+          <span class="prop">"source"</span>: <span class="str">"control-api#1"</span>,
+          <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+          <span class="prop">"scope"</span>: {
+            <span class="prop">"testId"</span>: <span class="str">"account › read only"</span>
+          },
+          <span class="prop">"undeclaredTools"</span>: <span class="str">"deny"</span>,
+          <span class="prop">"evicted"</span>: <span class="kw">false</span>,
+          <span class="prop">"tools"</span>: [
+            {
+              <span class="prop">"name"</span>: <span class="str">"get_account"</span>,
+              <span class="prop">"entries"</span>: [
+                {
+                  <span class="prop">"id"</span>: <span class="str">"control-api#1:get_account#0"</span>,
+                  <span class="prop">"args"</span>: {
+                    <span class="prop">"id"</span>: <span class="str">"u1"</span>
+                  },
+                  <span class="prop">"consumed"</span>: <span class="kw">true</span>
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h3 id="reset-effects-on-mcp-fakes">Reset effects on MCP fakes</h3>
+        <p>
+          <code>POST /__aimock/reset</code>, its deprecated alias
+          <code>POST /__aimock/reset/fixtures</code>, and
+          <code>DELETE /__aimock/fixtures</code> unload every MCP fake along with the LLM fixtures.
+          <code>POST /__aimock/reset/journal</code>
+          leaves fakes and their state as they are. None of them closes MCP sessions.
+        </p>
 
         <h2>Error Injection</h2>
 

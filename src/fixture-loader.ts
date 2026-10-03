@@ -26,6 +26,8 @@ import {
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
+import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
+import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 
 /**
  * Auto-stringify object-valued `content` and `toolCalls[].arguments` fields.
@@ -178,27 +180,68 @@ function warn(logger: Logger | undefined, msg: string, ...rest: unknown[]): void
   }
 }
 
-export function loadFixtureFile(
+/**
+ * A parsed JSON value, or `null` when the file could not be read or parsed (warned).
+ *
+ * @internal Shared with fixture-loader-services.ts.
+ */
+export function readFixtureJson(
   filePath: string,
-  logger?: Logger,
-  liveOptions?: LiveOptions,
-): Fixture[] {
+  logger: Logger | undefined,
+): { value: unknown } | null {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf-8");
   } catch (err) {
     warn(logger, `Could not read file ${filePath}:`, err);
-    return [];
+    return null;
   }
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return { value: JSON.parse(raw) };
   } catch (err) {
     warn(logger, `Invalid JSON in ${filePath}:`, err);
+    return null;
+  }
+}
+
+/**
+ * `parsed` is a JSON object with an own top-level `mcpFakes` key.
+ *
+ * @internal Shared with fixture-loader-services.ts.
+ */
+export function hasMcpFakesKey(parsed: unknown): parsed is Record<string, unknown> {
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    Object.prototype.hasOwnProperty.call(parsed, "mcpFakes")
+  );
+}
+
+/**
+ * The LLM fixtures of a parsed file. A missing or non-array `fixtures` is
+ * warned and gives none, except that a file with `mcpFakes` may leave
+ * `fixtures` out (`fixturesOptional`, spec 5.4). An entry whose `match` is
+ * not an object is skipped with a warning; any other bad entry throws.
+ *
+ * @internal Shared with fixture-loader-services.ts.
+ */
+export function fixturesOf(
+  parsed: unknown,
+  filePath: string,
+  logger: Logger | undefined,
+  liveOptions: LiveOptions | undefined,
+  fixturesOptional: boolean,
+): Fixture[] {
+  if (
+    fixturesOptional &&
+    typeof parsed === "object" &&
+    parsed !== null &&
+    !Object.prototype.hasOwnProperty.call(parsed, "fixtures")
+  ) {
     return [];
   }
-
   if (
     typeof parsed !== "object" ||
     parsed === null ||
@@ -220,17 +263,52 @@ export function loadFixtureFile(
   return fixtures;
 }
 
-export function loadFixturesFromDir(
-  dirPath: string,
+/**
+ * B13: the old loaders return LLM fixtures only, so a file with `mcpFakes`
+ * fails loud instead of losing its fakes.
+ */
+function cannotCarryFakes(filePath: string): FixtureLoadError {
+  return new FixtureLoadError({
+    rule: "mcp-fakes/loader-cannot-carry-fakes",
+    file: filePath,
+    blockId: null,
+    entryId: null,
+    detail: msg`top-level "mcpFakes" key: loadFixtureFile and loadFixturesFromDir cannot carry MCP fakes; use loadFixtureFileWithServices or loadFixturesFromDirWithServices, or LLMock.loadFixtureFile or LLMock.loadFixtureDir`,
+  });
+}
+
+/**
+ * Load the LLM fixtures of one file. Throws a `FixtureLoadError` (rule
+ * `mcp-fakes/loader-cannot-carry-fakes`) when the file has a top-level
+ * `mcpFakes` key; use `loadFixtureFileWithServices` (fixture-loader-services.ts) for such files.
+ */
+export function loadFixtureFile(
+  filePath: string,
   logger?: Logger,
   liveOptions?: LiveOptions,
 ): Fixture[] {
+  const read = readFixtureJson(filePath, logger);
+  if (read === null) return [];
+  if (hasMcpFakesKey(read.value)) throw cannotCarryFakes(filePath);
+  return fixturesOf(read.value, filePath, logger, liveOptions, false);
+}
+
+/**
+ * The `.json` files (sorted) and the subdirectories (sorted) of `dirPath`,
+ * or `null` when it cannot be read (warned).
+ *
+ * @internal Shared with fixture-loader-services.ts.
+ */
+export function listFixtureDir(
+  dirPath: string,
+  logger: Logger | undefined,
+): { jsonFiles: string[]; subdirs: string[] } | null {
   let entries: string[];
   try {
     entries = readdirSync(dirPath);
   } catch (err) {
     warn(logger, `Could not read directory ${dirPath}:`, err);
-    return [];
+    return null;
   }
 
   const jsonFiles: string[] = [];
@@ -254,17 +332,34 @@ export function loadFixturesFromDir(
     }
   }
   jsonFiles.sort();
+  subdirs.sort();
+  return { jsonFiles, subdirs };
+}
+
+/**
+ * Load the LLM fixtures of every `.json` file under `dirPath`. Throws a
+ * `FixtureLoadError` (rule `mcp-fakes/loader-cannot-carry-fakes`) on the
+ * first file with a top-level `mcpFakes` key; use
+ * `loadFixturesFromDirWithServices` (fixture-loader-services.ts) for such
+ * directories.
+ */
+export function loadFixturesFromDir(
+  dirPath: string,
+  logger?: Logger,
+  liveOptions?: LiveOptions,
+): Fixture[] {
+  const listing = listFixtureDir(dirPath, logger);
+  if (listing === null) return [];
 
   const fixtures: Fixture[] = [];
-  for (const name of jsonFiles) {
+  for (const name of listing.jsonFiles) {
     const filePath = join(dirPath, name);
     fixtures.push(...loadFixtureFile(filePath, logger, liveOptions));
   }
 
   // Recurse into all subdirectories (full depth) to support nested layouts
   // like showcase/aimock/d6/<integration>/<feature>.json.
-  subdirs.sort();
-  for (const sub of subdirs) {
+  for (const sub of listing.subdirs) {
     fixtures.push(...loadFixturesFromDir(join(dirPath, sub), logger, liveOptions));
   }
 
@@ -1342,4 +1437,175 @@ export function validateFixtures(
   }
 
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// FixtureLoadError — the error type for fail-loud fixture-load cases
+// ---------------------------------------------------------------------------
+
+/**
+ * The `rule` values owned by MCP fakes (prefix `mcp-fakes/`). The
+ * bad-block letters: (a) no scope, (b)
+ * malformed scope, (c) shared + deny, (d) bad call entry, (e) duplicate tool,
+ * (f) entry-id or block-id collision, (g) bad block/tool shape, (h) unknown
+ * key on a block, tool or call entry, (i) mcpFakes, or one of its blocks, has
+ * the wrong JSON type, mcpFakes holds no blocks, or an add has an invalid
+ * origin or source item, (j) anyArgs not `true`.
+ */
+export const MCP_FAKES_LOAD_RULES = [
+  "mcp-fakes/bad-block:a",
+  "mcp-fakes/bad-block:b",
+  "mcp-fakes/bad-block:c",
+  "mcp-fakes/bad-block:d",
+  "mcp-fakes/bad-block:e",
+  "mcp-fakes/bad-block:f",
+  "mcp-fakes/bad-block:g",
+  "mcp-fakes/bad-block:h",
+  "mcp-fakes/bad-block:i",
+  "mcp-fakes/bad-block:j",
+  "mcp-fakes/mount-conflict",
+  "mcp-fakes/loader-cannot-carry-fakes",
+  "mcp-fakes/watch-reload-changed",
+] as const;
+
+export type McpFakesLoadRule = (typeof MCP_FAKES_LOAD_RULES)[number];
+
+/**
+ * Every known `FixtureLoadError` rule, by prefix. A feature that throws
+ * `FixtureLoadError` adds its own prefix here, with its rule values as a
+ * union of string literals; a module can add one by declaration merging.
+ */
+export interface FixtureLoadRuleRegistry {
+  "mcp-fakes": McpFakesLoadRule;
+}
+
+/**
+ * A known `FixtureLoadError` rule, namespaced `<prefix>/<name>`. Each
+ * registered value must start with its own prefix and `/` (any other value
+ * drops out of the union), so a misspelled or unregistered rule fails to
+ * compile.
+ */
+export type FixtureLoadRule = {
+  [P in keyof FixtureLoadRuleRegistry]: FixtureLoadRuleRegistry[P] & `${P}/${string}`;
+}[keyof FixtureLoadRuleRegistry];
+
+export interface FixtureLoadErrorInit {
+  /** Namespaced `<prefix>/<name>`, one of {@link FixtureLoadRuleRegistry}. */
+  rule: FixtureLoadRule;
+  /** Source of the offending input (path, URL, `control-api#<n>`, `code#<n>`), or null. */
+  file: string | null;
+  /** `<source><load>[<block>]` of the offending block; omit or null when not tied to a block. */
+  blockId?: string | null;
+  /**
+   * Entry id when one entry caused it (bad-block cases d, f, j, and h on a
+   * call entry); omit or null otherwise.
+   */
+  entryId?: string | null;
+  /**
+   * The offending key or value, in words: text, or a `Message` from the
+   * message builder (message-text.ts), whose user parts are quoted and cut
+   * once. Cut to `MCP_FAKES_ECHO_LIMIT` chars in the message (see `capPart`).
+   */
+  detail: string | Message;
+}
+
+export interface FixtureLoadErrorJSON {
+  /** `"FixtureLoadError"`, or a subclass's own name (e.g. `"McpFakesAddError"`). */
+  name: string;
+  rule: string;
+  file: string | null;
+  blockId?: string | null;
+  entryId?: string | null;
+  message: string;
+}
+
+/**
+ * `text` with every run of line breaks, and the spaces around it, folded to
+ * one space: CR, LF, VT, FF, NEL, and the Unicode line and paragraph
+ * separators.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s*[\r\n\v\f\u0085\u2028\u2029]+\s*/g, " ");
+}
+
+/**
+ * The `detail` as a `FixtureLoadError` message adds it: built in a budget of
+ * its own, cut to at most `MCP_FAKES_ECHO_LIMIT` chars in all, with each of
+ * its user parts cut once. A text detail is folded onto one line, gets the
+ * escaping of every JSON text part (`jsonText`: each control char left, C0,
+ * DEL or C1, and the line and paragraph separators as `\uXXXX`) and is cut
+ * as JSON text (it is
+ * made of fixed text, paths and quoted values, where a backslash only starts
+ * a JSON escape; a stray one only moves the cut back a few chars).
+ */
+function capPart(detail: string | Message): Message {
+  const message = typeof detail === "string" ? msg`${jsonText(oneLine(detail))}` : detail;
+  return within(MCP_FAKES_ECHO_LIMIT, message);
+}
+
+/**
+ * One `file`, `blockId` or `entryId` as the message names it: JSON-quoted
+ * (control chars escaped, so a name can neither break the line nor pose as
+ * the message layout), and cut once to `MCP_FAKES_ECHO_LIMIT` chars at most.
+ * An empty string is `""`, so the message names every part `toJSON()` keeps.
+ */
+function namePart(text: string): Message {
+  return msg`${quote(text)}`;
+}
+
+/**
+ * Thrown for a fixture-load case aimock cannot honor (fail-loud rule). Only
+ * the MCP fakes code throws it; other fixture-loader paths log warnings.
+ * `blockId` and `entryId` are own properties only when supplied, so
+ * `toJSON()` (the control API's HTTP 400 `details`) omits them otherwise.
+ * The message names `file` and every non-null `blockId` and `entryId`, an
+ * empty string as `""`, so it agrees with `toJSON()`. `options.cause` (the
+ * standard `ErrorOptions`) keeps the underlying error, such as a JSON parse
+ * failure; `toJSON()` leaves it out.
+ */
+export class FixtureLoadError extends Error {
+  /** Typed `string` so a subclass can set its own name. */
+  override readonly name: string = "FixtureLoadError";
+  readonly rule: FixtureLoadRule;
+  readonly file: string | null;
+  declare readonly blockId?: string | null;
+  declare readonly entryId?: string | null;
+
+  constructor(init: FixtureLoadErrorInit, options?: ErrorOptions) {
+    const file = init.file === null ? msg`<no file>` : namePart(init.file);
+    const block = init.blockId == null ? msg`` : msg`, block ${namePart(init.blockId)}`;
+    const entry = init.entryId == null ? msg`` : msg`, entry ${namePart(init.entryId)}`;
+    super(
+      oneLine(build(msg`${file}${block}${entry}: [${fixed(init.rule)}] ${capPart(init.detail)}`)),
+      options,
+    );
+    this.rule = init.rule;
+    this.file = init.file;
+    if (init.blockId !== undefined) {
+      Object.defineProperty(this, "blockId", {
+        value: init.blockId,
+        enumerable: true,
+        writable: false,
+      });
+    }
+    if (init.entryId !== undefined) {
+      Object.defineProperty(this, "entryId", {
+        value: init.entryId,
+        enumerable: true,
+        writable: false,
+      });
+    }
+  }
+
+  toJSON(): FixtureLoadErrorJSON {
+    const json: FixtureLoadErrorJSON = {
+      name: this.name,
+      rule: this.rule,
+      file: this.file,
+      message: this.message,
+    };
+    if (this.blockId !== undefined) json.blockId = this.blockId;
+    if (this.entryId !== undefined) json.entryId = this.entryId;
+    return json;
+  }
 }

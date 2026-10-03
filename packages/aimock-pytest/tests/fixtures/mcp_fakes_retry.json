@@ -1,0 +1,14 @@
+{
+  "mcpFakes": {
+    "scope": { "testId": "tickets › retry on timeout" },
+    "tools": [
+      {
+        "name": "create_ticket",
+        "calls": [
+          { "id": "first-try", "args": { "title": "Refund" }, "error": "upstream timeout" },
+          { "id": "retry", "args": { "title": "Refund" }, "result": "TICKET-42" }
+        ]
+      }
+    ]
+  }
+}

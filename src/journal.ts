@@ -177,6 +177,27 @@ export class Journal {
     this.fixtureCountsMaxTestIds = testIdCap !== undefined && testIdCap > 0 ? testIdCap : 0;
   }
 
+  /**
+   * The per-test-id cap on fixture match-count maps, for an MCP mount to pass
+   * to `McpFakeStore.setMaxTestIds`. Always a non-negative safe integer, `0`
+   * meaning unbounded, and never throws, whatever option was passed:
+   * omitted, zero, negative or `NaN` is `0`; `Infinity` or a value above
+   * `Number.MAX_SAFE_INTEGER` (never reached) is `0`; a fraction of 1 or more
+   * is rounded down (`1.5` evicts at 2 ids, so it keeps 1). For these values
+   * it is the number of test ids the journal keeps.
+   *
+   * An option between 0 and 1 is the exception. The journal keeps no test id
+   * (each new count map is evicted as soon as it is made, so counts never
+   * advance), and a store cap cannot say "keep none" because `0` is
+   * unbounded. The getter returns `1`, the smallest bounded cap, so a store
+   * given it keeps 1 test id where the journal keeps 0.
+   */
+  get fixtureCountsMaxTestIdsCap(): number {
+    const cap = this.fixtureCountsMaxTestIds;
+    if (!(cap > 0) || cap > Number.MAX_SAFE_INTEGER) return 0;
+    return Math.max(1, Math.floor(cap));
+  }
+
   /** Backwards-compatible accessor — returns the default (no testId) count map. */
   get fixtureMatchCounts(): Map<Fixture, number> {
     return this.getFixtureMatchCountsForTest(DEFAULT_TEST_ID);
@@ -256,7 +277,8 @@ export class Journal {
       this.fixtureMatchCountsByTestId.set(testId, counts);
       // FIFO eviction when over capacity. JS Map preserves insertion order,
       // so the first key returned by keys() is the oldest. Same O(n) shift
-      // caveat as `entries`: acceptable at small caps (default 500).
+      // caveat as `entries`: acceptable at small caps (createServer
+      // default 500; a bare Journal is unbounded).
       if (
         this.fixtureCountsMaxTestIds > 0 &&
         this.fixtureMatchCountsByTestId.size > this.fixtureCountsMaxTestIds

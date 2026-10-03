@@ -294,29 +294,102 @@ class AIMockServer:
         - A JSON array of fixture objects
         - A single fixture object (wrapped into a list automatically)
 
+        An object with an ``"mcpFakes"`` key has that value posted next to
+        ``"fixtures"`` (an object with ``"mcpFakes"`` and no ``"fixtures"``
+        is posted as ``{"mcpFakes": ...}`` alone).
+
         Raises :class:`ValueError` if the parsed JSON is not a dict or list.
+        Raises :class:`requests.HTTPError` carrying the server's ``error``
+        and ``details`` when the server rejects the load with a 400, and
+        :class:`RuntimeError` when the file has ``mcpFakes`` and the server
+        is too old to serve fakes. In that case nothing from the file is
+        added: a file with both ``fixtures`` and ``mcpFakes`` is preceded by
+        a probe that adds nothing, because an old server would add the
+        fixtures and ignore ``mcpFakes``.
         """
         with open(path) as f:
             data = json.load(f)
 
+        body: dict[str, Any]
         if isinstance(data, list):
-            fixtures = data
-        elif isinstance(data, dict) and "fixtures" in data:
-            fixtures = data["fixtures"]
+            body = {"fixtures": data}
+        elif isinstance(data, dict) and ("fixtures" in data or "mcpFakes" in data):
+            body = {key: data[key] for key in ("fixtures", "mcpFakes") if key in data}
         elif isinstance(data, dict):
-            fixtures = [data]
+            body = {"fixtures": [data]}
         else:
             raise ValueError(
                 f"Invalid fixture file {path}: expected a JSON object or array, "
                 f"got {type(data).__name__}"
             )
 
+        if "mcpFakes" in body and isinstance(body.get("fixtures"), list) and body["fixtures"]:
+            # An old server adds the fixtures and ignores mcpFakes, so a
+            # mixed file is checked first with a body that adds nothing on
+            # any server: an empty mcpFakes array is a bad block to a server
+            # that serves fakes, and has no fixtures array for an old one.
+            probe = self._control_request("POST", "/fixtures",
+                json={"mcpFakes": []},
+                timeout=5,
+            )
+            if self._rejects_missing_fixtures(probe):
+                raise RuntimeError(
+                    f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                    f"the server needs a fixtures array ({probe.text})"
+                )
+            if probe.status_code != 400:
+                probe.raise_for_status()
+
         r = self._control_request("POST", "/fixtures",
-            json={"fixtures": fixtures},
+            json=body,
             timeout=5,
         )
+        if "fixtures" not in body and self._rejects_missing_fixtures(r):
+            # A fakes-only body needs no fixtures array on a server that
+            # serves fakes, so this answer comes from an older server.
+            raise RuntimeError(
+                f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                f"the server needs a fixtures array ({r.text})"
+            )
+        if r.status_code == 400:
+            payload = self._json_or_none(r)
+            if isinstance(payload, dict):
+                lines = [f"aimock rejected fixtures from {path}: {payload.get('error')}"]
+                details = payload.get("details")
+                if isinstance(details, list):
+                    for item in details:
+                        lines.append(f"  - {json.dumps(item, ensure_ascii=False)}")
+                elif details is not None:
+                    lines.append(f"  - {json.dumps(details, ensure_ascii=False)}")
+                raise requests.HTTPError("\n".join(lines), response=r)
         r.raise_for_status()
+        if "mcpFakes" in body:
+            payload = self._json_or_none(r)
+            if not isinstance(payload, dict) or "mcpFakesAdded" not in payload:
+                raise RuntimeError(
+                    f"aimock server too old for mcpFakes: {path} has mcpFakes, but "
+                    f"the server's answer has no mcpFakesAdded ({r.text})"
+                )
         return self
+
+    @staticmethod
+    def _json_or_none(r: requests.Response) -> Any:
+        try:
+            return r.json()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _rejects_missing_fixtures(cls, r: requests.Response) -> bool:
+        """True for the 400 an aimock gives a body with no ``fixtures`` array."""
+        if r.status_code != 400:
+            return False
+        payload = cls._json_or_none(r)
+        return (
+            isinstance(payload, dict)
+            and payload.get("error") == 'Missing or invalid "fixtures" array'
+            and not payload.get("details")
+        )
 
     def clear_fixtures(self) -> AIMockServer:
         """Delete all fixtures via ``DELETE /__aimock/fixtures``."""

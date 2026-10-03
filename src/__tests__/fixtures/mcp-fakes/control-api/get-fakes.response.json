@@ -1,0 +1,35 @@
+{
+  "testId": "account › read only",
+  "context": null,
+  "mounts": [
+    {
+      "mount": "/mcp",
+      "blocks": [
+        {
+          "blockId": "control-api#1",
+          "source": "control-api#1",
+          "mount": "/mcp",
+          "scope": {
+            "testId": "account › read only"
+          },
+          "undeclaredTools": "deny",
+          "evicted": false,
+          "tools": [
+            {
+              "name": "get_account",
+              "entries": [
+                {
+                  "id": "control-api#1:get_account#0",
+                  "args": {
+                    "id": "u1"
+                  },
+                  "consumed": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

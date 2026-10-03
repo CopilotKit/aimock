@@ -4,6 +4,7 @@ import type { Journal } from "./journal.js";
 import type { LiveFixtureResponse, LiveOptions } from "./live-types.js";
 import type { Logger } from "./logger.js";
 import type { MetricsRegistry } from "./metrics.js";
+import type { McpFakeAddOrigin, McpFakeAddResult } from "./mcp-fakes.js";
 
 // aimock type definitions — shared across all provider adapters and the fixture router.
 
@@ -18,6 +19,23 @@ export interface Mountable {
   setJournal?(journal: Journal): void;
   setBaseUrl?(url: string): void;
   setRegistry?(registry: MetricsRegistry): void;
+  /**
+   * MCP fakes. A mount "is an MCPMock" for fakes if and only if it
+   * implements `addMcpFakes`. Always appends. `origin` picks the entry-id
+   * source and its counter: `file` keeps each block's `source` (`@<k>` load
+   * counter); `code` / `control-api` is one run-time addition (`code#<n>` /
+   * `control-api#<n>`). Returns the shadowed-entry warnings with the real
+   * entry ids. When any block is bad, or the input holds no blocks, throws one
+   * `FixtureLoadError` (an `McpFakesAddError` carrying every error found and
+   * the warnings) and adds nothing.
+   */
+  addMcpFakes?(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult;
+  /** Unload every fake on this mount. The entry-id counters are kept. */
+  clearMcpFakes?(): void;
+  /** Reset fake consumption state for one test id, or for all when omitted. */
+  resetScenarioState?(testId?: string): void;
+  /** Hands an MCP mount a `Logger`. Nothing in the server calls it. */
+  setLogger?(logger: Logger): void;
 }
 
 export interface ContentPart {
@@ -892,9 +910,19 @@ export interface JournalEntry {
   headers: Record<string, string>;
   body: JournalBody | null;
   service?: string;
+  /**
+   * Resolved test id of an MCP request (`"__default__"` when none), for an
+   * MCP mount to set. Journal test-id filtering does not read it: it
+   * re-derives the id from the headers and path (`journalEntryTestId`).
+   */
+  testId?: string;
+  /** Resolved context of an MCP request, `null` when none; for an MCP mount to set. */
+  context?: string | null;
   response: {
     status: number;
     fixture: Fixture | null;
+    /** For an MCP mount to set on `tools/call` entries a fake answered or failed. */
+    mcpFake?: { id: string | null; outcome: McpFakeOutcome };
     /**
      * What was going to serve this request. "fixture" = a fixture matched (or
      * would have, before chaos intervened). "proxy" = no fixture matched and
@@ -1351,3 +1379,178 @@ export interface HandlerDefaults {
    */
   bytePlusVideo?: FalQueueConfig;
 }
+
+// MCP fakes — scenario-scoped MCP tool fakes in fixture files (`mcpFakes`)
+
+/**
+ * Block scope: `"shared"`, or exact test id and/or context (at least one;
+ * `{}` is not a scope). Readonly: validated scopes are frozen.
+ */
+export type McpFakeScope =
+  | "shared"
+  | Readonly<{ testId: string; context?: string }>
+  | Readonly<{ testId?: string; context: string }>;
+
+/**
+ * `T` with every nested property and array read-only: the type of a value the
+ * MCP fakes store deep-freezes before it hands it out.
+ */
+export type McpFakeDeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends object
+    ? { readonly [K in keyof T]: McpFakeDeepReadonly<T[K]> }
+    : T;
+
+/** MCP `Annotations` on a content block. */
+export interface McpFakeAnnotations {
+  audience?: Array<"user" | "assistant">;
+  /** From 0 (least) to 1 (most important). */
+  priority?: number;
+  /** RFC 3339 date-time with seconds and a `Z` or `±hh:mm` offset. */
+  lastModified?: string;
+}
+
+/** MCP `Icon` on a `resource_link` content block. */
+export interface McpFakeIcon {
+  src: string;
+  mimeType?: string;
+  sizes?: string[];
+  theme?: "light" | "dark";
+}
+
+/** MCP `TextResourceContents` / `BlobResourceContents`: exactly one of `text` / `blob`. */
+export type McpFakeResourceContents = {
+  uri: string;
+  mimeType?: string;
+  _meta?: Record<string, unknown>;
+} & ({ text: string; blob?: never } | { blob: string; text?: never });
+
+type McpFakeContentCommon = {
+  annotations?: McpFakeAnnotations;
+  _meta?: Record<string, unknown>;
+};
+
+/** One MCP content block of a tool result (`ContentBlock`); `data` and `blob` are base64. */
+export type McpFakeContentBlock = McpFakeContentCommon &
+  (
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+    | { type: "audio"; data: string; mimeType: string }
+    | {
+        type: "resource_link";
+        uri: string;
+        name: string;
+        title?: string;
+        description?: string;
+        mimeType?: string;
+        size?: number;
+        icons?: McpFakeIcon[];
+      }
+    | { type: "resource"; resource: McpFakeResourceContents }
+  );
+
+/** A full MCP `CallToolResult`, served unchanged. No other keys. */
+export interface McpFakeFullResult {
+  content: McpFakeContentBlock[];
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+
+/**
+ * Structured data: any JSON object without the `CallToolResult`
+ * keys, served as text plus `structuredContent`.
+ */
+export type McpFakeStructuredResult = Record<string, unknown> & {
+  content?: never;
+  isError?: never;
+  structuredContent?: never;
+  _meta?: never;
+};
+
+/**
+ * A call entry's `result` value. Validation also checks what the type cannot
+ * say: base64 `data` / `blob`, `priority` from 0 to 1, the `lastModified`
+ * format, and plain JSON throughout. Unknown keys inside a content item are
+ * allowed and served as given.
+ */
+export type McpFakeResult =
+  | string
+  | McpFakeContentBlock[]
+  | McpFakeFullResult
+  | McpFakeStructuredResult;
+
+/** How a call entry matches: exactly one of `args` / `anyArgs`. */
+export type McpFakeCallMatch =
+  | { args: Record<string, unknown>; anyArgs?: never }
+  | { anyArgs: true; args?: never };
+
+/** What a call entry answers: exactly one of `result` / `error`. */
+export type McpFakeCallAnswer =
+  | { result: McpFakeResult; error?: never }
+  | { error: string; result?: never };
+
+/** One ordered answer for a tool. */
+export type McpFakeCall = McpFakeCallMatch & McpFakeCallAnswer & { id?: string };
+
+/** One faked tool in a block. */
+export interface McpFakeTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  calls: McpFakeCall[];
+}
+
+/** One `mcpFakes` block. */
+export interface McpFakeBlock {
+  scope: McpFakeScope;
+  mount?: string;
+  undeclaredTools?: McpFakeUndeclaredPolicy;
+  tools: McpFakeTool[];
+}
+
+export type McpFakeUndeclaredPolicy = "allow" | "deny";
+
+/**
+ * The resolved identity of one MCP request: test id, context and undeclared
+ * override, each from the request or else from the session.
+ * `null` means "not supplied". The identity shape the fake store's matching
+ * methods take (`applicable`, `selectTier`, `claim`, `policy`, `declaredTools`,
+ * `listTools`).
+ */
+export interface McpFakeIdentity {
+  testId: string | null;
+  context: string | null;
+  undeclared: McpFakeUndeclaredPolicy | null;
+}
+
+/**
+ * One raw block as a loader hands it off, before validation. `source` is the
+ * entry-id source string; `blockIndex` is `null` when `mcpFakes` is a single object.
+ */
+export interface McpFakeSource {
+  source: string;
+  blockIndex: number | null;
+  raw: unknown;
+}
+
+/**
+ * `response.mcpFake.outcome` on a `tools/call` journal entry. `evicted`:
+ * the request's test id lost its consumption state to the FIFO test-id cap.
+ */
+export type McpFakeOutcome = "answered" | "mismatch" | "exhausted" | "not_declared" | "evicted";
+
+/**
+ * JSON-RPC error codes of the four fake failures, keyed by
+ * `error.data.aimock.code`. `-31010` and `-31011` sit outside the JSON-RPC
+ * reserved range. `MCP_FAKE_EVICTED` is for a lookup of a declared tool by a
+ * test id whose state the FIFO test-id cap evicted, until it is reset.
+ */
+export const MCP_FAKE_ERROR_CODES = {
+  MCP_FAKE_NOT_DECLARED: -32602,
+  MCP_FAKE_MISMATCH: -32602,
+  MCP_FAKE_EXHAUSTED: -31010,
+  MCP_FAKE_EVICTED: -31011,
+} as const;
+
+export type McpFakeErrorCode = keyof typeof MCP_FAKE_ERROR_CODES;

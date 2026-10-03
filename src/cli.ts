@@ -1,9 +1,16 @@
 #!/usr/bin/env node
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer } from "./server.js";
-import { loadFixtureFile, loadFixturesFromDir, validateFixtures } from "./fixture-loader.js";
+import { FixtureLoadError, validateFixtures } from "./fixture-loader.js";
+import {
+  loadFixtureFileWithServices,
+  loadFixturesFromDirWithServices,
+  type FixturesWithServices,
+} from "./fixture-loader-services.js";
+import { McpFakesAddError } from "./mcp-fakes.js";
+import { build, msg } from "./message-text.js";
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
 import { AGUIMock } from "./agui-mock.js";
@@ -11,7 +18,7 @@ import { parseChaosField, CHAOS_FIELDS, type ChaosField } from "./chaos.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
-import type { Fixture, ChaosConfig, RecordConfig } from "./types.js";
+import type { Fixture, ChaosConfig, RecordConfig, McpFakeSource } from "./types.js";
 
 const HELP = `
 Usage: aimock [options]
@@ -412,21 +419,90 @@ async function resolveAllFixtureSources(): Promise<ResolvedFixtureSource[]> {
   return resolved;
 }
 
-function loadSource(source: ResolvedFixtureSource): Fixture[] {
+// F3: the loaders that carry `mcpFakes`. A file's entry-id source (I6) is the
+// --fixtures value as given: the path, or the URL of a remote file (whose
+// `path` is the on-disk cache).
+function loadSource(source: ResolvedFixtureSource): FixturesWithServices {
   return source.isDir
-    ? loadFixturesFromDir(source.path, logger)
-    : loadFixtureFile(source.path, logger);
+    ? loadFixturesFromDirWithServices(source.path, logger)
+    : loadFixtureFileWithServices(source.path, logger, undefined, source.source);
+}
+
+/** Each source's `mcpFakes` blocks, in load order, for the --watch comparison. */
+function fakesBySource(blocks: McpFakeSource[]): Map<string, unknown[]> {
+  const bySource = new Map<string, unknown[]>();
+  for (const block of blocks) {
+    const list = bySource.get(block.source) ?? [];
+    list.push([block.blockIndex, block.raw]);
+    bySource.set(block.source, list);
+  }
+  return bySource;
+}
+
+/**
+ * R9/F11: fakes are not reloaded by --watch, so a reload whose `mcpFakes`
+ * differ from the boot set is rejected. Returns the first changed source.
+ * A source in `unreadable` could not be read or parsed: it is not compared,
+ * because its blocks are unknown, not removed.
+ */
+function changedFakesSource(
+  boot: McpFakeSource[],
+  reload: McpFakeSource[],
+  unreadable: ReadonlySet<string>,
+): string | null {
+  const before = fakesBySource(boot);
+  const after = fakesBySource(reload);
+  for (const source of new Set([...before.keys(), ...after.keys()])) {
+    if (unreadable.has(source)) continue;
+    if (!isDeepStrictEqual(before.get(source), after.get(source))) return source;
+  }
+  return null;
+}
+
+/**
+ * L3: a load error on stderr, whatever the log level: every error of a
+ * `McpFakesAddError`, one per line, then its L8 warnings.
+ */
+function printLoadError(err: FixtureLoadError): void {
+  const errors = err instanceof McpFakesAddError ? err.errors : [err];
+  for (const e of errors) console.error(e.message);
+  if (err instanceof McpFakesAddError) {
+    for (const w of err.warnings) console.warn(w.message);
+  }
+}
+
+/** A --watch reload that `loadFn` rejected and already printed (L3, L7). */
+class ReloadRejected extends Error {}
+
+/**
+ * The --watch logger: as `Logger`, except that the watcher's own report of a
+ * {@link ReloadRejected} reload is dropped, so the error is printed once.
+ */
+class WatchLogger extends Logger {
+  override error(...args: unknown[]): void {
+    if (args.some((a) => a instanceof ReloadRejected)) return;
+    super.error(...args);
+  }
 }
 
 async function main() {
   const sources = await resolveAllFixtureSources();
 
   const fixtures: Fixture[] = [];
+  const mcpFakes: McpFakeSource[] = [];
+  // The primary source's blocks: what a --watch reload of it is compared with.
+  let primaryFakes: McpFakeSource[] = [];
   for (const src of sources) {
-    fixtures.push(...loadSource(src));
+    const loaded = loadSource(src);
+    fixtures.push(...loaded.fixtures);
+    mcpFakes.push(...loaded.mcpFakes);
+    if (src === sources[0]) primaryFakes = loaded.mcpFakes;
   }
 
-  if (fixtures.length === 0) {
+  if (fixtures.length === 0 && mcpFakes.length > 0) {
+    // F5/L9: fake blocks count as loaded; only LLM requests have nothing to match.
+    console.warn(build(msg`Warning: No LLM fixtures loaded; LLM requests will return 404`));
+  } else if (fixtures.length === 0) {
     if (validateOnLoad || values.strict) {
       console.error("Error: No fixtures loaded and validation/strict mode is enabled — aborting.");
       process.exit(1);
@@ -446,6 +522,8 @@ async function main() {
     for (const w of warnings) {
       logger.warn(`Fixture ${w.fixtureIndex}: ${w.message}`);
     }
+    // L8 (shadowed mcpFakes entries) is not printed here: the hand-off in
+    // createServer prints it on every start.
     for (const e of errors) {
       logger.error(`Fixture ${e.fixtureIndex}: ${e.message}`);
     }
@@ -476,6 +554,7 @@ async function main() {
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,
     },
     mounts,
+    { search: [], rerank: [], moderation: [], mcpFakes },
   );
 
   // Only the first local source is watched — remote URL sources are fetched once
@@ -507,9 +586,41 @@ async function main() {
     if (!primary) {
       logger.warn("--watch requested but no resolvable fixture sources; skipping watcher");
     } else {
-      const loadFn = (): Fixture[] => loadSource(primary);
+      // A rejected reload is printed here, whatever the log level, then
+      // thrown as ReloadRejected: watchFixtures keeps the previous fixtures,
+      // and its WatchLogger does not print the error a second time.
+      const reject = (err: FixtureLoadError): never => {
+        printLoadError(err);
+        throw new ReloadRejected(build(msg`--watch reload rejected`));
+      };
+      const loadFn = (): Fixture[] => {
+        let loaded: FixturesWithServices;
+        try {
+          loaded = loadSource(primary);
+        } catch (err) {
+          // L3: a bad block in the reloaded file.
+          if (err instanceof FixtureLoadError) return reject(err);
+          throw err;
+        }
+        const changed = changedFakesSource(
+          primaryFakes,
+          loaded.mcpFakes,
+          new Set(loaded.unreadable),
+        );
+        if (changed !== null) {
+          // L7.
+          return reject(
+            new FixtureLoadError({
+              rule: "mcp-fakes/watch-reload-changed",
+              file: changed,
+              detail: msg`mcpFakes changed on --watch reload; MCP fakes are not reloaded, so the whole reload is rejected and the previous fixtures stay loaded. Restart aimock to load the new fakes`,
+            }),
+          );
+        }
+        return loaded.fixtures;
+      };
       watcher = watchFixtures(primary.path, fixtures, loadFn, {
-        logger,
+        logger: new WatchLogger(logLevel),
         validate: validateOnLoad,
         validateFn: validateFixtures,
       });
@@ -519,6 +630,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  if (err instanceof FixtureLoadError) {
+    printLoadError(err);
+  } else {
+    console.error(err);
+  }
   process.exit(1);
 });

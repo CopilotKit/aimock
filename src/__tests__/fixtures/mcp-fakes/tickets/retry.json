@@ -1,0 +1,22 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "open a refund ticket", "hasToolResult": false },
+      "response": {
+        "toolCalls": [{ "name": "create_ticket", "arguments": { "title": "Refund" } }]
+      }
+    }
+  ],
+  "mcpFakes": {
+    "scope": { "testId": "tickets › retry on timeout" },
+    "tools": [
+      {
+        "name": "create_ticket",
+        "calls": [
+          { "id": "first-try", "args": { "title": "Refund" }, "error": "upstream timeout" },
+          { "id": "retry", "args": { "title": "Refund" }, "result": "TICKET-42" }
+        ]
+      }
+    ]
+  }
+}

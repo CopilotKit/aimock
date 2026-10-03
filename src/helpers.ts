@@ -2,7 +2,9 @@ import type { LiveFixtureResponse } from "./live-types.js";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
-import { DEFAULT_TEST_ID } from "./constants.js";
+import { DEFAULT_TEST_ID, MCP_FAKES_ECHO_LIMIT } from "./constants.js";
+import { cutText } from "./echo-text.js";
+import { build, fixed, msg, quote, type MessageValue } from "./message-text.js";
 import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
 import { isRecognizedApiKeyHeader } from "./api-key-auth.js";
@@ -30,7 +32,10 @@ import type {
   ResponseOverrides,
   RecordConfig,
   RecordProviderKey,
+  McpFakeIdentity,
+  McpFakeUndeclaredPolicy,
 } from "./types.js";
+import type { MCPSession } from "./mcp-types.js";
 
 /**
  * Resolve effective strict mode from per-request header and server default.
@@ -1506,11 +1511,14 @@ export function matchesPattern(text: string, pattern: string | RegExp): boolean 
 }
 
 /**
- * The ONE definition of "which test does this traffic belong to": the
- * `X-Test-Id` header wins, then `?testId=` in the query string, then
- * `DEFAULT_TEST_ID`. Every per-test axis (fixture match-counts, the journal
- * filter, chaos scoping) resolves through this, so a caller that tags one way
- * can never land in two different scopes.
+ * Which test LLM and other HTTP-route traffic belongs to: the `X-Test-Id`
+ * header (raw, not percent-decoded) wins, then `?testId=` in the query string
+ * (read through `URLSearchParams`, so percent-decoded and with `+` as a
+ * space), then `DEFAULT_TEST_ID`. Every per-test axis of those routes
+ * (fixture match-counts, the journal filter, chaos scoping) resolves through
+ * this. MCP mounts resolve the test id with {@link resolveMcpIdentity}
+ * instead, which percent-decodes the header, so `X-Test-Id: a%20b` is `a%20b`
+ * here and `a b` there. Both read a `+` in the query as a space.
  */
 export function resolveTestId(headers: IncomingHttpHeaders, url: string | undefined): string {
   const headerValue = headers["x-test-id"];
@@ -1542,6 +1550,313 @@ export function getContext(req: http.IncomingMessage): string | undefined {
     return headerValue;
   }
   return undefined;
+}
+
+/**
+ * Decode one MCP identity value: an `X-Test-Id` / `X-AIMock-Context` header
+ * value, and also each query name and (through {@link decodeMcpQueryValue})
+ * each `?testId=` / `?context=` / `?undeclared=` query value. Clients send `encodeURIComponent(id)` because
+ * `fetch` rejects characters such as `›` in a header. A value that is not
+ * valid percent-encoding (a raw `applies 50% discount`) is used as-is, with
+ * `fellBack: true` so the caller can log the fallback. Only that `URIError`
+ * is caught; any other throw propagates. MCP requests only: LLM routes read
+ * the header raw and the query through `URLSearchParams` (see
+ * {@link resolveTestId}).
+ */
+export function decodeMcpHeaderValue(raw: string): { value: string; fellBack: boolean } {
+  try {
+    return { value: decodeURIComponent(raw), fellBack: false };
+  } catch (err) {
+    if (!(err instanceof URIError)) throw err;
+    return { value: raw, fellBack: true };
+  }
+}
+
+/**
+ * Decode one MCP query value (`?testId=`, `?context=`, `?undeclared=`) the way
+ * `URLSearchParams` reads it (spec I1): a `+` is a space, then the value is
+ * percent-decoded by the {@link decodeMcpHeaderValue} rule. So a query built
+ * with `URL.searchParams.set(...)` (a space sent as `+`) and one built with
+ * `encodeURIComponent` both resolve to the id itself. A value that is not
+ * valid percent-encoding is used as-is (its `+` still a space), with
+ * `fellBack: true`.
+ */
+function decodeMcpQueryValue(raw: string): { value: string; fellBack: boolean } {
+  return decodeMcpHeaderValue(raw.replace(/\+/g, " "));
+}
+
+/** The parts of a request that {@link resolveMcpIdentity} reads. */
+export type McpIdentityRequest = Pick<http.IncomingMessage, "headers" | "url"> &
+  Partial<Pick<http.IncomingMessage, "headersDistinct">>;
+
+/**
+ * Every value of the header `name`, one per header line: `[]` when absent.
+ * Node joins a repeated header into one comma-joined `req.headers` string, so
+ * the values come from `req.headersDistinct` (one element per line) when the
+ * request has it. A caller without it (a hand-built request) is read from
+ * `req.headers`: one element for a string, each element for an array.
+ */
+function headerValues(req: McpIdentityRequest, name: string): string[] {
+  const distinct = req.headersDistinct?.[name];
+  if (distinct !== undefined) return distinct;
+  const value = req.headers[name];
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+/** One `name=value` pair of a query string, its name decoded. */
+interface McpQueryPair {
+  /** The decoded name, or `null` when the name is not valid percent-encoding. */
+  name: string | null;
+  /** The raw (still percent-encoded) value; `""` for a bare name with no `=`. */
+  value: string;
+}
+
+/**
+ * Every pair of a query string, in order, each name decoded by the
+ * `decodeMcpHeaderValue` rule. A bare `name` with no `=` counts as an
+ * occurrence with an empty value, so `?testId&testId=t1` has two. Each value
+ * is left raw for the caller to decode with {@link decodeMcpQueryValue}.
+ * A name that is not valid percent-encoding (`test%Id`) gets `name: null`: it
+ * matches no field, and the caller counts it.
+ */
+function queryPairs(query: string): McpQueryPair[] {
+  if (query === "") return [];
+  return query.split("&").map((pair) => {
+    const eq = pair.indexOf("=");
+    const key = decodeMcpHeaderValue(eq === -1 ? pair : pair.slice(0, eq));
+    return { name: key.fellBack ? null : key.value, value: eq === -1 ? "" : pair.slice(eq + 1) };
+  });
+}
+
+/**
+ * A request value as a message part, the way the message builder quotes every
+ * user string: JSON-quoted (quotes and control characters escaped), then cut
+ * once as JSON text, so the whole echo, quotes, escapes and the
+ * `… (<n> more chars)` count included, fits in `MCP_FAKES_ECHO_LIMIT` and the
+ * cut never splits a JSON escape or a surrogate pair.
+ */
+function echoIdentityValue(value: string): MessageValue {
+  return quote(value, MCP_FAKES_ECHO_LIMIT);
+}
+
+/** The session fields an MCP session binds at `initialize`. */
+type McpIdentitySession = Pick<MCPSession, "testId" | "context" | "undeclared">;
+
+/** An MCP identity input: the test id, the context or the undeclared override. */
+export type McpIdentityField = "testId" | "context" | "undeclared";
+
+/**
+ * Why an MCP request's identity inputs cannot be honored. The MCP mount is
+ * meant to answer `status` with `{ "error": message }` and serve nothing.
+ * - `MCP_INVALID_UNDECLARED`: an undeclared override (`X-AIMock-MCP-Undeclared`
+ *   / `?undeclared=`) other than `allow` / `deny`, so a typo such as `denied`
+ *   can never turn a `deny` scenario into the permissive default. `raw` is
+ *   the value as sent (the query value still percent-encoded), not quoted,
+ *   cut by `cutText` to `MCP_FAKES_ECHO_LIMIT` chars, so a huge value is
+ *   never carried in full. A query value that
+ *   is not valid percent-encoding is also an error, and the message says so.
+ * - `MCP_DUPLICATE_IDENTITY`: one field sent more than once on one path (a
+ *   header array with more than one element, or a repeated query name, empty
+ *   or not). No value is picked. `count` is how many were sent.
+ */
+export type McpIdentityError =
+  | {
+      code: "MCP_INVALID_UNDECLARED";
+      status: 400;
+      field: "undeclared";
+      source: "header" | "query";
+      raw: string;
+      message: string;
+    }
+  | {
+      code: "MCP_DUPLICATE_IDENTITY";
+      status: 400;
+      field: McpIdentityField;
+      source: "header" | "query";
+      count: number;
+      message: string;
+    };
+
+/** The result of {@link resolveMcpIdentity}: a resolved identity, or an error to answer with. */
+export type McpIdentityResolution =
+  | {
+      ok: true;
+      identity: McpFakeIdentity;
+      /** Whether the request itself carried each field (raw header/query, not the session). */
+      supplied: { testId: boolean; context: boolean; undeclared: boolean };
+      /**
+       * Whether a header or query value sent for each field was not valid
+       * percent-encoding and fell back to the raw value. Set also when the
+       * header supplied the field and the ignored query value did not decode,
+       * so bad encoding is never silent. For the MCP mount to log a warning,
+       * once per session per field.
+       */
+      fellBack: { testId: boolean; context: boolean };
+      /**
+       * How many query names were not valid percent-encoding (`?test%Id=`).
+       * Such a name matches no field. Present only when at least one was
+       * found, for the MCP mount to log.
+       */
+      undecodedQueryNames?: number;
+    }
+  | { ok: false; error: McpIdentityError };
+
+const MCP_IDENTITY_INPUTS: Record<
+  McpIdentityField,
+  { header: string; query: string; label: string }
+> = {
+  testId: { header: "x-test-id", query: "testId", label: "X-Test-Id" },
+  context: { header: "x-aimock-context", query: "context", label: "X-AIMock-Context" },
+  undeclared: {
+    header: "x-aimock-mcp-undeclared",
+    query: "undeclared",
+    label: "X-AIMock-MCP-Undeclared",
+  },
+};
+
+/**
+ * Resolve the identity (test id, context, undeclared override) of one MCP request.
+ * Each field resolves on its own, first of: the header, the query parameter,
+ * the session value bound at `initialize`. A field sent more than once on
+ * either path (more than one header line, read from `headersDistinct` because
+ * Node joins repeated lines into one `headers` string; a header array from a
+ * hand-built request; a repeated query name) is an error
+ * (`MCP_DUPLICATE_IDENTITY`), even when the other path also carries it. For
+ * the test id and the context, a header value is decoded with
+ * `decodeURIComponent` (raw value on failure, with `fellBack` set) and a query
+ * value the way `URLSearchParams` reads it (spec I1): a `+` is a space, then
+ * the same `decodeURIComponent` rule. So `encodeURIComponent` output (what
+ * clients send) and a query built with `URL.searchParams` both decode to the
+ * id itself, while a raw `+` is a `+` in the header and a space in the query.
+ * When both paths carry a test id or a context, the header is used and the
+ * query value is ignored, even if the two differ, but an ignored query value
+ * that does not decode still sets `fellBack`. The undeclared header is not
+ * percent-decoded; its query value is, by the same query rule. Both are
+ * trimmed and compared case-insensitively. `supplied` says whether the
+ * request itself carried a non-empty header or query value for the field,
+ * never `resolveTestId`'s result (which returns `"__default__"` when nothing
+ * is sent). Blank values: an empty value is not supplied and falls through;
+ * it is never rejected. A whitespace-only value is not supplied for the
+ * undeclared override (it is trimmed), but is a real value for the test id
+ * and the context, which match exactly and are never trimmed (Node trims a
+ * header value, so only the query or a hand-built request can carry one). A
+ * lone query name with no `=` carries no value. An empty session value counts
+ * as none, and a missing `req.url` as `/`. A field with no value anywhere is
+ * `null`. An unrecognized undeclared override on the header or the query is
+ * an error (`ok: false`), not a fall-through: both are checked before the
+ * header one is used, so a valid header does not hide a mistyped query value.
+ * Bad percent-encoding is never silent: a test id or context value that does
+ * not decode sets `fellBack`, on either path, used or ignored; an undeclared
+ * query value that does not decode is that error, with the message saying
+ * so; and a query name that does not decode matches no field and is counted
+ * in `undecodedQueryNames`. `resolveTestId` / `getContext` stay unchanged for
+ * LLM routes.
+ */
+export function resolveMcpIdentity(
+  req: McpIdentityRequest,
+  session?: McpIdentitySession,
+): McpIdentityResolution {
+  const url = req.url ?? "/";
+  const qIdx = url.indexOf("?");
+  const pairs = queryPairs(qIdx === -1 ? "" : url.slice(qIdx + 1));
+
+  // Collect each field's one raw value per path, rejecting any repetition first.
+  const raw = {} as Record<McpIdentityField, { header?: string; query?: string }>;
+  for (const field of ["testId", "context", "undeclared"] as const) {
+    const input = MCP_IDENTITY_INPUTS[field];
+    const sent = [
+      ["header", headerValues(req, input.header)],
+      ["query", pairs.filter((p) => p.name === input.query).map((p) => p.value)],
+    ] as const;
+    for (const [source, values] of sent) {
+      if (values.length > 1) {
+        const label =
+          source === "header"
+            ? msg`${fixed(input.label)} header`
+            : msg`?${fixed(input.query)}= query parameter`;
+        return {
+          ok: false,
+          error: {
+            code: "MCP_DUPLICATE_IDENTITY",
+            status: 400,
+            field,
+            source,
+            count: values.length,
+            message: build(msg`Duplicate ${label}: ${values.length} values sent, expected one`),
+          },
+        };
+      }
+    }
+    raw[field] = { header: sent[0][1][0], query: sent[1][1][0] };
+  }
+
+  const fromRequest = (
+    field: "testId" | "context",
+  ): { value: string | null; fellBack: boolean } => {
+    const { header, query: q } = raw[field];
+    const fromQuery = q ? decodeMcpQueryValue(q) : null;
+    if (header) {
+      // The header wins; an ignored query value that does not decode still flags.
+      const used = decodeMcpHeaderValue(header);
+      return { value: used.value, fellBack: used.fellBack || (fromQuery?.fellBack ?? false) };
+    }
+    return fromQuery ?? { value: null, fellBack: false };
+  };
+
+  const testId = fromRequest("testId");
+  const context = fromRequest("context");
+
+  // Check every supplied undeclared value before using one: the header wins,
+  // but a mistyped query value next to it is still an error.
+  let undeclared: McpFakeUndeclaredPolicy | null = null;
+  for (const source of ["header", "query"] as const) {
+    const sent = raw.undeclared[source];
+    if (sent === undefined) continue;
+    // Header decoding covers only X-Test-Id / X-AIMock-Context; this header is
+    // not percent-decoded. The query value is decoded.
+    const decoded =
+      source === "header" ? { value: sent, fellBack: false } : decodeMcpQueryValue(sent);
+    if (decoded.value.trim() === "") continue;
+    const parsed = parseMcpUndeclared(decoded.value);
+    if (parsed === null) {
+      const echoed = echoIdentityValue(sent);
+      const label =
+        source === "header"
+          ? msg`X-AIMock-MCP-Undeclared header`
+          : msg`?undeclared= query parameter`;
+      const note = decoded.fellBack ? msg` (not valid percent-encoding)` : msg``;
+      return {
+        ok: false,
+        error: {
+          code: "MCP_INVALID_UNDECLARED",
+          status: 400,
+          field: "undeclared",
+          source,
+          raw: cutText(sent),
+          message: build(msg`Invalid ${label} value ${echoed}${note}: expected allow or deny`),
+        },
+      };
+    }
+    undeclared ??= parsed;
+  }
+
+  const undecodedQueryNames = pairs.filter((p) => p.name === null).length;
+  return {
+    ok: true,
+    identity: {
+      testId: testId.value ?? (session?.testId || null),
+      context: context.value ?? (session?.context || null),
+      undeclared: undeclared ?? session?.undeclared ?? null,
+    },
+    supplied: {
+      testId: testId.value !== null,
+      context: context.value !== null,
+      undeclared: undeclared !== null,
+    },
+    fellBack: { testId: testId.fellBack, context: context.fellBack },
+    ...(undecodedQueryNames > 0 ? { undecodedQueryNames } : {}),
+  };
 }
 
 // ─── Snapshot recording helpers ──────────────────────────────────────────────
@@ -1865,4 +2180,20 @@ export function describeMatch(match: FixtureMatch, index: number): string {
   const head = full.slice(0, DESCRIBE_MATCH_MAX - 4);
   const cut = head.lastIndexOf(", ");
   return `${cut > 0 ? head.slice(0, cut) : head}, … }`;
+}
+
+// ─── MCP fakes: undeclared-tool override ────────────────────────────────────
+
+/**
+ * Parse an `X-AIMock-MCP-Undeclared` header or `?undeclared=` value.
+ * Modeled on {@link resolveStrictMode}: case-insensitive, surrounding
+ * whitespace trimmed. Returns `null` when unrecognised; unlike the strict
+ * header, {@link resolveMcpIdentity} turns that into an error rather than a
+ * fall-through, because falling through would turn a mistyped `deny` into
+ * the permissive default.
+ */
+function parseMcpUndeclared(raw: string): McpFakeUndeclaredPolicy | null {
+  const val = raw.trim().toLowerCase();
+  if (val === "allow" || val === "deny") return val;
+  return null;
 }

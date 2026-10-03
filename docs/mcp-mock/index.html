@@ -128,6 +128,810 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
 ]);</code></pre>
         </div>
 
+        <h2 id="scenario-fakes">Scenario fakes (fixtures)</h2>
+        <p>
+          A fixture file can hold an <code>mcpFakes</code> key next to its <code>fixtures</code>
+          array. It scripts the MCP tool answers for one test scenario: an ordered list of answers
+          per tool, exact or any-argument matching, and an optional closed world that fails on any
+          tool the scenario does not declare. The LLM turns and the tool answers of a scenario live
+          in one file. Fakes work at the wire, so any MCP client that speaks Streamable HTTP can use
+          them, in any language or agent framework.
+        </p>
+        <div class="code-block" data-sample="tickets/retry.json">
+          <div class="code-block-header">tickets/retry.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"open a refund ticket"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">false</span> },
+      <span class="prop">"response"</span>: {
+        <span class="prop">"toolCalls"</span>: [{ <span class="prop">"name"</span>: <span class="str">"create_ticket"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"title"</span>: <span class="str">"Refund"</span> } }]
+      }
+    }
+  ],
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"tickets › retry on timeout"</span> },
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"create_ticket"</span>,
+        <span class="prop">"calls"</span>: [
+          { <span class="prop">"id"</span>: <span class="str">"first-try"</span>, <span class="prop">"args"</span>: { <span class="prop">"title"</span>: <span class="str">"Refund"</span> }, <span class="prop">"error"</span>: <span class="str">"upstream timeout"</span> },
+          { <span class="prop">"id"</span>: <span class="str">"retry"</span>, <span class="prop">"args"</span>: { <span class="prop">"title"</span>: <span class="str">"Refund"</span> }, <span class="prop">"result"</span>: <span class="str">"TICKET-42"</span> }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          In the test <code>tickets › retry on timeout</code>, the first
+          <code>create_ticket</code> call with <code>{"title":"Refund"}</code> gets a tool error
+          with the text <code>upstream timeout</code>, which the model sees and can retry. The
+          second call gets <code>TICKET-42</code>. A third call fails with
+          <code>MCP_FAKE_EXHAUSTED</code>.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Minimum version:</strong> <code>mcpFakes</code> needs the aimock release that
+            includes MCP fakes. An older aimock does not serve your fakes. It ignores the
+            <code>mcpFakes</code> key without a warning in a file that also has a
+            <code>fixtures</code> array. A file with only <code>mcpFakes</code> loads no fixtures
+            and logs <code>Missing or invalid "fixtures" array</code>. If the run then has no
+            fixtures at all, <code>llmock</code> starts with a warning, or exits under
+            <code>--validate-on-load</code> or <code>--strict</code>.
+          </p>
+        </div>
+
+        <h3>Format</h3>
+        <p>
+          <code>mcpFakes</code> is one block or an array of blocks. Use an array when an agent talks
+          to several MCP servers (one block per <code>mount</code>) or when one file holds several
+          scopes. A block has these keys:
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>scope</code></td>
+              <td>
+                Required. <code>{ "testId": "..." }</code>, <code>{ "context": "..." }</code>, both,
+                or the string <code>"shared"</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>mount</code></td>
+              <td>
+                Optional. The MCP mount path, starting with <code>/</code>. Default
+                <code>/mcp</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>undeclaredTools</code></td>
+              <td>
+                Optional. <code>"allow"</code> (default) or <code>"deny"</code>. See
+                <a href="#closed-world">Closed world</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tools</code></td>
+              <td>
+                Required array. Each tool has a <code>name</code> (exact, case-sensitive), an
+                optional <code>description</code> and <code>inputSchema</code> (used for
+                <code>tools/list</code>), and a non-empty <code>calls</code> array of answers. Only
+                a <code>deny</code> block with a test id or context scope may have an empty
+                <code>tools</code> array.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Each item of <code>calls</code> has these keys:</p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>args</code></td>
+              <td>A JSON object. The call matches only when its arguments are equal to it.</td>
+            </tr>
+            <tr>
+              <td><code>anyArgs</code></td>
+              <td><code>true</code>. The call matches whatever its arguments are.</td>
+            </tr>
+            <tr>
+              <td><code>result</code></td>
+              <td>The success answer: a string, a content array or an object (see below).</td>
+            </tr>
+            <tr>
+              <td><code>error</code></td>
+              <td>
+                A string. The answer is a tool execution error,
+                <code>{ content: [{ type: "text", text }], isError: true }</code>. The model sees it
+                and can retry.
+              </td>
+            </tr>
+            <tr>
+              <td><code>id</code></td>
+              <td>Optional name for the entry, used in errors, the journal and inspection.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Each entry has exactly one of <code>args</code> or <code>anyArgs</code>, and exactly one
+          of <code>result</code> or <code>error</code>. A <code>result</code> becomes a
+          <code>tools/call</code> result like this:
+        </p>
+        <ul>
+          <li>
+            A string becomes <code>{ content: [{ type: "text", text }], isError: false }</code>, the
+            same as a string from <code>onToolCall</code>.
+          </li>
+          <li>An array is used as <code>content</code>.</li>
+          <li>
+            An object with any of the keys <code>content</code>, <code>isError</code>,
+            <code>structuredContent</code> or <code>_meta</code> is the full result. It must have a
+            <code>content</code> array and no other keys.
+          </li>
+          <li>
+            Any other object is sent as <code>structuredContent</code>, with its JSON text in a text
+            content block, so clients that do not read <code>structuredContent</code> still get the
+            data.
+          </li>
+        </ul>
+        <p>
+          A single answer with an object <code>result</code>. In the test
+          <code>weather › seattle</code>, the model first asks for <code>get_weather</code>. The
+          call with <code>{"city":"Seattle"}</code> gets <code>structuredContent</code>
+          <code>{"tempF":60,"conditions":"rain"}</code> and the same JSON as a text block. After the
+          tool result, the model answers <code>It is 60F and raining in Seattle.</code>
+        </p>
+        <div class="code-block" data-sample="weather/seattle.json">
+          <div class="code-block-header">
+            weather/seattle.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"fixtures"</span>: [
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"weather in Seattle"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">false</span> },
+      <span class="prop">"response"</span>: { <span class="prop">"toolCalls"</span>: [{ <span class="prop">"name"</span>: <span class="str">"get_weather"</span>, <span class="prop">"arguments"</span>: { <span class="prop">"city"</span>: <span class="str">"Seattle"</span> } }] }
+    },
+    {
+      <span class="prop">"match"</span>: { <span class="prop">"userMessage"</span>: <span class="str">"weather in Seattle"</span>, <span class="prop">"hasToolResult"</span>: <span class="kw">true</span> },
+      <span class="prop">"response"</span>: { <span class="prop">"content"</span>: <span class="str">"It is 60F and raining in Seattle."</span> }
+    }
+  ],
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"weather › seattle"</span> },
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+        <span class="prop">"calls"</span>: [
+          { <span class="prop">"args"</span>: { <span class="prop">"city"</span>: <span class="str">"Seattle"</span> }, <span class="prop">"result"</span>: { <span class="prop">"tempF"</span>: <span class="num">60</span>, <span class="prop">"conditions"</span>: <span class="str">"rain"</span> } }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+        <p>
+          An entry without an <code>id</code> gets one from its file, tool and position: for
+          example, if the first entry above had no <code>id</code>, its id would be
+          <code>tickets/retry.json:create_ticket#0</code>. A file in a fixtures directory is named
+          by its path relative to that directory. An entry with an <code>id</code> uses it in place
+          of the tool and position, as in <code>tickets/retry.json:first-try</code>. Entry ids are
+          unique on each mount.
+        </p>
+        <p>
+          An array of blocks, one per MCP server. aimock mounts an <code>MCPMock</code> at
+          <code>/mcp/flights</code> and one at <code>/mcp/hotels</code>. In the test
+          <code>travel › book trip</code>, <code>search_flights</code> on
+          <code>/mcp/flights</code> answers <code>UA 100 departs 09:00</code> for any arguments, and
+          <code>book_hotel</code> on <code>/mcp/hotels</code> answers <code>HOTEL-7</code> for
+          <code>{"city":"Paris"}</code>. Each mount serves only its own block: a
+          <code>book_hotel</code> call on <code>/mcp/flights</code> gets
+          <code>Unknown tool: book_hotel</code>.
+        </p>
+        <div class="code-block" data-sample="multi/travel.json">
+          <div class="code-block-header">multi/travel.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"mcpFakes"</span>: [
+    {
+      <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"travel › book trip"</span> },
+      <span class="prop">"mount"</span>: <span class="str">"/mcp/flights"</span>,
+      <span class="prop">"tools"</span>: [
+        {
+          <span class="prop">"name"</span>: <span class="str">"search_flights"</span>,
+          <span class="prop">"calls"</span>: [{ <span class="prop">"anyArgs"</span>: <span class="kw">true</span>, <span class="prop">"result"</span>: <span class="str">"UA 100 departs 09:00"</span> }]
+        }
+      ]
+    },
+    {
+      <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"travel › book trip"</span> },
+      <span class="prop">"mount"</span>: <span class="str">"/mcp/hotels"</span>,
+      <span class="prop">"tools"</span>: [
+        { <span class="prop">"name"</span>: <span class="str">"book_hotel"</span>, <span class="prop">"calls"</span>: [{ <span class="prop">"args"</span>: { <span class="prop">"city"</span>: <span class="str">"Paris"</span> }, <span class="prop">"result"</span>: <span class="str">"HOTEL-7"</span> }] }
+      ]
+    }
+  ]
+}</code></pre>
+        </div>
+
+        <h3>Why <code>scope</code> is required</h3>
+        <p>
+          All fixture files load into one server. Without a scope, a fake written for one test would
+          answer every other test. So a block with no <code>scope</code> fails the load. Use
+          <code>"shared"</code> only for answers that every test may get.
+        </p>
+
+        <h3>How a request picks blocks</h3>
+        <p>Each MCP request resolves a test id and a context, each on its own:</p>
+        <ul>
+          <li>
+            <strong>Test id:</strong> the <code>X-Test-Id</code> header, else the
+            <code>?testId=</code> query parameter on the MCP URL, else the value the session got at
+            <code>initialize</code>.
+          </li>
+          <li>
+            <strong>Context:</strong> the <code>X-AIMock-Context</code> header, else the
+            <code>?context=</code> query parameter, else the session value.
+          </li>
+        </ul>
+        <p>
+          On <code>initialize</code>, the test id, context and undeclared override that the request
+          sends are stored on the session, so later requests in that session need not send them
+          again. A value sent on a later request wins over the session value for that field only.
+        </p>
+        <p>
+          A <code>testId</code> scope matches only a request whose test id is exactly equal to it
+          (case-sensitive, no normalization). A <code>context</code> scope works the same way. A
+          scope with both needs both. <code>"shared"</code> matches every request. A request with no
+          test id and no context sees only shared blocks.
+        </p>
+        <p>
+          When more than one block declares a tool, the most specific level wins: test id and
+          context, then test id only, then context only, then shared. Only the entries of that level
+          are used for that tool, so a scenario that declares <code>get_weather</code> replaces a
+          shared <code>get_weather</code>, and two scenarios never see each other&rsquo;s entries.
+        </p>
+        <p>
+          A field sent twice on one path (two <code>X-Test-Id</code> headers, or
+          <code>?testId=</code> twice) is rejected with HTTP 400 and code
+          <code>MCP_DUPLICATE_IDENTITY</code>. When the header and the query both carry a value, the
+          header is used.
+        </p>
+
+        <h3>Encode test ids on the MCP client</h3>
+        <p>
+          Test ids often contain characters such as <code>›</code>, which <code>fetch</code> and
+          Node&rsquo;s <code>http.request</code> refuse to put in a header. The MCP SDK transports
+          use <code>fetch</code>. So send <code>encodeURIComponent(id)</code> in
+          <code>X-Test-Id</code> and <code>X-AIMock-Context</code>, or in the
+          <code>?testId=</code> and <code>?context=</code> query parameters, on the MCP client.
+          aimock decodes both headers on MCP requests. A value that does not decode is used as sent,
+          and the request is not rejected. An id that contains a literal <code>%XX</code> sequence
+          must be sent as <code>%25XX</code>.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Encode on the MCP client only.</strong> LLM routes compare these headers as
+            sent. If a shared request interceptor encodes them for LLM calls too, LLM context
+            fixtures that contain a space stop matching.
+          </p>
+        </div>
+
+        <h3>Argument matching</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Value</th>
+              <th>Rule</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Objects</td>
+              <td>
+                Same keys, each value equal. Key order does not matter. An extra or missing key is a
+                mismatch.
+              </td>
+            </tr>
+            <tr>
+              <td>Arrays</td>
+              <td>Same length, equal element by element. Order matters.</td>
+            </tr>
+            <tr>
+              <td>Strings, booleans, <code>null</code></td>
+              <td>
+                Strict equality. No type conversion: <code>"1"</code> is not <code>1</code>, and
+                <code>null</code> is not a missing key.
+              </td>
+            </tr>
+            <tr>
+              <td>Numbers</td>
+              <td>Equal as parsed JSON numbers (<code>1</code> equals <code>1.0</code>).</td>
+            </tr>
+            <tr>
+              <td>No <code>arguments</code></td>
+              <td>Treated as <code>{}</code>.</td>
+            </tr>
+            <tr>
+              <td>Arguments that are not an object</td>
+              <td>Match only an <code>anyArgs</code> entry.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          These rules follow the argument rules that Mastra documents for its tool mocks: object key
+          order is ignored, array order matters, and values are not converted to other types.
+          Fixtures written for one carry over to the other.
+        </p>
+        <p>
+          For each call, aimock takes the first entry that is not used yet and whose arguments
+          match, and marks it used. Entries for the same tool and arguments are used in the order
+          you declare them. Calls with different arguments each find their own entry, whatever the
+          call order, because models make parallel tool calls in an order a test cannot control. Put
+          <code>args</code> entries before <code>anyArgs</code> entries for the same tool; an
+          <code>args</code> entry after an <code>anyArgs</code> entry gets a validation warning,
+          because it cannot match until the <code>anyArgs</code> entry is used.
+        </p>
+        <p>
+          Any arguments, scoped by context. Every request that sends
+          <code>X-AIMock-Context: docs-search</code> uses this block, whatever its test id. The
+          first <code>search_docs</code> call gets <code>Doc A: refunds take 5 days</code> and the
+          second gets <code>Doc B: contact support</code>, whatever the query text. A third call
+          fails with <code>MCP_FAKE_EXHAUSTED</code>. A request without that context does not see
+          the block, so with no registered <code>search_docs</code> tool it gets
+          <code>Unknown tool: search_docs</code>.
+        </p>
+        <div class="code-block" data-sample="docs/search.json">
+          <div class="code-block-header">docs/search.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"context"</span>: <span class="str">"docs-search"</span> },
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"search_docs"</span>,
+        <span class="prop">"calls"</span>: [
+          { <span class="prop">"anyArgs"</span>: <span class="kw">true</span>, <span class="prop">"result"</span>: [{ <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Doc A: refunds take 5 days"</span> }] },
+          { <span class="prop">"anyArgs"</span>: <span class="kw">true</span>, <span class="prop">"result"</span>: [{ <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Doc B: contact support"</span> }] }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+
+        <h3>Precedence</h3>
+        <p>For a <code>tools/call</code> of a tool:</p>
+        <ol>
+          <li>
+            If the request&rsquo;s blocks declare fakes for the tool, a fake answers. A mismatch or
+            an exhausted tool returns an error; the call never falls through to a code handler.
+          </li>
+          <li>
+            Otherwise, under <code>deny</code>, the call fails with
+            <code>MCP_FAKE_NOT_DECLARED</code>, even if an <code>onToolCall</code> handler or a
+            config <code>result</code> exists for the tool.
+          </li>
+          <li>Otherwise the tool is answered as it is without fakes.</li>
+        </ol>
+        <p>
+          <code>tools/list</code> returns the registered tools plus the tools named in the
+          request&rsquo;s blocks. A fake-only tool is listed with its <code>description</code> and
+          <code>inputSchema</code>, or with <code>{ "type": "object" }</code> as its schema. When a
+          tool is both registered and faked, the registered definition is listed. Fakes never remove
+          a registered tool from the list.
+        </p>
+
+        <h3>Errors</h3>
+        <p>
+          A fake failure means the test scenario is wrong, not that the tool failed. So aimock
+          answers it with a JSON-RPC protocol error (over HTTP 200), which MCP client SDKs raise as
+          an exception. If it were a tool result with <code>isError: true</code>, the model could
+          read it, recover, and let the test pass by accident. Use an entry&rsquo;s
+          <code>error</code> key for a tool failure that the model is meant to see.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th><code>error.data.aimock.code</code></th>
+              <th>JSON-RPC code</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>MCP_FAKE_MISMATCH</code></td>
+              <td><code>-32602</code></td>
+              <td>The tool is faked, but no entry matches the arguments.</td>
+            </tr>
+            <tr>
+              <td><code>MCP_FAKE_EXHAUSTED</code></td>
+              <td><code>-31010</code></td>
+              <td>Entries match the arguments, but all of them are used.</td>
+            </tr>
+            <tr>
+              <td><code>MCP_FAKE_NOT_DECLARED</code></td>
+              <td><code>-32602</code></td>
+              <td>
+                The scenario denies undeclared tools and no block declares this tool. The message
+                starts with <code>Unknown tool:</code>, as for an unknown tool without fakes.
+              </td>
+            </tr>
+            <tr>
+              <td><code>MCP_FAKE_EVICTED</code></td>
+              <td><code>-31011</code></td>
+              <td>
+                The state of this test id was dropped by the per-mount test-id cap. See
+                <a href="#parallel-tests">Parallel tests</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>MCP_FAKE_INTERNAL_ERROR</code></td>
+              <td><code>-32603</code></td>
+              <td>
+                An aimock defect: a matching entry&rsquo;s answer could not be built. The message
+                starts with <code>aimock MCP fake internal error:</code>. Please report it.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Key your test code on <code>error.data.aimock.code</code>; the JSON-RPC code is shared
+          with other errors. Every <code>data.aimock</code> has <code>code</code>,
+          <code>tool</code>, <code>testId</code>, <code>context</code> (each <code>null</code> when
+          not supplied) and <code>mount</code>. A mismatch adds <code>received</code>,
+          <code>declared</code> (each entry&rsquo;s <code>id</code>, <code>args</code> or
+          <code>anyArgs</code>, and <code>consumed</code>) and <code>firstDifference</code>, the
+          path to the first value that differs from the closest declared entry. An exhausted error
+          adds <code>received</code>, <code>matchingDeclared</code>,
+          <code>matchingConsumed</code> and <code>matchingIds</code>. A not-declared error adds
+          <code>declaredTools</code>. An evicted error adds <code>cap</code>. An internal error adds
+          <code>error</code>, the text of the error that aimock caught. The message names the tool,
+          the arguments received and what was declared.
+        </p>
+        <p>
+          The bodies below are what aimock sends. <code>id</code> is the JSON-RPC id of the
+          <code>tools/call</code> request, which the MCP client picks. A
+          <code>get_weather</code> call with <code>{"city":"seattle"}</code> in the test
+          <code>weather › seattle</code> (the <code>weather/seattle.json</code> example above):
+        </p>
+        <div class="code-block" data-sample="wire/mismatch.json">
+          <div class="code-block-header">Mismatch <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"jsonrpc"</span>: <span class="str">"2.0"</span>,
+  <span class="prop">"id"</span>: <span class="num">1</span>,
+  <span class="prop">"error"</span>: {
+    <span class="prop">"code"</span>: <span class="num">-32602</span>,
+    <span class="prop">"message"</span>: <span class="str">"aimock MCP fake mismatch: tool \"get_weather\" was called with arguments that match no declared fake (testId \"weather › seattle\"). Received {\"city\":\"seattle\"}. Declared: weather/seattle.json:get_weather#0 {\"city\":\"Seattle\"}."</span>,
+    <span class="prop">"data"</span>: {
+      <span class="prop">"aimock"</span>: {
+        <span class="prop">"code"</span>: <span class="str">"MCP_FAKE_MISMATCH"</span>,
+        <span class="prop">"tool"</span>: <span class="str">"get_weather"</span>,
+        <span class="prop">"testId"</span>: <span class="str">"weather › seattle"</span>,
+        <span class="prop">"context"</span>: <span class="kw">null</span>,
+        <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+        <span class="prop">"received"</span>: {
+          <span class="prop">"city"</span>: <span class="str">"seattle"</span>
+        },
+        <span class="prop">"declared"</span>: [
+          {
+            <span class="prop">"id"</span>: <span class="str">"weather/seattle.json:get_weather#0"</span>,
+            <span class="prop">"args"</span>: {
+              <span class="prop">"city"</span>: <span class="str">"Seattle"</span>
+            },
+            <span class="prop">"consumed"</span>: <span class="kw">false</span>
+          }
+        ],
+        <span class="prop">"firstDifference"</span>: <span class="str">"$.city: expected \"Seattle\", received \"seattle\""</span>
+      }
+    }
+  }
+}</code></pre>
+        </div>
+        <p>
+          The third <code>create_ticket</code> call in the test
+          <code>tickets › retry on timeout</code> (the <code>tickets/retry.json</code> example
+          above):
+        </p>
+        <div class="code-block" data-sample="wire/exhausted.json">
+          <div class="code-block-header">Exhausted <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"jsonrpc"</span>: <span class="str">"2.0"</span>,
+  <span class="prop">"id"</span>: <span class="num">3</span>,
+  <span class="prop">"error"</span>: {
+    <span class="prop">"code"</span>: <span class="num">-31010</span>,
+    <span class="prop">"message"</span>: <span class="str">"aimock MCP fake exhausted: tool \"create_ticket\" with {\"title\":\"Refund\"} was called again, but all 2 matching fakes are already used (testId \"tickets › retry on timeout\")."</span>,
+    <span class="prop">"data"</span>: {
+      <span class="prop">"aimock"</span>: {
+        <span class="prop">"code"</span>: <span class="str">"MCP_FAKE_EXHAUSTED"</span>,
+        <span class="prop">"tool"</span>: <span class="str">"create_ticket"</span>,
+        <span class="prop">"testId"</span>: <span class="str">"tickets › retry on timeout"</span>,
+        <span class="prop">"context"</span>: <span class="kw">null</span>,
+        <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+        <span class="prop">"received"</span>: {
+          <span class="prop">"title"</span>: <span class="str">"Refund"</span>
+        },
+        <span class="prop">"matchingDeclared"</span>: <span class="num">2</span>,
+        <span class="prop">"matchingConsumed"</span>: <span class="num">2</span>,
+        <span class="prop">"matchingIds"</span>: [<span class="str">"tickets/retry.json:first-try"</span>, <span class="str">"tickets/retry.json:retry"</span>]
+      }
+    }
+  }
+}</code></pre>
+        </div>
+        <p>
+          A <code>delete_account</code> call in the test <code>account › read only</code> (the
+          <code>account/read-only.json</code> example in <a href="#closed-world">Closed world</a>):
+        </p>
+        <div class="code-block" data-sample="wire/not-declared.json">
+          <div class="code-block-header">Not declared <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"jsonrpc"</span>: <span class="str">"2.0"</span>,
+  <span class="prop">"id"</span>: <span class="num">2</span>,
+  <span class="prop">"error"</span>: {
+    <span class="prop">"code"</span>: <span class="num">-32602</span>,
+    <span class="prop">"message"</span>: <span class="str">"Unknown tool: delete_account (aimock MCP fake not declared: this scenario denies undeclared tools; testId \"account › read only\")."</span>,
+    <span class="prop">"data"</span>: {
+      <span class="prop">"aimock"</span>: {
+        <span class="prop">"code"</span>: <span class="str">"MCP_FAKE_NOT_DECLARED"</span>,
+        <span class="prop">"tool"</span>: <span class="str">"delete_account"</span>,
+        <span class="prop">"testId"</span>: <span class="str">"account › read only"</span>,
+        <span class="prop">"context"</span>: <span class="kw">null</span>,
+        <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+        <span class="prop">"declaredTools"</span>: [<span class="str">"get_account"</span>]
+      }
+    }
+  }
+}</code></pre>
+        </div>
+        <p>
+          MCP 2025-03-26, the version aimock advertises, lists invalid arguments as a protocol
+          error. From MCP 2025-11-25, input validation errors are tool execution errors. aimock
+          still answers a mismatch with a protocol error, on purpose, for the reason above.
+        </p>
+        <p>
+          Agents sometimes catch tool exceptions. So every fake failure is also logged at
+          <code>error</code> level (a line starting with <code>MCP-FAKE:</code>), stored in the
+          journal with <code>response.mcpFake.outcome</code> set to <code>mismatch</code>,
+          <code>exhausted</code>, <code>not_declared</code> or <code>evicted</code>, and counted in
+          the <code>aimock_mcp_fake_failures_total{code}</code> metric. A fake answer is stored with
+          outcome <code>answered</code> and the entry id. <code>MCP_FAKE_INTERNAL_ERROR</code> is
+          logged and counted the same way, but its journal entry has no
+          <code>response.mcpFake</code>; the message is in <code>response.error</code>. To check
+          that a test had no fake failures, read
+          <code>GET /__aimock/journal?testId=&lt;id&gt;&amp;service=mcp</code> and fail on any entry
+          that has a <code>response.mcpFake.outcome</code> other than <code>answered</code>, or that
+          has <code>response.error</code>. Entries for other methods, and calls that no fake
+          answered, have no <code>response.mcpFake</code>. A standalone <code>MCPMock</code> (not
+          mounted on an <code>LLMock</code> server) has no journal, metrics or logger, so only the
+          JSON-RPC error is sent.
+        </p>
+
+        <h3 id="closed-world">Closed world (<code>undeclaredTools: "deny"</code>)</h3>
+        <p>
+          With <code>"undeclaredTools": "deny"</code> in a scoped block, a call to a tool that no
+          block of the request declares fails with <code>MCP_FAKE_NOT_DECLARED</code>. Tools that
+          any of the request&rsquo;s blocks declare, shared ones included, are still answered by
+          their fakes. If any scoped block of the request says <code>deny</code>, the request is
+          under <code>deny</code>.
+        </p>
+        <p>
+          In the test <code>account › read only</code>, <code>get_account</code> with
+          <code>{"id":"u1"}</code> answers <code>{"plan":"pro"}</code>. A call to any other tool,
+          such as <code>delete_account</code>, fails with <code>MCP_FAKE_NOT_DECLARED</code>.
+        </p>
+        <div class="code-block" data-sample="account/read-only.json">
+          <div class="code-block-header">
+            account/read-only.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"account › read only"</span> },
+    <span class="prop">"undeclaredTools"</span>: <span class="str">"deny"</span>,
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"get_account"</span>,
+        <span class="prop">"calls"</span>: [{ <span class="prop">"args"</span>: { <span class="prop">"id"</span>: <span class="str">"u1"</span> }, <span class="prop">"result"</span>: <span class="str">"{\"plan\":\"pro\"}"</span> }]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+        <ul>
+          <li>
+            A <code>"shared"</code> block with <code>deny</code> fails the load, so one
+            scenario&rsquo;s closed world never reaches another.
+          </li>
+          <li>
+            A block scoped by context only closes the world for every test that sends that context.
+          </li>
+          <li>
+            The <code>X-AIMock-MCP-Undeclared: allow|deny</code> header or the
+            <code>?undeclared=allow|deny</code> query parameter overrides the policy for a request
+            (or for a session, when sent on <code>initialize</code>). The value is trimmed and
+            compared without case. Any other value is rejected with HTTP 400 and code
+            <code>MCP_INVALID_UNDECLARED</code>, so a typo never turns <code>deny</code> into
+            <code>allow</code>.
+          </li>
+          <li>Strict mode (<code>--strict</code>) does not turn on <code>deny</code>.</li>
+        </ul>
+
+        <h3 id="parallel-tests">Parallel tests and consumption state</h3>
+        <p>
+          Which entries are used is tracked per mount and per test id. Requests that send only a
+          context, or nothing, share one default state. Tests that run in parallel must each send
+          their own test id, or they use up each other&rsquo;s entries.
+        </p>
+        <p>
+          Each mount keeps the state of at most as many test ids as the fixture match-count cap
+          (<code>--fixture-counts-max</code>, default 500; <code>0</code> means no cap). When the
+          cap drops the oldest test id, every later fake call with that test id fails with
+          <code>MCP_FAKE_EVICTED</code> until a reset, so used entries are never served again.
+        </p>
+
+        <h3>Reset</h3>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Call</th>
+              <th>Effect on fakes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>POST /__aimock/reset</code>, <code>DELETE /__aimock/fixtures</code>,
+                <code>LLMock.reset()</code>, <code>LLMock.clearFixtures()</code>
+              </td>
+              <td>Unload all fakes, with the LLM fixtures.</td>
+            </tr>
+            <tr>
+              <td><code>LLMock.resetMatchCounts(testId?)</code></td>
+              <td>
+                Keep the fakes; mark the entries of that test id (or of every test id) as unused.
+                The Vitest and Jest plugins call it before each test.
+              </td>
+            </tr>
+            <tr>
+              <td><code>MCPMock.reset()</code></td>
+              <td>
+                Unload this mount&rsquo;s fakes, with its tools, resources, prompts and sessions.
+              </td>
+            </tr>
+            <tr>
+              <td><code>POST /__aimock/reset/journal</code></td>
+              <td>No effect on fakes.</td>
+            </tr>
+            <tr>
+              <td><code>--watch</code> reload</td>
+              <td>
+                Fakes are not reloaded. A reload whose <code>mcpFakes</code> changed is rejected
+                with an error on stderr, and the previous fixtures stay loaded. Restart the server
+                to load changed fakes.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Session bindings survive every reset except <code>MCPMock.reset()</code>.</p>
+
+        <h3>Loading fakes</h3>
+        <ul>
+          <li>
+            <code>llmock --fixtures &lt;path&gt;</code> and <code>LLMock.loadFixtureFile()</code> /
+            <code>loadFixtureDir()</code> load <code>mcpFakes</code> with the LLM fixtures. A file
+            may hold only <code>mcpFakes</code>.
+          </li>
+          <li>
+            If no mount serves a block&rsquo;s <code>mount</code> path, aimock mounts an
+            <code>MCPMock</code> there, at start or later. So
+            <code>npx -p @copilotkit/aimock llmock --fixtures ./fixtures</code> serves fakes with no
+            other setup.
+          </li>
+          <li><code>mcp.loadFakes(blocks)</code> adds blocks to one <code>MCPMock</code>.</li>
+          <li>
+            <code>POST /__aimock/fixtures</code> accepts an <code>mcpFakes</code> key. See the
+            <a href="/control-api">Control API</a>.
+          </li>
+          <li>
+            The free functions <code>loadFixtureFile()</code> and
+            <code>loadFixturesFromDir()</code> return LLM fixtures only, so they throw on a file
+            with <code>mcpFakes</code>. Use <code>loadFixtureFileWithServices()</code> or
+            <code>loadFixturesFromDirWithServices()</code>, or the <code>LLMock</code> methods.
+          </li>
+        </ul>
+        <p>
+          Both ways in code. <code>loadFixtureFile()</code> takes a file path, relative to the
+          working directory. In this example, <code>/mcp</code> (mounted by aimock for the
+          file&rsquo;s block) answers <code>get_weather</code> in the test
+          <code>weather › seattle</code>, and <code>/billing</code> answers <code>refund</code> with
+          <code>{"amount":10}</code> in the test <code>billing › refund</code> with
+          <code>refunded 10</code>.
+        </p>
+        <div class="code-block" data-sample="programmatic/load-fakes.mjs">
+          <div class="code-block-header">
+            programmatic/load-fakes.mjs <span class="lang-tag">javascript</span>
+          </div>
+          <pre><code><span class="kw">import</span> { LLMock, MCPMock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock"</span>;
+
+<span class="kw">export</span> <span class="kw">async</span> <span class="kw">function</span> startMock() {
+  <span class="kw">const</span> llm = <span class="kw">new</span> LLMock({ port: 0 });
+
+  <span class="cm">// A fixture file: its LLM fixtures and its mcpFakes load together.</span>
+  llm.loadFixtureFile(<span class="str">"weather/seattle.json"</span>);
+
+  <span class="cm">// Fakes from code, on a mount you create.</span>
+  <span class="kw">const</span> billing = <span class="kw">new</span> MCPMock();
+  billing.loadFakes({
+    scope: { testId: <span class="str">"billing › refund"</span> },
+    tools: [{ name: <span class="str">"refund"</span>, calls: [{ args: { amount: 10 }, result: <span class="str">"refunded 10"</span> }] }],
+  });
+  llm.mount(<span class="str">"/billing"</span>, billing);
+
+  <span class="kw">await</span> llm.start();
+  <span class="kw">return</span> llm;
+}</code></pre>
+        </div>
+        <p>
+          Fakes fail loud. A block that aimock cannot honor fails the whole load, in every mode,
+          strict or not: the load call throws a <code>FixtureLoadError</code>,
+          <code>start()</code> rejects, the CLI prints the error and exits non-zero, and the control
+          API answers 400 and adds nothing. This covers a missing or malformed <code>scope</code>, a
+          <code>"shared"</code> block with <code>deny</code>, a malformed entry, the same tool twice
+          in one block, an entry id that is already used on the mount, an unknown key (for example a
+          misspelled <code>undeclaredTool</code>), and a <code>mount</code> path held by a mount
+          that is not an <code>MCPMock</code>. The error&rsquo;s <code>rule</code> field (for
+          example <code>mcp-fakes/bad-block:a</code> or <code>mcp-fakes/mount-conflict</code>) names
+          the check, and its message names the file and block. <code>aimock validate</code> reports
+          the same errors per file, except mount conflicts, which depend on the running server.
+        </p>
+
+        <h3>Inspecting fakes</h3>
+        <p>
+          <code
+            >GET
+            /__aimock/mcp/fakes?testId=&lt;id&gt;&amp;context=&lt;ctx&gt;&amp;mount=&lt;path&gt;</code
+          >
+          lists, per mount, the blocks that apply to that test id and context, with each
+          entry&rsquo;s id and whether it is used. Use it at the end of a test to check that every
+          declared fake was used. See the <a href="/control-api#mcp-fakes">Control API</a>.
+        </p>
+
+        <h3>What aimock cannot fake: in-process tools</h3>
+        <p>
+          aimock sees only what crosses the network. A tool that runs inside your agent process and
+          never makes an MCP call cannot be faked here. Only an in-process mock, such as
+          Mastra&rsquo;s tool mocks for Mastra agents, can fake those. MCP over stdio is not
+          supported either; <code>MCPMock</code> serves HTTP only.
+        </p>
+
+        <h3>Known limitations</h3>
+        <ul>
+          <li>
+            After start, an <code>LLMock.loadFixtureFile()</code> or <code>loadFixtureDir()</code>
+            call whose blocks go to more than one mount can leave blocks on the earlier mounts when
+            a later mount rejects its blocks for an entry id that is already loaded there. The call
+            throws, and its LLM fixtures are not added, but the blocks already added to the earlier
+            mounts stay until a reset. Loads that go to one mount, and loads before start, add all
+            or nothing.
+          </li>
+          <li>
+            Only <code>tools/call</code> is faked per scenario; <code>resources/read</code> and
+            <code>prompts/get</code> are not.
+          </li>
+          <li>
+            Partial argument matching (subset, regular expression, JSON Schema) is not supported.
+          </li>
+          <li>Recording real MCP tool results into fixtures is not supported yet.</li>
+        </ul>
+
         <h2>Resources</h2>
         <p>Register static resources that clients can read:</p>
         <div class="code-block">
@@ -170,6 +974,11 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
   }
 }</code></pre>
         </div>
+        <p>
+          A config <code>result</code> is one fixed answer per tool for the whole server process. To
+          script answers per test, with ordered answers and argument checks, use
+          <a href="#scenario-fakes">scenario fakes</a> in fixture files.
+        </p>
 
         <h2>Session Management</h2>
         <p>
@@ -192,7 +1001,9 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
             </tr>
             <tr>
               <td><code>tools/list</code></td>
-              <td>Lists all registered tools</td>
+              <td>
+                Lists the registered tools, plus the tools named in the request&rsquo;s fake blocks
+              </td>
             </tr>
             <tr>
               <td><code>tools/call</code></td>
@@ -222,6 +1033,13 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
               <td><code>DELETE /</code></td>
               <td>Destroys a session</td>
             </tr>
+            <tr>
+              <td><code>GET /</code></td>
+              <td>
+                Answers 405 with <code>Allow: POST, DELETE</code>; the mock offers no server-sent
+                event stream
+              </td>
+            </tr>
           </tbody>
         </table>
 
@@ -233,7 +1051,7 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
           <pre><code>mcp.health();       <span class="cm">// { status: "ok", tools: 2, resources: 1, prompts: 0, sessions: 1 }</span>
 mcp.getSessions();  <span class="cm">// Map of active sessions</span>
 mcp.getRequests();  <span class="cm">// Journal entries (when mounted with shared journal)</span>
-mcp.reset();        <span class="cm">// Clears all tools, resources, prompts, and sessions</span></code></pre>
+mcp.reset();        <span class="cm">// Clears all tools, resources, prompts, sessions, and MCP fakes</span></code></pre>
         </div>
       </main>
       <aside class="page-toc" id="page-toc"></aside>

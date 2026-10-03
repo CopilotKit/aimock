@@ -78,6 +78,13 @@
 }</code></pre>
         </div>
 
+        <p>
+          A fixture file may also hold an optional top-level <code>mcpFakes</code> key, which
+          scripts MCP tool answers for one test scenario next to its LLM turns. A file may hold
+          <code>fixtures</code>, <code>mcpFakes</code>, or both. See
+          <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+        </p>
+
         <h2>Match Fields</h2>
 
         <table class="endpoint-table">
@@ -963,6 +970,18 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             retain their original source indices.
           </li>
         </ul>
+
+        <p>
+          <code>LLMock.loadFixtureFile()</code>, <code>LLMock.loadFixtureDir()</code> and
+          <code>llmock --fixtures</code> also load a file&rsquo;s <code>mcpFakes</code>. When no
+          mount serves a block&rsquo;s <code>mount</code> path (default <code>/mcp</code>), aimock
+          mounts an <code>MCPMock</code> there, so fakes need no other setup. The free functions
+          <code>loadFixtureFile()</code> and <code>loadFixturesFromDir()</code> return LLM fixtures
+          only and throw on a file with <code>mcpFakes</code>; use
+          <code>loadFixtureFileWithServices()</code> or
+          <code>loadFixturesFromDirWithServices()</code> for such files. See
+          <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
+        </p>
 
         <h3>From a file</h3>
         <div class="code-block">

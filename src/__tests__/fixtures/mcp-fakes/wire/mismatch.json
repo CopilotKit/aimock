@@ -1,0 +1,30 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "aimock MCP fake mismatch: tool \"get_weather\" was called with arguments that match no declared fake (testId \"weather › seattle\"). Received {\"city\":\"seattle\"}. Declared: weather/seattle.json:get_weather#0 {\"city\":\"Seattle\"}.",
+    "data": {
+      "aimock": {
+        "code": "MCP_FAKE_MISMATCH",
+        "tool": "get_weather",
+        "testId": "weather › seattle",
+        "context": null,
+        "mount": "/mcp",
+        "received": {
+          "city": "seattle"
+        },
+        "declared": [
+          {
+            "id": "weather/seattle.json:get_weather#0",
+            "args": {
+              "city": "Seattle"
+            },
+            "consumed": false
+          }
+        ],
+        "firstDifference": "$.city: expected \"Seattle\", received \"seattle\""
+      }
+    }
+  }
+}

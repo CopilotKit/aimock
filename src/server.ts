@@ -24,6 +24,7 @@ import {
   claimOneShotError,
   clearFixtureQueue,
   releaseOneShotError,
+  FixtureLoadError,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -206,6 +207,19 @@ import {
   writeApiKeyUpgradeRejection,
   type ResolvedInboundAuth,
 } from "./api-key-auth.js";
+import type { McpFakeSource } from "./types.js";
+import {
+  CONTROL_PREFIX,
+  ensureFakeMount,
+  findFakeMount,
+  handOffMcpFakes,
+  isFakeMount,
+  mountConflictDetail,
+  type MountList,
+} from "./mcp-fakes-mount.js";
+import { MCP_FAKES_DEFAULT_MOUNT, McpFakeStore, McpFakesAddError, blockIdOf } from "./mcp-fakes.js";
+import { MCPMock } from "./mcp-mock.js";
+import { build, msg, quote } from "./message-text.js";
 
 const liveClosers = new WeakMap<HandlerDefaults, (testId?: string) => void>();
 
@@ -381,8 +395,6 @@ function handleNotFound(res: http.ServerResponse, message: string): void {
 // server.
 // ---------------------------------------------------------------------------
 
-const CONTROL_PREFIX = "/__aimock";
-
 /** The complete `GET /__aimock/fixtures` query-param vocabulary; anything else 400s. */
 const FIXTURES_PARAMS: ReadonlySet<string> = new Set(["include"]);
 
@@ -411,6 +423,11 @@ export interface FullResetTargets {
   grokVideoJobs: GrokVideoJobMap;
   bytePlusVideoJobs: BytePlusVideoJobMap;
   defaults: HandlerDefaults;
+  /**
+   * The server's mounts. A full reset unloads every MCP fake on them (R1, R2);
+   * the entry-id counters and MCP sessions are kept.
+   */
+  mounts?: MountList;
 }
 
 /**
@@ -459,6 +476,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   targets.veoVideoJobs.clear();
   targets.grokVideoJobs.clear();
   targets.bytePlusVideoJobs.clear();
+  for (const { handler } of targets.mounts ?? []) handler.clearMcpFakes?.();
   if (targets.defaults.registry) {
     targets.defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
   }
@@ -520,9 +538,14 @@ function fixtureResponseKind(response: Fixture["response"]): string {
  * scoping path does not also do. (Splitting on "," additionally broke every
  * legitimately comma-bearing id.) A raw `path.includes("testId=t1")` both
  * prefix-collides with `t10` and matches unrelated params like `notTestId`.
+ *
+ * An MCP mount records the test id it resolved on the entry (I9, B3): a
+ * decoded header or query value, or the one bound to the session at
+ * `initialize`. That value wins; LLM entries carry none and are attributed as
+ * before.
  */
 function journalEntryTestId(entry: JournalEntry): string {
-  return resolveTestId(entry.headers, entry.path);
+  return entry.testId ?? resolveTestId(entry.headers, entry.path);
 }
 
 /**
@@ -568,6 +591,202 @@ function effectiveChaos(defaults: HandlerDefaults, scopeId: string): ChaosConfig
   return isChaosScope(current) ? (current.base ?? {}) : current;
 }
 
+/** The `GET /__aimock/mcp/fakes` query-param vocabulary; anything else 400s. */
+const MCP_FAKES_PARAMS = new Set(["testId", "context", "mount"]);
+
+/** A block's `mount` path, read without running getters; the add validates it. */
+function controlFakeMountOf(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return MCP_FAKES_DEFAULT_MOUNT;
+  const value: unknown = Object.getOwnPropertyDescriptor(raw, "mount")?.value;
+  return typeof value === "string" ? value : MCP_FAKES_DEFAULT_MOUNT;
+}
+
+/** The blocks of one control-API `mcpFakes` value that go to one mount path. */
+interface ControlFakeGroup {
+  path: string;
+  /** Position of each block in the request's `mcpFakes` value. */
+  positions: number[];
+  sources: McpFakeSource[];
+}
+
+/** What the after-start auto-mount of a control-API add is wired with (W6, as W4). */
+interface ControlFakeWiring {
+  journal: Journal;
+  defaults: HandlerDefaults;
+}
+
+/**
+ * Check one `POST /__aimock/fixtures` `mcpFakes` value against the live
+ * mounts (F10, W6) without changing anything. Returns every error in input
+ * order (an empty list when the value can be added), and `apply`, which adds
+ * the blocks (auto-mounting an MCPMock where no mount serves a block's path)
+ * and returns the number of blocks added.
+ *
+ * The whole value is checked before any mount is touched, and the check
+ * never adds to a real mount: each group is added to a throwaway store,
+ * whose errors are the ones reported (it numbers the add `control-api#1`, as
+ * a new mount would; for an existing MCPMock the rejected group is re-run on
+ * its atomic add, so the errors name that mount's next `<n>`, I7). A group
+ * whose path no request to it can reach (a mount that is not an MCPMock
+ * serves it, an MCPMock answers it as its root, or it is under the control
+ * prefix) is a mount conflict (one error per block).
+ */
+function planControlApiFakes(
+  raw: unknown,
+  mounts: MountList,
+): { errors: FixtureLoadError[]; apply(wiring: ControlFakeWiring): number } {
+  const items: Array<{ position: number; source: McpFakeSource }> = Array.isArray(raw)
+    ? raw.map((block: unknown, position) => ({
+        position,
+        source: { source: "control-api", blockIndex: position, raw: block },
+      }))
+    : [{ position: 0, source: { source: "control-api", blockIndex: null, raw } }];
+
+  const groups = new Map<string, ControlFakeGroup>();
+  // An empty `mcpFakes` array is one (bad) add to the default mount.
+  if (items.length === 0) {
+    groups.set(MCP_FAKES_DEFAULT_MOUNT, {
+      path: MCP_FAKES_DEFAULT_MOUNT,
+      positions: [],
+      sources: [],
+    });
+  }
+  for (const { position, source } of items) {
+    const path = controlFakeMountOf(source.raw);
+    const group = groups.get(path) ?? { path, positions: [], sources: [] };
+    group.positions.push(position);
+    group.sources.push(source);
+    groups.set(path, group);
+  }
+
+  const found: Array<{ position: number; error: FixtureLoadError }> = [];
+  /** The paths `apply` auto-mounts, in order. */
+  const pending: string[] = [];
+  for (const group of groups.values()) {
+    const target = findFakeMount(mounts, group.path, pending);
+    if (target.kind === "conflict") {
+      group.positions.forEach((position) => {
+        const where = Array.isArray(raw) ? msg`mcpFakes[${position}]` : msg`mcpFakes`;
+        found.push({
+          position,
+          error: new FixtureLoadError({
+            rule: "mcp-fakes/mount-conflict",
+            file: null,
+            blockId: null,
+            entryId: null,
+            detail: msg`${where}: ${mountConflictDetail(group.path, target)}`,
+          }),
+        });
+      });
+      continue;
+    }
+    let failure = addFailure(() => new McpFakeStore().add(group.sources, { kind: "control-api" }));
+    if (target.kind === "none") pending.push(group.path);
+    if (!failure) continue;
+    // The throwaway numbers the add `control-api#1`; an existing MCPMock's
+    // errors must name its own next `<n>` (I7). Its add is atomic (a throw
+    // adds nothing and consumes no `<n>`), so the same rejected input is
+    // re-run on it for the numbered errors. A mount with any other add is
+    // never called here (A2).
+    if (target.kind === "mcp" && target.handler.addMcpFakes === MCPMock.prototype.addMcpFakes) {
+      const handler = target.handler;
+      failure =
+        addFailure(() => handler.addMcpFakes?.(group.sources, { kind: "control-api" })) ?? failure;
+    }
+    for (const error of failure.errors) {
+      found.push({ position: positionOf(error, group), error });
+    }
+  }
+  found.sort((a, b) => a.position - b.position);
+
+  return {
+    errors: found.map((f) => f.error),
+    apply(wiring: ControlFakeWiring): number {
+      let added = 0;
+      for (const group of groups.values()) {
+        const target = ensureFakeMount(
+          mounts,
+          group.path,
+          {
+            journal: wiring.journal,
+            registry: wiring.defaults.registry,
+            logger: wiring.defaults.logger,
+          },
+          wiring.defaults.logger,
+        );
+        // The plan found no conflict, and nothing else runs in between.
+        if ("conflict" in target) continue;
+        const result = target.handler.addMcpFakes?.(group.sources, { kind: "control-api" });
+        for (const warning of result?.warnings ?? []) wiring.defaults.logger.warn(warning.message);
+        added += group.sources.length;
+      }
+      return added;
+    },
+  };
+}
+
+/** The `McpFakesAddError` that `add` throws, or `null` when it adds. */
+function addFailure(add: () => unknown): McpFakesAddError | null {
+  try {
+    add();
+    return null;
+  } catch (err) {
+    if (err instanceof McpFakesAddError) return err;
+    throw err;
+  }
+}
+
+/**
+ * The request position of the block an add error names. The add numbers a
+ * run-time group's blocks by their place in the group (`[<j>]`), or gives no
+ * index to a single-object value; an error tied to no block sorts with the
+ * group's first block.
+ */
+function positionOf(error: FixtureLoadError, group: ControlFakeGroup): number {
+  const first = group.positions[0] ?? 0;
+  if (error.blockId == null || error.file === null) return first;
+  const at = group.positions.findIndex(
+    (_, j) => error.blockId === blockIdOf(error.file ?? "", "", j),
+  );
+  return at === -1 ? first : group.positions[at];
+}
+
+/** The listing half of an MCP mount, as `MCPMock` has it. */
+interface FakesSnapshotSource {
+  fakesSnapshot: MCPMock["fakesSnapshot"];
+}
+
+function hasFakesSnapshot(handler: Mountable): handler is Mountable & FakesSnapshotSource {
+  return "fakesSnapshot" in handler && typeof handler.fakesSnapshot === "function";
+}
+
+/**
+ * `GET /__aimock/mcp/fakes` (spec 6.5, I9): for each MCP mount (or the one
+ * named by `mount`), the blocks that apply to the requested test id and
+ * context, with every entry id and its consumed state for that test id.
+ * A mount is listed when it takes fakes (it implements `addMcpFakes`, the
+ * check every other fakes path uses); one with no `fakesSnapshot` lists no
+ * blocks.
+ */
+function listControlApiFakes(
+  mounts: MountList,
+  testId: string | null,
+  context: string | null,
+  mount: string | null,
+): Array<{ mount: string; blocks: ReturnType<MCPMock["fakesSnapshot"]> }> | null {
+  const listed = mounts.flatMap(({ path, handler }) =>
+    isFakeMount(handler) && (mount === null || path === mount)
+      ? [
+          {
+            mount: path,
+            blocks: hasFakesSnapshot(handler) ? handler.fakesSnapshot(testId, context) : [],
+          },
+        ]
+      : [],
+  );
+  return mount !== null && listed.length === 0 ? null : listed;
+}
+
 /**
  * Handle requests under `/__aimock/`. Returns `true` if the request was
  * handled, `false` if the path doesn't match the control prefix.
@@ -585,6 +804,7 @@ async function handleControlAPI(
   grokVideoJobs: GrokVideoJobMap,
   bytePlusVideoJobs: BytePlusVideoJobMap,
   defaults: HandlerDefaults,
+  mounts: MountList,
 ): Promise<boolean> {
   if (!pathname.startsWith(CONTROL_PREFIX)) return false;
 
@@ -859,6 +1079,32 @@ async function handleControlAPI(
     return true;
   }
 
+  // GET /__aimock/mcp/fakes — the MCP fakes that apply to a test id/context,
+  // per mount, with each entry's consumed state (spec 6.5, I9).
+  if (subPath === "/mcp/fakes" && req.method === "GET") {
+    const reply = (status: number, body: unknown): true => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return true;
+    };
+    for (const key of searchParams.keys()) {
+      if (!MCP_FAKES_PARAMS.has(key)) {
+        return reply(400, {
+          error: `Unknown query parameter: '${key}'. Supported: ${[...MCP_FAKES_PARAMS].join(", ")}`,
+        });
+      }
+    }
+    // Empty values are not supplied (I1, I2).
+    const testId = searchParams.get("testId") || null;
+    const context = searchParams.get("context") || null;
+    const mount = searchParams.get("mount") || null;
+    const listed = listControlApiFakes(mounts, testId, context, mount);
+    if (listed === null) {
+      return reply(404, { error: build(msg`No MCP mount at ${quote(mount ?? "")}`) });
+    }
+    return reply(200, { testId, context, mounts: listed });
+  }
+
   // POST /__aimock/fixtures — add fixtures dynamically
   if (subPath === "/fixtures" && req.method === "POST") {
     let raw: string;
@@ -872,9 +1118,9 @@ async function handleControlAPI(
       return true;
     }
 
-    let parsed: { fixtures?: FixtureFileEntry[] };
+    let parsed: { fixtures?: FixtureFileEntry[]; mcpFakes?: unknown } | null;
     try {
-      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[] };
+      parsed = JSON.parse(raw) as { fixtures?: FixtureFileEntry[]; mcpFakes?: unknown } | null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       defaults.logger.error(`POST /__aimock/fixtures: invalid JSON: ${msg}`);
@@ -883,13 +1129,20 @@ async function handleControlAPI(
       return true;
     }
 
-    if (parsed === null || !Array.isArray(parsed.fixtures)) {
+    // F10, B6: `fixtures` is optional when the body carries `mcpFakes`.
+    const withFakes =
+      typeof parsed === "object" && parsed !== null && Object.hasOwn(parsed, "mcpFakes");
+    if (
+      parsed === null ||
+      (!Array.isArray(parsed.fixtures) && !(withFakes && parsed.fixtures === undefined))
+    ) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: 'Missing or invalid "fixtures" array' }));
       return true;
     }
+    const entries: FixtureFileEntry[] = Array.isArray(parsed.fixtures) ? parsed.fixtures : [];
 
-    const missingMatchIndex = parsed.fixtures.findIndex(
+    const missingMatchIndex = entries.findIndex(
       (entry) =>
         entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.match == null,
     );
@@ -899,7 +1152,7 @@ async function handleControlAPI(
       return true;
     }
 
-    const invalidMatchIndex = parsed.fixtures.findIndex(
+    const invalidMatchIndex = entries.findIndex(
       (entry) =>
         entry !== null &&
         typeof entry === "object" &&
@@ -915,27 +1168,48 @@ async function handleControlAPI(
       return true;
     }
 
-    const converted = parsed.fixtures.map((e) => entryToFixture(e));
+    const converted = entries.map((e) => entryToFixture(e));
     const issues = validateFixtures(converted);
     const errors = issues.filter((i) => i.severity === "error");
-    if (errors.length > 0) {
+    // The whole body is checked before anything is added (W6): the LLM
+    // fixtures, then every `mcpFakes` block against the live mounts.
+    const fakes = withFakes ? planControlApiFakes(parsed.mcpFakes, mounts) : null;
+    const fakeErrors = fakes?.errors ?? [];
+    const validationFailed = (details: unknown[]): true => {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Validation failed", details: errors }));
+      res.end(JSON.stringify({ error: "Validation failed", details }));
       return true;
+    };
+    if (errors.length > 0 || fakeErrors.length > 0) {
+      return validationFailed([...errors, ...fakeErrors.map((e) => e.toJSON())]);
     }
 
+    let mcpFakesAdded = 0;
+    if (fakes) {
+      try {
+        mcpFakesAdded = fakes.apply({ journal, defaults });
+      } catch (err) {
+        if (!(err instanceof McpFakesAddError)) throw err;
+        return validationFailed(err.errors.map((e) => e.toJSON()));
+      }
+    }
     fixtures.push(...converted);
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ added: converted.length }));
+    res.end(
+      JSON.stringify(
+        withFakes ? { added: converted.length, mcpFakesAdded } : { added: converted.length },
+      ),
+    );
     return true;
   }
 
-  // DELETE /__aimock/fixtures — clear all fixtures
+  // DELETE /__aimock/fixtures — clear all fixtures, and every MCP fake (R3)
   if (subPath === "/fixtures" && req.method === "DELETE") {
     clearFixtureQueue(fixtures);
+    for (const { handler } of mounts) handler.clearMcpFakes?.();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
     }
@@ -952,6 +1226,7 @@ async function handleControlAPI(
     grokVideoJobs,
     bytePlusVideoJobs,
     defaults,
+    mounts,
   });
 
   // POST /__aimock/reset — full reset (fixtures, journal entries + fixture
@@ -2152,6 +2427,8 @@ export interface ServiceFixtures {
   search: SearchFixture[];
   rerank: RerankFixture[];
   moderation: ModerationFixture[];
+  /** MCP fake blocks, handed off at start to the MCPMock serving each block's `mount` (F2). */
+  mcpFakes?: McpFakeSource[];
 }
 
 // NOTE: The fixtures array is read by reference on each request. Callers
@@ -2175,9 +2452,49 @@ export async function createServerWithResolvedAuth(
   mounts?: Array<{ path: string; handler: Mountable }>,
   serviceFixtures?: ServiceFixtures,
 ): Promise<ServerInstance> {
+  const logger = new Logger(options?.logLevel ?? "silent");
+  // Mounts-array rule (spec 5.2): one server-owned array for every use below.
+  // A caller's array is that array, so a later `LLMock.mount()` push is seen.
+  const mountList = mounts ?? [];
+  // F2: hand MCP fakes off before the mount loop; a bad input rejects start().
+  // A start that fails later takes the hand-off back, so a retry loads each
+  // block once.
+  const handOff =
+    serviceFixtures?.mcpFakes && serviceFixtures.mcpFakes.length > 0
+      ? handOffMcpFakes(mountList, serviceFixtures.mcpFakes, logger)
+      : null;
+  try {
+    return await startServer(
+      fixtures,
+      options,
+      resolvedAuth,
+      mountList,
+      logger,
+      serviceFixtures,
+      () => handOff?.commit(),
+    );
+  } catch (err) {
+    handOff?.undo();
+    throw err;
+  }
+}
+
+/**
+ * The server of `createServerWithResolvedAuth`, after the MCP fakes hand-off.
+ * `commitHandOff` runs once the server listens; if it throws, the server is
+ * closed and start rejects.
+ */
+async function startServer(
+  fixtures: Fixture[],
+  options: MockServerOptions | undefined,
+  resolvedAuth: ResolvedInboundAuth,
+  mountList: MountList,
+  logger: Logger,
+  serviceFixtures: ServiceFixtures | undefined,
+  commitHandOff: () => void,
+): Promise<ServerInstance> {
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
-  const logger = new Logger(options?.logLevel ?? "silent");
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
   // Runtime-mutable server chaos config. Reads fall through to the construction
@@ -2585,11 +2902,10 @@ export async function createServerWithResolvedAuth(
   }
 
   // Share journal and metrics registry with mounted services
-  if (mounts) {
-    for (const { handler } of mounts) {
-      if (handler.setJournal) handler.setJournal(journal);
-      if (registry && handler.setRegistry) handler.setRegistry(registry);
-    }
+  for (const { handler } of mountList) {
+    if (handler.setJournal) handler.setJournal(journal);
+    if (registry && handler.setRegistry) handler.setRegistry(registry);
+    if (handler.setLogger) handler.setLogger(logger);
   }
 
   // Set initial fixtures-loaded gauge
@@ -2654,7 +2970,7 @@ export async function createServerWithResolvedAuth(
           // here at startup labelled that (correctly routed) traffic `{unknown}`.
           const normalizedPath = normalizePathLabel(
             pathname,
-            mounts ? mounts.map((m) => m.path) : [],
+            mountList.map((m) => m.path),
           );
           const method = req.method ?? "UNKNOWN";
           registry.incrementCounter("aimock_requests_total", {
@@ -2765,18 +3081,17 @@ export async function createServerWithResolvedAuth(
         grokVideoJobs,
         bytePlusVideoJobs,
         defaults,
+        mountList,
       );
       return;
     }
 
     // Dispatch to mounted services before any path rewrites
-    if (mounts) {
-      for (const { path: mountPath, handler } of mounts) {
-        if (pathname === mountPath || pathname.startsWith(mountPath + "/")) {
-          const subPath = pathname.slice(mountPath.length) || "/";
-          const handled = await handler.handleRequest(req, res, subPath);
-          if (handled) return;
-        }
+    for (const { path: mountPath, handler } of mountList) {
+      if (pathname === mountPath || pathname.startsWith(mountPath + "/")) {
+        const subPath = pathname.slice(mountPath.length) || "/";
+        const handled = await handler.handleRequest(req, res, subPath);
+        if (handled) return;
       }
     }
 
@@ -3011,11 +3326,11 @@ export async function createServerWithResolvedAuth(
     // Health / readiness probes
     if (pathname === HEALTH_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      if (mounts && mounts.length > 0) {
+      if (mountList.length > 0) {
         const services: Record<string, unknown> = {
           llm: { status: "ok", fixtures: fixtures.length },
         };
-        for (const { path: mountPath, handler } of mounts) {
+        for (const { path: mountPath, handler } of mountList) {
           if (handler.health) {
             const name = mountPath.replace(/^\//, "");
             services[name] = handler.health();
@@ -4349,15 +4664,13 @@ export async function createServerWithResolvedAuth(
     }
 
     // Dispatch to mounted services before any path rewrites
-    if (mounts) {
-      for (const { path: mountPath, handler } of mounts) {
-        if (
-          (pathname === mountPath || pathname.startsWith(mountPath + "/")) &&
-          handler.handleUpgrade
-        ) {
-          const subPath = pathname.slice(mountPath.length) || "/";
-          if (await handler.handleUpgrade(socket, head, subPath)) return;
-        }
+    for (const { path: mountPath, handler } of mountList) {
+      if (
+        (pathname === mountPath || pathname.startsWith(mountPath + "/")) &&
+        handler.handleUpgrade
+      ) {
+        const subPath = pathname.slice(mountPath.length) || "/";
+        if (await handler.handleUpgrade(socket, head, subPath)) return;
       }
     }
 
@@ -4498,11 +4811,16 @@ export async function createServerWithResolvedAuth(
       }
       const url = `http://${addr.address}:${addr.port}`;
 
+      try {
+        commitHandOff();
+      } catch (err) {
+        server.close(() => reject(err));
+        return;
+      }
+
       // Set base URL on mounted services that support it
-      if (mounts) {
-        for (const { path: mountPath, handler } of mounts) {
-          if (handler.setBaseUrl) handler.setBaseUrl(url + mountPath);
-        }
+      for (const { path: mountPath, handler } of mountList) {
+        if (handler.setBaseUrl) handler.setBaseUrl(url + mountPath);
       }
 
       resolve({

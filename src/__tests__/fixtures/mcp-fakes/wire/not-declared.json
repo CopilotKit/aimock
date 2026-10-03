@@ -1,0 +1,18 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32602,
+    "message": "Unknown tool: delete_account (aimock MCP fake not declared: this scenario denies undeclared tools; testId \"account › read only\").",
+    "data": {
+      "aimock": {
+        "code": "MCP_FAKE_NOT_DECLARED",
+        "tool": "delete_account",
+        "testId": "account › read only",
+        "context": null,
+        "mount": "/mcp",
+        "declaredTools": ["get_account"]
+      }
+    }
+  }
+}

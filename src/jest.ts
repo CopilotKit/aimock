@@ -20,9 +20,8 @@ declare var afterEach: (fn: () => Promise<void> | void, timeout?: number) => voi
 /* eslint-enable no-var */
 
 import { LLMock } from "./llmock.js";
-import { loadFixtureFile, loadFixturesFromDir } from "./fixture-loader.js";
-import type { LiveOptions } from "./live-types.js";
-import type { Fixture, MockServerOptions } from "./types.js";
+import { FixtureLoadError } from "./fixture-loader.js";
+import type { MockServerOptions } from "./types.js";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -43,8 +42,10 @@ export interface AimockHandle {
 /**
  * Start an aimock server for the duration of the test suite.
  *
- * - `beforeAll`: starts the server and optionally loads fixtures
- * - `beforeEach`: closes Live sessions and resets fixture match counts (not fixtures)
+ * - `beforeAll`: starts the server and optionally loads fixtures (LLM fixtures and
+ *   `mcpFakes` blocks; a bad `mcpFakes` block fails `beforeAll`)
+ * - `beforeEach`: closes Live sessions and resets fixture match counts and MCP fake
+ *   consumption (not fixtures or fakes)
  * - `afterEach`: closes Live sessions owned by this helper's server
  * - `afterAll`: stops the server
  *
@@ -63,11 +64,7 @@ export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
     const llm = new LLMock(serverOpts);
 
     if (fixturePath) {
-      const resolved = resolve(fixturePath);
-      const loadedFixtures = loadFixtures(resolved, options.live);
-      for (const f of loadedFixtures) {
-        llm.addFixture(f);
-      }
+      loadFixtures(llm, resolve(fixturePath));
     }
 
     const url = await llm.start();
@@ -114,18 +111,25 @@ export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
   };
 }
 
-function loadFixtures(fixturePath: string, liveOptions?: LiveOptions): Fixture[] {
+/**
+ * Load a fixture file or directory into `llm`: its LLM fixtures and its
+ * `mcpFakes` blocks, which the LLMock buffers and auto-mounts at start (F12).
+ * A `FixtureLoadError` (a bad `mcpFakes` block) propagates and fails
+ * `beforeAll`; any other load failure is only warned about, as before.
+ */
+function loadFixtures(llm: LLMock, fixturePath: string): void {
   try {
     const stat = statSync(fixturePath);
     if (stat.isDirectory()) {
-      return loadFixturesFromDir(fixturePath, undefined, liveOptions);
+      llm.loadFixtureDir(fixturePath);
+    } else {
+      llm.loadFixtureFile(fixturePath);
     }
-    return loadFixtureFile(fixturePath, undefined, liveOptions);
   } catch (err) {
+    if (err instanceof FixtureLoadError) throw err;
     console.warn(
       `[aimock] Failed to load fixtures from ${fixturePath}: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return [];
   }
 }
 

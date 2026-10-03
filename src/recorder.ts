@@ -408,7 +408,12 @@ export function persistFixture(opts: {
     // "captured A; then B") would be fragmented into two bogus entries if the
     // joined string were split back apart on merge. Carrying the array forward
     // avoids that round-trip fragmentation entirely.
-    let fileContent: { fixtures: unknown[]; _warning?: string; _warnings?: string[] };
+    let fileContent: {
+      [key: string]: unknown;
+      fixtures: unknown[];
+      _warning?: string;
+      _warnings?: string[];
+    };
     if (mergeExisting && fs.existsSync(filepath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
@@ -423,7 +428,18 @@ export function persistFixture(opts: {
             `Existing fixture file ${filepath} has a non-array "fixtures" — discarding it and starting fresh`,
           );
         }
-        fileContent = { fixtures: [...(existingFixtures ?? []), fixture] };
+        // Keep every top-level key the recorder does not own (e.g. a
+        // hand-added `mcpFakes` block). The recorder owns `fixtures`,
+        // `_warnings` and `_warning`; those are rebuilt below, so a stale
+        // copy is never carried over verbatim.
+        const keptKeys: Record<string, unknown> = {};
+        if (existing !== null && typeof existing === "object" && !Array.isArray(existing)) {
+          for (const [key, value] of Object.entries(existing as Record<string, unknown>)) {
+            if (key === "fixtures" || key === "_warnings" || key === "_warning") continue;
+            keptKeys[key] = value;
+          }
+        }
+        fileContent = { ...keptKeys, fixtures: [...(existingFixtures ?? []), fixture] };
         // Carry existing warnings forward — a later clean capture merging into
         // the same snapshot file must not erase an earlier capture's warning
         // (e.g. an over-cap b64 omission). Prefer the new `_warnings` array;

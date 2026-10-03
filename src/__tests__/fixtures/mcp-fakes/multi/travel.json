@@ -1,0 +1,21 @@
+{
+  "mcpFakes": [
+    {
+      "scope": { "testId": "travel › book trip" },
+      "mount": "/mcp/flights",
+      "tools": [
+        {
+          "name": "search_flights",
+          "calls": [{ "anyArgs": true, "result": "UA 100 departs 09:00" }]
+        }
+      ]
+    },
+    {
+      "scope": { "testId": "travel › book trip" },
+      "mount": "/mcp/hotels",
+      "tools": [
+        { "name": "book_hotel", "calls": [{ "args": { "city": "Paris" }, "result": "HOTEL-7" }] }
+      ]
+    }
+  ]
+}

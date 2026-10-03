@@ -45,4 +45,10 @@ export interface MCPSession {
   id: string;
   initialized: boolean;
   createdAt: number;
+  /** Test id supplied at `initialize`; per-request values win. */
+  testId?: string;
+  /** Context supplied at `initialize`; per-request values win. */
+  context?: string;
+  /** Undeclared-tool policy override supplied at `initialize`; per-request values win. */
+  undeclared?: "allow" | "deny";
 }

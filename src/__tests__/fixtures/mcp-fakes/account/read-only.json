@@ -1,0 +1,12 @@
+{
+  "mcpFakes": {
+    "scope": { "testId": "account › read only" },
+    "undeclaredTools": "deny",
+    "tools": [
+      {
+        "name": "get_account",
+        "calls": [{ "args": { "id": "u1" }, "result": "{\"plan\":\"pro\"}" }]
+      }
+    ]
+  }
+}

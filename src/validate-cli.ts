@@ -93,12 +93,21 @@
 
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { format, parseArgs } from "node:util";
-import { entryToFixture, renderValidationRef, validateFixtures } from "./fixture-loader.js";
+import {
+  entryToFixture,
+  FixtureLoadError,
+  hasMcpFakesKey,
+  renderValidationRef,
+  validateFixtures,
+} from "./fixture-loader.js";
 import type { ValidationRef } from "./fixture-loader.js";
 import { Logger } from "./logger.js";
-import type { Fixture, FixtureFile } from "./types.js";
+import { McpFakesAddError, McpFakeStore, validateMcpFakes } from "./mcp-fakes.js";
+import type { McpFakeIssue } from "./mcp-fakes.js";
+import { build, msg, plainText } from "./message-text.js";
+import type { Fixture, FixtureFile, McpFakeSource } from "./types.js";
 
 export const VALIDATE_HELP = `
 Usage: aimock validate [options] [--] <path> [more paths ...]
@@ -176,6 +185,11 @@ interface FileReport {
    */
   mention: number;
   fixtures: number;
+  /**
+   * `mcpFakes` blocks this file loaded (F8); set only for a file that has a
+   * top-level `mcpFakes` key.
+   */
+  mcpFakeBlocks?: number;
   errors: Finding[];
   warnings: Finding[];
   fatal?: string;
@@ -326,6 +340,13 @@ interface CollectEntry {
   file: string;
   fatal?: string;
   skipped?: string;
+  /**
+   * The entry-id `source` (I6) of the file's `mcpFakes` blocks: its path
+   * relative to the walked directory, with `/` separators, as
+   * `loadFixturesFromDirWithServices` derives it. Absent for a named file,
+   * whose source is its path as given.
+   */
+  source?: string;
 }
 
 /**
@@ -367,6 +388,10 @@ function nonFixtureSkipReason(file: string): string | undefined {
   } catch {
     return undefined;
   }
+  // F6: a top-level `mcpFakes` key makes it a fixture file (fakes-only or not).
+  // D2: checked before the config sections, because the loader loads the
+  // fakes of any file with the key, config-shaped or not.
+  if (hasMcpFakesKey(parsed)) return undefined;
   const asConfig = aimockConfigDescription(parsed);
   if (asConfig !== undefined) return `not a fixture file — ${asConfig}`;
   // A present `fixtures` key of the wrong shape is a MALFORMED fixture file,
@@ -579,12 +604,14 @@ function unexpectedEntryFailure(index: number, err: unknown): Finding {
 function validateOneFile(
   file: string,
   mention: number,
+  source: string,
 ): {
   report: FileReport;
   fixtures: Fixture[];
   indices: number[];
   identities: FindingIdentity[];
   runErrors: string[];
+  mcpFakes: McpFakeSource[];
 } {
   const report: FileReport = { file, mention, fixtures: 0, errors: [], warnings: [] };
   const fixtures: Fixture[] = [];
@@ -595,26 +622,36 @@ function validateOneFile(
   // Identities of the findings the RULES produced (not the conversion
   // diagnostics, which the union pass cannot produce and so cannot repeat).
   const identities: FindingIdentity[] = [];
+  // The file's `mcpFakes` blocks, when they pass `validateMcpFakes`, for the
+  // run's entry-id check across files (I8).
+  const mcpFakes: McpFakeSource[] = [];
 
   let raw: string;
   try {
     raw = readFileSync(file, "utf-8");
   } catch (err) {
     setFatal(report, `Could not read file: ${errText(err)}`);
-    return { report, fixtures, indices: sourceIndex, identities, runErrors };
+    return { report, fixtures, indices: sourceIndex, identities, runErrors, mcpFakes };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch (err) {
     setFatal(report, `Invalid JSON: ${errText(err)}`);
-    return { report, fixtures, indices: sourceIndex, identities, runErrors };
+    return { report, fixtures, indices: sourceIndex, identities, runErrors, mcpFakes };
   }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    !Array.isArray((parsed as { fixtures?: unknown }).fixtures)
-  ) {
+  // F7: a file with a top-level `mcpFakes` key may leave `fixtures` out
+  // (spec 5.4), as the loader allows; a `fixtures` key it does have must
+  // still be an array.
+  const fakesDoc = hasMcpFakesKey(parsed) ? parsed : undefined;
+  const fixturesLeftOut =
+    fakesDoc !== undefined && !Object.prototype.hasOwnProperty.call(fakesDoc, "fixtures");
+  const badShape =
+    !fixturesLeftOut &&
+    (typeof parsed !== "object" ||
+      parsed === null ||
+      !Array.isArray((parsed as { fixtures?: unknown }).fixtures));
+  if (badShape) {
     // Naming a file is asking about that file, so the wrong shape is still
     // fatal — the loader refuses it too. Say WHICH wrong shape when the file
     // is an aimock config, so the answer names the file for what it is rather
@@ -626,7 +663,31 @@ function validateOneFile(
         ? 'Missing or invalid "fixtures" array (expected { "fixtures": [...] })'
         : `Missing or invalid "fixtures" array (expected { "fixtures": [...] }) — this is ${asConfig}`,
     );
-    return { report, fixtures, indices: sourceIndex, identities, runErrors };
+    // D3: the loader still loads the fakes of such a file (it only warns
+    // about `fixtures`), so they are checked below before returning.
+  }
+
+  if (fakesDoc !== undefined) {
+    // F7: validate the blocks under the file's entry-id source (I6). A bad
+    // block is an error of this file; L8 shadowed entries are warnings.
+    const fakes = fakesDoc.mcpFakes;
+    const validation = validateMcpFakes(fakes, source);
+    report.errors.push(...validation.errors.map(loadErrorFinding));
+    report.mcpFakeBlocks = 0;
+    if (validation.errors.length > 0) {
+      report.warnings.push(...validation.warnings.map(issueFinding));
+    } else if (Array.isArray(fakes)) {
+      // The warnings of clean blocks come from the run's store, which gives
+      // each block its real entry ids (a repeated load is `@<k>`, I7).
+      fakes.forEach((block: unknown, blockIndex: number) => {
+        mcpFakes.push({ source, blockIndex, raw: block });
+      });
+    } else {
+      mcpFakes.push({ source, blockIndex: null, raw: fakes });
+    }
+  }
+  if (fixturesLeftOut || badShape) {
+    return { report, fixtures, indices: sourceIndex, identities, runErrors, mcpFakes };
   }
 
   // Convert the entries we already parsed rather than re-reading the file,
@@ -711,7 +772,20 @@ function validateOneFile(
     // very likely innocent, so this finding carries no entry index at all.
     report.errors.push({ message: `Validation failed for this file: ${errText(err)}` });
   }
-  return { report, fixtures, indices: sourceIndex, identities, runErrors };
+  return { report, fixtures, indices: sourceIndex, identities, runErrors, mcpFakes };
+}
+
+/**
+ * A `FixtureLoadError` from an `mcpFakes` block as a file-level finding (no
+ * fixture entry index): its message names the rule, file, block and entry.
+ */
+function loadErrorFinding(err: FixtureLoadError): Finding {
+  return { message: err.message };
+}
+
+/** An L8 shadowed-entry warning as a file-level finding. */
+function issueFinding(issue: McpFakeIssue): Finding {
+  return { message: issue.message };
 }
 
 /**
@@ -810,7 +884,7 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
             strict: flagInArgv("--strict"),
             failed: true,
             files: [],
-            run: { fixtures: 0, errors: [message] },
+            run: { fixtures: 0, mcpFakeBlocks: 0, errors: [message] },
           },
           null,
           2,
@@ -909,7 +983,11 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
       targets.push({ file: path, fatal: "No .json fixture files found in directory" });
       continue;
     }
-    targets.push(...entries);
+    // I6: a walked file's `mcpFakes` source is its path relative to the
+    // directory named on the command line, with `/` separators.
+    for (const entry of entries) {
+      targets.push({ ...entry, source: relative(path, entry.file).split(sep).join("/") });
+    }
   }
 
   // How many times each path is mentioned by the expanded target list, and a
@@ -962,6 +1040,12 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
   // Declared before the per-file loop because that loop contributes to it: an
   // index a file could not resolve belongs to no entry and no file section.
   const runErrors: string[] = [];
+  // One throwaway store for the run: adding each file's `mcpFakes` blocks to
+  // it, in load order, applies the entry-id uniqueness check across files
+  // (I8, bad block (f)). A mount conflict needs the running server's mounts
+  // and cannot be found here (spec 5.4, known limitation).
+  const fakeStore = new McpFakeStore();
+  let mcpFakeBlocks = 0;
   const siteKey = (fileId: number, index: number, severity: string, kind: string): string =>
     [fileId, index, severity, kind].join("\u0000");
 
@@ -989,6 +1073,7 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
     let indices: number[] = [];
     let identities: FindingIdentity[] = [];
     let fileRunErrors: string[] = [];
+    let mcpFakes: McpFakeSource[] = [];
     const mention = nextMention(target.file);
     try {
       ({
@@ -997,10 +1082,31 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
         indices,
         identities,
         runErrors: fileRunErrors,
-      } = validateOneFile(target.file, mention));
+        mcpFakes,
+      } = validateOneFile(target.file, mention, target.source ?? target.file));
     } catch (err) {
       // Backstop: nothing unexpected gets to abandon the remaining files.
       report = fatalReport(target.file, mention, `Validation failed: ${errText(err)}`);
+    }
+    if (mcpFakes.length > 0) {
+      try {
+        const added = fakeStore.add(mcpFakes, { kind: "file" });
+        report.mcpFakeBlocks = mcpFakes.length;
+        mcpFakeBlocks += mcpFakes.length;
+        report.warnings.push(...added.warnings.map(issueFinding));
+      } catch (err) {
+        if (err instanceof McpFakesAddError) {
+          report.errors.push(...err.errors.map(loadErrorFinding));
+          report.warnings.push(...err.warnings.map(issueFinding));
+        } else {
+          // D1: nothing may escape this function (see the module comment):
+          // any other throw is a finding of this file, so the run still
+          // reports every file and `--json` stays one valid document.
+          report.errors.push({
+            message: build(msg`mcpFakes check failed: ${plainText(errText(err), Infinity)}`),
+          });
+        }
+      }
     }
     reports.push(report);
     // These are raised inside `validateOneFile`, which knows the path but not
@@ -1051,12 +1157,13 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
   // has; the run still fails either way, on the per-file finding.
   const causeAlreadyReported = reports.some((r) => r.fatal !== undefined || r.errors.length > 0);
   if (union.length === 0) {
+    // F8: loaded `mcpFakes` blocks count as loaded.
     // The server aborts startup on this exact condition
     // ("No fixtures loaded and validation/strict mode is enabled"), so a run
     // whose inputs yield nothing — `{"fixtures": []}` and nothing else —
     // fails here too. Parsed-but-empty files alongside files that do load
     // fixtures are fine in both places.
-    if (!causeAlreadyReported) {
+    if (!causeAlreadyReported && mcpFakeBlocks === 0) {
       runErrors.push(
         "No fixtures loaded from any input — the server aborts startup on this under --validate-on-load/--strict",
       );
@@ -1162,7 +1269,14 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
   if (json) {
     log(
       JSON.stringify(
-        { strict, failed, files: reports, run: { fixtures: union.length, errors: runErrors } },
+        {
+          strict,
+          failed,
+          files: reports,
+          // D4: the blocks count as loaded, so a fakes-only run is not read
+          // as one that loaded nothing.
+          run: { fixtures: union.length, mcpFakeBlocks, errors: runErrors },
+        },
         null,
         2,
       ),
@@ -1208,9 +1322,16 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
         // "no fixtures loaded" error was not enough — that error is withheld as
         // soon as another file reports a cause, which is exactly when a failed
         // run still has a zero-fixture file to print.
-        if (r.fixtures === 0 && failed) {
+        const blocks = r.mcpFakeBlocks ?? 0;
+        if (r.fixtures === 0 && blocks === 0 && failed) {
           const why = noFixturesLoaded ? "see the run-level error" : "the run failed elsewhere";
           log(`${name}: ${r.fixtures} fixture(s), loaded nothing — ${why}`);
+        } else if (blocks > 0) {
+          log(
+            build(
+              msg`${plainText(name, Infinity)}: OK (${r.fixtures} fixture(s), ${blocks} mcpFakes block(s))`,
+            ),
+          );
         } else {
           log(`${name}: OK (${r.fixtures} fixture(s))`);
         }

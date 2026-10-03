@@ -12,6 +12,7 @@ import type {
   FixtureMatch,
   FixtureOpts,
   ImageResponse,
+  McpFakeSource,
   MockServerOptions,
   Mountable,
   RecordConfig,
@@ -32,12 +33,17 @@ import {
   INJECTED_STATUS_RANGE,
   queueOneShotError,
   clearFixtureQueue,
-  loadFixtureFile,
-  loadFixturesFromDir,
   entryToFixture,
   normalizeResponse,
   validateFixtures,
 } from "./fixture-loader.js";
+import {
+  loadFixtureFileWithServices,
+  loadFixturesFromDirWithServices,
+  type FixturesWithServices,
+} from "./fixture-loader-services.js";
+import { ensureFakeMount, isAutoMount, planFileFakes } from "./mcp-fakes-mount.js";
+import { build, msg, quote } from "./message-text.js";
 import { Journal } from "./journal.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
@@ -51,6 +57,9 @@ export class LLMock {
   private rerankFixtures: RerankFixture[] = [];
   private moderationFixtures: ModerationFixture[] = [];
   private mounts: Array<{ path: string; handler: Mountable }> = [];
+  /** `mcpFakes` blocks loaded before `start()`, handed to the server at start (W2). */
+  private mcpFakeBuffer: McpFakeSource[] = [];
+  /** MCPMocks the server or a load auto-mounted (W3, W6), for the L6 check. */
   private serverInstance: ServerInstance | null = null;
   private options: MockServerOptions;
   private readonly resolvedInboundAuth?: ResolvedInboundAuth;
@@ -96,14 +105,88 @@ export class LLMock {
     return this.fixtures;
   }
 
+  /**
+   * Load a fixture file: its LLM fixtures and its `mcpFakes` blocks (F4).
+   * Before `start()` the blocks are buffered and handed to the server at
+   * start (W2); after it they go to the MCPMock serving each block's `mount`
+   * path, auto-mounted when none does (W6). A block that cannot be honored
+   * throws a `FixtureLoadError` and nothing from the file is added.
+   */
   loadFixtureFile(filePath: string): this {
-    this.fixtures.push(...loadFixtureFile(filePath, undefined, this.options.live));
+    return this.acceptLoaded(loadFixtureFileWithServices(filePath, undefined, this.options.live));
+  }
+
+  /** As {@link loadFixtureFile}, for every fixture file under `dirPath`. */
+  loadFixtureDir(dirPath: string): this {
+    return this.acceptLoaded(
+      loadFixturesFromDirWithServices(dirPath, undefined, this.options.live),
+    );
+  }
+
+  /**
+   * Add a load's fakes (all or nothing), then its LLM fixtures. Before start
+   * the fakes are checked as the start-time hand-off will check them, with
+   * the blocks already buffered and the mounts added so far, so a file whose
+   * fakes would be rejected adds nothing. A mount added after the load can
+   * still make `start()` reject.
+   */
+  private acceptLoaded(loaded: FixturesWithServices): this {
+    if (loaded.mcpFakes.length > 0) {
+      if (this.serverInstance) {
+        this.addFakesAfterStart(this.serverInstance, loaded.mcpFakes);
+      } else {
+        planFileFakes(
+          this.mounts,
+          [...this.mcpFakeBuffer, ...loaded.mcpFakes],
+          new Set(loaded.mcpFakes),
+        );
+        this.mcpFakeBuffer.push(...loaded.mcpFakes);
+      }
+    }
+    this.fixtures.push(...loaded.fixtures);
     return this;
   }
 
-  loadFixtureDir(dirPath: string): this {
-    this.fixtures.push(...loadFixturesFromDir(dirPath, undefined, this.options.live));
-    return this;
+  /**
+   * W6 for a load after start. Every group of blocks (by `mount` path) is
+   * checked before any mount is touched: a path held by a mount that is not
+   * an MCPMock is a mount conflict, and each group is first added to a
+   * throwaway store. Groups for an existing MCPMock are then added to it (its
+   * own add is all or nothing and finds collisions with its loaded ids);
+   * groups for a free path are added last, to a new auto-mounted MCPMock,
+   * wired as W4. The add warnings (L8) are logged at `warn`.
+   */
+  private addFakesAfterStart(server: ServerInstance, sources: McpFakeSource[]): void {
+    const { onExisting, onNew } = planFileFakes(this.mounts, sources);
+
+    const logger = server.defaults.logger;
+    for (const { handler, group } of onExisting) {
+      const result = handler.addMcpFakes?.(group, { kind: "file" });
+      for (const warning of result?.warnings ?? []) logger.warn(warning.message);
+    }
+    const registry = server.defaults.registry;
+    for (const { path, group } of onNew) {
+      const target = ensureFakeMount(
+        this.mounts,
+        path,
+        {
+          journal: server.journal,
+          ...(registry ? { registry } : {}),
+          logger,
+        },
+        logger,
+      );
+      // The check above found no mount at this path, and nothing ran since.
+      if ("conflict" in target) continue;
+      const result = target.handler.addMcpFakes?.(group, { kind: "file" });
+      for (const warning of result?.warnings ?? []) logger.warn(warning.message);
+    }
+  }
+
+  /** R4, R5: unload the fakes of every mount and the pre-start buffer. */
+  private unloadMcpFakes(): void {
+    this.mcpFakeBuffer.length = 0;
+    for (const { handler } of this.mounts) handler.clearMcpFakes?.();
   }
 
   /**
@@ -143,6 +226,7 @@ export class LLMock {
   // one-shot claim parked in flight so it cannot re-arm into the cleared queue.
   clearFixtures(): this {
     clearFixtureQueue(this.fixtures);
+    this.unloadMcpFakes();
     return this;
   }
 
@@ -371,15 +455,33 @@ export class LLMock {
   // ---- Mounts ----
 
   mount(path: string, handler: Mountable): this {
+    // W4: an auto-mounted MCPMock at `path` takes its requests first (dispatch
+    // takes the first match), so the new mount is shadowed; so is one at
+    // `path` plus "/", whose root request the auto-mount answers as its own.
+    // An auto-mount lets any other sub-path fall through: that is no shadow.
+    const shadowedBy = this.serverInstance
+      ? this.mounts.find(
+          (m) => isAutoMount(m.handler) && (path === m.path || path === m.path + "/"),
+        )
+      : undefined;
     this.mounts.push({ path, handler });
 
-    // If server is already running, wire up journal, registry, and baseUrl immediately
-    // so late mounts behave identically to pre-start mounts.
+    // If server is already running, wire up journal, registry, logger and baseUrl
+    // immediately so late mounts behave identically to pre-start mounts.
     if (this.serverInstance) {
       if (handler.setJournal) handler.setJournal(this.serverInstance.journal);
       if (handler.setBaseUrl) handler.setBaseUrl(this.serverInstance.url + path);
       const registry = this.serverInstance.defaults.registry;
       if (registry && handler.setRegistry) handler.setRegistry(registry);
+      const logger = this.serverInstance.defaults.logger;
+      if (handler.setLogger) handler.setLogger(logger);
+      if (shadowedBy) {
+        logger.warn(
+          build(
+            msg`MCP fakes: the mount at ${quote(path)} is shadowed by the MCP mock auto-mounted at ${quote(shadowedBy.path)}; its requests reach the auto-mount`,
+          ),
+        );
+      }
     }
 
     return this;
@@ -403,10 +505,15 @@ export class LLMock {
     this.journal.clearEntries();
   }
 
+  /**
+   * Reset fixture match counts, and the MCP fakes consumption state of every
+   * mount (R6), for `testId` or for all test ids. Fakes stay loaded.
+   */
   resetMatchCounts(testId?: string): this {
     if (this.serverInstance) {
       this.serverInstance.journal.clearMatchCounts(testId);
     }
+    for (const { handler } of this.mounts) handler.resetScenarioState?.(testId);
     return this;
   }
 
@@ -478,6 +585,8 @@ export class LLMock {
     this.searchFixtures.length = 0;
     this.rerankFixtures.length = 0;
     this.moderationFixtures.length = 0;
+    // `ServerInstance` carries no mounts, so the fakes are unloaded here (R4).
+    this.unloadMcpFakes();
     performFullReset(this.fixtures, this.serverInstance);
     return this;
   }
@@ -488,23 +597,24 @@ export class LLMock {
     if (this.serverInstance) {
       throw new Error("Server already started");
     }
+    const serviceFixtures = {
+      search: this.searchFixtures,
+      rerank: this.rerankFixtures,
+      moderation: this.moderationFixtures,
+      mcpFakes: [...this.mcpFakeBuffer],
+    };
     this.serverInstance = await (this.resolvedInboundAuth
       ? createServerWithResolvedAuth(
           this.fixtures,
           this.options,
           this.resolvedInboundAuth,
           this.mounts,
-          {
-            search: this.searchFixtures,
-            rerank: this.rerankFixtures,
-            moderation: this.moderationFixtures,
-          },
+          serviceFixtures,
         )
-      : createServer(this.fixtures, this.options, this.mounts, {
-          search: this.searchFixtures,
-          rerank: this.rerankFixtures,
-          moderation: this.moderationFixtures,
-        }));
+      : createServer(this.fixtures, this.options, this.mounts, serviceFixtures));
+    // The server holds the buffered fakes now (W2). A start that rejects took
+    // its hand-off back, so the buffer is kept for a retry.
+    this.mcpFakeBuffer.length = 0;
     return this.serverInstance.url;
   }
 

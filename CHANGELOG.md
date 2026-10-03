@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- MCP scenario fakes: a fixture file's `mcpFakes` key scripts MCP tool answers per test id or context, with ordered answers, exact or any-argument matching, scripted tool errors and an optional closed world (`undeclaredTools: "deny"`). A mismatch, an exhausted tool or an undeclared tool under `deny` fails loud with a JSON-RPC error keyed by `error.data.aimock.code`
+- `POST /__aimock/fixtures` accepts an `mcpFakes` key; `fixtures` is optional when it is sent, and the response adds `mcpFakesAdded`. Callers that do not send `mcpFakes` get `{"added": n}` as before
+- `GET /__aimock/mcp/fakes` lists the fakes that apply to a test id and context, with each entry's consumed state
+- The CLI and `aimock validate` accept fixture files that hold only `mcpFakes`. A start with only fakes warns "No LLM fixtures loaded; LLM requests will return 404" and no longer aborts under `--strict` or `--validate-on-load`
+
+### Changed
+
+- `GET` on an MCP mount now answers 405 with `Allow: POST, DELETE` instead of falling through to the LLM routes
+- MCP `tools/call` journal entries now carry the request `body` (was `null`), and `response.mcpFake` (`id`, `outcome`) when a fake answered or failed
+- MCP journal entries carry `testId` and `context`. `GET /__aimock/journal?testId=` lists an MCP request under the test id bound at `initialize`, or under the decoded header value, instead of `"__default__"` or the encoded string
+- MCP requests read `X-Test-Id` and `X-AIMock-Context`, percent-decoded, to pick fakes. Answers on a mount without fakes do not change
+- An MCP request that sends a test id, context or `X-AIMock-MCP-Undeclared` override more than once on one path (repeated header or query name) gets HTTP 400 `MCP_DUPLICATE_IDENTITY`
+- `POST /__aimock/reset`, `DELETE /__aimock/fixtures`, `LLMock.reset()` and `LLMock.clearFixtures()` also unload MCP fakes
+- Under `undeclaredTools: "deny"`, an undeclared tool fails with `MCP_FAKE_NOT_DECLARED` even when an `onToolCall` handler or a config `result` exists for it
+- The recorder's snapshot merge keeps top-level keys it does not own (such as `mcpFakes`) instead of dropping them
+- A bad `mcpFakes` block, a block whose `mount` path is held by a mount that is not an MCP mock, or a `--watch` reload whose `mcpFakes` changed fails the load with a `FixtureLoadError` instead of being skipped. On `--watch` the previous fixtures stay loaded. No effect without `mcpFakes`
+- The free functions `loadFixtureFile` and `loadFixturesFromDir` throw on a file with a top-level `mcpFakes` key; use `loadFixtureFileWithServices` / `loadFixturesFromDirWithServices` or the `LLMock` methods
+
 ### Fixed
 
 - Fix internal errors for specific malformed provider fields and control fixture inputs, while preserving supported input forms and defaults. `toolName` matching safely skips malformed tools, and `addFixturesFromJSON` explains its array requirement. Multipart parsing distinguishes `name` from `filename`. Invalid HTTP and WebSocket request targets return 400 while retaining existing diagnostics and HTTP journal/CORS behavior (#474)

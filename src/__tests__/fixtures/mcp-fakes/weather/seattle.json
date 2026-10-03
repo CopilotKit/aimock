@@ -1,0 +1,23 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather in Seattle", "hasToolResult": false },
+      "response": { "toolCalls": [{ "name": "get_weather", "arguments": { "city": "Seattle" } }] }
+    },
+    {
+      "match": { "userMessage": "weather in Seattle", "hasToolResult": true },
+      "response": { "content": "It is 60F and raining in Seattle." }
+    }
+  ],
+  "mcpFakes": {
+    "scope": { "testId": "weather › seattle" },
+    "tools": [
+      {
+        "name": "get_weather",
+        "calls": [
+          { "args": { "city": "Seattle" }, "result": { "tempF": 60, "conditions": "rain" } }
+        ]
+      }
+    ]
+  }
+}

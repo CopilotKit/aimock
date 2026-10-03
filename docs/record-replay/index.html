@@ -941,6 +941,22 @@ try {
           an HTTP 503 response.
         </p>
 
+        <p>
+          Strict mode does not change how MCP fake calls are answered. To fail on a tool that a
+          scenario does not declare, use <code>"undeclaredTools": "deny"</code> in its
+          <code>mcpFakes</code> block (see <a href="/mcp-mock#closed-world">Closed world</a>). An
+          <code>mcpFakes</code> block that aimock cannot honor fails the load in every mode, strict
+          or not, and with or without <code>--validate-on-load</code>.
+        </p>
+
+        <p>
+          The CLI check for a start with no fixtures counts <code>mcpFakes</code> blocks as loaded.
+          A start with only fakes does not abort under <code>--strict</code> or
+          <code>--validate-on-load</code>. It prints
+          <code>Warning: No LLM fixtures loaded; LLM requests will return 404</code> and serves the
+          fakes.
+        </p>
+
         <h2>Fixture Auto-Generation</h2>
         <p>Recorded fixtures are saved to disk with timestamped filenames:</p>
 
