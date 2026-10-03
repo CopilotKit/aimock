@@ -2899,7 +2899,7 @@ export async function createServerWithResolvedAuth(
       return;
     }
 
-    // POST /api/v1/videos — submit a video generation job
+    // POST /api/v1/videos — submit a video generation job (202 Accepted)
     if (pathname === OPENROUTER_VIDEOS_PATH && req.method === "POST") {
       // CORS headers before the body is read: a readBody throw (e.g. the
       // body-size cap) lands in the catch below, which must not write a 500

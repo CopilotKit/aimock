@@ -46,7 +46,7 @@ import {
 
 /**
  * OpenRouter async video lifecycle mock (`/api/v1/videos`). Mirrors the
- * dedicated OpenRouter video-generation API: submit returns a job envelope,
+ * dedicated OpenRouter video-generation API: submit returns 202 with a job envelope,
  * status polls advance `pending → in_progress → completed | failed`, and a
  * `/content` endpoint serves the bytes. With `record.providers.openrouter`
  * configured, unmatched submits become a live interactive proxy: the submit
@@ -1626,7 +1626,7 @@ export async function handleOpenRouterVideoCreate(
     path,
     headers: flattenHeaders(req.headers),
     body: syntheticReq,
-    response: { status: 200, fixture },
+    response: { status: 202, fixture },
   });
 
   // A fixture authored with any non-terminal status — "processing" or a
@@ -1678,7 +1678,9 @@ export async function handleOpenRouterVideoCreate(
     );
   }
 
-  res.writeHead(200, { "Content-Type": "application/json" });
+  // 202, not 200: @openrouter/sdk's generated matcher accepts only 202 for
+  // videoGeneration.generate (OpenAPI success status).
+  res.writeHead(202, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
       id: jobId,
@@ -1909,7 +1911,7 @@ async function proxyOpenRouterVideoSubmit(args: {
     headers: flattenHeaders(req.headers),
     body: syntheticReq,
     response: {
-      status: 200,
+      status: 202,
       fixture: null,
       source: "proxy",
       ...strictOverrideField(defaults.strict, req.headers),
@@ -1918,7 +1920,8 @@ async function proxyOpenRouterVideoSubmit(args: {
 
   // Same envelope shape as the replay path: mock jobId, mock polling_url
   // (testId embedded for header-less polls), "pending" for API fidelity.
-  res.writeHead(200, { "Content-Type": "application/json" });
+  // 202 matches the fixture path and the official SDK's only success status.
+  res.writeHead(202, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
       id: jobId,

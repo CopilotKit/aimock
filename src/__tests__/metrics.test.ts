@@ -846,7 +846,7 @@ describe("integration: /metrics endpoint", () => {
       model: "m/v",
       prompt: "metrics video",
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const { id } = JSON.parse(submit.body) as { id: string };
 
     // Default 0/0 progression: the first poll reports completed.

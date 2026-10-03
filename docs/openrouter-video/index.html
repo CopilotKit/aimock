@@ -71,8 +71,9 @@
               <td>POST</td>
               <td><code>/api/v1/videos</code></td>
               <td>
-                <code>{ id, polling_url, status: "pending" }</code> job envelope; the matched
-                fixture's <code>video</code> drives the job's terminal state
+                <code>202</code> with <code>{ id, polling_url, status: "pending" }</code> (the
+                official SDK accepts only 202); the matched fixture's <code>video</code> drives the
+                job's terminal state
               </td>
             </tr>
             <tr>

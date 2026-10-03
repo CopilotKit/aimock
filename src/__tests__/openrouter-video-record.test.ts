@@ -436,7 +436,7 @@ describe("OpenRouter video record — submit proxy", () => {
       },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "record me" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const data = await res.json();
     // Mock-rewritten: a fresh aimock jobId, never the upstream one.
     expect(typeof data.id).toBe("string");
@@ -453,7 +453,7 @@ describe("OpenRouter video record — submit proxy", () => {
       .getAll()
       .find((e) => e.method === "POST" && e.path === "/api/v1/videos");
     expect(entry).toBeDefined();
-    expect(entry!.response.status).toBe(200);
+    expect(entry!.response.status).toBe(202);
     expect(entry!.response.fixture).toBeNull();
     expect(entry!.response.source).toBe("proxy");
   });
@@ -545,7 +545,7 @@ describe("OpenRouter video record — submit proxy", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "already recorded" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(upstream.counts.submit).toBe(0);
   });
 });
@@ -716,7 +716,7 @@ describe("OpenRouter video record — poll proxy and eager capture", () => {
       headers: { "Content-Type": "application/json", Authorization: authorization },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -1140,7 +1140,7 @@ describe("OpenRouter video record — round trip (record session then replay ses
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-rec" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { polling_url: string };
     // Poll (with auth, like a real client) until the proxied job terminates.
     for (let i = 0; i < 10; i++) {
@@ -1187,7 +1187,7 @@ describe("OpenRouter video record — round trip (record session then replay ses
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "round trip render" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { id: string; polling_url: string };
 
     const poll = await (await fetch(envelope.polling_url)).json();
@@ -1236,7 +1236,7 @@ describe("OpenRouter video record — round trip (record session then replay ses
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "round trip failure" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { polling_url: string };
 
     const poll = await (await fetch(envelope.polling_url)).json();
@@ -1777,7 +1777,7 @@ describe("OpenRouter video record — upstream timeouts (record.upstreamTimeoutM
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-t" },
       body: JSON.stringify({ model: "m/v", prompt: "hung poll" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { polling_url: string };
 
     const t0 = Date.now();
@@ -1874,7 +1874,7 @@ describe("OpenRouter video record — relay hygiene on proxied polls", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-relay" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -2071,7 +2071,7 @@ describe("OpenRouter video record — proxy-only mode", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-po" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "proxy only render" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { id: string; polling_url: string };
 
     const poll = await (
@@ -2115,7 +2115,7 @@ describe("OpenRouter video record — proxy-only mode", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-po" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "proxy only render" }),
     });
-    expect(second.status).toBe(200);
+    expect(second.status).toBe(202);
     expect(upstream.counts.submit).toBe(2);
 
     // Live-proxied content downloads journal source "proxy".
@@ -2276,7 +2276,7 @@ describe("OpenRouter video record — mock-internal headers never reach the upst
       },
       body: JSON.stringify({ model: "m/v", prompt: "header hygiene" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { polling_url: string };
 
     const poll = await fetch(envelope.polling_url, {
@@ -2464,7 +2464,7 @@ describe("OpenRouter video record — idle-based content timeout semantics", () 
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-idle" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -2644,7 +2644,7 @@ describe("OpenRouter video record — capturing window", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-win" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -2898,7 +2898,7 @@ describe("OpenRouter video record — strict gates record-job proxying", () => {
       },
       body: JSON.stringify({ model: "m/v", prompt: "strict server poll" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = (await submit.json()) as { polling_url: string };
 
     // A header-less poll falls back to the server-level strict → 503.
@@ -3463,7 +3463,7 @@ describe("OpenRouter video record — round 3 CR", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer sk-r3" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -3798,7 +3798,7 @@ describe("OpenRouter video record — round 4 CR", () => {
       headers: { "Content-Type": "application/json", ...auth },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -4102,13 +4102,13 @@ describe("OpenRouter video record — round 4 CR", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "slow factory" }),
     });
-    expect(ok.status).toBe(200);
+    expect(ok.status).toBe(202);
     await ok.arrayBuffer();
 
     const entries = m.journal
       .getAll()
       .filter(
-        (e) => e.method === "POST" && e.path === "/api/v1/videos" && e.response.status === 200,
+        (e) => e.method === "POST" && e.path === "/api/v1/videos" && e.response.status === 202,
       );
     expect(entries).toHaveLength(1);
   });
@@ -4278,7 +4278,7 @@ describe("OpenRouter video record — round 5 CR", () => {
       headers: { "Content-Type": "application/json", ...auth },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
@@ -4376,7 +4376,7 @@ describe("OpenRouter video record — round 5 CR", () => {
     // The envelope still relays (documented choice — the warned 404-on-poll
     // outcome matches TTL eviction semantics)...
     const res = await submitPromise;
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const envelope = (await res.json()) as { polling_url: string };
 
     // ...but the stale job was NOT inserted into the new world: the poll
@@ -4462,7 +4462,7 @@ describe("OpenRouter video record — round 6 CR", () => {
       headers: { "Content-Type": "application/json", ...auth, ...headers },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     return (await res.json()) as { id: string; polling_url: string };
   }
 
