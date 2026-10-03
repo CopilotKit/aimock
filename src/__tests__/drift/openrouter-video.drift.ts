@@ -156,7 +156,7 @@ describe("OpenRouter video-proxy envelope shapes", () => {
       prompt: "a serene beach at sunset",
     });
 
-    expect(res.status, res.body).toBe(200);
+    expect(res.status, res.body).toBe(202);
     const body = JSON.parse(res.body);
     expect(body.id).toBeDefined();
     expect(body.status).toBe("pending");
@@ -180,7 +180,7 @@ describe("OpenRouter video-proxy envelope shapes", () => {
       model: OPENROUTER_VIDEO_MODEL,
       prompt: "a serene beach at sunset",
     });
-    expect(submitRes.status, submitRes.body).toBe(200);
+    expect(submitRes.status, submitRes.body).toBe(202);
     const { polling_url } = JSON.parse(submitRes.body);
 
     const poll = await httpGet(polling_url);

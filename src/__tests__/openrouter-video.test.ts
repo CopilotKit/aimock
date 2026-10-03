@@ -139,7 +139,7 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
         prompt: "a sunset over the ocean",
       }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const data = await res.json();
     expect(typeof data.id).toBe("string");
     expect(data.id.length).toBeGreaterThan(0);
@@ -160,7 +160,7 @@ describe("POST /api/v1/videos (OpenRouter submit)", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "anything" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
   });
 
   test("malformed JSON body returns 400 invalid_json", async () => {
@@ -700,7 +700,7 @@ describe("OpenRouter video — strict mode diagnostics", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "once only" }),
     });
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(202);
 
     const second = await fetch(`${mock.url}/api/v1/videos`, {
       method: "POST",
@@ -762,7 +762,7 @@ describe("OpenRouter video — journal coverage", () => {
 
     const entries = mock.journal.getAll();
     const byPathStatus = entries.map((e) => `${e.method} ${e.path} ${e.response.status}`);
-    expect(byPathStatus).toContain(`POST /api/v1/videos 200`);
+    expect(byPathStatus).toContain(`POST /api/v1/videos 202`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id} 200`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 200`);
     expect(byPathStatus).toContain(`GET /api/v1/videos/${id}/content?index=0 401`);
@@ -916,7 +916,7 @@ describe("OpenRouter video — logger observability", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "still processing" }),
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     // Assert the coercion warn specifically — the fixture text itself contains
     // "processing", so a bare includes("processing") could match any log line
     // that echoes the prompt.
@@ -1274,7 +1274,7 @@ describe("OpenRouter video — logger observability", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "typo status" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const { id } = (await submit.json()) as { id: string };
     expect(warnSpy.mock.calls.some((c) => c.join(" ").includes('"FAILED"'))).toBe(true);
 
@@ -1364,7 +1364,7 @@ describe("OpenRouter video — full lifecycle integration", () => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
       body: JSON.stringify({ model: "bytedance/seedance-2.0", prompt: "full lifecycle" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = await submit.json();
     expect(envelope.status).toBe("pending");
 
@@ -2501,7 +2501,7 @@ describe("OpenRouter video — pinned existing behavior", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "m/v", prompt: "processing lifecycle" }),
     });
-    expect(submit.status).toBe(200);
+    expect(submit.status).toBe(202);
     const envelope = await submit.json();
     expect(envelope.status).toBe("pending");
 
@@ -3177,7 +3177,7 @@ describe("OpenRouter video submit — fixtures reset during a slow ResponseFacto
     // The envelope still relays (mirrors the record-submit guard's
     // documented choice)...
     const res = await submitPromise;
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const envelope = (await res.json()) as { polling_url: string };
 
     // ...but the job was NOT inserted into the new world — its poll 404s
