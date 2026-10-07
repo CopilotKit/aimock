@@ -2,59 +2,18 @@
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-10-07
+
 ### Added
 
-- OpenAI Vector Stores mock (`/v1/vector_stores`): create/list/retrieve/modify/delete, file attach with deterministic `in_progress` → `completed` poll progression, file-batch create/retrieve/cancel with `cancelling` → `cancelled`, cursor pagination (`limit`, `order`, `after`, `before`), `expires_after` stamping, `metadata`/`chunking_strategy` validation, `X-AIMock-Vector-Outcome` failure control, and deterministic `POST …/search` over `completed` files for direct retrieval tests. Hosted `file_search` execution is not supported; Responses requests require separate matching fixtures. Files must exist in the Files store first (`usage_bytes` is real). Journaled as `service: "vector-stores"`, chaos-gated, metrics-normalized, cleared by the full reset path, with a new [Vector Stores](https://aimock.copilotkit.dev/vector-stores) docs page
-- Add `GET /__aimock/openapi.json` (OpenAPI 3.1) and `GET /__aimock/routes` (`{ count, routes }`) for HTTP route discovery, plus package exports for the catalog and route definitions (#451).
-- MCP scenario fakes: a fixture file's `mcpFakes` key scripts MCP tool answers per test id or context, with ordered answers, exact or any-argument matching, scripted tool errors and an optional closed world (`undeclaredTools: "deny"`). A mismatch, an exhausted tool or an undeclared tool under `deny` fails loud with a JSON-RPC error keyed by `error.data.aimock.code`
-- `POST /__aimock/fixtures` accepts an `mcpFakes` key; `fixtures` is optional when it is sent, and the response adds `mcpFakesAdded`. Callers that do not send `mcpFakes` get `{"added": n}` as before
-- `GET /__aimock/mcp/fakes` lists the fakes that apply to a test id and context, with each entry's consumed state
-- MCP requests accept an opt-in `X-AIMock-MCP-Undeclared` header or `?undeclared=` query parameter (`allow` or `deny`) that overrides the undeclared-tool policy for the request, or for the session when sent at `initialize`. With `deny`, every `tools/call` to a tool that no fake declares fails with `MCP_FAKE_NOT_DECLARED`, even on a mount with no fakes loaded, so `onToolCall` handlers and config `result` values do not run
-- The CLI and `aimock validate` accept fixture files that hold only `mcpFakes`. A start with only fakes warns "No LLM fixtures loaded; LLM requests will return 404" and no longer aborts under `--strict` or `--validate-on-load`
-- `LLMock.loadFixtureFile()`, `LLMock.loadFixtureDir()`, `llmock --fixtures` and `llm.fixtures` in an `aimock --config` file load a file's `mcpFakes` with its LLM fixtures. When no mount serves a block's `mount` path (default `/mcp`), aimock mounts an `MCPMock` there. `LLMock.resetMatchCounts(testId?)` also marks that test id's fake entries as unused
-- `MCPMock` methods for fakes: `loadFakes(blocks)` (returns `{ warnings }`, throws `McpFakesAddError` on a bad block), `addMcpFakes(sources, origin)`, `fakesSnapshot(testId?, context?)`, `resetScenarioState(testId?)`, `clearMcpFakes()` and `setLogger(logger)`
-- New exports from `@copilotkit/aimock`: `loadFixtureFileWithServices` and `loadFixturesFromDirWithServices`, which return `{ fixtures, mcpFakes, mcpFakeWarnings, unreadable }` (`unreadable` lists the files that could not be read or parsed), `FixtureLoadError`, `McpFakesAddError`, `MCP_FAKE_ERROR_CODES` and the `McpFake*` types. `@copilotkit/aimock/mcp` also exports `McpFakesAddError`, `MCP_FAKE_ERROR_CODES` and the `McpFake*` types
-- Every MCP fake failure is logged at error level as an `MCP-FAKE:` line and counted in the `aimock_mcp_fake_failures_total{code}` metric
-- The Vitest and Jest `useAimock` plugins load the `mcpFakes` of their `fixtures` path. A bad block fails `beforeAll` with a `FixtureLoadError`, and `beforeEach` marks every fake entry as unused
-- The pytest plugin's `load_fixtures` posts a file's `mcpFakes` with its fixtures, and accepts a file with only `mcpFakes`. Against an aimock release without MCP fakes it raises `RuntimeError` ("aimock server too old for mcpFakes") and adds nothing from the file
-- `aimock validate` checks `mcpFakes` blocks by the server's load rules and entry ids across files. The `OK` line counts blocks (`OK (0 fixture(s), 1 mcpFakes block(s))`), and a `--json` file entry with `mcpFakes` has `mcpFakeBlocks`
-- `LLMock.mount()` after start logs a warning when an `MCPMock` that aimock mounted for fakes already serves that path, because the auto-mounted mock keeps those requests
-
-### Changed
-
-- Update the adoption wall to retain supported Botiverse attribution and omit unsupported Alpic/Skybridge attribution; keep its curated Botiverse mapping and 29-tile animation duration consistent with the generator (#495).
-- Expand the landing-page comparisons, qualify WireMock fault support, and label MCP scenario fakes as preview-only with a pinned preview installation (#494).
-- Share internal strict decimal-integer parsing across files pagination, fine-tuning pagination and chaos configuration while preserving each caller’s accepted inputs, bounds and error messages (#479).
-- `GET` on an MCP mount, and on any path of a standalone `MCPMock`, now answers 405 with `Allow: POST, DELETE` instead of falling through to the LLM routes or the JSON-RPC handler
-- MCP `tools/call` journal entries now carry the request `body` (was `null`), and `response.mcpFake` (`id`, `outcome`) when a fake answered or failed
-- MCP journal entries carry `testId` and `context`. `GET /__aimock/journal?testId=` lists an MCP request under the test id bound at `initialize`, or under the decoded header value, instead of `"__default__"` or the encoded string
-- MCP requests read `X-Test-Id` and `X-AIMock-Context`, percent-decoded, to pick fakes. Answers on a mount without fakes do not change
-- An MCP request that sends a test id, context or `X-AIMock-MCP-Undeclared` override more than once on one path (repeated header or query name) gets HTTP 400 `MCP_DUPLICATE_IDENTITY`
-- An MCP request with an `X-AIMock-MCP-Undeclared` or `?undeclared=` value other than `allow` or `deny` gets HTTP 400 `MCP_INVALID_UNDECLARED` (for example `Invalid X-AIMock-MCP-Undeclared header value "zzz": expected allow or deny`). This applies to every MCP request, also on a mount without fakes
-- An MCP `tools/call` whose `name` is not a string (for example `123`) gets the JSON-RPC error `Invalid tool name: expected a string, got number` instead of `Unknown tool: 123`. A missing or empty name still gets `Missing tool name`
-- A JSON-RPC batch POST to an MCP mount is journaled as one entry per message, each with its own `body`, instead of one entry per HTTP request. Journal and `getRequests()` counts go up for batch callers
-- `POST /__aimock/reset`, `DELETE /__aimock/fixtures`, `LLMock.reset()` and `LLMock.clearFixtures()` also unload MCP fakes
-- Under `undeclaredTools: "deny"`, an undeclared tool fails with `MCP_FAKE_NOT_DECLARED` even when an `onToolCall` handler or a config `result` exists for it
-- The recorder's snapshot merge keeps top-level keys it does not own (such as `mcpFakes`) instead of dropping them
-- A bad `mcpFakes` block, a block whose `mount` path is held by a mount that is not an MCP mock, or a `--watch` reload whose `mcpFakes` changed fails the load with a `FixtureLoadError` instead of being skipped. On `--watch` the previous fixtures stay loaded. No effect without `mcpFakes`
-- The free functions `loadFixtureFile` and `loadFixturesFromDir` throw on a file with a top-level `mcpFakes` key; use `loadFixtureFileWithServices` / `loadFixturesFromDirWithServices` or the `LLMock` methods
-- The pytest plugin's `load_fixtures` still raises `requests.HTTPError` when the server answers 400 with a JSON body, but the message is now `aimock rejected fixtures from <path>: <error>`, followed by one line per item of `details`, instead of the default `requests` text
-- `aimock validate --json` always includes `run.mcpFakeBlocks`, which is `0` when no file has `mcpFakes`
+- Script MCP tool answers and errors per scenario, including aimock-pytest 0.6.0 support.
+- Mock OpenAI Vector Stores, file batches and deterministic search (#497).
+- Discover supported HTTP routes through the OpenAPI 3.1 catalog (#451).
 
 ### Fixed
 
-- Classify `gemini-nano-banana-2.1` under the existing image-generation drift exclusions. The model outputs Image and Text; its appearance in the provider listing no longer raises an unclassified text-family alert.
-- Return HTTP 202 from OpenRouter video submission on fixture replay and successful record/proxy paths, with matching journal status; polling and downloads remain HTTP 200 (#492).
-- Fix the competitive-matrix updater to apply detected capabilities to migration pages even when homepage cells are unchanged or no homepage row exists. Report migration outcomes and flag ambiguous or unsupported cells for manual review without changing them (#488)
-- Allow PUT in CORS preflight responses so browsers can call the existing `/fal/queue/requests/{requestId}` route (#480).
-- Fix internal errors for specific malformed provider fields and control fixture inputs, while preserving supported input forms and defaults. `toolName` matching safely skips malformed tools, and `addFixturesFromJSON` explains its array requirement. Multipart parsing distinguishes `name` from `filename`. Invalid HTTP and WebSocket request targets return 400 while retaining existing diagnostics and HTTP journal/CORS behavior (#474)
-- Reject missing Ollama tool functions and malformed Anthropic message collections before fixture matching. Reject numeric user/assistant content in Anthropic requests and numeric Gemini Interactions input (#474)
-- Validate malformed tool shapes on native `/v1/chat/completions` before fixture matching or proxy forwarding, while preserving supported shorthand. Compatible routes skip `toolName` matches for non-array tools without changing the request or proxy payload (#474)
-- Report invalid legacy Responses fixture tool arguments as descriptive configuration errors before response headers. This prevents malformed output and replaces incidental exceptions (#474)
-- Prevent scalar and array JSON fixture matches from acting as catch-alls. File loading warns and skips those entries. JSON API and control API batches reject atomically. `aimock validate` reports accurate errors and counts (#474)
-- Validate Cohere embedding type containers and members when building embedding output. Enforce the 100000-dimension serialization budget only for Gemini deterministic fallback. Require a model on native OpenAI embedding requests while preserving compatible-route defaults and supported empty inputs (#474)
-- Reject malformed image prompts, speech input, and JSON video prompts before fixture matching. Preserve supported content-part arrays (#474)
-- Require a complete positive safe integer for legacy `/v1/_requests?limit=...`, preserving supported numeric formatting. The separate control journal still accepts `limit=0` (#474)
+- Reject malformed requests and fixtures with clear validation errors (#474).
+- Correct video status, browser PUT access, model classification and comparison docs.
 
 ## [1.43.0] - 2026-09-22
 

@@ -2901,7 +2901,7 @@
             <div class="demo-body">
               <pre><span class="t-green">$</span> npx @copilotkit/aimock --config aimock.json
 
-<span class="t-blue">&#9889;</span> aimock v1.43.0
+<span class="t-blue">&#9889;</span> aimock v1.44.0
 
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/chat/completions
 <span class="t-green">&#10003;</span> LLM    <span class="t-dim">mounted at</span>  /v1/messages
@@ -3278,7 +3278,7 @@
               </tr>
               <tr>
                 <th scope="row">Scenario-scoped MCP tool fakes</th>
-                <td class="col-aimock"><a href="#mcp-fakes-preview">Preview &#10003;</a></td>
+                <td class="col-aimock"><a href="#mcp-fakes-preview">&#10003;</a></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
@@ -3289,7 +3289,7 @@
               </tr>
               <tr>
                 <th scope="row">Fail on undeclared MCP tool</th>
-                <td class="col-aimock"><a href="#mcp-fakes-preview">Preview &#10003;</a></td>
+                <td class="col-aimock"><a href="#mcp-fakes-preview">&#10003;</a></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
                 <td><span class="no" role="img" aria-label="No">&#10007;</span></td>
@@ -3544,12 +3544,9 @@
           class="fade-in"
           style="scroll-margin-top: calc(var(--nav-h) + 3rem)"
         >
-          MCP fakes require a preview package; they are not included in npm release 1.43.0. To try
-          the <a href="/mcp-mock#scenario-fakes">MCP fakes examples</a>, install the verified
-          preview:
-          <code style="overflow-wrap: anywhere"
-            >npm install https://pkg.pr.new/@copilotkit/aimock@d0398c0</code
-          >.
+          MCP scenario fakes are included in aimock 1.44.0. To use the
+          <a href="/mcp-mock#scenario-fakes">MCP fakes examples</a>, install:
+          <code style="overflow-wrap: anywhere">npm install @copilotkit/aimock@1.44.0</code>.
         </p>
         <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
           <table class="agent-tools-table">
@@ -3557,7 +3554,7 @@
               <tr>
                 <th scope="col">Capability</th>
                 <th scope="col" class="col-aimock">
-                  <a href="/mcp-mock">aimock MCP fakes (preview)</a>
+                  <a href="/mcp-mock">aimock MCP fakes</a>
                 </th>
                 <th scope="col">
                   <a href="https://mastra.ai/docs/evals/experiments"
