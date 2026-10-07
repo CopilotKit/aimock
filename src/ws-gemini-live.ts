@@ -12,9 +12,13 @@ import type {
   ChatCompletionRequest,
   ToolDefinition,
   AudioResponse,
+  ToolCall,
+  JournalEntry,
 } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
+  InvalidToolArgumentsError,
+  toolArgsForWire,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -219,6 +223,26 @@ function convertTools(geminiTools?: GeminiLiveToolDef[]): ToolDefinition[] {
       parameters: d.parameters,
     },
   }));
+}
+
+function liveToolArguments(tc: ToolCall) {
+  const args = toolArgsForWire(tc);
+  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
+  return args.value;
+}
+
+/** Validate the whole selected response before audio, text, or any tool is sent. */
+function preflightToolArguments(toolCalls: ToolCall[], journalEntry: JournalEntry) {
+  try {
+    for (const tc of toolCalls) liveToolArguments(tc);
+  } catch (error) {
+    if (error instanceof InvalidToolArgumentsError) {
+      journalEntry.response.status = 500;
+      journalEntry.response.error = error.message;
+    }
+    // The existing outer handler emits code 13 and leaves the socket open.
+    throw error;
+  }
 }
 
 // ─── Main handler ───────────────────────────────────────────────────────────
@@ -492,7 +516,7 @@ async function processMessage(
   // reasoning from the audio branch alone would invent a Live-wide capability
   // out of one fixture field. That gap is real but separate.
   if (isAudioResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: "WS",
       path,
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
@@ -501,6 +525,7 @@ async function processMessage(
     });
 
     const audioResp = response as AudioResponse;
+    preflightToolArguments(audioResp.toolCalls ?? [], journalEntry);
     let mimeType: string;
     let data: string;
 
@@ -537,15 +562,7 @@ async function processMessage(
 
       if (!ws.isClosed) {
         const functionCalls = resolvedToolCalls.map((tc) => {
-          let argsObj: Record<string, unknown>;
-          try {
-            argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-          } catch {
-            defaults.logger.warn(
-              `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-            );
-            argsObj = {};
-          }
+          const argsObj = liveToolArguments(tc);
           return { name: tc.name, args: argsObj, id: tc.resolvedId };
         });
         ws.send(JSON.stringify({ toolCall: { functionCalls } }));
@@ -593,6 +610,10 @@ async function processMessage(
     // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
     if (response.blocks && response.blocks.length > 0) {
       const resolvedBlocks = resolveFixtureBlocks(response.blocks);
+      preflightToolArguments(
+        resolvedBlocks.filter((block) => block.type === "toolCall"),
+        journalEntry,
+      );
       const interruption = createInterruptionSignal(fixture);
       const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
       const { recordedTimings } = fixture;
@@ -626,15 +647,7 @@ async function processMessage(
           if (ws.isClosed) break;
 
           const resolvedId = block.id ?? generateToolCallId();
-          let argsObj: Record<string, unknown>;
-          try {
-            argsObj = JSON.parse(block.arguments || "{}") as Record<string, unknown>;
-          } catch {
-            defaults.logger.warn(
-              `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-            );
-            argsObj = {};
-          }
+          const argsObj = liveToolArguments(block);
 
           try {
             ws.send(
@@ -734,6 +747,7 @@ async function processMessage(
       return;
     }
 
+    preflightToolArguments(response.toolCalls ?? [], journalEntry);
     const content = response.content ?? "";
     const chunkList: string[] = [];
     for (let i = 0; i < content.length; i += chunkSize) {
@@ -820,15 +834,7 @@ async function processMessage(
       }
 
       const functionCalls = resolvedToolCalls.map((tc) => {
-        let argsObj: Record<string, unknown>;
-        try {
-          argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-        } catch {
-          defaults.logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-          );
-          argsObj = {};
-        }
+        const argsObj = liveToolArguments(tc);
         return {
           name: tc.name,
           args: argsObj,
@@ -980,6 +986,8 @@ async function processMessage(
       response: { status: 200, fixture },
     });
 
+    preflightToolArguments(response.toolCalls ?? [], journalEntry);
+
     const interruption = createInterruptionSignal(fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
     const { recordedTimings } = fixture;
@@ -1009,15 +1017,7 @@ async function processMessage(
     }));
 
     const functionCalls = resolvedToolCalls.map((tc) => {
-      let argsObj: Record<string, unknown>;
-      try {
-        argsObj = JSON.parse(tc.arguments || "{}") as Record<string, unknown>;
-      } catch {
-        defaults.logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-        );
-        argsObj = {};
-      }
+      const argsObj = liveToolArguments(tc);
       return {
         name: tc.name,
         args: argsObj,

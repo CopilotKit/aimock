@@ -926,7 +926,7 @@ describe("POST /model/{modelId}/invoke (error fixture no explicit status)", () =
 });
 
 describe("POST /model/{modelId}/invoke (malformed tool call arguments)", () => {
-  it("falls back to empty object for malformed JSON in non-streaming", async () => {
+  it("rejects malformed JSON in non-streaming tool arguments", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-args" },
       response: {
@@ -942,9 +942,8 @@ describe("POST /model/{modelId}/invoke (malformed tool call arguments)", () => {
       },
     );
 
-    expect(res.status).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.content[0].input).toEqual({});
+    expect(res.status).toBe(500);
+    expect(res.body).toContain("invalid JSON arguments");
   });
 });
 
@@ -1423,7 +1422,7 @@ describe("buildBedrockStreamTextEvents", () => {
 describe("buildBedrockStreamToolCallEvents", () => {
   const logger = new Logger("silent");
 
-  it("falls back to '{}' for malformed JSON arguments", () => {
+  it("preserves malformed JSON arguments verbatim", () => {
     const events = buildBedrockStreamToolCallEvents(
       [{ name: "fn", arguments: "NOT VALID" }],
       "model-id",
@@ -1436,7 +1435,7 @@ describe("buildBedrockStreamToolCallEvents", () => {
     const fullJson = deltas
       .map((e) => (e.payload as { delta: { partial_json: string } }).delta.partial_json)
       .join("");
-    expect(fullJson).toBe("{}");
+    expect(fullJson).toBe("NOT VALID");
   });
 
   it("generates tool use id when not provided", () => {

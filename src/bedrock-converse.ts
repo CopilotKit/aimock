@@ -36,6 +36,8 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  toolArgsForWire,
+  InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -105,15 +107,14 @@ function converseUsage(overrides?: ResponseOverrides): {
 }
 
 function parseConverseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  try {
-    const parsed = JSON.parse(toolCall.arguments || "{}");
-    return JSON.stringify(parsed);
-  } catch {
+  const args = toolArgsForWire(toolCall);
+  if (args.kind === "verbatim") {
     logger.warn(
       `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
     );
-    return "{}";
+    return args.raw;
   }
+  return args.text;
 }
 
 function buildBedrockStreamTextEvents(
@@ -610,20 +611,18 @@ function buildConverseToolCallResponse(
     });
   }
   for (const tc of toolCalls) {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
+      throw new InvalidToolArgumentsError(tc);
     }
     contentBlocks.push({
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
         name: tc.name,
-        input: argsObj,
+        input: args.value,
       },
     });
   }
@@ -656,24 +655,21 @@ function buildConverseContentWithToolCallsResponse(
     });
   }
 
-  // Build a Converse `toolUse` content block from a fixture tool call, parsing
-  // its string `arguments` into the object `input` Converse emits (warning on
-  // malformed JSON — same idiom as the legacy/streaming paths).
+  // Converse `input` requires a JSON value; reject malformed arguments before
+  // emitting an object response instead of substituting an empty object.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
+      throw new InvalidToolArgumentsError(tc);
     }
     return {
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
         name: tc.name,
-        input: argsObj,
+        input: args.value,
       },
     };
   };

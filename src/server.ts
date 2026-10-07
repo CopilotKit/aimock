@@ -59,6 +59,7 @@ import {
   readBody,
   readBodyBufferBounded,
   RequestBodyTooLargeError,
+  InvalidToolArgumentsError,
   resolveRequestId,
   markMintedRequestId,
   resolveResponse,
@@ -2735,6 +2736,30 @@ async function startServer(
     return status >= 400 && status < 500 ? "invalid_request_error" : "server_error";
   }
 
+  /** Invalid fixture arguments retain each object's provider error envelope. */
+  function invalidToolArgumentsEnvelope(pathname: string, message: string): string {
+    const code = "aimock_invalid_tool_arguments";
+    if (pathname === OLLAMA_CHAT_PATH) return JSON.stringify({ error: message });
+    if (pathname === GEMINI_INTERACTIONS_PATH) {
+      return JSON.stringify({ error: { code, message } });
+    }
+    if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
+      return JSON.stringify({ error: { code: 500, message, status: "INTERNAL" } });
+    }
+    if (pathname === MESSAGES_PATH) {
+      return JSON.stringify({ type: "error", error: { type: "api_error", code, message } });
+    }
+    if (
+      BEDROCK_INVOKE_RE.test(pathname) ||
+      BEDROCK_STREAM_RE.test(pathname) ||
+      BEDROCK_CONVERSE_RE.test(pathname) ||
+      BEDROCK_CONVERSE_STREAM_RE.test(pathname)
+    ) {
+      return JSON.stringify({ __type: "InternalServerException", message });
+    }
+    return JSON.stringify({ error: { message, type: "server_error", code } });
+  }
+
   /**
    * The newest journal entry this request already produced, or null.
    *
@@ -2802,6 +2827,7 @@ async function startServer(
   ): void {
     const route = `${req.method ?? "?"} ${pathname}`;
     const msg = err instanceof Error ? err.message : "Internal error";
+    const invalidToolArguments = err instanceof InvalidToolArgumentsError;
     const clientFault = err instanceof RequestBodyTooLargeError;
     const clientAbort = clientAbortedMidBody(req, res, err);
     const status = clientFault ? 400 : 500;
@@ -2854,6 +2880,7 @@ async function startServer(
         // `source`/`fixture` are left alone: they record what was going to
         // serve this request, which the crash didn't change.
         existing.response.status = status;
+        if (invalidToolArguments) existing.response.error = msg;
       } else {
         // Wrapped so journaling can never mask the error write below.
         try {
@@ -2863,7 +2890,12 @@ async function startServer(
             headers: flattenHeaders(req.headers),
             body: null,
             ...(opts?.service ? { service: opts.service } : {}),
-            response: { status, fixture: null, source: "internal" },
+            response: {
+              status,
+              fixture: null,
+              source: "internal",
+              ...(invalidToolArguments ? { error: msg } : {}),
+            },
           });
         } catch (jErr) {
           logger.warn(
@@ -2875,14 +2907,16 @@ async function startServer(
       writeErrorResponse(
         res,
         status,
-        opts?.envelope
-          ? opts.envelope(msg, status)
-          : JSON.stringify({
-              error: {
-                message: msg,
-                type: errorTypeForStatus(status),
-              },
-            }),
+        invalidToolArguments
+          ? invalidToolArgumentsEnvelope(pathname, msg)
+          : opts?.envelope
+            ? opts.envelope(msg, status)
+            : JSON.stringify({
+                error: {
+                  message: msg,
+                  type: errorTypeForStatus(status),
+                },
+              }),
       );
     } else {
       // Headers are on the wire, so the status the client got is fixed. If the

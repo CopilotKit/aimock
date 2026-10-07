@@ -1061,7 +1061,7 @@ describe("POST /api/generate (journal)", () => {
 // ─── Integration tests: malformed tool call arguments ───────────────────────
 
 describe("POST /api/chat (malformed tool call arguments)", () => {
-  it("falls back to empty object when arguments is not valid JSON", async () => {
+  it("rejects invalid JSON arguments with an object-wire error", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-args" },
       response: {
@@ -1075,12 +1075,9 @@ describe("POST /api/chat (malformed tool call arguments)", () => {
       stream: false,
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const body = JSON.parse(res.body);
-    expect(body.message.tool_calls).toHaveLength(1);
-    expect(body.message.tool_calls[0].function.name).toBe("fn");
-    // Malformed JSON falls back to empty object
-    expect(body.message.tool_calls[0].function.arguments).toEqual({});
+    expect(body.error).toContain('fixture tool call "fn" has invalid JSON arguments');
   });
 });
 
@@ -1313,7 +1310,7 @@ describe("POST /api/generate (error fixture streaming)", () => {
 // ─── Integration tests: POST /api/chat (streaming malformed tool call args) ──
 
 describe("POST /api/chat (streaming malformed tool call arguments)", () => {
-  it("falls back to empty object for malformed JSON in streaming", async () => {
+  it("rejects malformed JSON before writing stream chunks", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-stream-args" },
       response: {
@@ -1327,14 +1324,9 @@ describe("POST /api/chat (streaming malformed tool call arguments)", () => {
       // stream omitted → defaults to true
     });
 
-    expect(res.status).toBe(200);
-    const chunks = parseNDJSON(res.body) as Array<{
-      message: { tool_calls?: Array<{ function: { arguments: unknown } }> };
-      done: boolean;
-    }>;
-    const toolChunk = chunks.find((c) => c.message.tool_calls && c.message.tool_calls.length > 0);
-    expect(toolChunk).toBeDefined();
-    expect(toolChunk!.message.tool_calls![0].function.arguments).toEqual({});
+    expect(res.status).toBe(500);
+    const body = JSON.parse(res.body);
+    expect(body.error).toContain('fixture tool call "fn" has invalid JSON arguments');
   });
 });
 

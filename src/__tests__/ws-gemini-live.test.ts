@@ -797,10 +797,13 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
 
     const raw = await ws.waitForMessages(2);
     const msg = JSON.parse(raw[1]);
-    // Should still produce a toolCall with empty args object
-    expect(msg.toolCall).toBeDefined();
-    expect(msg.toolCall.functionCalls[0].name).toBe("search");
-    expect(msg.toolCall.functionCalls[0].args).toEqual({});
+    expect(msg).toEqual({
+      error: {
+        code: 13,
+        status: "INTERNAL",
+        message: expect.stringContaining('fixture tool call "search" has invalid JSON arguments'),
+      },
+    });
 
     ws.close();
   });

@@ -46,6 +46,7 @@ import {
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  toolArgsForWire,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -278,16 +279,13 @@ function buildCohereToolCallResponse(
 ): object {
   const cohereCalls = toolCalls.map((tc) => {
     // Validate arguments JSON
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsJson = "{}";
     }
+    const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
@@ -347,16 +345,13 @@ function buildCohereContentWithToolCallsResponse(
     : toolCalls;
 
   const cohereCalls = effectiveToolCalls.map((tc) => {
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsJson = "{}";
     }
+    const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
       type: "function",
@@ -552,16 +547,13 @@ function buildCohereToolCallStreamEvents(
     const callId = tc.id || generateToolCallId();
 
     // Validate arguments JSON
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsJson = "{}";
     }
+    const argsJson = args.raw;
 
     // tool-call-start
     events.push({
@@ -686,16 +678,13 @@ function buildCohereContentWithToolCallsStreamEvents(
           toolPlanEmitted = true;
         }
         const callId = block.id || generateToolCallId();
-        let argsJson: string;
-        try {
-          JSON.parse(block.arguments || "{}");
-          argsJson = block.arguments || "{}";
-        } catch {
+        const args = toolArgsForWire(block);
+        if (args.kind === "verbatim") {
           logger.warn(
             `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
           );
-          argsJson = "{}";
         }
+        const argsJson = args.raw;
         events.push({
           type: "tool-call-start",
           index: toolIdx,
@@ -800,16 +789,13 @@ function buildCohereContentWithToolCallsStreamEvents(
     const tc = toolCalls[idx];
     const callId = tc.id || generateToolCallId();
 
-    let argsJson: string;
-    try {
-      JSON.parse(tc.arguments || "{}");
-      argsJson = tc.arguments || "{}";
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsJson = "{}";
     }
+    const argsJson = args.raw;
 
     // tool-call-start
     events.push({

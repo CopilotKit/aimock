@@ -812,7 +812,7 @@ describe("POST /v2/chat (multiple tool calls)", () => {
 // ─── Integration tests: POST /v2/chat (malformed tool call arguments) ───────
 
 describe("POST /v2/chat (malformed tool call arguments)", () => {
-  it("falls back to empty string when arguments is not valid JSON", async () => {
+  it("preserves argument text when arguments is not valid JSON", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-args" },
       response: {
@@ -830,8 +830,7 @@ describe("POST /v2/chat (malformed tool call arguments)", () => {
     const body = JSON.parse(res.body);
     expect(body.message.tool_calls).toHaveLength(1);
     expect(body.message.tool_calls[0].function.name).toBe("fn");
-    // Malformed JSON falls back to "{}" (logs warning)
-    expect(body.message.tool_calls[0].function.arguments).toBe("{}");
+    expect(body.message.tool_calls[0].function.arguments).toBe("NOT VALID JSON");
   });
 });
 
@@ -961,7 +960,7 @@ describe("POST /v2/chat (journal)", () => {
 // ─── Integration tests: POST /v2/chat (streaming malformed tool call args) ──
 
 describe("POST /v2/chat (streaming malformed tool call arguments)", () => {
-  it("falls back to '{}' for malformed JSON in streaming tool call", async () => {
+  it("preserves malformed JSON in streaming tool call", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-stream-args" },
       response: {
@@ -987,7 +986,7 @@ describe("POST /v2/chat (streaming malformed tool call arguments)", () => {
         return fn.arguments as string;
       })
       .join("");
-    expect(argsAccum).toBe("{}");
+    expect(argsAccum).toBe("NOT VALID JSON");
   });
 });
 
