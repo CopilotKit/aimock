@@ -86,7 +86,7 @@ When the server rejects a file with HTTP 400, `load_fixtures` raises `requests.H
 
 ```
 --aimock-node PATH       Path to node binary
---aimock-version VER     aimock npm version (default: 1.43.0)
+--aimock-version VER     aimock npm version (default: 1.44.0)
 --aimock-api-key KEY     Inbound API key for the aimock child process
 ```
 
