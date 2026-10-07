@@ -162,6 +162,23 @@ import {
   handleFineTuningEvents,
   clearFineTuningStore,
 } from "./fine-tuning.js";
+import {
+  handleVectorStoresCreate,
+  handleVectorStoresList,
+  handleVectorStoresRetrieve,
+  handleVectorStoresModify,
+  handleVectorStoresDelete,
+  handleVectorStoreFilesCreate,
+  handleVectorStoreFilesList,
+  handleVectorStoreFilesRetrieve,
+  handleVectorStoreFilesDelete,
+  handleVectorFileBatchesCreate,
+  handleVectorFileBatchesRetrieve,
+  handleVectorFileBatchesCancel,
+  handleVectorFileBatchesFiles,
+  handleVectorStoresSearch,
+  clearVectorStoreStore,
+} from "./vector-stores.js";
 import { upgradeToWebSocket, type WebSocketConnection } from "./ws-framing.js";
 import { handleLiveSession } from "./ws-live.js";
 import { normalizeLiveOptions } from "./live-fixture.js";
@@ -256,6 +273,15 @@ import {
   FILES_PATH,
   FILES_ID_RE,
   FILES_CONTENT_RE,
+  VECTOR_STORES_PATH,
+  VECTOR_STORES_SEARCH_RE,
+  VECTOR_STORES_BATCH_FILES_RE,
+  VECTOR_STORES_BATCH_CANCEL_RE,
+  VECTOR_STORES_BATCH_RE,
+  VECTOR_STORES_FILE_RE,
+  VECTOR_STORES_ID_RE,
+  VECTOR_STORES_FILES_RE,
+  VECTOR_STORES_FILE_BATCHES_RE,
   BYTEPLUS_VIDEO_SUBMIT_RE,
   BYTEPLUS_VIDEO_STATUS_RE,
   FINE_TUNING_JOBS_PATH,
@@ -459,6 +485,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   clearElevenLabsVoices();
   clearFileStore();
   clearFineTuningStore();
+  clearVectorStoreStore();
   resetInteractionCounter();
   resetEventIdCounter();
   if (!targets) return;
@@ -3595,6 +3622,215 @@ async function startServer(
         routeError(req, res, err, pathname, {
           service: "fine-tuning",
         });
+      }
+      return;
+    }
+
+    // Vector Stores — most-specific REs before the id RE, collection last.
+    // The id RE's `[^/]+` would otherwise swallow `/files`, `/search` and
+    // the file-batch suffixes, and the collection exact match must not claim
+    // an id path. Every branch is method-guarded so unhandled methods fall
+    // through to the shared 404, the server-wide convention (see the files
+    // block above).
+    const vsSearchMatch = pathname.match(VECTOR_STORES_SEARCH_RE);
+    if (vsSearchMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresSearch(
+          req,
+          res,
+          vsSearchMatch[1],
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchFilesMatch = pathname.match(VECTOR_STORES_BATCH_FILES_RE);
+    if (vsBatchFilesMatch && req.method === "GET") {
+      try {
+        await handleVectorFileBatchesFiles(
+          req,
+          res,
+          vsBatchFilesMatch[1],
+          vsBatchFilesMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchCancelMatch = pathname.match(VECTOR_STORES_BATCH_CANCEL_RE);
+    if (vsBatchCancelMatch && req.method === "POST") {
+      try {
+        await readBody(req);
+        await handleVectorFileBatchesCancel(
+          req,
+          res,
+          vsBatchCancelMatch[1],
+          vsBatchCancelMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsBatchMatch = pathname.match(VECTOR_STORES_BATCH_RE);
+    if (vsBatchMatch && req.method === "GET") {
+      try {
+        await handleVectorFileBatchesRetrieve(
+          req,
+          res,
+          vsBatchMatch[1],
+          vsBatchMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    const vsFileMatch = pathname.match(VECTOR_STORES_FILE_RE);
+    if (vsFileMatch && req.method === "GET") {
+      try {
+        await handleVectorStoreFilesRetrieve(
+          req,
+          res,
+          vsFileMatch[1],
+          vsFileMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsFileMatch && req.method === "DELETE") {
+      try {
+        await handleVectorStoreFilesDelete(
+          req,
+          res,
+          vsFileMatch[1],
+          vsFileMatch[2],
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    // Note: VECTOR_STORES_ID_RE only matches the exact 3-segment id path,
+    // so it can never swallow the /files, /search or /file_batches suffixes
+    // handled above — no extra depth guards needed.
+    const vsIdMatch = pathname.match(VECTOR_STORES_ID_RE);
+    if (vsIdMatch && req.method === "GET") {
+      try {
+        await handleVectorStoresRetrieve(req, res, vsIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsIdMatch && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresModify(
+          req,
+          res,
+          vsIdMatch[1],
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (vsIdMatch && req.method === "DELETE") {
+      try {
+        await handleVectorStoresDelete(req, res, vsIdMatch[1], journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILES_RE.test(pathname) && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        const storeId = pathname.split("/")[3];
+        await handleVectorStoreFilesCreate(
+          req,
+          res,
+          storeId,
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILES_RE.test(pathname) && req.method === "GET") {
+      try {
+        const storeId = pathname.split("/")[3];
+        await handleVectorStoreFilesList(req, res, storeId, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (VECTOR_STORES_FILE_BATCHES_RE.test(pathname) && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        const storeId = pathname.split("/")[3];
+        await handleVectorFileBatchesCreate(
+          req,
+          res,
+          storeId,
+          raw,
+          journal,
+          defaults,
+          setCorsHeaders,
+        );
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (pathname === VECTOR_STORES_PATH && req.method === "GET") {
+      try {
+        await handleVectorStoresList(req, res, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
+      }
+      return;
+    }
+    if (pathname === VECTOR_STORES_PATH && req.method === "POST") {
+      try {
+        const raw = await readBody(req);
+        await handleVectorStoresCreate(req, res, raw, journal, defaults, setCorsHeaders);
+      } catch (err: unknown) {
+        routeError(req, res, err, pathname, { service: "vector-stores" });
       }
       return;
     }

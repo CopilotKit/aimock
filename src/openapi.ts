@@ -1720,6 +1720,297 @@ const COMPONENTS: Record<string, unknown> = {
       last_id: { type: ["string", "null"] },
     },
   },
+  VectorStore: {
+    type: "object",
+    required: ["id", "object", "created_at", "name", "usage_bytes", "file_counts", "status"],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["vector_store"] },
+      created_at: { type: "integer" },
+      name: { type: "string" },
+      usage_bytes: { type: "integer" },
+      file_counts: { type: "object" },
+      status: { type: "string", enum: ["expired", "in_progress", "completed"] },
+      metadata: { type: ["object", "null"] },
+      expires_after: { $ref: "#/components/schemas/VectorStoreExpiresAfter" },
+      chunking_strategy: { $ref: "#/components/schemas/VectorStoreChunkingStrategyRequest" },
+      expires_at: { type: ["integer", "null"] },
+      last_active_at: { type: ["integer", "null"] },
+    },
+  },
+  VectorStoreDeleteResponse: {
+    type: "object",
+    required: ["id", "object", "deleted"],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["vector_store.deleted"] },
+      deleted: { type: "boolean", enum: [true] },
+    },
+  },
+  VectorStoreListResponse: {
+    type: "object",
+    properties: {
+      object: { type: "string", enum: ["list"] },
+      data: { type: "array", items: { $ref: "#/components/schemas/VectorStore" } },
+      first_id: { type: ["string", "null"] },
+      last_id: { type: ["string", "null"] },
+      has_more: { type: "boolean" },
+    },
+  },
+  VectorStoreFile: {
+    type: "object",
+    required: [
+      "id",
+      "object",
+      "created_at",
+      "vector_store_id",
+      "status",
+      "usage_bytes",
+      "attributes",
+    ],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["vector_store.file"] },
+      created_at: { type: "integer" },
+      vector_store_id: { type: "string" },
+      status: { type: "string", enum: ["in_progress", "completed", "failed", "cancelled"] },
+      usage_bytes: { type: "integer" },
+      attributes: { $ref: "#/components/schemas/VectorStoreAttributes" },
+      chunking_strategy: { $ref: "#/components/schemas/VectorStoreFileChunkingStrategy" },
+      last_error: { type: ["object", "null"] },
+    },
+  },
+  VectorStoreFileDeleteResponse: {
+    type: "object",
+    required: ["id", "object", "deleted"],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["vector_store.file.deleted"] },
+      deleted: { type: "boolean", enum: [true] },
+    },
+  },
+  VectorStoreFileListResponse: {
+    type: "object",
+    properties: {
+      object: { type: "string", enum: ["list"] },
+      data: { type: "array", items: { $ref: "#/components/schemas/VectorStoreFile" } },
+      first_id: { type: ["string", "null"] },
+      last_id: { type: ["string", "null"] },
+      has_more: { type: "boolean" },
+    },
+  },
+  VectorFileBatch: {
+    type: "object",
+    required: ["id", "object", "created_at", "vector_store_id", "status", "file_counts"],
+    properties: {
+      id: { type: "string" },
+      object: { type: "string", enum: ["vector_store.file_batch"] },
+      created_at: { type: "integer" },
+      vector_store_id: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["in_progress", "completed", "failed", "cancelled", "cancelling"],
+      },
+      file_counts: { type: "object" },
+    },
+  },
+  VectorFileBatchFilesResponse: {
+    type: "object",
+    properties: {
+      object: { type: "string", enum: ["list"] },
+      data: { type: "array", items: { $ref: "#/components/schemas/VectorStoreFile" } },
+      first_id: { type: ["string", "null"] },
+      last_id: { type: ["string", "null"] },
+      has_more: { type: "boolean" },
+    },
+  },
+  VectorSearchResponse: {
+    type: "object",
+    required: ["object", "search_query", "data", "has_more"],
+    properties: {
+      object: { type: "string", enum: ["vector_store.search_results_page"] },
+      search_query: {
+        oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+      },
+      data: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["file_id", "filename", "score", "content", "attributes"],
+          properties: {
+            file_id: { type: "string" },
+            filename: { type: "string" },
+            score: { type: "number" },
+            attributes: {
+              type: ["object", "null"],
+              additionalProperties: { type: ["string", "number", "boolean"] },
+            },
+            content: { type: "array", items: { type: "object" } },
+          },
+        },
+      },
+      has_more: { type: "boolean" },
+    },
+  },
+  VectorStoreExpiresAfter: {
+    type: "object",
+    required: ["anchor", "days"],
+    properties: {
+      anchor: { type: "string", enum: ["last_active_at"] },
+      days: { type: "integer", minimum: 1, maximum: 365 },
+    },
+  },
+  VectorStoreMetadata: {
+    type: ["object", "null"],
+    maxProperties: 16,
+    propertyNames: { maxLength: 64 },
+    additionalProperties: { type: "string", maxLength: 512 },
+  },
+  VectorStoreAttributes: {
+    type: ["object", "null"],
+    maxProperties: 16,
+    propertyNames: { maxLength: 64 },
+    additionalProperties: {
+      oneOf: [{ type: "string", maxLength: 512 }, { type: "number" }, { type: "boolean" }],
+    },
+  },
+  VectorStoreChunkingStrategyRequest: {
+    oneOf: [
+      {
+        type: "object",
+        required: ["type"],
+        properties: { type: { type: "string", enum: ["auto"] } },
+      },
+      {
+        type: "object",
+        required: ["type", "static"],
+        properties: {
+          type: { type: "string", enum: ["static"] },
+          static: {
+            type: "object",
+            required: ["max_chunk_size_tokens", "chunk_overlap_tokens"],
+            properties: {
+              max_chunk_size_tokens: { type: "integer", minimum: 100, maximum: 4096 },
+              chunk_overlap_tokens: {
+                type: "integer",
+                minimum: 0,
+                maximum: 2048,
+                description: "Must be at most half of max_chunk_size_tokens.",
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+  VectorStoreFileChunkingStrategy: {
+    type: "object",
+    required: ["type", "static"],
+    properties: {
+      type: { type: "string", enum: ["static"] },
+      static: {
+        type: "object",
+        required: ["max_chunk_size_tokens", "chunk_overlap_tokens"],
+        properties: {
+          max_chunk_size_tokens: { type: "integer", minimum: 100, maximum: 4096 },
+          chunk_overlap_tokens: {
+            type: "integer",
+            minimum: 0,
+            maximum: 2048,
+            description: "Must be at most half of max_chunk_size_tokens.",
+          },
+        },
+      },
+    },
+  },
+  VectorStoreAttributeFilter: {
+    oneOf: [
+      {
+        type: "object",
+        required: ["type", "key", "value"],
+        properties: {
+          type: { type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte"] },
+          key: { type: "string" },
+          value: { type: ["string", "number", "boolean"] },
+        },
+      },
+      {
+        type: "object",
+        required: ["type", "filters"],
+        properties: {
+          type: { type: "string", enum: ["and", "or"] },
+          filters: {
+            type: "array",
+            items: { $ref: "#/components/schemas/VectorStoreAttributeFilter" },
+          },
+        },
+      },
+    ],
+  },
+  VectorStoreCreateRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      file_ids: { type: "array", maxItems: 2000, items: { type: "string", minLength: 1 } },
+      expires_after: { $ref: "#/components/schemas/VectorStoreExpiresAfter" },
+      chunking_strategy: { $ref: "#/components/schemas/VectorStoreChunkingStrategyRequest" },
+      metadata: { $ref: "#/components/schemas/VectorStoreMetadata" },
+    },
+  },
+  VectorStoreUpdateRequest: {
+    type: "object",
+    properties: {
+      name: { type: ["string", "null"] },
+      expires_after: {
+        oneOf: [{ $ref: "#/components/schemas/VectorStoreExpiresAfter" }, { type: "null" }],
+      },
+      metadata: { $ref: "#/components/schemas/VectorStoreMetadata" },
+    },
+  },
+  VectorStoreFileCreateRequest: {
+    type: "object",
+    required: ["file_id"],
+    properties: {
+      file_id: { type: "string", minLength: 1 },
+      attributes: { $ref: "#/components/schemas/VectorStoreAttributes" },
+      chunking_strategy: { $ref: "#/components/schemas/VectorStoreChunkingStrategyRequest" },
+    },
+  },
+  VectorStoreFileBatchCreateRequest: {
+    type: "object",
+    required: ["file_ids"],
+    properties: {
+      file_ids: {
+        type: "array",
+        minItems: 1,
+        maxItems: 2000,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1 },
+      },
+      attributes: { $ref: "#/components/schemas/VectorStoreAttributes" },
+      chunking_strategy: { $ref: "#/components/schemas/VectorStoreChunkingStrategyRequest" },
+    },
+  },
+  VectorStoreSearchRequest: {
+    type: "object",
+    required: ["query"],
+    properties: {
+      query: {
+        oneOf: [
+          { type: "string", minLength: 1 },
+          { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        ],
+      },
+      filters: { $ref: "#/components/schemas/VectorStoreAttributeFilter" },
+      max_num_results: { type: "integer", minimum: 1, maximum: 50 },
+      ranking_options: {
+        type: "object",
+        properties: {
+          score_threshold: { type: "number", minimum: 0, maximum: 1 },
+        },
+      },
+    },
+  },
   ModelsListResponse: {
     type: "object",
     properties: {
@@ -1936,6 +2227,38 @@ const MULTIPART = "multipart/form-data";
 const AUDIO = "audio/mpeg";
 const OCTET = "application/octet-stream";
 
+const VECTOR_LIST_QUERY: QueryParam[] = [
+  {
+    name: "limit",
+    description: "Maximum entries per page",
+    schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+  },
+  {
+    name: "order",
+    description: "Sort order by creation time",
+    schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+  },
+  {
+    name: "after",
+    description: "Known entry ID to page after; mutually exclusive with before",
+    schema: { type: "string" },
+  },
+  {
+    name: "before",
+    description: "Known entry ID to page before; mutually exclusive with after",
+    schema: { type: "string" },
+  },
+];
+
+const VECTOR_FILE_LIST_QUERY: QueryParam[] = [
+  ...VECTOR_LIST_QUERY,
+  {
+    name: "filter",
+    description: "Filter by file ingestion status before pagination",
+    schema: { type: "string", enum: ["in_progress", "completed", "failed", "cancelled"] },
+  },
+];
+
 const JOURNAL_QUERY: QueryParam[] = [
   { name: "limit", description: "Max entries (integer >= 0)", schema: { type: "integer" } },
   { name: "offset", description: "Entries to skip (integer >= 0)", schema: { type: "integer" } },
@@ -2042,6 +2365,45 @@ const SCHEMA_REFS: Record<string, OperationSchemas> = {
     reqContent: MULTIPART,
     response: "FileObject",
   },
+  // OpenAI Vector Stores API
+  "POST /v1/vector_stores/{vector_store_id}/search": {
+    request: "VectorStoreSearchRequest",
+    response: "VectorSearchResponse",
+  },
+  "GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/files": {
+    response: "VectorFileBatchFilesResponse",
+    query: VECTOR_FILE_LIST_QUERY,
+  },
+  "POST /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/cancel": {
+    response: "VectorFileBatch",
+  },
+  "GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}": {
+    response: "VectorFileBatch",
+  },
+  "POST /v1/vector_stores/{vector_store_id}/file_batches": {
+    request: "VectorStoreFileBatchCreateRequest",
+    response: "VectorFileBatch",
+  },
+  "GET /v1/vector_stores/{vector_store_id}/files/{file_id}": { response: "VectorStoreFile" },
+  "DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}": {
+    response: "VectorStoreFileDeleteResponse",
+  },
+  "POST /v1/vector_stores/{vector_store_id}/files": {
+    request: "VectorStoreFileCreateRequest",
+    response: "VectorStoreFile",
+  },
+  "GET /v1/vector_stores/{vector_store_id}/files": {
+    response: "VectorStoreFileListResponse",
+    query: VECTOR_FILE_LIST_QUERY,
+  },
+  "GET /v1/vector_stores/{vector_store_id}": { response: "VectorStore" },
+  "POST /v1/vector_stores/{vector_store_id}": {
+    request: "VectorStoreUpdateRequest",
+    response: "VectorStore",
+  },
+  "DELETE /v1/vector_stores/{vector_store_id}": { response: "VectorStoreDeleteResponse" },
+  "GET /v1/vector_stores": { response: "VectorStoreListResponse", query: VECTOR_LIST_QUERY },
+  "POST /v1/vector_stores": { request: "VectorStoreCreateRequest", response: "VectorStore" },
   // OpenAI fine-tuning jobs
   "POST /v1/fine_tuning/jobs/{job_id}/cancel": { response: "FineTuningJob" },
   "GET /v1/fine_tuning/jobs/{job_id}/events": { response: "FineTuningJobEventListResponse" },

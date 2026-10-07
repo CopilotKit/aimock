@@ -122,6 +122,32 @@ export type {
   FineTuningJobHyperparameters,
   FineTuningJobStatus,
 } from "./fine-tuning.js";
+export {
+  handleVectorStoresCreate,
+  handleVectorStoresList,
+  handleVectorStoresRetrieve,
+  handleVectorStoresModify,
+  handleVectorStoresDelete,
+  handleVectorStoreFilesCreate,
+  handleVectorStoreFilesList,
+  handleVectorStoreFilesRetrieve,
+  handleVectorStoreFilesDelete,
+  handleVectorFileBatchesCreate,
+  handleVectorFileBatchesRetrieve,
+  handleVectorFileBatchesCancel,
+  handleVectorFileBatchesFiles,
+  handleVectorStoresSearch,
+  clearVectorStoreStore,
+} from "./vector-stores.js";
+export type {
+  VectorStoreObject,
+  VectorStoreFileObject,
+  VectorFileBatchObject,
+  VectorSearchResult,
+  VectorStoreStatus,
+  VectorStoreFileStatus,
+  VectorFileBatchStatus,
+} from "./vector-stores.js";
 export type { ServiceFixtures } from "./server.js";
 
 // WebSocket

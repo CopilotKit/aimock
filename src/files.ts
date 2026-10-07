@@ -61,6 +61,7 @@ import { createHash } from "node:crypto";
 import type * as http from "node:http";
 import { flattenHeaders, generateId, isJsonObject, parseStrictIntegerText } from "./helpers.js";
 import { applyChaosAsync } from "./chaos.js";
+import { removeVectorStoreFile } from "./vector-stores.js";
 import type { ChaosDefaults, ChatCompletionRequest, JournalBody } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
@@ -337,6 +338,11 @@ export function clearFileStore(): void {
 
 export function getFileStoreSize(): number {
   return fileStore.size;
+}
+
+/** The original upload name, without exposing mutable file metadata. */
+export function getStoredFileName(id: string): string | undefined {
+  return fileStore.get(id)?.filename;
 }
 
 /**
@@ -1654,6 +1660,7 @@ export async function handleFilesDelete(
   }
   fileStore.delete(fileId);
   fileContents.delete(fileId);
+  removeVectorStoreFile(fileId);
   writeJson(res, 200, { id: fileId, object: "file", deleted: true }, setCorsHeaders);
   journalFiles(journal, method, path, flattenHeaders(req.headers), 200);
 }

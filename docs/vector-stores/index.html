@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vector Stores — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Vector Stores</h1>
+        <p class="lead">
+          aimock implements the 14 OpenAI Vector Stores endpoints listed below in memory. An SDK can
+          upload a file, attach it to a store, poll it to <code>completed</code>, and call
+          <code>POST /v1/vector_stores/{id}/search</code> directly without touching
+          <code>api.openai.com</code>. Progression is deterministic and driven by retrieves.
+        </p>
+        <p>
+          This mock does not execute the hosted <code>file_search</code> tool in Responses or
+          Assistants. Vector-store contents do not automatically produce model responses. Responses
+          requests need separate matching fixtures for local mock responses. In default mock mode,
+          an unmatched Responses request returns <code>404</code> with
+          <code>no_fixture_match</code>. Strict mode returns <code>503</code> instead, even when an
+          upstream is configured. With strict mode disabled, record/proxy mode forwards unmatched
+          requests to the configured upstream.
+        </p>
+
+        <h2>Endpoints</h2>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Path</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores</code></td>
+              <td>Create a store, optionally with <code>file_ids</code></td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores</code></td>
+              <td>
+                List stores, newest first (<code>limit</code>, <code>order</code>,
+                <code>after</code>, <code>before</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores/{id}</code></td>
+              <td>Retrieve a store (refreshes its derived status)</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores/{id}</code></td>
+              <td>Modify <code>name</code>, <code>metadata</code>, <code>expires_after</code></td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/v1/vector_stores/{id}</code></td>
+              <td>Delete a store and its files and batches</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores/{id}/files</code></td>
+              <td>Attach a <code>file_id</code> from the Files store</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores/{id}/files</code></td>
+              <td>List attached files (<code>filter</code>, pagination)</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores/{id}/files/{file_id}</code></td>
+              <td>Retrieve a file, advancing it one poll step</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/v1/vector_stores/{id}/files/{file_id}</code></td>
+              <td>Detach a file</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores/{id}/file_batches</code></td>
+              <td>Create a file batch from <code>file_ids</code></td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores/{id}/file_batches/{batch_id}</code></td>
+              <td>Retrieve a batch, advancing it one poll step</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores/{id}/file_batches/{batch_id}/cancel</code></td>
+              <td>Cancel a non-terminal batch</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/v1/vector_stores/{id}/file_batches/{batch_id}/files</code></td>
+              <td>List a batch's files (pagination)</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/v1/vector_stores/{id}/search</code></td>
+              <td>Deterministic search over <code>completed</code> files</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Deterministic Progression</h2>
+        <p>
+          A new file starts at <code>in_progress</code>. The first retrieve after attaching shows
+          <code>in_progress</code>; the second lands the outcome (<code>completed</code> by default)
+          and the file is stable from then on. File batches follow the same two-poll rule. A store's
+          own <code>status</code> is derived: <code>in_progress</code> while any file or batch is
+          still live, <code>completed</code> once everything settles, and <code>expired</code> once
+          <code>expires_at</code> passes.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Status ladder <span class="lang-tag">text</span></div>
+          <pre><code>attach    -> in_progress
+retrieve  -> in_progress
+retrieve  -> completed | failed | cancelled   (stable afterwards)
+
+batch     -> in_progress
+retrieve  -> in_progress
+retrieve  -> completed | failed | cancelled
+cancel    -> cancelling -> cancelled          (400 once terminal)</code></pre>
+        </div>
+
+        <h2>Failure Injection</h2>
+        <p>
+          Send <code>X-AIMock-Vector-Outcome: completed | failed | cancelled</code> on
+          <code>POST …/files</code> or <code>POST …/file_batches</code> to choose where the second
+          poll lands (default <code>completed</code>; anything else is a <code>400</code>). A
+          <code>failed</code> file carries a
+          <code>last_error: { code: "mock_ingest_failed", … }</code> payload so error rendering
+          paths are testable.
+        </p>
+
+        <h2>Files Must Exist First</h2>
+        <p>
+          Attaching a <code>file_id</code> the Files store has never seen is a
+          <code>404</code> naming the file, so a suite that forgets the upload step fails loudly
+          instead of indexing a ghost. <code>usage_bytes</code> is the real byte length from the
+          Files store. Upload with <code>purpose: "assistants"</code> (or any accepted Files
+          purpose) before attaching.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Upload → store → poll → search <span class="lang-tag">ts</span>
+          </div>
+          <pre><code><span class="kw">const</span> file = <span class="kw">await</span> openai.files.create({
+  file: fs.createReadStream(<span class="str">"./docs.txt"</span>),
+  purpose: <span class="str">"assistants"</span>,
+});
+<span class="kw">const</span> store = <span class="kw">await</span> openai.vectorStores.create({ name: <span class="str">"rag"</span> });
+<span class="kw">await</span> openai.vectorStores.files.create(store.id, { file_id: file.id });
+<span class="kw">await</span> openai.vectorStores.files.retrieve(store.id, file.id); <span class="c">// in_progress</span>
+<span class="kw">await</span> openai.vectorStores.files.retrieve(store.id, file.id); <span class="c">// completed</span>
+<span class="kw">const</span> hits = <span class="kw">await</span> fetch(`${base}/v1/vector_stores/${store.id}/search`, {
+  method: <span class="str">"POST"</span>,
+  headers: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  body: JSON.stringify({ query: <span class="str">"pricing"</span>, max_num_results: <span class="str">5</span> }),
+}).then((r) =&gt; r.json());</code></pre>
+        </div>
+
+        <h2>Search</h2>
+        <p>
+          Search is deterministic, not semantic: only <code>completed</code> files are searched,
+          ranking is a stable hash of <code>query + file_id</code> so the same query always orders
+          the same way, and every hit carries its file id plus a canned text snippet quoting the
+          query. <code>query</code> accepts a non-empty string or a non-empty array of non-empty
+          strings. Array entries are joined with a newline in request order for ranking and
+          snippets; a single-entry array ranks identically to its string. The response
+          <code>search_query</code> echoes the original string or array.
+          <code>max_num_results</code> is an integer in <code>1</code>&ndash;<code>50</code>
+          (default <code>10</code>); <code>ranking_options.score_threshold</code> is a number in
+          <code>0</code>&ndash;<code>1</code>. An empty store answers <code>200</code> with
+          <code>data: []</code>. Direct search supports tests of top-k, thresholds, and empty
+          results. It does not measure semantic relevance.
+        </p>
+
+        <p>
+          File attachment and batch creation accept <code>attributes</code>: up to 16 pairs with
+          keys of at most 64 characters and string values of at most 512 characters, numbers, or
+          booleans. Batch attributes apply to each newly attached file. Omitted or null attributes
+          are returned as <code>null</code>; an empty object stays empty. Search results include the
+          file's attributes.
+        </p>
+        <p>
+          Search <code>filters</code> accept comparisons
+          <code>{ type: "eq", key: "category", value: "guide" }</code> using <code>eq</code>,
+          <code>ne</code>, <code>gt</code>, <code>gte</code>, <code>lt</code>, or <code>lte</code>,
+          and nested groups <code>{ type: "and", filters: [...] }</code> or
+          <code>{ type: "or", filters: [...] }</code>. Filters run before ranking and result limits.
+          Comparisons require an existing key and matching value types; missing keys do not match,
+          including with <code>ne</code>. Ordering uses numeric, lexicographic string, or
+          false-before-true boolean order. Malformed attributes or filters return <code>400</code>.
+        </p>
+
+        <h2>Validation</h2>
+        <ul>
+          <li>
+            A body that is not a JSON object is a <code>400</code>; <code>name</code> must be a
+            string when present on create. On modify, <code>name: null</code> resets the name to an
+            empty string; omitting <code>name</code> preserves it
+          </li>
+          <li>
+            <code>metadata</code> follows the shared platform rule: at most 16 string pairs, keys up
+            to 64 characters, values up to 512
+          </li>
+          <li>
+            <code>expires_after</code> is
+            <code>{ anchor: "last_active_at", days: 1&ndash;365 }</code>; sending
+            <code>null</code> on modify clears the expiry
+          </li>
+          <li>
+            <code>chunking_strategy</code> is <code>{ type: "auto" }</code> or
+            <code
+              >{ type: "static", static: { max_chunk_size_tokens: 100&ndash;4096,
+              chunk_overlap_tokens: 0&ndash;2048 } }</code
+            >
+            with overlap at most half the chunk size
+          </li>
+          <li>
+            <code>file_ids</code> is an array of up to 2000 non-empty strings; attaching the same
+            file twice is a <code>400</code>
+          </li>
+          <li>
+            List pagination: <code>limit</code> is an integer in
+            <code>1</code>&ndash;<code>100</code>, <code>order</code> is <code>asc</code> or
+            <code>desc</code>, <code>after</code>/<code>before</code> must name a known cursor and
+            are mutually exclusive; a repeated scalar parameter is a <code>400</code>
+          </li>
+          <li>Unknown store, file or batch ids are <code>404</code> naming the id</li>
+        </ul>
+
+        <h2>State &amp; Journal</h2>
+        <p>
+          Stores live in memory for the life of the process. <code>POST /__aimock/reset</code>,
+          <code>LLMock.reset()</code> and <code>clearVectorStoreStore()</code> all clear them. Every
+          request is journaled exactly once with <code>service: "vector-stores"</code> and runs
+          through the chaos gate — see <a href="/chaos-testing">Chaos Testing</a>. Prometheus labels
+          are normalized (<code>/v1/vector_stores/{id}</code>,
+          <code>/v1/vector_stores/{id}/files/{fileId}</code>,
+          <code>/v1/vector_stores/{id}/file_batches/{batchId}[/cancel|/files]</code>,
+          <code>/v1/vector_stores/{id}/search</code>), so caller-controlled ids cannot inflate
+          cardinality — see <a href="/metrics">Prometheus Metrics</a>.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

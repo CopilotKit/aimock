@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import OpenAI, { toFile } from "openai";
 import type { SSEChunk, ChatCompletion, ChatCompletionRequest } from "../types.js";
 import { LLMock } from "../llmock.js";
 import { CATALOG_ROUTES, buildOpenApiDocument } from "../openapi.js";
@@ -68,6 +69,12 @@ function expectCatalogReferencesResolve(doc: unknown): void {
 
 describe("OpenAPI route catalog", () => {
   let mock: LLMock;
+  const post = (path: string, body: object) =>
+    fetch(`${mock.url}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
   beforeEach(async () => {
     // metrics:true so GET /metrics is served (otherwise it 404s by design).
     mock = new LLMock({ port: 0, metrics: true });
@@ -75,6 +82,494 @@ describe("OpenAPI route catalog", () => {
   });
   afterEach(async () => {
     await mock.stop();
+  });
+
+  it.each(["omitted", "auto", "static"] as const)(
+    "describes emitted vector resource configuration over HTTP: %s",
+    async (kind) => {
+      const chunking =
+        kind === "omitted"
+          ? undefined
+          : kind === "auto"
+            ? { type: "auto" }
+            : { type: "static", static: { max_chunk_size_tokens: 100, chunk_overlap_tokens: 50 } };
+      const expires = kind === "omitted" ? undefined : { anchor: "last_active_at", days: 1 };
+      const attributes =
+        kind === "omitted" ? null : { topic: "catalog", enabled: true, year: 2026 };
+      const created = await post("/v1/vector_stores", {
+        expires_after: expires,
+        chunking_strategy: chunking,
+      });
+      expect(created.status).toBe(200);
+      const store = await created.json();
+      const client = new OpenAI({ apiKey: "test", baseURL: `${mock.url}/v1` });
+      const upload = await client.files.create({
+        purpose: "assistants",
+        file: await toFile(Buffer.from("resource catalog proof"), "resource.txt"),
+      });
+      const attached = await post(`/v1/vector_stores/${store.id}/files`, {
+        file_id: upload.id,
+        attributes,
+        chunking_strategy: chunking,
+      });
+      expect(attached.status).toBe(200);
+      const file = await attached.json();
+      await client.vectorStores.del(store.id);
+      await client.files.del(upload.id);
+      expect(store.expires_after).toEqual(expires);
+      expect(store.chunking_strategy).toEqual(chunking);
+      expect(file.attributes).toEqual(attributes);
+      expect(file.chunking_strategy).toEqual(
+        kind === "auto"
+          ? { type: "static", static: { max_chunk_size_tokens: 800, chunk_overlap_tokens: 400 } }
+          : chunking,
+      );
+      const doc = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+      const schemas = doc.components.schemas;
+      console.log(
+        JSON.stringify({
+          kind,
+          store,
+          file,
+          storeSchema: schemas.VectorStore,
+          fileSchema: schemas.VectorStoreFile,
+        }),
+      );
+      expect.soft(schemas.VectorStore.properties.expires_after).toEqual({
+        $ref: "#/components/schemas/VectorStoreExpiresAfter",
+      });
+      expect.soft(schemas.VectorStore.properties.chunking_strategy).toEqual({
+        $ref: "#/components/schemas/VectorStoreChunkingStrategyRequest",
+      });
+      expect.soft(schemas.VectorStore.required).not.toContain("expires_after");
+      expect.soft(schemas.VectorStore.required).not.toContain("chunking_strategy");
+      expect.soft(schemas.VectorStoreFile.properties.attributes).toEqual({
+        $ref: "#/components/schemas/VectorStoreAttributes",
+      });
+      expect.soft(schemas.VectorStoreFile.required).toContain("attributes");
+      expect.soft(schemas.VectorStoreFile.required).not.toContain("chunking_strategy");
+      expect.soft(schemas.VectorStoreFile.properties.chunking_strategy).toEqual({
+        $ref: "#/components/schemas/VectorStoreFileChunkingStrategy",
+      });
+      expect
+        .soft(schemas.VectorStoreFileChunkingStrategy)
+        .toEqual(schemas.VectorStoreChunkingStrategyRequest.oneOf[1]);
+    },
+  );
+
+  it.each(["stores", "files", "batch files"] as const)(
+    "describes supported vector list query parameters for %s over HTTP",
+    async (kind) => {
+      const client = new OpenAI({ apiKey: "test", baseURL: `${mock.url}/v1` });
+      const store = await client.vectorStores.create({});
+      await client.vectorStores.create({});
+      await client.vectorStores.create({});
+      const fileIds: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const file = await client.files.create({
+          purpose: "assistants",
+          file: await toFile(Buffer.from("catalog pagination proof"), `page-${i}.txt`),
+        });
+        fileIds.push(file.id);
+      }
+      const batch = await client.vectorStores.fileBatches.create(store.id, { file_ids: fileIds });
+      const suffix =
+        kind === "stores" ? "" : kind === "files" ? "/files" : `/file_batches/${batch.id}/files`;
+      const path =
+        kind === "stores" ? "/v1/vector_stores" : `/v1/vector_stores/${store.id}${suffix}`;
+      const template =
+        kind === "stores"
+          ? path
+          : kind === "files"
+            ? "/v1/vector_stores/{vector_store_id}/files"
+            : "/v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/files";
+      const getPage = async (query: string) => {
+        const response = await fetch(`${mock.url}${path}?${query}`);
+        expect(response.status).toBe(200);
+        const page: { data: { id: string }[]; has_more: boolean } = await response.json();
+        return page;
+      };
+      const all = await getPage("order=asc&limit=100");
+      expect(all.data).toHaveLength(3);
+      const first = await getPage("order=asc&limit=1");
+      expect(first.data).toEqual(all.data.slice(0, 1));
+      expect(first.has_more).toBe(true);
+      expect((await getPage(`order=asc&limit=1&after=${all.data[0].id}`)).data).toEqual(
+        all.data.slice(1, 2),
+      );
+      expect((await getPage(`order=asc&limit=1&before=${all.data[2].id}`)).data).toEqual(
+        all.data.slice(1, 2),
+      );
+      expect((await getPage("order=desc&limit=1")).data).toEqual(all.data.slice(2));
+      for (const invalid of [
+        "limit=0",
+        "limit=101",
+        "order=wrong",
+        `after=${all.data[0].id}&before=${all.data[2].id}`,
+      ]) {
+        expect((await fetch(`${mock.url}${path}?${invalid}`)).status).toBe(400);
+      }
+      if (kind !== "stores") {
+        expect((await getPage("filter=failed")).data).toEqual([]);
+        for (const filter of ["in_progress", "completed", "failed", "cancelled"])
+          await getPage(`filter=${filter}`);
+        expect((await fetch(`${mock.url}${path}?filter=wrong`)).status).toBe(400);
+      }
+      const doc: {
+        paths: {
+          [path: string]: {
+            get: {
+              parameters: {
+                name: string;
+                in: string;
+                required: boolean;
+                schema: {
+                  type: string;
+                  minimum?: number;
+                  maximum?: number;
+                  default?: string | number;
+                  enum?: string[];
+                };
+              }[];
+            };
+          };
+        };
+      } = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+      const parameters = doc.paths[template].get.parameters;
+      console.log(
+        JSON.stringify({
+          template,
+          livePagination: "passed",
+          liveFilter: kind !== "stores",
+          parameters,
+        }),
+      );
+      const expected = [
+        { name: "limit", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+        { name: "order", schema: { type: "string", enum: ["asc", "desc"], default: "desc" } },
+        { name: "after", schema: { type: "string" } },
+        { name: "before", schema: { type: "string" } },
+        ...(kind === "stores"
+          ? []
+          : [
+              {
+                name: "filter",
+                schema: {
+                  type: "string",
+                  enum: ["in_progress", "completed", "failed", "cancelled"],
+                },
+              },
+            ]),
+      ];
+      for (const parameter of expected) {
+        expect
+          .soft(parameters)
+          .toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ ...parameter, in: "query", required: false }),
+            ]),
+          );
+      }
+    },
+  );
+
+  it.each([
+    { suffix: "/search", field: "query", schemaName: "VectorStoreSearchRequest" },
+    { suffix: "/files", field: "file_id", schemaName: "VectorStoreFileCreateRequest" },
+    { suffix: "/file_batches", field: "file_ids", schemaName: "VectorStoreFileBatchCreateRequest" },
+  ])(
+    "describes the real vector request contract for $suffix",
+    async ({ suffix, field, schemaName }) => {
+      const doc = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+      const store = await (await post("/v1/vector_stores", {})).json();
+      const upload = new FormData();
+      upload.set("purpose", "assistants");
+      upload.set("file", new Blob(["catalog request proof"]), "catalog.txt");
+      const file = await (
+        await fetch(`${mock.url}/v1/files`, { method: "POST", body: upload })
+      ).json();
+      const path = `/v1/vector_stores/${store.id}${suffix}`;
+      const template = `/v1/vector_stores/{vector_store_id}${suffix}`;
+      const valid =
+        suffix === "/search"
+          ? { query: ["catalog", "proof"] }
+          : suffix === "/files"
+            ? {
+                file_id: file.id,
+                attributes: { topic: "catalog", enabled: true, year: 2026 },
+                chunking_strategy: { type: "auto" },
+              }
+            : {
+                file_ids: [file.id],
+                attributes: null,
+                chunking_strategy: {
+                  type: "static",
+                  static: { max_chunk_size_tokens: 100, chunk_overlap_tokens: 50 },
+                },
+              };
+      const missing = await post(path, {});
+      const empty = await post(path, { [field]: field === "file_id" ? "" : [] });
+      const accepted = await post(path, valid);
+      expect([missing.status, empty.status, accepted.status]).toEqual([400, 400, 200]);
+      const ref = doc.paths[template].post.requestBody.content["application/json"].schema.$ref;
+      const schema = doc.components.schemas[ref.split("/").at(-1)];
+      console.log(
+        JSON.stringify({
+          template,
+          statuses: [missing.status, empty.status, accepted.status],
+          ref,
+          schema,
+        }),
+      );
+      expect.soft(ref).toBe(`#/components/schemas/${schemaName}`);
+      expect.soft(schema.required).toContain(field);
+      if (field === "file_id")
+        expect.soft(schema.properties.file_id).toEqual({ type: "string", minLength: 1 });
+      if (field === "file_ids")
+        expect.soft(schema.properties.file_ids).toMatchObject({
+          type: "array",
+          minItems: 1,
+          maxItems: 2000,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1 },
+        });
+      if (field === "query")
+        expect.soft(schema.properties.query).toEqual({
+          oneOf: [
+            { type: "string", minLength: 1 },
+            { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          ],
+        });
+    },
+  );
+
+  it("describes vector create/update and nested request forms accepted over HTTP", async () => {
+    const doc = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+    const schemas = doc.components.schemas;
+    const created = await post("/v1/vector_stores", {
+      name: "catalog",
+      file_ids: [],
+      metadata: { source: "test" },
+      expires_after: { anchor: "last_active_at", days: 1 },
+      chunking_strategy: { type: "auto" },
+    });
+    expect(created.status).toBe(200);
+    const store = await created.json();
+    const updated = await post(`/v1/vector_stores/${store.id}`, {
+      name: null,
+      metadata: null,
+      expires_after: null,
+    });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ name: "", metadata: null, expires_at: null });
+    const filter = {
+      type: "and",
+      filters: [
+        { type: "eq", key: "topic", value: "catalog" },
+        { type: "or", filters: [{ type: "gte", key: "year", value: 2026 }] },
+      ],
+    };
+    expect(
+      (
+        await post(`/v1/vector_stores/${store.id}/search`, {
+          query: "catalog",
+          filters: filter,
+          max_num_results: 50,
+          ranking_options: { score_threshold: 0.5 },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(`/v1/vector_stores/${store.id}/search`, {
+          query: "catalog",
+          filters: { type: "eq", key: "topic" },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      doc.paths["/v1/vector_stores/{vector_store_id}"].post.requestBody.content["application/json"]
+        .schema.$ref,
+    ).toBe("#/components/schemas/VectorStoreUpdateRequest");
+    expect(schemas.VectorStoreUpdateRequest.properties.name.type).toEqual(["string", "null"]);
+    expect(schemas.VectorStoreUpdateRequest.properties.expires_after.oneOf).toContainEqual({
+      type: "null",
+    });
+    expect(schemas.VectorStoreCreateRequest.properties.file_ids).toMatchObject({
+      maxItems: 2000,
+      items: { minLength: 1 },
+    });
+    expect(schemas.VectorStoreCreateRequest.properties.file_ids.minItems).toBeUndefined();
+    expect(schemas.VectorStoreMetadata).toMatchObject({
+      type: ["object", "null"],
+      maxProperties: 16,
+      propertyNames: { maxLength: 64 },
+      additionalProperties: { type: "string", maxLength: 512 },
+    });
+    expect(schemas.VectorStoreAttributes).toMatchObject({
+      type: ["object", "null"],
+      maxProperties: 16,
+      propertyNames: { maxLength: 64 },
+      additionalProperties: {
+        oneOf: [{ type: "string", maxLength: 512 }, { type: "number" }, { type: "boolean" }],
+      },
+    });
+    for (const name of ["VectorStoreFileCreateRequest", "VectorStoreFileBatchCreateRequest"]) {
+      expect(schemas[name].properties.attributes.$ref).toBe(
+        "#/components/schemas/VectorStoreAttributes",
+      );
+      expect(schemas[name].properties.chunking_strategy.$ref).toBe(
+        "#/components/schemas/VectorStoreChunkingStrategyRequest",
+      );
+    }
+    expect(schemas.VectorStoreChunkingStrategyRequest.oneOf[0]).toMatchObject({
+      required: ["type"],
+      properties: { type: { enum: ["auto"] } },
+    });
+    expect(schemas.VectorStoreChunkingStrategyRequest.oneOf[1].properties.static).toMatchObject({
+      required: ["max_chunk_size_tokens", "chunk_overlap_tokens"],
+      properties: {
+        max_chunk_size_tokens: { minimum: 100, maximum: 4096 },
+        chunk_overlap_tokens: { minimum: 0, maximum: 2048 },
+      },
+    });
+    expect(schemas.VectorStoreSearchRequest.properties.filters.$ref).toBe(
+      "#/components/schemas/VectorStoreAttributeFilter",
+    );
+    expect(schemas.VectorStoreAttributeFilter.oneOf[0]).toMatchObject({
+      required: ["type", "key", "value"],
+      properties: {
+        type: { enum: ["eq", "ne", "gt", "gte", "lt", "lte"] },
+        value: { type: ["string", "number", "boolean"] },
+      },
+    });
+    expect(schemas.VectorStoreAttributeFilter.oneOf[1]).toMatchObject({
+      required: ["type", "filters"],
+      properties: {
+        type: { enum: ["and", "or"] },
+        filters: { items: { $ref: "#/components/schemas/VectorStoreAttributeFilter" } },
+      },
+    });
+  });
+
+  it.each([
+    { label: "empty string query", query: "catalog", populated: false, attributes: null },
+    { label: "populated string query", query: "catalog", populated: true, attributes: null },
+    {
+      label: "populated array query with attributes",
+      query: ["catalog", "proof"],
+      populated: true,
+      attributes: { category: "guide", revision: 2, published: true },
+    },
+  ])(
+    "describes the real vector search response: $label",
+    async ({ query, populated, attributes }) => {
+      const client = new OpenAI({ apiKey: "mock", baseURL: `${mock.url}/v1`, maxRetries: 0 });
+      const store = await client.vectorStores.create({ name: "catalog search" });
+      if (populated) {
+        const file = await client.files.create({
+          purpose: "assistants",
+          file: await toFile(Buffer.from("catalog proof"), "catalog.txt"),
+        });
+        await client.vectorStores.files.create(store.id, { file_id: file.id, attributes });
+        await client.vectorStores.files.retrieve(store.id, file.id);
+        await client.vectorStores.files.retrieve(store.id, file.id);
+      }
+      const response = await client.vectorStores.search(store.id, { query }).asResponse();
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      const doc = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+      const ref =
+        doc.paths["/v1/vector_stores/{vector_store_id}/search"].post.responses["200"].content[
+          "application/json"
+        ].schema;
+      const schema = doc.components.schemas[ref.$ref.split("/").at(-1)];
+      expect(body.object).toBe("vector_store.search_results_page");
+      expect(body.search_query).toEqual(query);
+      expect(body.data).toHaveLength(populated ? 1 : 0);
+      expect(body.has_more).toBe(false);
+      expect
+        .soft(schema.required)
+        .toEqual(expect.arrayContaining(["object", "search_query", "data", "has_more"]));
+      expect.soft(schema.properties.object.enum).toEqual([body.object]);
+      expect.soft(schema.properties.search_query).toEqual({
+        oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+      });
+      expect.soft(schema.properties.has_more.type).toBe(typeof body.has_more);
+      const result = schema.properties.data.items;
+      expect
+        .soft(result.required)
+        .toEqual(expect.arrayContaining(["file_id", "filename", "score", "content", "attributes"]));
+      expect.soft(result.properties.attributes).toEqual({
+        type: ["object", "null"],
+        additionalProperties: { type: ["string", "number", "boolean"] },
+      });
+      for (const item of body.data) {
+        expect(item.attributes).toEqual(attributes);
+        expect(item.filename).toBe("catalog.txt");
+        expect(result.properties.file_id.type).toBe(typeof item.file_id);
+        expect(result.properties.filename.type).toBe(typeof item.filename);
+        expect(result.properties.score.type).toBe(typeof item.score);
+        expect(Array.isArray(item.content)).toBe(true);
+        expect(result.properties.content.type).toBe("array");
+        expect(item.content.length).toBeGreaterThan(0);
+        for (const chunk of item.content) {
+          expect(chunk).not.toBeNull();
+          expect(Array.isArray(chunk)).toBe(false);
+          expect(result.properties.content.items.type).toBe(typeof chunk);
+          expect(chunk).toMatchObject({ type: "text", text: expect.any(String) });
+          expect(chunk.text.length).toBeGreaterThan(0);
+        }
+      }
+    },
+  );
+
+  it.each([
+    { resource: "store", object: "vector_store.deleted" },
+    { resource: "file", object: "vector_store.file.deleted" },
+  ])("describes the real vector $resource deletion envelope", async ({ resource, object }) => {
+    const doc = await (await fetch(`${mock.url}/__aimock/openapi.json`)).json();
+    const storeResponse = await fetch(`${mock.url}/v1/vector_stores`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "catalog deletion" }),
+    });
+    expect(storeResponse.status).toBe(200);
+    const store = await storeResponse.json();
+    const upload = new FormData();
+    upload.set("purpose", "assistants");
+    upload.set("file", new Blob(["catalog deletion proof"]), "catalog.txt");
+    const uploadResponse = await fetch(`${mock.url}/v1/files`, { method: "POST", body: upload });
+    expect(uploadResponse.status).toBe(200);
+    const file = await uploadResponse.json();
+    const storePath = `/v1/vector_stores/${store.id}`;
+    const attachment = await fetch(`${mock.url}${storePath}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_id: file.id }),
+    });
+    expect(attachment.status).toBe(200);
+
+    const suffix = resource === "file" ? `/files/${file.id}` : "";
+    const response = await fetch(`${mock.url}${storePath}${suffix}`, { method: "DELETE" });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ id: resource === "file" ? file.id : store.id, deleted: true, object });
+    const template =
+      "/v1/vector_stores/{vector_store_id}" + (resource === "file" ? "/files/{file_id}" : "");
+    const ref = doc.paths[template].delete.responses["200"].content["application/json"].schema;
+    const schema = doc.components.schemas[ref.$ref.split("/").at(-1)];
+    console.log(JSON.stringify({ template, status: response.status, body, schema }));
+    for (const key of schema.required) expect.soft(body).toHaveProperty(key);
+    expect.soft(schema.required).toEqual(expect.arrayContaining(["id", "deleted", "object"]));
+    expect.soft(schema.properties.id).toEqual({ type: "string" });
+    expect.soft(schema.properties.deleted).toEqual({ type: "boolean", enum: [true] });
+    expect.soft(schema.properties.object).toEqual({ type: "string", enum: [body.object] });
+
+    if (resource === "file") {
+      expect((await fetch(`${mock.url}${storePath}`, { method: "DELETE" })).status).toBe(200);
+    }
+    expect((await fetch(`${mock.url}/v1/files/${file.id}`, { method: "DELETE" })).status).toBe(200);
   });
 
   it.each([
@@ -1053,6 +1548,29 @@ describe("OpenAPI route catalog", () => {
       TRANSLATIONS_PATH: ["POST /v1/audio/translations"],
       VEO_OPERATION_RE: ["GET /v1beta/operations/{name}"],
       VEO_PREDICT_LRO_RE: ["POST /v1beta/models/{model}:predictLongRunning"],
+      VECTOR_STORES_BATCH_CANCEL_RE: [
+        "POST /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/cancel",
+      ],
+      VECTOR_STORES_BATCH_FILES_RE: [
+        "GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/files",
+      ],
+      VECTOR_STORES_BATCH_RE: ["GET /v1/vector_stores/{vector_store_id}/file_batches/{batch_id}"],
+      VECTOR_STORES_FILE_BATCHES_RE: ["POST /v1/vector_stores/{vector_store_id}/file_batches"],
+      VECTOR_STORES_FILE_RE: [
+        "GET /v1/vector_stores/{vector_store_id}/files/{file_id}",
+        "DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}",
+      ],
+      VECTOR_STORES_FILES_RE: [
+        "POST /v1/vector_stores/{vector_store_id}/files",
+        "GET /v1/vector_stores/{vector_store_id}/files",
+      ],
+      VECTOR_STORES_ID_RE: [
+        "GET /v1/vector_stores/{vector_store_id}",
+        "POST /v1/vector_stores/{vector_store_id}",
+        "DELETE /v1/vector_stores/{vector_store_id}",
+      ],
+      VECTOR_STORES_PATH: ["GET /v1/vector_stores", "POST /v1/vector_stores"],
+      VECTOR_STORES_SEARCH_RE: ["POST /v1/vector_stores/{vector_store_id}/search"],
       VERTEX_AI_RE: [
         "POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent",
         "POST /v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent",

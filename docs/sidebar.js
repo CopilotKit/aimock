@@ -52,6 +52,7 @@
         { label: "Rerank", href: "/rerank" },
         { label: "Moderation", href: "/moderation" },
         { label: "Files API", href: "/files" },
+        { label: "Vector Stores", href: "/vector-stores" },
         { label: "Structured Output", href: "/structured-output" },
         { label: "Sequential Responses", href: "/sequential-responses" },
         { label: "Multi-Turn Conversations", href: "/multi-turn" },

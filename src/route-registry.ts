@@ -133,6 +133,23 @@ export const FINE_TUNING_ID_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)$/;
 export const FINE_TUNING_CANCEL_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/cancel$/;
 export const FINE_TUNING_EVENTS_RE = /^\/v1\/fine_tuning\/jobs\/([^/]+)\/events$/;
 
+// OpenAI Vector Stores API. Shared with server.ts dispatch and metrics.ts
+// path-label normalization (store/file/batch ids are caller-minted, so every
+// id-bearing path collapses to a placeholder). Dispatch order in server.ts is
+// most-specific RE first (search → batch-files → batch-cancel → batch → file →
+// id), then the two sub-collection REs below, then the collection exact path.
+export const VECTOR_STORES_PATH = "/v1/vector_stores";
+export const VECTOR_STORES_SEARCH_RE = /^\/v1\/vector_stores\/([^/]+)\/search$/;
+export const VECTOR_STORES_BATCH_FILES_RE =
+  /^\/v1\/vector_stores\/([^/]+)\/file_batches\/([^/]+)\/files$/;
+export const VECTOR_STORES_BATCH_CANCEL_RE =
+  /^\/v1\/vector_stores\/([^/]+)\/file_batches\/([^/]+)\/cancel$/;
+export const VECTOR_STORES_BATCH_RE = /^\/v1\/vector_stores\/([^/]+)\/file_batches\/([^/]+)$/;
+export const VECTOR_STORES_FILE_RE = /^\/v1\/vector_stores\/([^/]+)\/files\/([^/]+)$/;
+export const VECTOR_STORES_ID_RE = /^\/v1\/vector_stores\/([^/]+)$/;
+export const VECTOR_STORES_FILES_RE = /^\/v1\/vector_stores\/([^/]+)\/files$/;
+export const VECTOR_STORES_FILE_BATCHES_RE = /^\/v1\/vector_stores\/([^/]+)\/file_batches$/;
+
 export const CONTROL_PREFIX = "/__aimock";
 
 export interface RouteDefinition {
@@ -604,6 +621,105 @@ export const ROUTE_DEFINITIONS: RouteDefinition[] = [
     path: "/v1/fine_tuning/jobs",
     service: "fine-tuning",
     description: "Fine-tuning job create",
+  },
+  // OpenAI Vector Stores (cancel before id is not needed: the id RE is
+  // anchored to the exact 3-segment path so it cannot swallow sub-resources;
+  // most-specific REs still read first in the dispatcher).
+  {
+    method: "POST",
+    path: "/v1/vector_stores/{vector_store_id}/search",
+    examplePath: "/v1/vector_stores/vs-test123/search",
+    service: "vector-stores",
+    description: "Vector store search",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/files",
+    examplePath: "/v1/vector_stores/vs-test123/file_batches/vsbf-test123/files",
+    service: "vector-stores",
+    description: "Vector file batch files list",
+  },
+  {
+    method: "POST",
+    path: "/v1/vector_stores/{vector_store_id}/file_batches/{batch_id}/cancel",
+    examplePath: "/v1/vector_stores/vs-test123/file_batches/vsbf-test123/cancel",
+    service: "vector-stores",
+    description: "Vector file batch cancel",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores/{vector_store_id}/file_batches/{batch_id}",
+    examplePath: "/v1/vector_stores/vs-test123/file_batches/vsbf-test123",
+    service: "vector-stores",
+    description: "Vector file batch retrieve",
+  },
+  {
+    method: "POST",
+    path: "/v1/vector_stores/{vector_store_id}/file_batches",
+    examplePath: "/v1/vector_stores/vs-test123/file_batches",
+    service: "vector-stores",
+    description: "Vector file batch create",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores/{vector_store_id}/files/{file_id}",
+    examplePath: "/v1/vector_stores/vs-test123/files/file-test123",
+    service: "vector-stores",
+    description: "Vector store file retrieve",
+  },
+  {
+    method: "DELETE",
+    path: "/v1/vector_stores/{vector_store_id}/files/{file_id}",
+    examplePath: "/v1/vector_stores/vs-test123/files/file-test123",
+    service: "vector-stores",
+    description: "Vector store file delete",
+  },
+  {
+    method: "POST",
+    path: "/v1/vector_stores/{vector_store_id}/files",
+    examplePath: "/v1/vector_stores/vs-test123/files",
+    service: "vector-stores",
+    description: "Vector store file attach",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores/{vector_store_id}/files",
+    examplePath: "/v1/vector_stores/vs-test123/files",
+    service: "vector-stores",
+    description: "Vector store files list",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores/{vector_store_id}",
+    examplePath: "/v1/vector_stores/vs-test123",
+    service: "vector-stores",
+    description: "Vector store retrieve",
+  },
+  {
+    method: "POST",
+    path: "/v1/vector_stores/{vector_store_id}",
+    examplePath: "/v1/vector_stores/vs-test123",
+    service: "vector-stores",
+    description: "Vector store modify",
+  },
+  {
+    method: "DELETE",
+    path: "/v1/vector_stores/{vector_store_id}",
+    examplePath: "/v1/vector_stores/vs-test123",
+    service: "vector-stores",
+    description: "Vector store delete",
+  },
+  {
+    method: "GET",
+    path: "/v1/vector_stores",
+    service: "vector-stores",
+    description: "Vector store list",
+  },
+  {
+    method: "POST",
+    path: "/v1/vector_stores",
+    service: "vector-stores",
+    description: "Vector store create",
   },
   // Chat completions (terminal dispatcher branch)
   {
