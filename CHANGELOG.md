@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve malformed tool-call argument strings on string-based response wires instead of silently replacing them with `{}`. Object-based wires now return an explicit error (HTTP 500, or a Gemini Live WebSocket error) before response content. Valid JSON, empty or omitted legacy arguments, and fixture validation retain their existing behavior.
+
 ## [1.44.0] - 2026-10-07
 
 ### Added

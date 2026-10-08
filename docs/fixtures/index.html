@@ -555,6 +555,34 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           capture and retention.
         </p>
 
+        <h2 id="tool-arguments">Tool argument JSON</h2>
+        <p>
+          Malformed JSON in a tool call's <code>arguments</code> is no longer silently replaced with
+          <code>{}</code>. The response depends on how the selected API carries arguments:
+        </p>
+        <ul>
+          <li>
+            <strong>String arguments:</strong> The malformed string is sent unchanged. This includes
+            Anthropic Messages, Bedrock InvokeModel, Bedrock Converse, and Gemini Interactions
+            streaming argument deltas, plus Cohere's streaming and non-streaming arguments. A client
+            or SDK may reject the malformed JSON when it parses the string.
+          </li>
+          <li>
+            <strong>Object arguments:</strong> Malformed JSON produces an explicit error before
+            response content is sent. This applies to non-streaming Anthropic Messages, Bedrock
+            InvokeModel, Bedrock Converse, and Gemini Interactions, and to Gemini, Gemini Live, and
+            Ollama. HTTP requests return status <code>500</code>; Gemini Live sends an error on the
+            existing WebSocket connection.
+          </li>
+        </ul>
+        <p>
+          Valid JSON retains its existing behavior, including arrays, primitives, and
+          <code>null</code>. Empty or omitted legacy tool-call arguments still default to
+          <code>{}</code>; whitespace-only strings are malformed JSON. Fixture validation is
+          unchanged: <code>validateFixtures()</code> can still reject malformed arguments before
+          replay, and ordered tool-call blocks still require an <code>arguments</code> field.
+        </p>
+
         <h2 id="ordered-blocks">Ordered blocks (tool-first &amp; interleaved streaming)</h2>
         <p>
           By default a <strong>Content + Tool Calls</strong> response streams its text first, then
@@ -574,8 +602,8 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           When <code>blocks</code> is present it <strong>takes precedence</strong> over the
           <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
           streamed in array order. When <code>blocks</code> is <strong>absent</strong>, legacy
-          <code>{ content, toolCalls }</code> fixtures stream exactly as before &mdash; text-first,
-          byte-identical to prior releases. The field is purely additive.
+          <code>{ content, toolCalls }</code> fixtures with valid JSON arguments stream as before
+          &mdash; text-first, byte-identical to prior releases. The field is purely additive.
         </p>
 
         <h3 id="blocks-only">Blocks-only fixtures (first-class)</h3>

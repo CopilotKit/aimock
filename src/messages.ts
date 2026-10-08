@@ -20,6 +20,8 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  toolArgsForWire,
+  InvalidToolArgumentsError,
   generateMessageId,
   generateToolUseId,
   extractOverrides,
@@ -645,17 +647,14 @@ function buildClaudeToolCallStreamEvents(
   for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
-    // Parse arguments to JSON object (Claude uses objects, not strings)
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    // Preserve malformed arguments on the streaming string wire.
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
     }
-    const argsJson = JSON.stringify(argsObj);
+    const argsJson = args.kind === "parsed" ? args.text : args.raw;
 
     // content_block_start
     events.push({
@@ -793,15 +792,14 @@ function buildClaudeToolCallResponse(
   }
 
   for (const tc of toolCalls) {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
+      throw new InvalidToolArgumentsError(tc);
     }
+    const argsObj = args.value;
     contentBlocks.push({
       type: "tool_use",
       id: tc.id || generateToolUseId(),
@@ -931,16 +929,13 @@ function buildClaudeContentWithToolCallsStreamEvents(
       } else {
         const toolUseId = block.id || generateToolUseId();
 
-        let argsObj: unknown;
-        try {
-          argsObj = JSON.parse(block.arguments || "{}");
-        } catch {
+        const args = toolArgsForWire(block);
+        if (args.kind === "verbatim") {
           logger.warn(
             `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
           );
-          argsObj = {};
         }
-        const argsJson = JSON.stringify(argsObj);
+        const argsJson = args.kind === "parsed" ? args.text : args.raw;
 
         events.push({
           type: "content_block_start",
@@ -1021,16 +1016,13 @@ function buildClaudeContentWithToolCallsStreamEvents(
   for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
     }
-    const argsJson = JSON.stringify(argsObj);
+    const argsJson = args.kind === "parsed" ? args.text : args.raw;
 
     events.push({
       type: "content_block_start",
@@ -1103,18 +1095,17 @@ function buildClaudeContentWithToolCallsResponse(
   }
 
   // Build a tool_use content block from a fixture tool call, parsing its
-  // string `arguments` into the object `input` Anthropic emits (warning on
-  // malformed JSON, same idiom as the streaming/legacy paths).
+  // string `arguments` into the object `input` Anthropic emits. Malformed
+  // JSON cannot be represented on this object wire and must fail explicitly.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
+      throw new InvalidToolArgumentsError(tc);
     }
+    const argsObj = args.value;
     return {
       type: "tool_use",
       id: tc.id || generateToolUseId(),

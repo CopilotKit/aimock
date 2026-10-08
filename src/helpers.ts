@@ -37,6 +37,39 @@ import type {
 } from "./types.js";
 import type { MCPSession } from "./mcp-types.js";
 
+/** Preserve authored text for string wires without silently repairing invalid JSON. */
+export function toolArgsForWire(tc: ToolCall) {
+  const raw = tc.arguments || "{}";
+  try {
+    const value: unknown = JSON.parse(raw);
+    return { kind: "parsed" as const, value, text: JSON.stringify(value), raw };
+  } catch {
+    return { kind: "verbatim" as const, raw };
+  }
+}
+
+/** Object wires reject the verbatim branch; string wires never need this error. */
+export class InvalidToolArgumentsError extends Error {
+  readonly toolName: string;
+  readonly parseDiagnostic: string;
+
+  constructor(tc: ToolCall) {
+    let parseDiagnostic = "";
+    try {
+      JSON.parse(tc.arguments || "{}");
+    } catch (error) {
+      parseDiagnostic = error instanceof Error ? error.message : String(error);
+    }
+    super(
+      `aimock: fixture tool call "${tc.name}" has invalid JSON arguments; this wire carries arguments as an object. ` +
+        `Use a wire that carries tool arguments as a string to test malformed JSON. (${parseDiagnostic})`,
+    );
+    this.name = "InvalidToolArgumentsError";
+    this.toolName = tc.name;
+    this.parseDiagnostic = parseDiagnostic;
+  }
+}
+
 /**
  * Resolve effective strict mode from per-request header and server default.
  * Header values override the server default — same precedence pattern as chaos

@@ -49,6 +49,8 @@ import {
   strictNoMatchLogLine,
   validateChatMessages,
   validateToolsField,
+  toolArgsForWire,
+  InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -319,20 +321,18 @@ function buildBedrockToolCallResponse(
     contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
   }
   for (const tc of toolCalls) {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
+    const args = toolArgsForWire(tc);
+    if (args.kind === "verbatim") {
       logger.warn(
         `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
       );
-      argsObj = {};
+      throw new InvalidToolArgumentsError(tc);
     }
     contentBlocks.push({
       type: "tool_use",
       id: tc.id || generateToolUseId(),
       name: tc.name,
-      input: argsObj,
+      input: args.value,
     });
   }
   return {
@@ -376,20 +376,18 @@ function buildBedrockBlocksResponse(
     if (block.type === "text") {
       contentBlocks.push({ type: "text", text: block.text });
     } else {
-      let argsObj: unknown;
-      try {
-        argsObj = JSON.parse(block.arguments || "{}");
-      } catch {
+      const args = toolArgsForWire(block);
+      if (args.kind === "verbatim") {
         logger.warn(
           `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
         );
-        argsObj = {};
+        throw new InvalidToolArgumentsError(block);
       }
       contentBlocks.push({
         type: "tool_use",
         id: block.id || generateToolUseId(),
         name: block.name,
-        input: argsObj,
+        input: args.value,
       });
     }
   }
@@ -849,15 +847,14 @@ function buildBedrockInvokeMessageStop(): { eventType: string; payload: object }
 }
 
 function parseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  try {
-    const parsed = JSON.parse(toolCall.arguments || "{}");
-    return JSON.stringify(parsed);
-  } catch {
+  const args = toolArgsForWire(toolCall);
+  if (args.kind === "verbatim") {
     logger.warn(
       `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
     );
-    return "{}";
+    return args.raw;
   }
+  return args.text;
 }
 
 export function buildBedrockStreamTextEvents(

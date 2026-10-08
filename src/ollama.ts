@@ -45,13 +45,14 @@ import {
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  toolArgsForWire,
+  InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { writeNDJSONStream } from "./ndjson-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 
@@ -237,26 +238,9 @@ function buildOllamaChatToolCallChunks(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
-  logger: Logger,
   reasoning?: string,
 ): object[] {
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   // Tool calls are sent in a single chunk (no streaming of individual args)
   const chunks: object[] = [];
@@ -301,26 +285,9 @@ function buildOllamaChatToolCallChunks(
 function buildOllamaChatToolCallResponse(
   toolCalls: ToolCall[],
   model: string,
-  logger: Logger,
   reasoning?: string,
 ): object {
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   return {
     model,
@@ -339,18 +306,10 @@ function buildOllamaChatToolCallResponse(
 // ─── Response builders: /api/chat — content + tool calls ────────────────────
 
 // Map a fixture tool call into Ollama's wire shape (object arguments, no id).
-function toOllamaToolCall(
-  tc: ToolCall,
-  logger: Logger,
-): { function: { name: string; arguments: unknown } } {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
-  return { function: { name: tc.name, arguments: argsObj } };
+function toOllamaToolCall(tc: ToolCall): { function: { name: string; arguments: unknown } } {
+  const args = toolArgsForWire(tc);
+  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
+  return { function: { name: tc.name, arguments: args.value } };
 }
 
 function buildOllamaChatContentWithToolCallsChunks(
@@ -358,7 +317,6 @@ function buildOllamaChatContentWithToolCallsChunks(
   toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
-  logger: Logger,
   reasoning?: string,
   blocks?: FixtureBlock[],
 ): object[] {
@@ -409,7 +367,7 @@ function buildOllamaChatContentWithToolCallsChunks(
           message: {
             role: "assistant",
             content: "",
-            tool_calls: [toOllamaToolCall(block, logger)],
+            tool_calls: [toOllamaToolCall(block)],
           },
           done: false,
         });
@@ -454,23 +412,7 @@ function buildOllamaChatContentWithToolCallsChunks(
   }
 
   // Tool calls in a single chunk (same as tool-call-only path)
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   chunks.push({
     model,
@@ -509,7 +451,6 @@ function buildOllamaChatContentWithToolCallsResponse(
   content: string,
   toolCalls: ToolCall[],
   model: string,
-  logger: Logger,
   reasoning?: string,
   blocks?: FixtureBlock[],
 ): object {
@@ -532,23 +473,7 @@ function buildOllamaChatContentWithToolCallsResponse(
       .map((b) => ({ name: b.name, arguments: b.arguments }));
   }
 
-  const ollamaToolCalls = toolCalls.map((tc) => {
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
-    return {
-      function: {
-        name: tc.name,
-        arguments: argsObj,
-      },
-    };
-  });
+  const ollamaToolCalls = toolCalls.map(toOllamaToolCall);
 
   return {
     model,
@@ -895,7 +820,6 @@ export async function handleOllama(
         response.content ?? "",
         response.toolCalls ?? [],
         completionReq.model,
-        logger,
         effReasoning,
         response.blocks,
       );
@@ -907,7 +831,6 @@ export async function handleOllama(
         response.toolCalls ?? [],
         completionReq.model,
         chunkSize,
-        logger,
         effReasoning,
         response.blocks,
       );
@@ -1004,7 +927,6 @@ export async function handleOllama(
       const body = buildOllamaChatToolCallResponse(
         response.toolCalls,
         completionReq.model,
-        logger,
         effReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1014,7 +936,6 @@ export async function handleOllama(
         response.toolCalls,
         completionReq.model,
         chunkSize,
-        logger,
         effReasoning,
       );
       const interruption = createInterruptionSignal(fixture);

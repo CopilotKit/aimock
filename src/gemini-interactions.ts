@@ -37,6 +37,8 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   resolveFixtureBlockOutcome,
+  toolArgsForWire,
+  InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -383,20 +385,15 @@ export function buildInteractionsTextResponse(
 }
 
 // Build a single SDK 2.x function_call step from a fixture tool call,
-// reusing the existing malformed-arguments guard (logger.warn + {} fallback).
-function buildFunctionCallStep(tc: ToolCall, logger: Logger): object {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
+// rejecting malformed arguments that the object wire cannot represent.
+function buildFunctionCallStep(tc: ToolCall): object {
+  const args = toolArgsForWire(tc);
+  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
   return {
     type: "function_call",
     id: tc.id || generateToolCallId(),
     name: tc.name,
-    arguments: argsObj,
+    arguments: args.value,
   };
 }
 
@@ -412,7 +409,7 @@ export function buildInteractionsToolCallResponse(
     status: "requires_action",
     model: overrides?.model ?? model,
     role: "model",
-    steps: toolCalls.map((tc) => buildFunctionCallStep(tc, logger)),
+    steps: toolCalls.map((tc) => buildFunctionCallStep(tc)),
     usage: interactionsUsage(overrides),
   };
 }
@@ -447,10 +444,7 @@ export function buildInteractionsContentWithToolCallsResponse(
         outputText += block.text;
       } else {
         steps.push(
-          buildFunctionCallStep(
-            { name: block.name, arguments: block.arguments, id: block.id },
-            logger,
-          ),
+          buildFunctionCallStep({ name: block.name, arguments: block.arguments, id: block.id }),
         );
       }
     }
@@ -460,7 +454,7 @@ export function buildInteractionsContentWithToolCallsResponse(
     steps.push({ type: "model_output", content: [{ type: "text", text: content }] });
     outputText = content;
     for (const tc of toolCalls) {
-      steps.push(buildFunctionCallStep(tc, logger));
+      steps.push(buildFunctionCallStep(tc));
     }
   }
 
@@ -568,7 +562,7 @@ export function buildInteractionsTextSSEEvents(
 export function buildInteractionsToolCallSSEEvents(
   toolCalls: ToolCall[],
   interactionId: string,
-  logger: Logger,
+  _logger: Logger,
   overrides?: ResponseOverrides,
 ): InteractionsSSEEvent[] {
   const events: InteractionsSSEEvent[] = [];
@@ -586,15 +580,7 @@ export function buildInteractionsToolCallSSEEvents(
   // carries an empty `arguments: {}` placeholder.
   for (let idx = 0; idx < toolCalls.length; idx++) {
     const tc = toolCalls[idx];
-    let argsObj: unknown;
-    try {
-      argsObj = JSON.parse(tc.arguments || "{}");
-    } catch {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      argsObj = {};
-    }
+    const args = toolArgsForWire(tc);
 
     events.push({
       event_type: "step.start",
@@ -617,7 +603,7 @@ export function buildInteractionsToolCallSSEEvents(
       index: idx,
       delta: {
         type: "arguments_delta",
-        arguments: JSON.stringify(argsObj),
+        arguments: args.kind === "parsed" ? args.text : args.raw,
       },
       event_id: nextEventId(),
     });
@@ -693,15 +679,8 @@ function pushFunctionCallStepEvents(
   events: InteractionsSSEEvent[],
   index: number,
   tc: ToolCall,
-  logger: Logger,
 ): void {
-  let argsObj: unknown;
-  try {
-    argsObj = JSON.parse(tc.arguments || "{}");
-  } catch {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    argsObj = {};
-  }
+  const args = toolArgsForWire(tc);
 
   events.push({
     event_type: "step.start",
@@ -720,7 +699,7 @@ function pushFunctionCallStepEvents(
     index,
     delta: {
       type: "arguments_delta",
-      arguments: JSON.stringify(argsObj),
+      arguments: args.kind === "parsed" ? args.text : args.raw,
     },
     event_id: nextEventId(),
   });
@@ -764,12 +743,11 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
       if (block.type === "text") {
         pushTextStepEvents(events, idx, block.text, chunkSize);
       } else {
-        pushFunctionCallStepEvents(
-          events,
-          idx,
-          { name: block.name, arguments: block.arguments, id: block.id },
-          logger,
-        );
+        pushFunctionCallStepEvents(events, idx, {
+          name: block.name,
+          arguments: block.arguments,
+          id: block.id,
+        });
       }
       idx += 1;
     }
@@ -778,7 +756,7 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
     // index 1+ — byte-for-byte unchanged from the pre-blocks behavior.
     pushTextStepEvents(events, 0, content, chunkSize);
     for (let i = 0; i < toolCalls.length; i++) {
-      pushFunctionCallStepEvents(events, i + 1, toolCalls[i], logger);
+      pushFunctionCallStepEvents(events, i + 1, toolCalls[i]);
     }
   }
 
