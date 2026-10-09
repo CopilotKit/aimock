@@ -232,6 +232,23 @@ export const includeFamilies: Record<Provider, Set<string>> = {
     // Decision: INCLUDE, recorded in
     // drift-proposals/anthropic-claude-sonnet-5-5-new-family.md.
     "claude-sonnet-5-5",
+    // Claude Haiku 5.5, first listed 2026-10-08 (drift run 37738956337). Point
+    // release of the Haiku line after the already-included `claude-haiku-4-5`,
+    // as `claude-opus-5-5` and `claude-sonnet-5-5` are of theirs. There is no
+    // `claude-haiku-5` family, so it is not a prefix of any included key and
+    // must be enumerated.
+    //
+    // Classified by LINEAGE plus Anthropic's official models overview
+    // (platform.claude.com/docs/en/docs/about-claude/models/overview, fetched
+    // 2026-10-09), NOT by a live probe: no probe was run. The overview lists it
+    // as a current model, API id `claude-haiku-5-5`, text and image input, text
+    // output, tool use, adaptive thinking, retirement not sooner than
+    // 2027-10-07. Not a voice/audio family, so no knownVoiceModelFamilies
+    // pairing.
+    //
+    // Decision: INCLUDE, recorded in
+    // drift-proposals/anthropic-claude-haiku-5-5-new-family.md.
+    "claude-haiku-5-5",
   ]),
   gemini: familySet("gemini", [
     // Gemini 2.0 / 2.5 text families
