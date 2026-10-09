@@ -17,6 +17,7 @@ import { encodeEventStreamMessage, encodeEventStreamFrame } from "../aws-event-s
 import { parseHarmonyContent } from "../harmony.js";
 import { validateFixtures } from "../fixture-loader.js";
 import type { Fixture } from "../types.js";
+import { fnArgs } from "./helpers/tool-calls.js";
 
 // ---------------------------------------------------------------------------
 // 1. OpenAI SSE
@@ -112,7 +113,7 @@ describe("collapseOpenAISSE", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"Paris"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"Paris"}');
     expect(result.toolCalls![0].id).toBe("call_abc");
     expect(result.content).toBeUndefined();
   });
@@ -228,7 +229,7 @@ describe("collapseOpenAISSE", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("lookup");
-    expect(result.toolCalls![0].arguments).toBe('{"q":"test"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"q":"test"}');
   });
 
   it("does not let a trailing empty usage frame clobber a populated one (#369 F4)", () => {
@@ -311,7 +312,7 @@ describe("collapseAnthropicSSE", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"Paris"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"Paris"}');
     expect(result.toolCalls![0].id).toBe("toolu_abc");
     expect(result.content).toBeUndefined();
   });
@@ -384,7 +385,7 @@ describe("collapseGeminiSSE", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(JSON.parse(result.toolCalls![0].arguments)).toEqual({ city: "Paris" });
+    expect(JSON.parse(fnArgs(result.toolCalls![0]))).toEqual({ city: "Paris" });
     expect(result.content).toBeUndefined();
   });
   it("counts droppedChunks for malformed JSON mixed with valid chunks", () => {
@@ -552,7 +553,7 @@ describe("collapseCohereSSE", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"Paris"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"Paris"}');
     expect(result.toolCalls![0].id).toBe("call_xyz");
     expect(result.content).toBeUndefined();
   });
@@ -622,7 +623,7 @@ describe("collapseBedrockEventStream", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"Paris"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"Paris"}');
     expect(result.toolCalls![0].id).toBe("tool_123");
   });
 
@@ -994,10 +995,10 @@ describe("collapseAnthropicSSE multiple tool calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("toolu_1");
     expect(result.toolCalls![1].name).toBe("get_time");
-    expect(result.toolCalls![1].arguments).toBe('{"tz":"EST"}');
+    expect(fnArgs(result.toolCalls![1])).toBe('{"tz":"EST"}');
     expect(result.toolCalls![1].id).toBe("toolu_2");
   });
 });
@@ -1061,10 +1062,10 @@ describe("collapseCohereSSE multiple tool calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("call_1");
     expect(result.toolCalls![1].name).toBe("get_time");
-    expect(result.toolCalls![1].arguments).toBe('{"tz":"EST"}');
+    expect(fnArgs(result.toolCalls![1])).toBe('{"tz":"EST"}');
     expect(result.toolCalls![1].id).toBe("call_2");
   });
 });
@@ -1105,10 +1106,10 @@ describe("collapseBedrockEventStream multiple tool calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
     expect(result.toolCalls![0].id).toBe("tool_1");
     expect(result.toolCalls![1].name).toBe("get_time");
-    expect(result.toolCalls![1].arguments).toBe('{"tz":"EST"}');
+    expect(fnArgs(result.toolCalls![1])).toBe('{"tz":"EST"}');
     expect(result.toolCalls![1].id).toBe("tool_2");
   });
 });
@@ -1316,7 +1317,7 @@ describe("collapseGeminiSSE defensive branches", () => {
     const result = collapseGeminiSSE(body);
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe("already-a-string");
+    expect(fnArgs(result.toolCalls![0])).toBe("already-a-string");
   });
 });
 
@@ -1565,7 +1566,7 @@ describe("collapseBedrockEventStream — Anthropic Messages format", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
     expect(result.toolCalls![0].id).toBe("toolu_123");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"NYC"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"NYC"}');
   });
 });
 
@@ -1638,7 +1639,7 @@ describe("collapseOllamaNDJSON with tool_calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"SF"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"SF"}');
     expect(result.content).toBeUndefined();
   });
 
@@ -1720,9 +1721,9 @@ describe("collapseOllamaNDJSON with tool_calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"SF"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"SF"}');
     expect(result.toolCalls![1].name).toBe("get_time");
-    expect(result.toolCalls![1].arguments).toBe('{"tz":"PST"}');
+    expect(fnArgs(result.toolCalls![1])).toBe('{"tz":"PST"}');
   });
 });
 
@@ -1889,8 +1890,8 @@ describe("collapseOpenAISSE Responses API function calls", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"Paris"}');
-    expect(JSON.parse(result.toolCalls![0].arguments)).toEqual({ city: "Paris" });
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"Paris"}');
+    expect(JSON.parse(fnArgs(result.toolCalls![0]))).toEqual({ city: "Paris" });
     // The tool-call id is the Responses API `call_id` (what a tool result
     // references), not the internal `fc_…` item id.
     expect(result.toolCalls![0].id).toBe("call_abc");
@@ -2200,7 +2201,7 @@ describe("collapseOpenAISSE Responses API function calls", () => {
 
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"q":"from-deltas"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"q":"from-deltas"}');
   });
 
   it("function_call_arguments.done does not double-append onto delta-accumulated arguments", () => {
@@ -2239,8 +2240,8 @@ describe("collapseOpenAISSE Responses API function calls", () => {
 
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"q":"from-deltas"}');
-    expect(JSON.parse(result.toolCalls![0].arguments)).toEqual({ q: "from-deltas" });
+    expect(fnArgs(result.toolCalls![0])).toBe('{"q":"from-deltas"}');
+    expect(JSON.parse(fnArgs(result.toolCalls![0]))).toEqual({ q: "from-deltas" });
   });
 
   it("adopts arguments from a delta-less function_call_arguments.done into an existing entry", () => {
@@ -2296,7 +2297,7 @@ describe("collapseOpenAISSE Responses API function calls", () => {
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("");
-    expect(result.toolCalls![0].arguments).toBe('{"solo":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"solo":1}');
     expect(result.toolCalls![0].id).toBeUndefined();
     expect(result.content).toBeUndefined();
   });
@@ -2342,7 +2343,7 @@ describe("collapseOpenAISSE Responses API function calls", () => {
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("no_call_id");
-    expect(result.toolCalls![0].arguments).toBe('{"n":2}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"n":2}');
     expect(result.toolCalls![0].id).toBeUndefined();
   });
 });
@@ -2924,7 +2925,7 @@ describe("collapseOpenAISSE harmony channel tokens", () => {
     expect(result.toolCalls).toBeDefined();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("generate_a2ui");
-    expect(result.toolCalls![0].arguments).toBe('{"component":"card","props":{"title":"Hi"}}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"component":"card","props":{"title":"Hi"}}');
 
     // ...the analysis channel becomes reasoning...
     expect(result.reasoning).toBe("Need to call the tool to render the card.");
@@ -2987,9 +2988,9 @@ describe("collapseOpenAISSE harmony channel tokens", () => {
 
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls![0].name).toBe("first");
-    expect(result.toolCalls![0].arguments).toBe('{"a":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"a":1}');
     expect(result.toolCalls![1].name).toBe("second");
-    expect(result.toolCalls![1].arguments).toBe('{"b":2}');
+    expect(fnArgs(result.toolCalls![1])).toBe('{"b":2}');
     expect(result.content ?? "").not.toContain("functions.first");
   });
 
@@ -3080,7 +3081,7 @@ describe("collapseOpenAISSE harmony fail-safe + token-aware", () => {
     expect(result.content).toBe(prose);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"SF"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"SF"}');
   });
 
   // A2 — body termination: tool-call args JSON containing a literal token
@@ -3106,8 +3107,8 @@ describe("collapseOpenAISSE harmony fail-safe + token-aware", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("say");
     // Args must be the COMPLETE, valid JSON — not cut at the embedded token.
-    expect(result.toolCalls![0].arguments).toBe('{"text":"say <|call|> now"}');
-    expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    expect(fnArgs(result.toolCalls![0])).toBe('{"text":"say <|call|> now"}');
+    expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
   });
 
   // A2 — channel/start must not truncate an open json body.
@@ -3128,8 +3129,8 @@ describe("collapseOpenAISSE harmony fail-safe + token-aware", () => {
     const result = collapseOpenAISSE(body);
 
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"markup":"<|channel|> tag in a2ui"}');
-    expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+    expect(fnArgs(result.toolCalls![0])).toBe('{"markup":"<|channel|> tag in a2ui"}');
+    expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
   });
 
   // A3 — anchoring: text BEFORE the first <|channel|> must be captured.
@@ -3199,7 +3200,7 @@ describe("collapseOpenAISSE harmony fail-safe + token-aware", () => {
 
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("role_placed");
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
   });
 
   // A5 — recipient routing: an analysis-channel header carrying a recipient
@@ -3353,7 +3354,7 @@ describe("collapseOllamaNDJSON harmony channel tokens", () => {
 
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("generate_a2ui");
-    expect(result.toolCalls![0].arguments).toBe('{"component":"card","props":{"title":"Hi"}}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"component":"card","props":{"title":"Hi"}}');
     expect(result.reasoning).toBe("Need to render a card.");
     const leak = result.content ?? "";
     expect(leak).not.toContain("<|channel|>");
@@ -3398,7 +3399,7 @@ describe("collapseOllamaNDJSON harmony channel tokens", () => {
     const result = collapseOllamaNDJSON(body);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("no_args");
-    expect(result.toolCalls![0].arguments).toBe("{}");
+    expect(fnArgs(result.toolCalls![0])).toBe("{}");
   });
 });
 
@@ -3734,7 +3735,7 @@ describe("harmony rewrite — DUAL-SOURCE (fallback-only wiring)", () => {
     expect(result.content).toBe(prose);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("get_weather");
-    expect(result.toolCalls![0].arguments).toBe('{"city":"SF"}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"city":"SF"}');
     expect(result.truncated).toBeUndefined();
     expect(result.droppedChunks ?? 0).toBe(0);
     expect(result.harmonyUnparsed).toBeUndefined();
@@ -4304,7 +4305,7 @@ describe("stream block-order instrumentation (#274)", () => {
       result.toolCalls!.forEach((tc, i) => {
         const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
         expect(block.name).toBe(tc.name);
-        expect(block.arguments).toBe(tc.arguments);
+        expect(block.arguments).toBe(fnArgs(tc));
         expect(block.id).toBe(tc.id);
       });
       // Concretely: the first call by stream arrival is `first_arrived`.
@@ -4333,8 +4334,8 @@ describe("stream block-order instrumentation (#274)", () => {
       expect(block.arguments).toBe("{}");
       expect(() => JSON.parse(block.arguments)).not.toThrow();
       // And it agrees with the flat representation.
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(block.arguments).toBe(result.toolCalls![0].arguments);
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(block.arguments).toBe(fnArgs(result.toolCalls![0]));
     });
   });
 
@@ -4553,8 +4554,8 @@ describe("stream block-order instrumentation (#274)", () => {
       const body = [toolStart(0, "call_1", "no_args")].join("\n");
       const result = collapseCohereSSE(body);
       expect(result.toolCalls).toHaveLength(1);
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     });
 
     it("text-first stream is NOT interleaved → no blocks (legacy byte-identical)", () => {
@@ -4614,7 +4615,7 @@ describe("stream block-order instrumentation (#274)", () => {
       result.toolCalls!.forEach((tc, i) => {
         const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
         expect(block.name).toBe(tc.name);
-        expect(block.arguments).toBe(tc.arguments);
+        expect(block.arguments).toBe(fnArgs(tc));
         expect(block.id).toBe(tc.id);
       });
       // Every persisted arguments string (blocks AND flat) must be valid JSON so
@@ -4625,7 +4626,7 @@ describe("stream block-order instrumentation (#274)", () => {
         }
       }
       for (const tc of result.toolCalls!) {
-        expect(() => JSON.parse(tc.arguments)).not.toThrow();
+        expect(() => JSON.parse(fnArgs(tc))).not.toThrow();
       }
     });
   });
@@ -4675,16 +4676,16 @@ describe("stream block-order instrumentation (#274)", () => {
       const buf = Buffer.concat([cToolStart(0, "tool_1", "no_args")]);
       const result = collapseBedrockEventStream(buf);
       expect(result.toolCalls).toHaveLength(1);
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     });
 
     it("Anthropic-native: zero-arg tool call → flat arguments is '{}' not '' (F5)", () => {
       const buf = Buffer.concat([nToolStart(0, "toolu_1", "no_args")]);
       const result = collapseBedrockEventStream(buf);
       expect(result.toolCalls).toHaveLength(1);
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     });
 
     it("Converse: tool-first stream → content preserved (no longer dropped) AND blocks ordered", () => {
@@ -4745,7 +4746,7 @@ describe("stream block-order instrumentation (#274)", () => {
       result.toolCalls!.forEach((tc, i) => {
         const block = blockToolCalls[i] as { name: string; arguments: string; id?: string };
         expect(block.name).toBe(tc.name);
-        expect(block.arguments).toBe(tc.arguments);
+        expect(block.arguments).toBe(fnArgs(tc));
         expect(block.id).toBe(tc.id);
       });
       for (const b of result.blocks!) {
@@ -4754,7 +4755,7 @@ describe("stream block-order instrumentation (#274)", () => {
         }
       }
       for (const tc of result.toolCalls!) {
-        expect(() => JSON.parse(tc.arguments)).not.toThrow();
+        expect(() => JSON.parse(fnArgs(tc))).not.toThrow();
       }
     });
   });
@@ -4785,8 +4786,8 @@ describe("stream block-order instrumentation (#274)", () => {
       ].join("\n\n");
       const result = collapseGeminiInteractionsSSE(body);
       expect(result.toolCalls).toHaveLength(1);
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     });
 
     it("legacy 1.x zero-arg (arguments: '') → arguments '{}' not ''", () => {
@@ -4799,8 +4800,8 @@ describe("stream block-order instrumentation (#274)", () => {
       ].join("\n\n");
       const result = collapseGeminiInteractionsSSE(body);
       expect(result.toolCalls).toHaveLength(1);
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
     });
 
     it("valid non-empty args pass through unchanged (no regression)", () => {
@@ -4817,7 +4818,7 @@ describe("stream block-order instrumentation (#274)", () => {
         }),
       ].join("\n\n");
       const result = collapseGeminiInteractionsSSE(body);
-      expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+      expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
     });
 
     it("2.x truncated/unparseable accumulated args → arguments '{}' (never persists invalid JSON)", () => {
@@ -4839,8 +4840,8 @@ describe("stream block-order instrumentation (#274)", () => {
       const result = collapseGeminiInteractionsSSE(body);
       expect(result.toolCalls).toHaveLength(1);
       // RED before fix: persisted as the invalid '{"city":' string.
-      expect(result.toolCalls![0].arguments).toBe("{}");
-      expect(() => JSON.parse(result.toolCalls![0].arguments)).not.toThrow();
+      expect(fnArgs(result.toolCalls![0])).toBe("{}");
+      expect(() => JSON.parse(fnArgs(result.toolCalls![0]))).not.toThrow();
       // The malformed assembly is still surfaced via droppedChunks accounting.
       expect(result.droppedChunks).toBeGreaterThanOrEqual(1);
 
@@ -4868,7 +4869,7 @@ describe("stream block-order instrumentation (#274)", () => {
         }),
       ].join("\n\n");
       const result = collapseGeminiInteractionsSSE(body);
-      expect(result.toolCalls![0].arguments).toBe('{"city":"SF"}');
+      expect(fnArgs(result.toolCalls![0])).toBe('{"city":"SF"}');
       expect(result.droppedChunks).toBeUndefined();
       const fixture: Fixture = {
         match: { userMessage: "weather", model: "gemini-2.0-flash" },
@@ -4974,7 +4975,7 @@ describe("collapseCohereSSE tool-call-start correlation ordering", () => {
     ].join("\n");
     const result = collapseCohereSSE(body);
     expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].arguments).toBe('{"x":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"x":1}');
     expect(result.droppedChunks).toBeUndefined();
   });
 });
@@ -5003,7 +5004,7 @@ describe("collapseOpenAISSE index-and-id-less tool-call correlation", () => {
     const result = collapseOpenAISSE(body);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls![0].name).toBe("foo");
-    expect(result.toolCalls![0].arguments).toBe('{"a":1}');
+    expect(fnArgs(result.toolCalls![0])).toBe('{"a":1}');
   });
 
   // Distinct calls still separate when each carries its own id, and a trailing

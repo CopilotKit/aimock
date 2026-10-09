@@ -9,6 +9,7 @@ import type {
   Fixture,
   FixtureMatch,
   FixtureResponse,
+  FixtureToolCall,
   RecordConfig,
   RecordedTimings,
   RecordProviderKey,
@@ -779,11 +780,7 @@ export async function proxyAndRecord(
       const audioToolCallsSpread =
         collapsed.toolCalls && collapsed.toolCalls.length > 0
           ? {
-              toolCalls: collapsed.toolCalls.map((tc) => ({
-                ...tc,
-                name: tc.name ?? "",
-                arguments: tc.arguments ?? "{}",
-              })),
+              toolCalls: collapsed.toolCalls.map(sanitizeRecordedToolCall),
             }
           : {};
       const audioContentSpread = collapsed.content ? { content: collapsed.content } : {};
@@ -856,11 +853,7 @@ export async function proxyAndRecord(
         ? { webSearches: collapsed.webSearches }
         : {};
       if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
-        const sanitizedToolCalls = collapsed.toolCalls.map((tc) => ({
-          ...tc,
-          name: tc.name ?? "",
-          arguments: tc.arguments ?? "{}",
-        }));
+        const sanitizedToolCalls = collapsed.toolCalls.map(sanitizeRecordedToolCall);
         if (collapsed.content) {
           // Both content and toolCalls present — save as ContentWithToolCallsResponse.
           //
@@ -1586,6 +1579,19 @@ function logDroppedReasoningSignature(
   if (reasoningSignature && !reasoning) {
     logger?.warn("Dropping captured reasoningSignature — no plaintext reasoning to attach it to");
   }
+}
+
+/**
+ * Sanitize a collapsed tool call per kind before it is persisted. A function
+ * call always gets a string `arguments` (`"{}"` when missing). A Responses
+ * custom call keeps its free-text `input` (`""` when missing) and never gets
+ * `arguments`.
+ */
+function sanitizeRecordedToolCall(tc: FixtureToolCall): FixtureToolCall {
+  if (tc.type === "custom") {
+    return { ...tc, name: tc.name ?? "", input: tc.input ?? "" };
+  }
+  return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
 }
 
 /**

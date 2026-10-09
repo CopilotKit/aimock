@@ -8,7 +8,13 @@
  */
 
 import { crc32 } from "node:zlib";
-import type { FixtureBlock, RecordProviderKey, ToolCall } from "./types.js";
+import type {
+  CustomToolCall,
+  FixtureBlock,
+  FixtureToolCall,
+  RecordProviderKey,
+  ToolCall,
+} from "./types.js";
 import type { Logger } from "./logger.js";
 import { isHarmonyContent, parseHarmonyContent } from "./harmony.js";
 
@@ -138,7 +144,12 @@ export interface CollapseResult {
    * `response.usage` override shape before persisting.
    */
   usage?: Record<string, unknown>;
-  toolCalls?: ToolCall[];
+  /**
+   * Function calls, plus OpenAI Responses custom tool calls
+   * (`{ type: "custom", name, input }`) from `custom_tool_call` items. Only
+   * {@link collapseOpenAISSE} produces custom calls or `namespace`.
+   */
+  toolCalls?: FixtureToolCall[];
   droppedChunks?: number;
   firstDroppedSample?: string;
   truncated?: boolean;
@@ -167,8 +178,10 @@ export interface CollapseResult {
    * keeps the legacy `{ content, toolCalls }` shape byte-identical.
    *
    * Each text block coalesces all contiguous content deltas between tool
-   * atoms; each toolCall block carries the fully-assembled name/arguments/id
-   * for one tool call in the position its FIRST delta arrived.
+   * atoms. Each tool block sits in the position where its FIRST delta arrived:
+   * a function call becomes a `toolCall` block with the fully-assembled
+   * name/arguments/id, and an OpenAI Responses custom call becomes a
+   * `customToolCall` block with name/input/id, where `input` is kept verbatim.
    */
   blocks?: FixtureBlock[];
 }
@@ -180,15 +193,45 @@ export interface CollapseResult {
 /**
  * Atom recorded during a collapse pass, in stream arrival order. A `text` atom
  * carries one content delta's text (contiguous text atoms are coalesced when
- * building blocks); a `toolCall` atom is a stable reference to a tool-call
- * accumulator whose name/arguments/id are filled in across later deltas. The
- * `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
+ * building blocks). A `toolCall` atom is a stable reference to a function-call
+ * accumulator whose name/arguments/id are filled in across later deltas. A
+ * `customToolCall` atom is a stable reference to a custom-call accumulator
+ * whose name/input/id are filled in the same way. The `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
  * to a flat `toolCalls` array), so block identity is reconciled with the flat
  * representation at finalize time — see {@link buildOrderedBlocks}.
  */
 type OrderAtom =
   | { kind: "text"; text: string }
-  | { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } };
+  | { kind: "toolCall"; ref: FunctionCallAcc }
+  | { kind: "customToolCall"; ref: CustomCallAcc };
+
+/** Accumulator for a function call. `namespace` is set only by the Responses API. */
+interface FunctionCallAcc {
+  name: string;
+  arguments: string;
+  id?: string;
+  namespace?: string;
+}
+
+/** Accumulator for an OpenAI Responses `custom_tool_call` (free-text `input`). */
+interface CustomCallAcc {
+  name: string;
+  input: string;
+  id?: string;
+  namespace?: string;
+}
+
+/**
+ * A tool-call accumulator in {@link collapseOpenAISSE}'s `toolCallMap`. The
+ * Responses API puts function and custom calls in one `output_index` space, so
+ * the map holds both kinds.
+ */
+type ToolCallAcc = ({ kind: "function" } & FunctionCallAcc) | ({ kind: "custom" } & CustomCallAcc);
+
+/** A Responses `namespace` field when it is a non-empty string, else undefined. */
+function responsesNamespace(item: Record<string, unknown>): string | undefined {
+  return typeof item.namespace === "string" && item.namespace !== "" ? item.namespace : undefined;
+}
 
 /**
  * Normalize a tool call's accumulated `arguments` into valid JSON exactly like
@@ -207,12 +250,48 @@ function normalizeToolArguments(args: string | undefined): string {
  * normalizing `arguments` so the block agrees byte-for-byte with the flat
  * `toolCalls` entry built from the SAME accumulator object.
  */
-function toToolCallBlock(ref: { name: string; arguments: string; id?: string }): FixtureBlock {
+function toToolCallBlock(ref: FunctionCallAcc): FixtureBlock {
   return {
     type: "toolCall",
     name: ref.name,
     arguments: normalizeToolArguments(ref.arguments),
     ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/**
+ * Build a `customToolCall` block from a custom-call accumulator. The `input` is
+ * free text: it is kept as is, never normalized to `"{}"`.
+ */
+function toCustomToolCallBlock(ref: CustomCallAcc): FixtureBlock {
+  return {
+    type: "customToolCall",
+    name: ref.name,
+    input: ref.input,
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/** Project a function-call accumulator to a flat fixture tool call. */
+function toFunctionToolCall(ref: FunctionCallAcc): ToolCall {
+  return {
+    name: ref.name,
+    arguments: normalizeToolArguments(ref.arguments),
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
+  };
+}
+
+/** Project a custom-call accumulator to a flat fixture custom tool call. */
+function toCustomToolCall(ref: CustomCallAcc): CustomToolCall {
+  return {
+    type: "custom",
+    name: ref.name,
+    input: ref.input,
+    ...(ref.id ? { id: ref.id } : {}),
+    ...(ref.namespace ? { namespace: ref.namespace } : {}),
   };
 }
 
@@ -223,17 +302,21 @@ function toToolCallBlock(ref: { name: string; arguments: string; id?: string }):
  * `CollapseResult.blocks` unset and the recorder keeps the legacy shape.
  *
  * Interleaved ⇔ (a tool atom appears strictly before the first text atom) OR
- * (a text atom appears after any tool atom). A stream with no tool atoms, or
+ * (a text atom appears after any tool atom). Tool atoms are `toolCall` and
+ * `customToolCall` atoms. A stream with no tool atoms, or
  * with no text atoms, is never interleaved. Text-first-then-tools is the common
  * legacy case and is explicitly NOT interleaved.
  *
- * CONSISTENCY (#274): each toolCall block is derived from the SAME accumulator
- * object referenced by its atom and normalized identically to the flat
- * `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}).
- * Because the atom `ref` is the very object the flat list is built from, the
- * block and its flat counterpart describe the same call by identity — even when
- * upstream tool-call indices do not match stream-arrival order. Empty/missing
- * arguments normalize to `"{}"` in BOTH representations, never `""`.
+ * CONSISTENCY (#274): each tool block is derived from the SAME accumulator
+ * object referenced by its atom. Because the atom `ref` is the very object the
+ * flat list is built from, the block and its flat counterpart describe the same
+ * call by identity — even when upstream tool-call indices do not match
+ * stream-arrival order. A `toolCall` block is normalized identically to the
+ * flat `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}):
+ * empty/missing arguments become `"{}"` in BOTH representations, never `""`. A
+ * `customToolCall` block ({@link toCustomToolCallBlock}) keeps `input` verbatim,
+ * the same as the flat custom tool call ({@link toCustomToolCall}); it is never
+ * normalized to `"{}"`.
  */
 function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
   let firstTextIndex = -1;
@@ -257,8 +340,9 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
   const toolBeforeText = firstToolIndex < firstTextIndex;
   if (!toolBeforeText && !textAfterTool) return undefined;
 
-  // Coalesce contiguous text atoms into one text block; emit each tool atom as
-  // a toolCall block reflecting its fully-assembled, normalized accumulator.
+  // Coalesce contiguous text atoms into one text block; emit each function-call
+  // atom as a normalized toolCall block and each custom-call atom as a
+  // customToolCall block with its input kept verbatim.
   const blocks: FixtureBlock[] = [];
   let pendingText = "";
   let hasPendingText = false;
@@ -275,7 +359,9 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
       hasPendingText = true;
     } else {
       flushText();
-      blocks.push(toToolCallBlock(a.ref));
+      blocks.push(
+        a.kind === "customToolCall" ? toCustomToolCallBlock(a.ref) : toToolCallBlock(a.ref),
+      );
     }
   }
   flushText();
@@ -394,7 +480,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   let firstDroppedSample: string | undefined;
   let harmonyUnparsed = false;
   let harmonyNote: string | undefined;
-  const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+  const toolCallMap = new Map<number, ToolCallAcc>();
   // Fallback keying for deltas that OMIT `index`. Without this, every
   // index-less delta collapses under one `undefined`/NaN key, merging distinct
   // tool calls and corrupting arguments. Index-less fragments that share an
@@ -487,25 +573,53 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         }
       }
       if (item?.type === "function_call" && typeof parsed.output_index === "number") {
-        // Finalize the accumulated tool call. Fill id/name when the opening
-        // `.added` event was absent, and adopt the full `arguments` ONLY when
-        // the delta stream produced none — never re-append, since the deltas
-        // already carry the complete string.
+        // Finalize the accumulated tool call. Fill id/name/namespace when the
+        // opening `.added` event lacked them, and adopt the full `arguments`
+        // ONLY when the delta stream produced none — never re-append, since the
+        // deltas already carry the complete string.
         const entry = toolCallMap.get(parsed.output_index);
         if (entry) {
-          if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
-          if (!entry.name && typeof item.name === "string") entry.name = item.name;
-          if (entry.arguments === "" && typeof item.arguments === "string") {
-            entry.arguments = item.arguments;
+          if (entry.kind === "function") {
+            if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
+            if (!entry.name && typeof item.name === "string") entry.name = item.name;
+            if (!entry.namespace) entry.namespace = responsesNamespace(item);
+            if (entry.arguments === "" && typeof item.arguments === "string") {
+              entry.arguments = item.arguments;
+            }
           }
         } else {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             id: typeof item.call_id === "string" ? item.call_id : "",
             name: typeof item.name === "string" ? item.name : "",
             arguments: typeof item.arguments === "string" ? item.arguments : "",
+            namespace: responsesNamespace(item),
           };
           toolCallMap.set(parsed.output_index, created);
           orderAtoms.push({ kind: "toolCall", ref: created });
+        }
+        continue;
+      }
+      if (item?.type === "custom_tool_call" && typeof parsed.output_index === "number") {
+        // Same rules as a function call, for the free-text `input`.
+        const entry = toolCallMap.get(parsed.output_index);
+        if (entry) {
+          if (entry.kind === "custom") {
+            if (!entry.id && typeof item.call_id === "string") entry.id = item.call_id;
+            if (!entry.name && typeof item.name === "string") entry.name = item.name;
+            if (!entry.namespace) entry.namespace = responsesNamespace(item);
+            if (entry.input === "" && typeof item.input === "string") entry.input = item.input;
+          }
+        } else {
+          const created: ToolCallAcc = {
+            kind: "custom",
+            id: typeof item.call_id === "string" ? item.call_id : "",
+            name: typeof item.name === "string" ? item.name : "",
+            input: typeof item.input === "string" ? item.input : "",
+            namespace: responsesNamespace(item),
+          };
+          toolCallMap.set(parsed.output_index, created);
+          orderAtoms.push({ kind: "customToolCall", ref: created });
         }
         continue;
       }
@@ -524,19 +638,71 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       const item = parsed.item as Record<string, unknown> | undefined;
       if (item?.type === "function_call" && typeof parsed.output_index === "number") {
         if (!toolCallMap.has(parsed.output_index)) {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             // The Responses API `call_id` is what a tool result references, so
             // capture THAT (not the internal `fc_…` item id) as the tool-call
             // id — matching what the replay path treats as `toolCall.id`.
             id: typeof item.call_id === "string" ? item.call_id : "",
             name: typeof item.name === "string" ? item.name : "",
             arguments: "",
+            namespace: responsesNamespace(item),
           };
           toolCallMap.set(parsed.output_index, created);
           orderAtoms.push({ kind: "toolCall", ref: created });
         }
         continue;
       }
+      // A custom (freeform) tool call: `output_item.added` (custom_tool_call)
+      // → `custom_tool_call_input.delta`* → `custom_tool_call_input.done` →
+      // `output_item.done`. It shares the function calls' `output_index` space.
+      if (item?.type === "custom_tool_call" && typeof parsed.output_index === "number") {
+        if (!toolCallMap.has(parsed.output_index)) {
+          const created: ToolCallAcc = {
+            kind: "custom",
+            id: typeof item.call_id === "string" ? item.call_id : "",
+            name: typeof item.name === "string" ? item.name : "",
+            input: "",
+            namespace: responsesNamespace(item),
+          };
+          toolCallMap.set(parsed.output_index, created);
+          orderAtoms.push({ kind: "customToolCall", ref: created });
+        }
+        continue;
+      }
+    }
+    if (
+      parsed.type === "response.custom_tool_call_input.delta" &&
+      typeof parsed.delta === "string" &&
+      typeof parsed.output_index === "number"
+    ) {
+      let entry = toolCallMap.get(parsed.output_index);
+      if (!entry) {
+        entry = { kind: "custom", id: "", name: "", input: "" };
+        toolCallMap.set(parsed.output_index, entry);
+        orderAtoms.push({ kind: "customToolCall", ref: entry });
+      }
+      if (entry.kind === "custom") {
+        entry.input += parsed.delta;
+      }
+      continue;
+    }
+    if (
+      parsed.type === "response.custom_tool_call_input.done" &&
+      typeof parsed.output_index === "number"
+    ) {
+      // Adopt the full `input` only when the deltas produced none.
+      const entry = toolCallMap.get(parsed.output_index);
+      if (entry) {
+        if (entry.kind === "custom" && entry.input === "" && typeof parsed.input === "string") {
+          entry.input = parsed.input;
+        }
+      } else if (typeof parsed.input === "string") {
+        const created: ToolCallAcc = { kind: "custom", id: "", name: "", input: parsed.input };
+        toolCallMap.set(parsed.output_index, created);
+        orderAtoms.push({ kind: "customToolCall", ref: created });
+      }
+      continue;
     }
     if (
       parsed.type === "response.function_call_arguments.delta" &&
@@ -545,11 +711,11 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     ) {
       let entry = toolCallMap.get(parsed.output_index);
       if (!entry) {
-        entry = { id: "", name: "", arguments: "" };
+        entry = { kind: "function", id: "", name: "", arguments: "" };
         toolCallMap.set(parsed.output_index, entry);
         orderAtoms.push({ kind: "toolCall", ref: entry });
       }
-      entry.arguments += parsed.delta;
+      if (entry.kind === "function") entry.arguments += parsed.delta;
       continue;
     }
     if (
@@ -561,11 +727,20 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       // double-append.
       const entry = toolCallMap.get(parsed.output_index);
       if (entry) {
-        if (entry.arguments === "" && typeof parsed.arguments === "string") {
+        if (
+          entry.kind === "function" &&
+          entry.arguments === "" &&
+          typeof parsed.arguments === "string"
+        ) {
           entry.arguments = parsed.arguments;
         }
       } else if (typeof parsed.arguments === "string") {
-        const created = { id: "", name: "", arguments: parsed.arguments };
+        const created: ToolCallAcc = {
+          kind: "function",
+          id: "",
+          name: "",
+          arguments: parsed.arguments,
+        };
         toolCallMap.set(parsed.output_index, created);
         orderAtoms.push({ kind: "toolCall", ref: created });
       }
@@ -656,7 +831,8 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         lastToolCallKey = index;
 
         if (!toolCallMap.has(index)) {
-          const created = {
+          const created: ToolCallAcc = {
+            kind: "function",
             id: rawId ?? "",
             name: (fn?.name as string) ?? "",
             arguments: "",
@@ -674,7 +850,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         if (tc.id && typeof tc.id === "string" && !entry.id) {
           entry.id = tc.id;
         }
-        if (fn?.arguments && typeof fn.arguments === "string") {
+        if (entry.kind === "function" && fn?.arguments && typeof fn.arguments === "string") {
           entry.arguments += fn.arguments;
         }
       }
@@ -713,23 +889,17 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // same accumulator objects as `toolCallMap`, so derive the flat list from
     // those atoms (stream-arrival order, matching blocks) when blocks exist;
     // otherwise keep the legacy index-sorted order for byte-identical fixtures.
-    const orderedToolCalls = orderAtoms
-      .filter(
-        (a): a is { kind: "toolCall"; ref: { name: string; arguments: string; id?: string } } =>
-          a.kind === "toolCall",
-      )
-      .map((a) => ({
-        name: a.ref.name,
-        arguments: normalizeToolArguments(a.ref.arguments),
-        ...(a.ref.id ? { id: a.ref.id } : {}),
-      }));
-    const indexSortedToolCalls = Array.from(toolCallMap.entries())
+    // Each kind projects to its own fixture shape: a function call keeps
+    // normalized JSON `arguments`; a custom call keeps its free-text `input`
+    // (never `arguments`, never a `"{}"` default). `namespace` is kept on both.
+    const orderedToolCalls: FixtureToolCall[] = [];
+    for (const a of orderAtoms) {
+      if (a.kind === "toolCall") orderedToolCalls.push(toFunctionToolCall(a.ref));
+      else if (a.kind === "customToolCall") orderedToolCalls.push(toCustomToolCall(a.ref));
+    }
+    const indexSortedToolCalls: FixtureToolCall[] = Array.from(toolCallMap.entries())
       .sort(([a], [b]) => a - b)
-      .map(([, tc]) => ({
-        name: tc.name,
-        arguments: normalizeToolArguments(tc.arguments),
-        ...(tc.id ? { id: tc.id } : {}),
-      }));
+      .map(([, tc]) => (tc.kind === "custom" ? toCustomToolCall(tc) : toFunctionToolCall(tc)));
     return {
       ...(transcriptSeen
         ? {
