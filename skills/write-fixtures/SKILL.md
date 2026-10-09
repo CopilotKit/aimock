@@ -192,6 +192,114 @@ The optional `chaos` field on a fixture enables probabilistic failure injection:
 
 Rates are evaluated per-request. When triggered, the chaos failure replaces the normal response.
 
+### Bad model output and retry recovery
+
+Use `misbehavior` to change a valid fixture response. Keep `chaos` for transport failures.
+Semantic fault rendering currently supports only the `openai-chat` wire, including Azure and OpenRouter chat endpoints.
+Do not claim support for Responses, Realtime, Anthropic, Gemini, Bedrock, Cohere or Ollama semantic faults.
+
+Save this fixture as `bad-tool.json`. Its first matching request receives invalid tool JSON; the next receives valid arguments.
+
+```json
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather", "endpoint": "chat" },
+      "response": {
+        "toolCalls": [{ "id": "call_weather", "name": "weather", "arguments": { "city": "Paris" } }]
+      },
+      "misbehavior": {
+        "seed": 42,
+        "faults": [
+          {
+            "fault": "tool-args-invalid-json",
+            "style": "trailing-comma",
+            "times": 1,
+            "providers": ["openai-chat"]
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Check application parsing and recovery explicitly. An HTTP 200 with bad arguments does not trigger the SDK's HTTP retry logic.
+For Vitest, use the real local server and official SDK:
+
+```typescript
+import OpenAI from "openai";
+import { LLMock } from "@copilotkit/aimock";
+import { expect } from "vitest";
+
+const mock = new LLMock();
+mock.loadFixtureFile("bad-tool.json");
+await mock.start();
+try {
+  const client = new OpenAI({
+    apiKey: "local",
+    baseURL: `${mock.url}/v1`,
+    maxRetries: 0,
+    defaultHeaders: { "X-Test-Id": "retry-tool" },
+  });
+  const request = {
+    model: "gpt-4",
+    messages: [{ role: "user", content: "weather" }],
+  } as const;
+  const first = await client.chat.completions.create({
+    ...request,
+    messages: [...request.messages],
+  });
+  const bad = first.choices[0].message.tool_calls?.[0].function.arguments;
+  expect(bad).toBeDefined();
+  expect(() => JSON.parse(bad!)).toThrow(SyntaxError);
+  const second = await client.chat.completions.create({
+    ...request,
+    messages: [...request.messages],
+  });
+  expect(JSON.parse(second.choices[0].message.tool_calls![0].function.arguments)).toEqual({
+    city: "Paris",
+  });
+  expect(mock.journal.getAll()[0].response.misbehavior).toMatchObject({
+    applied: true,
+    source: "fixture",
+    wire: "openai-chat",
+    fault: "tool-args-invalid-json",
+  });
+} finally {
+  await mock.stop();
+}
+```
+
+Keep the same test ID for both attempts. `times` counts firings per source, entry and test ID, not matching requests.
+Use `mock.resetMatchCounts("retry-tool")` to restart that test's counters. Clearing journal entries alone preserves fault counters.
+
+A configuration accepts a fault ID string or `{ seed, faults }`. Use `{ faults: [] }` for an explicit opt-out.
+Only `POST /__aimock/misbehavior` accepts bare `{}` as an opt-out.
+Each entry accepts `rate` from 0 to 1, positive integer `times`, a `tool` selector and a `providers` wire list.
+The default rate is 1. An omitted `times` has no firing limit. The default seed is 0; `"random"` selects one process seed.
+
+| Fault                        | Fault-specific configuration                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `tool-args-invalid-json`     | `style`: `truncated` (default), `trailing-comma`, `single-quotes`                                                             |
+| `tool-args-schema-violation` | `violation`: `missing-required` (default), `wrong-type`, `extra-property`, `enum-mismatch`, `not-object`; optional `property` |
+| `tool-unknown-name`          | Optional `name`                                                                                                               |
+| `tool-call-id-duplicate`     | No extra parameters; requires at least one call on an ID-emitting wire; duplicates the sole call when only one exists         |
+| `stop-length-mid-tool`       | `at` strictly between 0 and 1; default 0.5; emits a clean `length` stop with partial arguments                                |
+| `empty-response`             | No extra parameters                                                                                                           |
+| `refusal`                    | Optional `message`; keep `category` null or omitted on OpenAI Chat                                                            |
+| `content-filter`             | No extra parameters                                                                                                           |
+| `reasoning-only`             | Optional `reasoning`; OpenRouter emits `reasoning` with `reasoning_details`; native OpenAI exposes no reasoning               |
+
+For schema violations, send the tool schema in the request. Use direct schema constraints; do not assume `$ref` or combinator support.
+Selection order is HTTP header, fixture, runtime scope, then server baseline. Selected configurations replace one another; they do not merge.
+Fixture and header faults that cannot apply fail loudly. Runtime and server faults that cannot apply are skipped.
+Bad fixture configuration throws `FixtureLoadError` with a `misbehavior/` rule, including CLI loads without `--validate-on-load`.
+Bad server configuration or setter input throws a rule-prefixed `TypeError`.
+Check `response.misbehavior.evaluations` in the journal for skips, exhausted budgets and provider exclusions.
+Check actual SDK output too: `servedToolCalls` describes the prepared response, not proof of network delivery.
+See the [control API](https://aimock.copilotkit.dev/control-api#misbehavior) for runtime scope, validation errors and header grammar.
+
 ## Common Patterns
 
 ### Basic text fixture

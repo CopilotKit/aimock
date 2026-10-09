@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Model Misbehavior — aimock</title>
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../style.css" />
+    <script src="/pixels.js" defer></script>
+  </head>
+  <body>
+    <nav class="top-nav">
+      <div class="nav-inner">
+        <div style="display: flex; align-items: center; gap: 1rem">
+          <button
+            class="sidebar-toggle"
+            onclick="document.querySelector('.sidebar').classList.toggle('open')"
+            aria-label="Toggle sidebar"
+          >
+            &#9776;
+          </button>
+          <a href="/" class="nav-brand"> <span class="prompt">$</span> aimock </a>
+        </div>
+        <ul class="nav-links">
+          <li><a href="/">Home</a></li>
+          <li><a href="/docs" style="color: var(--accent)">Docs</a></li>
+          <li>
+            <a href="https://github.com/CopilotKit/aimock" class="gh-link" target="_blank"
+              ><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              GitHub</a
+            >
+          </li>
+        </ul>
+      </div>
+    </nav>
+
+    <div class="docs-layout">
+      <aside class="sidebar" id="sidebar"></aside>
+
+      <main class="docs-content">
+        <h1>Model Misbehavior</h1>
+        <p class="lead">
+          Use semantic faults to test invalid tool calls, empty answers, refusals, and clean length
+          stops. The HTTP response and stream framing remain valid.
+        </p>
+        <p>
+          <a href="/chaos-testing">Chaos Testing</a> changes the transport: errors, malformed
+          bodies, delays, or disconnects. Misbehavior changes the model output inside a valid
+          response.
+        </p>
+        <h2 id="support">Supported wires</h2>
+        <p>
+          All nine faults support streaming and non-streaming OpenAI Chat Completions. Azure OpenAI
+          and OpenRouter use this same <code>openai-chat</code> wire.
+        </p>
+        <p>
+          Support below describes this Unreleased build. A provider filter does not enable an
+          unavailable renderer. The fault catalog below uses OpenAI Chat output as its example.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Wire</th>
+              <th>Fault support</th>
+              <th>Restrictions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>openai-chat</code></td>
+              <td>All nine faults; streaming and non-streaming</td>
+              <td>Refusal <code>category</code> is unsupported. Includes Azure and OpenRouter.</td>
+            </tr>
+            <tr>
+              <td><code>openai-responses</code></td>
+              <td>All nine faults; HTTP object/SSE and WebSocket responses</td>
+              <td>Refusal <code>category</code> is unsupported.</td>
+            </tr>
+            <tr>
+              <td><code>openai-realtime</code></td>
+              <td>All except <code>refusal</code> and <code>reasoning-only</code></td>
+              <td>GA WebSocket only. The retired beta API remains unsupported.</td>
+            </tr>
+            <tr>
+              <td><code>anthropic</code>, <code>bedrock-invoke</code></td>
+              <td>All except <code>content-filter</code></td>
+              <td>
+                Invalid JSON and schema <code>not-object</code> require streaming. Non-streaming
+                tool input must remain an object.
+              </td>
+            </tr>
+            <tr>
+              <td><code>bedrock-converse</code></td>
+              <td>All except <code>refusal</code></td>
+              <td>
+                Schema <code>not-object</code> requires streaming. Invalid arguments produce the
+                <code>malformed_tool_use</code> stop reason in non-streaming mode.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gemini</code> generateContent, including the Vertex wrapper</td>
+              <td>All except <code>refusal</code></td>
+              <td>
+                Schema <code>not-object</code> is unsupported. Invalid arguments produce the
+                <code>MALFORMED_FUNCTION_CALL</code> finish reason. Duplicate IDs require an
+                ID-emitting tool-call mode.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gemini-interactions</code></td>
+              <td>All except <code>refusal</code> and <code>content-filter</code></td>
+              <td>Invalid JSON and schema <code>not-object</code> require streaming.</td>
+            </tr>
+            <tr>
+              <td><code>cohere</code></td>
+              <td>
+                All except <code>refusal</code>, <code>content-filter</code>, and
+                <code>reasoning-only</code>
+              </td>
+              <td>Streaming and non-streaming, including schema <code>not-object</code>.</td>
+            </tr>
+            <tr>
+              <td><code>ollama</code> chat</td>
+              <td>
+                Invalid arguments, schema violations, unknown tools, empty responses, and
+                reasoning-only responses
+              </td>
+              <td>
+                Schema <code>not-object</code> is unsupported. Invalid arguments produce a
+                native-format error.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gemini-live</code></td>
+              <td>
+                Invalid arguments, schema violations, unknown tools, duplicate IDs, and empty
+                responses
+              </td>
+              <td>Schema <code>not-object</code> is unsupported. WebSocket only.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Gemini and the Vertex wrapper share the <code>gemini</code> fault renderer. This local
+          support does not establish native Vertex fidelity. Bedrock Converse reasoning-only output
+          remains modeled/native-unverified, and recurring native drift checks remain pending.
+          Ollama <code>/api/generate</code> does not render semantic faults.
+        </p>
+        <p>
+          Realtime length-stop closure remains modeled/native-unverified, as described below.
+          Recurring native drift checks for this contract remain pending.
+        </p>
+        <p>
+          Cohere streaming length stops follow a captured tool-call lifecycle; object-mode length
+          stops remain modeled/native-unverified, as described below. Ollama native checks remain
+          pending for invalid-argument error wording and reasoning-only output; the modeled
+          exceptions do not cover those Ollama cases.
+        </p>
+        <p>
+          Unsupported fixture or request-header faults fail explicitly. Server and runtime faults
+          skip unsupported wires and record <code>unsupported-on-wire</code>. See
+          <a href="#errors">Errors and applicability</a>.
+        </p>
+
+        <h2 id="catalog">Fault catalog</h2>
+        <p>
+          Common fields are <code>rate</code>, <code>times</code>, <code>tool</code>, and
+          <code>providers</code>. Each fault accepts only its own parameters.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Fault</th>
+              <th>Parameters</th>
+              <th>OpenAI Chat output</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>tool-args-invalid-json</code></td>
+              <td>
+                <code>style</code>: <code>truncated</code> (default), <code>trailing-comma</code>,
+                or <code>single-quotes</code>
+              </td>
+              <td>
+                Invalid JSON in the selected tool argument string. The envelope remains valid;
+                finish reason is <code>tool_calls</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tool-args-schema-violation</code></td>
+              <td>
+                <code>violation</code>: <code>missing-required</code> (default),
+                <code>wrong-type</code>, <code>extra-property</code>, <code>enum-mismatch</code>, or
+                <code>not-object</code>; optional <code>property</code>
+              </td>
+              <td>
+                Valid JSON that violates a provable constraint in the request tool schema.
+                Unresolved schema constructs do not count as proof.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tool-unknown-name</code></td>
+              <td>Optional replacement <code>name</code></td>
+              <td>
+                A tool name absent from the request tool declarations. The default derives an unused
+                name from the selected tool.
+              </td>
+            </tr>
+            <tr>
+              <td><code>tool-call-id-duplicate</code></td>
+              <td>None</td>
+              <td>Two calls share an ID. With one call, aimock adds a second copy.</td>
+            </tr>
+            <tr>
+              <td><code>stop-length-mid-tool</code></td>
+              <td><code>at</code>: fraction strictly between 0 and 1; default <code>0.5</code></td>
+              <td>
+                A proper argument prefix, then <code>finish_reason: "length"</code>. Calls after the
+                target disappear. Streams end with normal framing and <code>[DONE]</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>empty-response</code></td>
+              <td>None</td>
+              <td>No visible text or tool calls; finish reason is <code>stop</code>.</td>
+            </tr>
+            <tr>
+              <td><code>refusal</code></td>
+              <td>
+                <code>message</code> defaults to <code>"I can't help with that."</code>;
+                <code>category</code> is unsupported on this wire
+              </td>
+              <td>
+                A refusal field, no visible answer or tools, and finish reason <code>stop</code>.
+                Streams carry <code>delta.refusal</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>content-filter</code></td>
+              <td>None</td>
+              <td>
+                No visible answer or tools; finish reason is <code>content_filter</code>. Azure
+                filter-result metadata is not synthesized.
+              </td>
+            </tr>
+            <tr>
+              <td><code>reasoning-only</code></td>
+              <td>Optional <code>reasoning</code>; otherwise fixture reasoning or a fallback</td>
+              <td>
+                No visible answer or tools; finish reason is <code>length</code>. Native OpenAI
+                exposes no reasoning text. OpenRouter exposes reasoning output.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          <code>stop-length-mid-tool</code> models a clean model length stop. Use
+          <a href="/error-injection">stream truncation</a> to test an abrupt transport cut.
+        </p>
+        <p>
+          Inspect the runtime catalog and support table with
+          <code>GET /__aimock/misbehavior/catalog</code>.
+        </p>
+
+        <h2 id="provider-output">Provider output differences</h2>
+        <p>
+          Responses length stops use <code>status: "incomplete"</code> with
+          <code>incomplete_details.reason: "max_output_tokens"</code>. Reasoning-only responses
+          contain reasoning output and no visible answer or tool call.
+        </p>
+        <p>
+          Anthropic and Bedrock InvokeModel length stops use <code>stop_reason: "max_tokens"</code>.
+          A non-streaming cut tool call has <code>input: {}</code>. Streaming retains the cut
+          argument prefix and omits the cut block's <code>content_block_stop</code> before the
+          message terminal.
+        </p>
+        <p>
+          Interactions length stops use <code>status: "incomplete"</code>. Non-streaming output
+          omits the cut tool call. Streaming retains the cut arguments and closes the tool step with
+          <code>step.stop</code>. That streaming closure is modeled, as described below.
+        </p>
+        <p>
+          Duplicate-ID faults require a wire that emits tool-call IDs. For a wire that preserves
+          authored IDs, the selected call must have a nonempty ID. Missing IDs can make the fault
+          inapplicable even when the wire supports it.
+        </p>
+
+        <h2 id="fidelity">Native captures and modeled contracts</h2>
+        <p>
+          A local SDK test proves how that client reads aimock's response. It does not prove that a
+          live model produces the same fault. Captured responses establish only the observed
+          request, model, and mode.
+        </p>
+        <p>
+          The eight earlier contracts below permit modeled behavior where native attempts did not
+          produce the required target. A later Gemini capture confirms one mode, as noted below.
+          Other listed targets remain modeled/native-unverified. The support table above controls
+          availability. Four separately approved Vertex cells are described after these earlier
+          contracts.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Contract</th>
+              <th>Modeled output</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Realtime <code>stop-length-mid-tool</code></td>
+              <td>
+                Cut argument deltas, then <code>response.function_call_arguments.done</code> with
+                that same prefix, before an incomplete <code>response.done</code> with
+                <code>max_output_tokens</code>. Native done-event occurrence is unverified.
+              </td>
+            </tr>
+            <tr>
+              <td>Anthropic <code>reasoning-only</code>, object and streaming</td>
+              <td>
+                Thinking only, no text or tools, and <code>max_tokens</code>. An explicitly empty
+                reasoning string still produces a thinking block. Signature and block closure remain
+                present; placeholder signatures are not live-provider signatures.
+              </td>
+            </tr>
+            <tr>
+              <td>Gemini Developer API <code>stop-length-mid-tool</code>, object and streaming</td>
+              <td>
+                Retains preceding text, omits the function call, and ends with
+                <code>MAX_TOKENS</code>. A malformed-function response does not establish this
+                length-stop contract.
+              </td>
+            </tr>
+            <tr>
+              <td>Gemini Developer API <code>reasoning-only</code>, object and streaming</td>
+              <td>
+                A <code>thought: true</code> part, <code>MAX_TOKENS</code>, and no answer or tools.
+                A subsequent non-streaming native capture on 2026-10-08 matches this target.
+                Streaming still contains answer text and remains native-unverified. This
+                mode-specific observation does not establish Vertex fidelity.
+              </td>
+            </tr>
+            <tr>
+              <td>Interactions <code>stop-length-mid-tool</code>, streaming only</td>
+              <td>
+                Cut <code>arguments_delta</code>, then <code>step.stop</code> and an incomplete
+                <code>interaction.completed</code>, with clean terminal framing. Non-streaming
+                length stops and both reasoning-only modes have separate native captures.
+              </td>
+            </tr>
+            <tr>
+              <td>Bedrock Converse <code>reasoning-only</code>, object and streaming</td>
+              <td>
+                <code>reasoningContent</code>, <code>max_tokens</code>, and no answer or tools.
+                Native captures contained reasoning and answers; the no-answer outcome remains
+                unverified.
+              </td>
+            </tr>
+            <tr>
+              <td>Bedrock InvokeModel <code>reasoning-only</code>, object and streaming</td>
+              <td>
+                Thinking only inside the Claude response/AWS envelope, with
+                <code>max_tokens</code> and no answer or tools. Native streaming reached that
+                terminal alongside text. The object capture ended with <code>end_turn</code> and
+                text; its no-answer outcome and target terminal remain modeled.
+              </td>
+            </tr>
+            <tr>
+              <td>Cohere <code>stop-length-mid-tool</code>, object only</td>
+              <td>
+                Cut tool arguments with <code>MAX_TOKENS</code>. Native object captures did not
+                contain a cut tool; this object contract remains modeled/native-unverified.
+                Streaming has a separate observed contract and is not part of this exception.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          For these exact cases, a complete valid native response that does not trigger the fault is
+          recorded as <code>NOT_TRIGGERED</code>. It is not a successful shape comparison. A
+          triggered target must match the contract. Access failures, transport errors, and malformed
+          or truncated captures cannot count as <code>NOT_TRIGGERED</code>.
+        </p>
+        <p>
+          These earlier exceptions do not cover Responses, Cohere streaming, or Ollama. They do not
+          themselves extend to Vertex, whose separate approval is described below. They do not
+          remove local SDK checks or recurring drift requirements. Gemini safety-filter attempts
+          also did not capture the modeled safety ratings; those values remain unobserved.
+        </p>
+
+        <p>
+          The Cohere streaming capture on <code>command-a-03-2025</code> contains an empty tool
+          argument opener, cut argument deltas, one <code>tool-call-end</code>, and a
+          <code>TOOL_CALL</code> message end followed by exactly one <code>data: [DONE]</code>. The
+          arguments remain incomplete JSON. The comparator requires this lifecycle and raw/SDK
+          agreement; it does not also accept <code>MAX_TOKENS</code> for streaming cuts. Only a
+          complete, valid object nontrigger may be <code>NOT_TRIGGERED</code>, and it does not
+          suppress the required stream comparison. Both recurring modes remain required; malformed
+          captures and genuine access or transport errors fail the comparison.
+        </p>
+        <p>
+          Each Cohere K5 invocation permits two requests, 128 requested output tokens per mode (256
+          total), a 45-second deadline and a 256 KiB response limit per request, with no SDK
+          retries. The existing collector can repeat up to three times: up to six K5 requests and
+          768 requested output tokens, apart from existing ordinary checks and model discovery.
+          Local and retained-capture tests passing, or native tests skipping without credentials,
+          does not establish a successful hosted daily run.
+        </p>
+
+        <p>
+          The opt-in AWS comparison covers eight cases: Bedrock InvokeModel and Converse, each in
+          object and streaming modes, for K5 (<code>stop-length-mid-tool</code>) and K9
+          (<code>reasoning-only</code>). K5 compares the captured native length-stop contract;
+          aimock's exact truncated argument prefix is deterministic and is not a prediction of
+          native output bytes. K9 remains modeled: a complete, valid native response with answer
+          text or tools is <code>NOT_TRIGGERED</code>, not evidence of the reasoning-only target.
+          Without the opt-in, local SDK and captured-response checks run and native cases are
+          skipped.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            opt-in AWS comparison <span class="lang-tag">sh</span>
+          </div>
+          <pre><code>AIMOCK_AWS_MISBEHAVIOR_LIVE=1 AWS_PROFILE=copilotkit-admin AWS_REGION=us-west-2 AIMOCK_AWS_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0 PATH=/opt/homebrew/opt/node@20/bin:$PATH pnpm exec vitest run --config vitest.config.drift.ts src/__tests__/drift/bedrock-misbehavior-live.drift.ts --maxWorkers=1 --no-file-parallelism --retry=0 --bail=1</code></pre>
+        </div>
+        <p>
+          This command makes paid native requests for the exact profile, region, and model shown,
+          after local prerequisites pass. It permits at most eight native requests without retries.
+          It does not establish whole-AWS coverage or daily operation. The daily AWS execution
+          destination remains unresolved; recurring native drift evidence is still required.
+        </p>
+
+        <h3>Vertex modeled contracts and recurring observations</h3>
+        <p>
+          Vertex has four separately approved modeled-contract cells:
+          <code>stop-length-mid-tool</code> and <code>reasoning-only</code>, each in object and
+          streaming modes. Their target shapes remain native-unverified. Length stops use
+          <code>MAX_TOKENS</code> without a function call; preceding ordinary text is allowed.
+          Reasoning-only output has nonempty <code>thought: true</code> text,
+          <code>MAX_TOKENS</code>, and no visible answer or tool call. Local Google SDK, value, and
+          mutation checks remain required.
+        </p>
+        <p>
+          Four bounded observations on Vertex <code>gemini-2.5-flash</code> did not produce these
+          target shapes. K5 object returned the undeclared
+          <code>google:python_interpreter</code> tool rather than the declared
+          <code>archive</code> tool. Its enclosing response was SDK-decodable, but this was not
+          normal declared-tool success. K5 streaming ended with
+          <code>MALFORMED_FUNCTION_CALL</code>. Both K9 modes contained reasoning and a visible
+          answer. These captured requests are examples, not guarantees of provider behavior or proof
+          that the target is impossible.
+        </p>
+        <p>
+          The comparator reports <code>TARGET_COMPARED</code> separately from explicitly approved
+          <code>NOT_TRIGGERED</code> outcomes. The interpreter exception matches only the retained
+          object response's exact tool name, program content, argument shape, and absence of extra
+          output. Changes to that semantic signature fail pending review. A
+          <code>MALFORMED_FUNCTION_CALL</code> non-trigger requires a valid enclosing response and a
+          diagnostic; malformed JSON still fails. Transport/access failures and contradictory
+          targets also fail. A non-trigger does not prove native fidelity and cannot weaken local
+          aimock assertions.
+        </p>
+        <p>
+          Live configuration requires <code>AIMOCK_VERTEX_LIVE=1</code>,
+          <code>AIMOCK_VERTEX_PROJECT=llmock-drift-testing</code>,
+          <code>AIMOCK_VERTEX_LOCATION=us-central1</code>,
+          <code>AIMOCK_VERTEX_MODEL=gemini-2.5-flash</code>, and a nonempty
+          <code>AIMOCK_VERTEX_ACCESS_TOKEN</code>. Missing enabled configuration fails. Disabled
+          local checks do not establish live acceptance. The existing daily main schedule and main
+          manual workflow use work-owned GitHub federation and a short-lived token, without a static
+          service-account key or generated ADC file.
+        </p>
+        <p>
+          Each invocation observes four cases in order: K5 object, K5 streaming, K9 object, and K9
+          streaming. Output caps are 16, 16, 64, and 64 tokens respectively (160 total). Each
+          request has a 45-second deadline and a 256 KiB response limit, with no per-case retries,
+          redirects, or fallback. Approved non-targets allow the next case to run. Genuine failures
+          stop the invocation and leave the remaining cases recorded as unattempted. Existing outer
+          retries can reach 12 calls and 480 requested output tokens; these caps are not a price
+          guarantee.
+        </p>
+        <p>
+          Local comparator and workflow checks do not prove a successful hosted authentication
+          exchange or daily execution. Those remain pending until observed. Manual hosted execution
+          is separate from scheduled recurrence. The selected Vertex
+          <code>gemini-2.5-flash</code> model retires on October 20, 2026. Replacement remains a
+          maintenance follow-up, not a new acceptance gate or a migration requirement for other
+          providers.
+        </p>
+
+        <h2 id="configuration">Configuration</h2>
+        <div class="code-block">
+          <div class="code-block-header">misbehavior config <span class="lang-tag">json</span></div>
+          <pre><code>{
+  "seed": 42,
+  "faults": [
+    {
+      "fault": "tool-args-invalid-json",
+      "style": "truncated",
+      "rate": 0.5,
+      "times": 1,
+      "tool": "weather",
+      "providers": ["openai-chat"]
+    }
+  ]
+}</code></pre>
+        </div>
+        <ul>
+          <li><code>rate</code> is between 0 and 1; the default is 1.</li>
+          <li>
+            <code>times</code> is a positive integer that limits successful firings per test ID,
+            configuration source, and fault entry.
+          </li>
+          <li>
+            <code>tool</code> selects the first call with that name. Tool faults otherwise select
+            the first call.
+          </li>
+          <li>
+            <code>providers</code> filters wire IDs, such as <code>openai-chat</code>. An empty list
+            excludes every wire.
+          </li>
+          <li>
+            <code>seed</code> accepts an integer or <code>"random"</code>. Omission uses the
+            deterministic default seed.
+          </li>
+        </ul>
+        <p>
+          The shorthand <code>"tool-args-invalid-json"</code> means
+          <code>{ "faults": [{ "fault": "tool-args-invalid-json" }] }</code>. An empty
+          <code>faults</code> list explicitly disables faults at that configuration level.
+        </p>
+        <p>
+          Set the server baseline with <code>new LLMock({ misbehavior: config })</code> or
+          <code>mock.setMisbehavior(config)</code>. The config file uses
+          <code>llm.misbehavior</code>. The setter preserves named test overrides;
+          <code>mock.clearMisbehavior()</code> clears the baseline and all runtime overrides.
+        </p>
+        <p>
+          A <a href="/fixtures#misbehavior">fixture's misbehavior field</a> accepts the same config
+          or shorthand. Older aimock versions can ignore this unknown fixture field. Do not assume
+          that a successful load proves fault support.
+        </p>
+
+        <h2 id="precedence">Scopes and precedence</h2>
+        <ol>
+          <li>Request header: <code>X-AIMock-Misbehavior</code></li>
+          <li>Fixture <code>misbehavior</code></li>
+          <li>Runtime override for <code>X-Test-Id</code></li>
+          <li>Server baseline</li>
+        </ol>
+        <p>
+          The first present config wins as a whole. Fields and fault lists do not merge. An explicit
+          empty list prevents fallback to lower levels.
+        </p>
+        <p>
+          Faults are evaluated in list order. At most one applies to a response. Later candidates
+          see the original response, not another fault's rewritten output.
+        </p>
+        <p>
+          The header accepts one fault and semicolon-separated scalar parameters. It does not accept
+          <code>times</code> or <code>providers</code>.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            HTTP request header <span class="lang-tag">text</span>
+          </div>
+          <pre><code>X-AIMock-Misbehavior: tool-args-invalid-json;style=trailing-comma;rate=1</code></pre>
+        </div>
+        <p>
+          Realtime, Responses WS, and Gemini Live upgrades reject this header with HTTP 400. Use a
+          runtime override with the session's <code>X-Test-Id</code>; unsupported WebSocket wires
+          still skip runtime faults.
+        </p>
+
+        <h2 id="retry">Fail once, then retry</h2>
+        <p>
+          Use <code>times: 1</code> to exercise an application retry. SDK transport retries do not
+          parse tool arguments, so the example retries after <code>JSON.parse</code> fails.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">retry.ts <span class="lang-tag">ts</span></div>
+          <pre><code>import { LLMock } from "@copilotkit/aimock";
+import OpenAI from "openai";
+
+const mock = new LLMock({ port: 0 });
+mock.onMessage("weather", {
+  toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }],
+});
+await mock.start();
+try {
+  const headers = { "X-Test-Id": "weather-retry" };
+  const installed = await fetch(`${mock.url}/__aimock/misbehavior`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      faults: [{ fault: "tool-args-invalid-json", times: 1 }],
+    }),
+  });
+  if (!installed.ok) throw new Error(await installed.text());
+  const client = new OpenAI({
+    apiKey: "local", baseURL: `${mock.url}/v1`, maxRetries: 0,
+    defaultHeaders: headers,
+  });
+  for (let attempt = 0; attempt &lt; 2; attempt++) {
+    const result = await client.chat.completions.create({
+      model: "gpt-4o", messages: [{ role: "user", content: "weather" }],
+    });
+    const args = result.choices[0].message.tool_calls![0].function.arguments;
+    try {
+      console.log(JSON.parse(args)); // The second attempt prints { city: "Paris" }.
+      break;
+    } catch (error) {
+      if (attempt === 1) throw error;
+    }
+  }
+} finally {
+  await mock.stop();
+}</code></pre>
+        </div>
+        <p>
+          <code>GET /__aimock/misbehavior</code> returns the config in effect for the selected test.
+          <code>DELETE</code> removes its runtime override and restores the baseline.
+        </p>
+        <p>
+          <code>POST {}</code> is a route-only shorthand for an explicit empty list. Fixture and
+          programmatic configs require <code>{ "faults": [] }</code>.
+        </p>
+
+        <h2 id="determinism">Determinism and ordering</h2>
+        <p>
+          A draw depends on the seed, test ID, configuration source, fault entry, and evaluation
+          ordinal. A failed rate draw advances that ordinal; an applied fault also spends its firing
+          budget.
+        </p>
+        <p>
+          Provider exclusions, inapplicable faults, unsupported wires, and exhausted budgets do not
+          spend a firing. They do not advance the draw ordinal.
+        </p>
+        <p>
+          <code>seed: "random"</code> chooses and logs a process seed. Reuse the numeric seed with
+          the same fixture source and request order to replay the draws.
+        </p>
+        <p>
+          Within a test ID, request order matters. Concurrent requests and async response factories
+          can change the order that reaches fault planning. A seed does not make that scheduling
+          deterministic.
+        </p>
+        <p>
+          Use a separate test ID for each test. Preserve fixture order and source paths when
+          replaying a run. A full reset clears fault counters; a journal-only reset preserves them.
+          Replacing a config alone does not reset them.
+        </p>
+
+        <p>
+          Counter retention shares the journal's <code>fixtureCountsMaxTestIds</code> limit. FIFO
+          eviction removes the oldest test ID's match and fault counters; later traffic for that ID
+          starts again.
+        </p>
+
+        <h2 id="sdk">Observed SDK behavior</h2>
+        <p>
+          The local conformance tests use the official OpenAI Node SDK 4.104.0 with retries
+          disabled. These observations describe that client against aimock, not every SDK version.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Client path</th>
+              <th>Observed result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>chat.completions.create</code>, stream or non-stream</td>
+              <td>
+                Invalid tool argument strings reach the caller. A separate
+                <code>JSON.parse</code> throws. Length, refusal, and content-filter fields remain
+                visible to the caller.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Strict-tool <code>beta.chat.completions.parse</code> or
+                <code>.stream().finalChatCompletion()</code>
+              </td>
+              <td>
+                A length stop throws <code>LengthFinishReasonError</code>. A content-filter stop
+                throws <code>ContentFilterFinishReasonError</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Schema violations and unknown tool names still require application checks on the basic
+          <code>create</code> path. A valid HTTP response does not prove valid tool arguments.
+        </p>
+        <p>
+          Responses WebSocket checks use OpenAI Node SDK 6.49.0 alongside the existing Chat SDK. SDK
+          helpers can transform or reject incomplete output; raw events and aggregated results are
+          separate observations. The support table describes aimock's wire output, not a promise
+          that every SDK helper returns a complete object.
+        </p>
+        <p>
+          Python integration checks use OpenAI 3.26.1 and Anthropic 1.12.1 against the local CLI.
+          They exercise the existing fixture and journal APIs, streaming, and strict-parser
+          failures. See the
+          <a
+            href="https://github.com/CopilotKit/aimock/tree/main/packages/aimock-pytest#running-tests-locally"
+            >aimock-pytest local test instructions</a
+          >. These checks require a build with this Unreleased feature and no live provider key.
+        </p>
+
+        <h2 id="journal">Inspect the prepared output</h2>
+        <p>
+          Read <code>entry.response.misbehavior</code> from the
+          <a href="/control-api#get-aimockjournal">request journal</a>. It records the source, wire,
+          fault, evaluations, and skip or error reasons.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">journal inspection <span class="lang-tag">ts</span></div>
+          <pre><code>const entry = mock.journal.getAll().at(-1);
+const fault = entry?.response.misbehavior;
+console.log(fault?.applied, fault?.fault, fault?.servedToolCalls);</code></pre>
+        </div>
+        <p>
+          <code>servedToolCalls</code> contains the prepared names, argument strings, and emitted
+          IDs. It can be empty for faults that clear tool calls.
+        </p>
+        <p>
+          <code>applied: true</code> means that aimock prepared the fault output. It does not prove
+          delivery to the client. A disconnect can occur before the prepared call reaches the
+          network.
+        </p>
+        <p>
+          The original fixture remains unchanged. Terminal chaos and proxy responses bypass semantic
+          faults, with <code>chaos-fired</code> or <code>proxied</code> journal reasons.
+          Record/replay keeps the upstream response as the recording truth.
+        </p>
+        <p>
+          Metrics use <code>aimock_misbehavior_total</code>, labeled by <code>fault</code>,
+          <code>wire</code>, and <code>outcome</code>. Empty lists and provider-independent bypasses
+          do not invent a fault metric.
+        </p>
+
+        <h2 id="errors">Errors and applicability</h2>
+        <p>
+          Unknown keys, invalid values, static inapplicability, and decidably unsupported wires fail
+          during fixture loading. <code>aimock validate</code> reports the logical source, fixture
+          index, and offending path.
+        </p>
+        <p>
+          At request time, an explicit fixture or header fault that cannot apply returns HTTP 501
+          with <code>aimock_misbehavior_not_applicable</code> or
+          <code>aimock_misbehavior_unsupported</code>. Malformed headers return HTTP 400 with
+          <code>aimock_misbehavior_invalid</code>.
+        </p>
+        <p>
+          Runtime and baseline configs skip inapplicable or unsupported faults so that ordinary text
+          turns can continue. A provider exclusion also skips the entry.
+        </p>
+        <p>
+          One-character tool arguments cannot produce a nonempty proper prefix. Empty arguments or
+          schema constraints that cannot prove a requested violation can also make a fault
+          inapplicable.
+        </p>
+        <p>
+          Authored invalid JSON remains a validation error. Use
+          <code>misbehavior: tool-args-invalid-json</code> for intentional invalid arguments. See
+          <a href="/fixtures#misbehavior">fixture validation guidance</a>.
+        </p>
+
+        <h2 id="realism">Strict tools and realism</h2>
+        <p>
+          Use invalid JSON and schema violations to test non-strict tools and open models. Invalid
+          JSON and schema violations are not realistic production outputs for OpenAI or Anthropic
+          strict structured tools.
+        </p>
+        <p>
+          Aimock's strict routing mode concerns fixture matches and proxy fallback. It does not
+          validate a tool's JSON schema or disable an authored semantic fault.
+        </p>
+      </main>
+      <aside class="page-toc" id="page-toc"></aside>
+    </div>
+    <footer class="docs-footer">
+      <div class="footer-inner">
+        <div class="footer-left"><span>$</span> aimock &middot; MIT License</div>
+        <ul class="footer-links">
+          <li><a href="https://github.com/CopilotKit/aimock" target="_blank">GitHub</a></li>
+          <li>
+            <a href="https://www.npmjs.com/package/@copilotkit/aimock" target="_blank">npm</a>
+          </li>
+        </ul>
+      </div>
+    </footer>
+    <script src="../sidebar.js"></script>
+    <script src="../cli-tabs.js"></script>
+  </body>
+</html>

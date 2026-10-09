@@ -60,6 +60,15 @@ export const COMPETITORS: readonly Competitor[] = [
 // exact set of rule labels and MATRIX_ROWLESS_RULES cannot name a missing rule.
 export const FEATURE_RULES = [
   {
+    rowLabel: "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)",
+    keywords: [
+      "tool.call.*(malformed|invalid json|schema)",
+      "unknown tool",
+      "content.filter.*(probability|block)",
+    ],
+  },
+
+  {
     rowLabel: "Chat Completions SSE",
     keywords: ["chat/completions", "streaming", "SSE", "server-sent", "stream.*true"],
   },

@@ -105,6 +105,26 @@
 );</code></pre>
         </div>
 
+        <h2 id="model-length-stop">Model Length Stops</h2>
+        <p>
+          <a href="/model-misbehavior">Model misbehavior</a> tests malformed tool arguments,
+          refusals, and other response failures on the <code>openai-chat</code> wire. The
+          <code>stop-length-mid-tool</code> fault cuts the selected tool call's argument string and
+          omits later tool calls.
+        </p>
+        <p>
+          In streaming mode, the response ends with <code>finish_reason: "length"</code>, an
+          optional usage chunk, and <code>[DONE]</code>. In non-streaming mode, the response
+          contains the partial arguments and the same length finish reason. The HTTP response
+          completes normally, but the tool arguments are incomplete.
+        </p>
+        <p>
+          Use <code>truncateAfterChunks</code> or <code>disconnectAfterMs</code> to test an
+          interrupted connection. These settings can also interrupt a semantic fault before its
+          clean terminal reaches the client. See
+          <a href="/chaos-testing#model-misbehavior">chaos precedence</a> when combining faults.
+        </p>
+
         <h2>Timed Disconnect</h2>
         <p>
           Disconnect after a specified number of milliseconds. Simulates network timeouts and

@@ -2972,8 +2972,9 @@
             <div class="feature-icon">&#128165;</div>
             <h3>Chaos Testing</h3>
             <p>
-              Drop, malformed, or disconnect at any probability. Verify your app gracefully handles
-              every failure mode.
+              Transport faults (drop, malformed, disconnect, 429) and model misbehavior: broken
+              tool-call JSON, schema violations, unknown tools, and max-tokens cutoffs in every
+              provider's real wire format.
             </p>
           </div>
 
@@ -3406,6 +3407,43 @@
                     >HTTP faults and delays</a
                   >
                 </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)
+                </th>
+                <td class="col-aimock">
+                  <a href="/model-misbehavior"><span class="yes">Built-in &#10003;</span></a>
+                </td>
+                <!-- C-X40; prototype mark pending final source verification -->
+                <td><a href="https://github.com/mswjs/msw">Not documented</a></td>
+                <!-- C-X41; prototype mark pending final source verification -->
+                <td><a href="https://github.com/vidaiUK/VidaiMock">Not documented</a></td>
+                <!-- C-X42; prototype mark pending final source verification -->
+                <td><a href="https://github.com/dwmkerr/mock-llm">Not documented</a></td>
+                <!-- C-X43; reviewed 2026-10-08: authored max_tokens/refusal, not automatic truncation or a tool-fault catalog -->
+                <td>
+                  <a
+                    href="https://github.com/piyook/llm-mock#truncated-and-refused-replies-stopreason"
+                    ><span class="partial">Partial</span></a
+                  ><br />
+                  stop-reason controls
+                </td>
+                <!-- C-X44; reviewed 2026-10-08: Partial inferred from String stop controls, not an abnormal-stop recipe or tool-fault catalog -->
+                <td>
+                  <span class="partial">Partial</span><br />
+                  stop-reason controls<br />
+                  <a href="https://mokksy.dev/docs/ai-mocks/openai/">OpenAI</a> /
+                  <a href="https://mokksy.dev/docs/ai-mocks/anthropic/">Anthropic</a>
+                </td>
+                <!-- C-S40; prototype mark pending final source verification -->
+                <td>
+                  <a href="https://www.mock-server.com/mock_server/llm_response_mocking.html"
+                    ><span class="partial">Partial</span></a
+                  >
+                </td>
+                <!-- C-W30; prototype mark pending final source verification -->
+                <td><a href="https://wiremock.org/docs/solutions/ai/">Not documented</a></td>
               </tr>
               <tr>
                 <th scope="row">Streaming physics</th>

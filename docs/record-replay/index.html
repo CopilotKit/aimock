@@ -1242,6 +1242,53 @@ describe(<span class="str">"agent chat"</span>, () => {
           first 8 hex characters of a random UUID).
         </p>
 
+        <h2 id="misbehavior-overlays">Model Misbehavior During Replay</h2>
+        <p>
+          <a href="/model-misbehavior">Model misbehavior</a> applies to matched fixture responses on
+          the <code>openai-chat</code> wire. It does not change proxied upstream responses or the
+          responses saved by the recorder. Existing <a href="/chaos-testing">transport chaos</a> can
+          still affect the live relay.
+        </p>
+        <p>
+          Without a terminal chaos action, a proxied OpenAI chat request with misbehavior configured
+          gets a bypass entry. The journal's
+          <code>response.misbehavior</code> reports <code>applied: false</code>,
+          <code>reason: "proxied"</code>, and an empty <code>evaluations</code> array. No
+          misbehavior roll or <code>times</code> budget is consumed.
+        </p>
+        <p>
+          Snapshot merging appends new captures and preserves existing fixture entries, including
+          any authored <code>misbehavior</code> field. It also preserves top-level metadata that the
+          recorder does not own. This does not add a <code>misbehavior</code> field to newly
+          recorded responses. Invalid snapshot files retain the replacement behavior described
+          above.
+        </p>
+        <p>
+          To test a recorded tool response without editing its file, load the recording for replay.
+          Then set a runtime fault for your test:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Replay overlay <span class="lang-tag">shell</span></div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/misbehavior \
+  -H 'Content-Type: application/json' \
+  -H 'X-Test-Id: replay-invalid-args' \
+  --data '{"seed":7,"faults":[{"fault":"tool-args-invalid-json","times":1}]}'</code></pre>
+        </div>
+        <p>
+          Send <code>X-Test-Id: replay-invalid-args</code> on the OpenAI Chat Completions request
+          that matches the recorded tool response. The runtime configuration affects that test's
+          replay responses without changing the stored fixture. A fixture's own
+          <code>misbehavior</code> takes precedence over the runtime configuration, including
+          <code>{ "faults": [] }</code>. The <code>X-AIMock-Misbehavior</code> request header
+          overrides both.
+        </p>
+        <p>
+          Check <code>response.misbehavior</code> in the journal for the applied fault and
+          <code>servedToolCalls</code>. The stored fixture remains the original response. Clear the
+          runtime override with <code>DELETE /__aimock/misbehavior</code> and the same
+          <code>X-Test-Id</code> header.
+        </p>
+
         <h2>Fixture Lifecycle</h2>
         <ul>
           <li>

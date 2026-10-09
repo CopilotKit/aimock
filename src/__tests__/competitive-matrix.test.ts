@@ -974,3 +974,34 @@ describe("Regression guard: OpenRouter router / fallback simulation (PR #328)", 
     expect(patterns).toContain("Model fallback/failover");
   });
 });
+
+// P1's model-fault detector is separate from generic transport chaos.
+describe("model misbehavior feature detection", () => {
+  const row = "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)";
+
+  it.each([
+    ["malformed-tool-arguments", "Inject tool-call malformed arguments"],
+    ["unknown-tool", "unknown tool"],
+    ["content-filter-probability", "content filter probability"],
+    ["invalid-json", "tool call emits invalid json"],
+    ["schema-violation", "tool-call schema violation"],
+    ["content-filter-block", "content-filter block"],
+  ])("recognizes %s", (cell, source) => {
+    const actual = extractFeatures(source)[row];
+    console.log(JSON.stringify({ cell, source, actual: actual ?? null, expected: true }));
+    expect(actual).toBe(true);
+  });
+
+  it.each([
+    "chaos",
+    "Chaos testing",
+    "HTTP 429",
+    "delay and disconnect",
+    "tool calls",
+    "schema validation",
+  ])("does not infer model faults from %s", (source) => {
+    const actual = extractFeatures(source)[row];
+    console.log(JSON.stringify({ source, actual: actual ?? null, expected: false }));
+    expect(actual).toBe(false);
+  });
+});

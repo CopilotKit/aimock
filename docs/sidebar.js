@@ -60,6 +60,7 @@
         { label: "Fixtures", href: "/fixtures" },
         { label: "Error Injection", href: "/error-injection" },
         { label: "Chaos Testing", href: "/chaos-testing" },
+        { label: "Model Misbehavior", href: "/model-misbehavior" },
         { label: "Streaming Physics", href: "/streaming-physics" },
         { label: "WebSocket APIs", href: "/websocket" },
         { label: "Prometheus Metrics", href: "/metrics" },
