@@ -38,7 +38,11 @@ import {
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
+  resolveFixtureBlockOutcome,
 } from "./helpers.js";
+import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -47,6 +51,7 @@ import type { RecordedTimings } from "./types.js";
 import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
@@ -694,6 +699,7 @@ function buildResponsePreamble(
   overrides?: ResponseOverrides,
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
+  forceReasoning = false,
 ): PreambleResult {
   const respId = overrides?.id ?? responseId();
   const created = overrides?.created ?? Math.floor(Date.now() / 1000);
@@ -727,6 +733,7 @@ function buildResponsePreamble(
 
   if (
     reasoning ||
+    forceReasoning ||
     shouldSynthesizeBlobOnlyReasoning(reasoning, model, synthesizeSummarylessReasoning)
   ) {
     const reasoningEvents = buildReasoningStreamEvents(
@@ -1511,20 +1518,112 @@ export async function handleResponses(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "openai-responses",
+    fixture,
+    response,
+    request: completionReq,
+    stream: responsesReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.some((evaluation) => evaluation.outcome === "error")) {
+      defaults.logger.error(misbehavior.message);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({
+        error: {
+          message: misbehavior.message,
+          type: "invalid_request_error",
+          code: misbehavior.code,
+        },
+      }),
+    );
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const fixtureTimings = fixture.recordedTimings;
   const effectiveReplaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const output = buildResponsesMisbehavior(
+      prepared,
+      completionReq,
+      chunkSize,
+      emitEncryptedReasoning,
+    );
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/responses",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    if (responsesReq.stream !== true) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(output.response));
+    } else {
+      const appliedTimings =
+        prepared.duplicateId && fixtureTimings
+          ? { ...fixtureTimings, interChunkDelaysMs: [...fixtureTimings.interChunkDelaysMs] }
+          : fixtureTimings;
+      if (prepared.duplicateId && appliedTimings) {
+        const lastGap = appliedTimings.interChunkDelaysMs.at(-1) ?? 0;
+        while (appliedTimings.interChunkDelaysMs.length < output.events.length - 1) {
+          appliedTimings.interChunkDelaysMs.push(lastGap);
+        }
+      }
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeResponsesSSEStream(res, output.events, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        recordedTimings: appliedTimings,
+        replaySpeed: effectiveReplaySpeed,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        entry.response.interrupted = true;
+        entry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
+    return;
+  }
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/responses",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(res, status, serializeErrorResponse(response), {
       retryAfter: response.retryAfter,
@@ -1549,6 +1648,12 @@ export async function handleResponses(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     if (responsesReq.stream !== true) {
       const body = buildContentWithToolCallsResponse(
@@ -1614,6 +1719,12 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (responsesReq.stream !== true) {
       const body = buildTextResponse(
         response.content,
@@ -1674,6 +1785,12 @@ export async function handleResponses(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (responsesReq.stream !== true) {
       const body = buildToolCallResponse(
         response.toolCalls,
@@ -1717,13 +1834,14 @@ export async function handleResponses(
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v1/responses",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
@@ -1731,4 +1849,133 @@ export async function handleResponses(
       error: { message: "Fixture response did not match any known type", type: "server_error" },
     }),
   );
+}
+
+/** Prepare call IDs once, retaining the engine's effective blocks and exact served-call metadata. */
+export function prepareResponsesMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
+  return prepareOpenAIChatMisbehavior(plan);
+}
+
+/** Build one faulted payload/event sequence for both HTTP and Responses WebSocket consumers. */
+export function buildResponsesMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  chunkSize: number,
+  emitEncryptedReasoning = false,
+) {
+  const response = plan.response;
+  if (
+    !(
+      isContentWithToolCallsResponse(response) ||
+      isTextResponse(response) ||
+      isToolCallResponse(response)
+    )
+  ) {
+    throw new Error("Responses misbehavior requires a prepared chat response");
+  }
+  const overrides = extractOverrides(response);
+  const reasoning = plan.reasoning ?? ("reasoning" in response ? response.reasoning : undefined);
+  const webSearches = "webSearches" in response ? response.webSearches : undefined;
+  const { respId, created, events, prefixOutputItems, nextOutputIndex } = buildResponsePreamble(
+    request.model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    overrides,
+    emitEncryptedReasoning,
+    false,
+    plan.reasoning !== undefined,
+  );
+  const output = [...prefixOutputItems];
+  let outputIndex = nextOutputIndex;
+  const incomplete = plan.stop === "length" || plan.stop === "content_filter";
+
+  if (plan.refusal !== undefined) {
+    const id = itemId();
+    const part = { type: "refusal", refusal: plan.refusal };
+    const item = { id, type: "message", role: "assistant", status: "completed", content: [part] };
+    const position = { item_id: id, output_index: outputIndex, content_index: 0 };
+    events.push(
+      {
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: { ...item, status: "in_progress", content: [] },
+      },
+      { type: "response.content_part.added", ...position, part: { type: "refusal", refusal: "" } },
+    );
+    for (let i = 0; i < plan.refusal.length; i += chunkSize) {
+      events.push({
+        type: "response.refusal.delta",
+        ...position,
+        delta: plan.refusal.slice(i, i + chunkSize),
+      });
+    }
+    events.push(
+      { type: "response.refusal.done", ...position, refusal: plan.refusal },
+      { type: "response.content_part.done", ...position, part },
+      { type: "response.output_item.done", output_index: outputIndex, item },
+    );
+    output.push(item);
+  } else if (
+    plan.summary.fault !== "empty-response" &&
+    plan.stop !== "content_filter" &&
+    plan.reasoning === undefined
+  ) {
+    const combined = isContentWithToolCallsResponse(response);
+    const outcome =
+      combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+    const blocks: FixtureBlock[] = outcome?.ordered ?? [
+      ...("content" in response && typeof response.content === "string"
+        ? [{ type: "text" as const, text: response.content }]
+        : []),
+      ...(combined || isToolCallResponse(response)
+        ? (response.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
+        : []),
+    ];
+    let callIndex = 0;
+    for (const block of blocks) {
+      if (block.type === "text") {
+        const message = buildMessageOutputEvents(block.text, chunkSize, outputIndex);
+        events.push(...message.events);
+        output.push(message.msgItem);
+      } else {
+        const call = buildFunctionCallOutputEvents(block, chunkSize, outputIndex);
+        const cut =
+          plan.summary.fault === "stop-length-mid-tool" && callIndex === plan.target?.index;
+        const item = cut ? { ...call.fcItem, status: "incomplete" } : call.fcItem;
+        // Live K5 capture retains both done events, with an incomplete call item.
+        events.push(
+          ...call.events.map((event) =>
+            cut && event.type === "response.output_item.done" ? { ...event, item } : event,
+          ),
+        );
+        output.push(item);
+        callIndex++;
+      }
+      outputIndex++;
+    }
+  }
+  const usage = resolveOpenAIChatMisbehaviorUsage(plan, request);
+  const body = {
+    id: respId,
+    object: "response",
+    created_at: created,
+    model: overrides?.model ?? request.model,
+    status: incomplete ? "incomplete" : responsesStatus(overrides?.finishReason, "completed"),
+    ...(incomplete
+      ? {
+          incomplete_details: {
+            reason: plan.stop === "content_filter" ? "content_filter" : "max_output_tokens",
+          },
+        }
+      : {}),
+    output,
+    usage: {
+      input_tokens: usage.prompt_tokens,
+      output_tokens: usage.completion_tokens,
+      total_tokens: usage.total_tokens,
+    },
+  };
+  events.push({ type: incomplete ? "response.incomplete" : "response.completed", response: body });
+  return { response: body, events };
 }

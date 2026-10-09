@@ -23,6 +23,8 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
   generateMessageId,
   generateToolCallId,
   generateDeterministicEmbedding,
@@ -54,6 +56,11 @@ import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
+import {
+  normalizeDirectToolSchema,
+  planMisbehavior,
+  recordMisbehaviorOutcome,
+} from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Cohere v2 Chat request types ───────────────────────────────────────────
@@ -219,13 +226,17 @@ export function cohereToCompletionRequest(req: CohereRequest): ChatCompletionReq
           },
         };
       }
+      // Preserve the native map identity before adapting to canonical JSON Schema.
+      const schema = normalizeDirectToolSchema({ tools: [t] }, t.name);
       // Cohere v2 native format: { name, description, parameter_definitions }
       return {
         type: "function" as const,
         function: {
           name: t.name,
           description: t.description,
-          parameters: t.parameter_definitions,
+          parameters: schema
+            ? { type: "object", properties: schema.properties, required: [...schema.required] }
+            : undefined,
         },
       };
     });
@@ -855,6 +866,7 @@ function buildCohereContentWithToolCallsStreamEvents(
 // ─── SSE writer for Cohere typed events ─────────────────────────────────────
 
 interface CohereStreamOptions {
+  terminalSentinel?: boolean;
   latency?: number;
   streamingProfile?: StreamingProfile;
   recordedTimings?: RecordedTimings;
@@ -894,6 +906,7 @@ async function writeCohereSSEStream(
   }
 
   if (!res.writableEnded) {
+    if (opts.terminalSentinel && !signal?.aborted) res.write("data: [DONE]\n\n");
     res.end();
   }
   return true;
@@ -1139,19 +1152,83 @@ export async function handleCohere(
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  const resolvedResponse = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "cohere",
+    fixture,
+    response: resolvedResponse,
+    request: completionReq,
+    stream: cohereReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v2/chat",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.length) logger.error(misbehavior.message);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({ message: misbehavior.message, code: misbehavior.code }),
+    );
+    return;
+  }
+  // Cohere carries the same raw argument strings and call identities as Chat.
+  // Reuse the accepted preparation so generated/duplicate IDs match metadata.
+  const prepared =
+    misbehavior.kind === "applied" ? prepareOpenAIChatMisbehavior(misbehavior) : undefined;
+  const observedK5Stream =
+    cohereReq.stream === true && prepared?.summary.fault === "stop-length-mid-tool";
+  const appliedReasoning =
+    prepared && "reasoning" in prepared.response
+      ? resolveReasoningForModel(
+          prepared.response.reasoning,
+          cohereReq.model,
+          resolveStrictMode(defaults.strict, req.headers),
+          logger,
+        )
+      : undefined;
+  const usage = prepared
+    ? resolveOpenAIChatMisbehaviorUsage(prepared, completionReq, appliedReasoning !== undefined)
+    : undefined;
+  const response =
+    prepared && usage
+      ? {
+          ...prepared.response,
+          usage,
+          ...(prepared.stop
+            ? { finishReason: observedK5Stream ? "tool_calls" : prepared.stop }
+            : {}),
+        }
+      : resolvedResponse;
+  const summary = prepared?.summary ?? misbehavior.summary;
+  const empty = prepared?.summary.fault === "empty-response";
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(res, status, serializeErrorResponse(response), {
       retryAfter: response.retryAfter,
@@ -1168,18 +1245,21 @@ export async function handleCohere(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
     });
     if (cohereReq.stream !== true) {
       const body = buildCohereContentWithToolCallsResponse(
@@ -1204,6 +1284,7 @@ export async function handleCohere(
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
+        terminalSentinel: observedK5Stream,
         latency,
         streamingProfile: fixture.streamingProfile,
         recordedTimings: fixture.recordedTimings,
@@ -1230,12 +1311,9 @@ export async function handleCohere(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
@@ -1243,8 +1321,25 @@ export async function handleCohere(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
+    });
     if (cohereReq.stream !== true) {
-      const body = buildCohereTextResponse(response.content, effReasoning, overrides);
+      const body = empty
+        ? {
+            ...buildCohereTextResponse("", undefined, overrides),
+            message: {
+              role: "assistant",
+              content: [],
+              tool_calls: [],
+              tool_plan: "",
+              citations: [],
+            },
+          }
+        : buildCohereTextResponse(response.content, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
@@ -1253,9 +1348,10 @@ export async function handleCohere(
         chunkSize,
         effReasoning,
         overrides,
-      );
+      ).filter((event) => !empty || event.type === "message-start" || event.type === "message-end");
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
+        terminalSentinel: observedK5Stream,
         latency,
         streamingProfile: fixture.streamingProfile,
         recordedTimings: fixture.recordedTimings,
@@ -1282,18 +1378,21 @@ export async function handleCohere(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      cohereReq.model,
-      effectiveStrict,
-      logger,
-    );
+    const effReasoning = prepared
+      ? appliedReasoning
+      : resolveReasoningForModel(response.reasoning, cohereReq.model, effectiveStrict, logger);
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v2/chat",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary,
+      defaults,
+      testId,
     });
     if (cohereReq.stream !== true) {
       const body = buildCohereToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
@@ -1309,6 +1408,7 @@ export async function handleCohere(
       );
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeCohereSSEStream(res, events, {
+        terminalSentinel: observedK5Stream,
         latency,
         streamingProfile: fixture.streamingProfile,
         recordedTimings: fixture.recordedTimings,
@@ -1327,13 +1427,14 @@ export async function handleCohere(
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v2/chat",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary, defaults, testId });
   writeErrorResponse(
     res,
     500,

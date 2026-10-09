@@ -11,6 +11,7 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
+  FixtureResponse,
   HandlerDefaults,
   RecordedTimings,
   FixtureBlock,
@@ -21,6 +22,8 @@ import type {
 } from "./types.js";
 import {
   toolArgsForWire,
+  estimatePromptTokens,
+  estimateTokens,
   InvalidToolArgumentsError,
   generateMessageId,
   generateToolUseId,
@@ -49,6 +52,8 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import type { MisbehaviorPlan } from "./misbehavior.js";
 
 /**
  * Non-empty placeholder signature written into emitted `thinking` blocks.
@@ -1156,6 +1161,269 @@ function buildClaudeContentWithToolCallsResponse(
   };
 }
 
+/** Internal Claude-family prepared output; the transport owns delivery and journaling. */
+export type PreparedClaudeMisbehavior = {
+  plan: MisbehaviorPlan;
+  usage: { input_tokens: number; output_tokens: number };
+} & ({ stream: true; events: ClaudeSSEEvent[] } | { stream: false; body: object });
+
+/**
+ * Prepare an already-selected Claude fault once for Messages or InvokeModel.
+ * IDs, canonical served arguments and usage describe the full emitted output,
+ * even when the transport later interrupts delivery. Never mutates the plan.
+ */
+export function prepareClaudeMisbehavior(
+  plan: MisbehaviorPlan,
+  context: {
+    request: ChatCompletionRequest;
+    stream: boolean;
+    chunkSize: number;
+    logger: Logger;
+    strict: boolean;
+  },
+): PreparedClaudeMisbehavior {
+  const response = plan.response;
+  if (
+    !(
+      isTextResponse(response) ||
+      isToolCallResponse(response) ||
+      isContentWithToolCallsResponse(response)
+    )
+  ) {
+    throw new TypeError("Claude misbehavior requires a chat response");
+  }
+  const outcome =
+    isContentWithToolCallsResponse(response) && response.blocks?.length
+      ? resolveFixtureBlockOutcome(response.blocks)
+      : undefined;
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  const toolCalls = calls.map((call, index) => ({
+    ...call,
+    // Captured Claude max_tokens tool output has input {}, even for a cut JSON prefix.
+    ...(!context.stream &&
+    plan.summary.fault === "stop-length-mid-tool" &&
+    index === plan.summary.target?.index
+      ? { arguments: "{}" }
+      : {}),
+    ...(index === plan.duplicateId?.destinationIndex ? {} : { id: call.id || generateToolUseId() }),
+  }));
+  if (plan.duplicateId) {
+    toolCalls[plan.duplicateId.destinationIndex].id = toolCalls[plan.duplicateId.sourceIndex].id;
+  }
+  let preparedResponse: FixtureResponse = { ...response };
+  delete preparedResponse.usage;
+  if (outcome) {
+    let index = 0;
+    preparedResponse = {
+      ...preparedResponse,
+      content: outcome.content,
+      toolCalls,
+      blocks: outcome.ordered.map((block) =>
+        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
+      ),
+    };
+  } else if ("toolCalls" in response) {
+    preparedResponse = { ...preparedResponse, toolCalls };
+  }
+  const servedToolCalls = toolCalls.map((call) => {
+    const args = toolArgsForWire(call);
+    return {
+      name: call.name,
+      id: call.id,
+      arguments: args.kind === "parsed" ? args.text : args.raw,
+    };
+  });
+  const preparedPlan: MisbehaviorPlan = {
+    ...plan,
+    response: preparedResponse,
+    summary: { ...plan.summary, servedToolCalls },
+  };
+  const reasoning =
+    plan.summary.fault === "reasoning-only"
+      ? (plan.reasoning ?? "")
+      : resolveReasoningForModel(
+          response.reasoning,
+          context.request.model,
+          context.strict,
+          context.logger,
+        );
+  const artifacts = resolveReasoningArtifactsForModel(
+    response.reasoningSignature,
+    response.redactedThinking,
+    context.request.model,
+    context.strict,
+    context.logger,
+  );
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  const usage = {
+    input_tokens: estimatePromptTokens(context.request.messages),
+    output_tokens: estimateTokens(
+      content +
+        servedToolCalls.map((call) => call.name + call.arguments).join("") +
+        (reasoning ?? "") +
+        (plan.refusal ?? ""),
+    ),
+  };
+  const overrides = {
+    ...extractOverrides(response),
+    ...(plan.stop === "length" ? { finishReason: "length" } : {}),
+    usage,
+  };
+  const model = context.request.model;
+  if (plan.summary.fault === "reasoning-only") {
+    // Approved modeled K9: native thinking-only exhaustion was not captured.
+    // Preserve an explicitly empty thought as a thinking block, never text.
+    const thought = reasoning ?? "";
+    const signature = artifacts.reasoningSignature ?? PLACEHOLDER_SIGNATURE;
+    const body = {
+      id: overrides.id ?? generateMessageId(),
+      type: "message",
+      role: overrides.role ?? "assistant",
+      content: [{ type: "thinking", thinking: thought, signature }],
+      model: overrides.model ?? model,
+      stop_reason: "max_tokens",
+      stop_sequence: null,
+      usage,
+    };
+    if (!context.stream) return { stream: false, body, plan: preparedPlan, usage };
+    const events: ClaudeSSEEvent[] = [
+      { type: "message_start", message: { ...body, content: [], stop_reason: null } },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "", signature: "" },
+      },
+    ];
+    const size = Math.max(1, context.chunkSize);
+    for (let offset = 0; offset < thought.length; offset += size) {
+      events.push({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: thought.slice(offset, offset + size) },
+      });
+    }
+    events.push(
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens", stop_sequence: null },
+        usage: { output_tokens: usage.output_tokens },
+      },
+      { type: "message_stop" },
+    );
+    return { stream: true, events, plan: preparedPlan, usage };
+  }
+  const empty = plan.summary.fault === "empty-response" || plan.summary.fault === "refusal";
+  if (empty) {
+    const stop = plan.stop === "refusal" ? "refusal" : "end_turn";
+    const detail =
+      plan.stop === "refusal"
+        ? {
+            stop_details: {
+              type: "refusal",
+              category: plan.refusalCategory ?? null,
+              explanation: plan.refusal ?? "",
+            },
+          }
+        : {};
+    const body = {
+      id: overrides.id ?? generateMessageId(),
+      type: "message",
+      role: overrides.role ?? "assistant",
+      content: [],
+      model: overrides.model ?? model,
+      stop_reason: stop,
+      stop_sequence: null,
+      ...detail,
+      usage,
+    };
+    if (!context.stream) return { stream: false, body, plan: preparedPlan, usage };
+    const events: ClaudeSSEEvent[] = [
+      {
+        type: "message_start",
+        message: {
+          ...body,
+          stop_reason: null,
+          ...("stop_details" in detail ? { stop_details: undefined } : {}),
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: stop, stop_sequence: null, ...detail },
+        usage: { output_tokens: usage.output_tokens },
+      },
+      { type: "message_stop" },
+    ];
+    return { stream: true, events, plan: preparedPlan, usage };
+  }
+  if (context.stream) {
+    const args = [
+      reasoning,
+      overrides,
+      artifacts.reasoningSignature,
+      artifacts.redactedThinking,
+    ] as const;
+    const events = isContentWithToolCallsResponse(preparedResponse)
+      ? buildClaudeContentWithToolCallsStreamEvents(
+          preparedResponse.content ?? "",
+          preparedResponse.toolCalls ?? [],
+          model,
+          Math.max(1, context.chunkSize),
+          context.logger,
+          ...args,
+          preparedResponse.blocks,
+        )
+      : isToolCallResponse(preparedResponse)
+        ? buildClaudeToolCallStreamEvents(
+            preparedResponse.toolCalls,
+            model,
+            Math.max(1, context.chunkSize),
+            context.logger,
+            ...args,
+          )
+        : buildClaudeTextStreamEvents(content, model, Math.max(1, context.chunkSize), ...args);
+    if (plan.summary.fault === "stop-length-mid-tool") {
+      // Captured Claude max_tokens output omits the cut tool's block stop.
+      // Earlier completed blocks retain their stops, including when IDs repeat.
+      const cutIndex = events.filter(
+        (event) =>
+          event.type === "content_block_start" &&
+          isJsonObject(event.content_block) &&
+          event.content_block.type === "tool_use",
+      )[plan.target?.index ?? 0]?.index;
+      return {
+        stream: true,
+        events: events.filter(
+          (event) => !(event.type === "content_block_stop" && event.index === cutIndex),
+        ),
+        plan: preparedPlan,
+        usage,
+      };
+    }
+    return { stream: true, events, plan: preparedPlan, usage };
+  }
+  const args = [
+    reasoning,
+    overrides,
+    artifacts.reasoningSignature,
+    artifacts.redactedThinking,
+  ] as const;
+  const body = isContentWithToolCallsResponse(preparedResponse)
+    ? buildClaudeContentWithToolCallsResponse(
+        preparedResponse.content ?? "",
+        preparedResponse.toolCalls ?? [],
+        model,
+        context.logger,
+        ...args,
+        preparedResponse.blocks,
+      )
+    : isToolCallResponse(preparedResponse)
+      ? buildClaudeToolCallResponse(preparedResponse.toolCalls, model, context.logger, ...args)
+      : buildClaudeTextResponse(content, model, ...args);
+  return { stream: false, body, plan: preparedPlan, usage };
+}
+
 // ─── SSE writer for Claude Messages API ─────────────────────────────────────
 
 interface ClaudeStreamOptions {
@@ -1488,18 +1756,103 @@ export async function handleMessages(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "anthropic",
+    fixture,
+    response,
+    request: completionReq,
+    stream: claudeReq.stream === true,
+    emitsToolCallIds: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`POST /v1/messages: ${misbehavior.message}`);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: misbehavior.status === 400 ? "invalid_request_error" : "api_error",
+          code: misbehavior.code,
+          message: misbehavior.message,
+        },
+      }),
+    );
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: claudeReq.stream === true,
+      chunkSize,
+      logger,
+      strict: resolveStrictMode(defaults.strict, req.headers),
+    });
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: req.url ?? "/v1/messages",
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    if (!prepared.stream) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(prepared.body));
+    } else {
+      const interruption = createInterruptionSignal(fixture);
+      try {
+        const completed = await writeClaudeSSEStream(res, prepared.events, {
+          latency,
+          streamingProfile: fixture.streamingProfile,
+          recordedTimings: fixture.recordedTimings,
+          replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+          signal: interruption?.signal,
+          onChunkSent: interruption?.tick,
+        });
+        if (!completed) {
+          if (!res.writableEnded) res.destroy();
+          entry.response.interrupted = true;
+          entry.response.interruptReason = interruption?.reason();
+        }
+      } finally {
+        interruption?.cleanup();
+      }
+    }
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? "/v1/messages",
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     // Anthropic-style error format: { type: "error", error: { type, message } }
     const anthropicError = {
@@ -1544,6 +1897,12 @@ export async function handleMessages(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     if (claudeReq.stream !== true) {
       const body = buildClaudeContentWithToolCallsResponse(
@@ -1621,6 +1980,12 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (claudeReq.stream !== true) {
       const body = buildClaudeTextResponse(
         response.content,
@@ -1691,6 +2056,12 @@ export async function handleMessages(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (claudeReq.stream !== true) {
       const body = buildClaudeToolCallResponse(
         response.toolCalls,
@@ -1734,13 +2105,14 @@ export async function handleMessages(
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? "/v1/messages",
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,

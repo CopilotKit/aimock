@@ -36,6 +36,7 @@ import {
   getTestId,
   resolveFixtureBlockOutcome,
   resolveResponse,
+  resolveUsage,
   resolveStrictMode,
   resolveReasoningForModel,
   strictOverrideField,
@@ -51,6 +52,7 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 
 // ─── Gemini request types ───────────────────────────────────────────────────
 
@@ -71,6 +73,7 @@ interface GeminiFunctionDeclaration {
   name: string;
   description?: string;
   parameters?: object;
+  parametersJsonSchema?: object;
 }
 
 interface GeminiToolDef {
@@ -253,7 +256,7 @@ export function geminiToCompletionRequest(
         function: {
           name: d.name,
           description: d.description,
-          parameters: d.parameters,
+          parameters: d.parameters ?? d.parametersJsonSchema,
         },
       }));
     }
@@ -310,8 +313,10 @@ function geminiUsageMetadata(overrides?: ResponseOverrides): {
 
 interface GeminiResponseChunk {
   candidates: {
-    content: { role: string; parts: GeminiPart[] };
+    content?: { role: string; parts: GeminiPart[] };
     finishReason?: string;
+    finishMessage?: string;
+    safetyRatings?: { category: string; probability: string; blocked: boolean }[];
     index: number;
   }[];
   usageMetadata?: {
@@ -811,6 +816,140 @@ async function writeGeminiSSEStream(
   return true;
 }
 
+/** Prepare native fault output once; the journal describes these exact parts. */
+function prepareGeminiMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  streaming: boolean,
+  chunkSize: number,
+  logger: Logger,
+  strict: boolean,
+): { chunks: GeminiResponseChunk[]; summary: MisbehaviorPlan["summary"] } {
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  if (!(combined || isToolCallResponse(response) || isTextResponse(response))) {
+    throw new Error("Applied Gemini misbehavior requires a chat response");
+  }
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  const overrides = extractOverrides(response);
+  delete overrides.usage;
+  const fault = plan.summary.fault;
+  const candidate: GeminiResponseChunk["candidates"][number] & { content: GeminiContent } = {
+    content: { role: "model", parts: [] },
+    index: 0,
+  };
+  let chunks: GeminiResponseChunk[];
+  if (fault === "tool-args-invalid-json") {
+    const target = calls[plan.target?.index ?? 0];
+    if (!target) throw new Error("Gemini malformed-call plan requires its selected tool call");
+    chunks = [
+      {
+        candidates: [
+          {
+            index: 0,
+            finishReason: "MALFORMED_FUNCTION_CALL",
+            finishMessage: `Malformed function call: ${target.name}(${target.arguments})`,
+          },
+        ],
+      },
+    ];
+  } else if (fault === "tool-unknown-name" && !request.tools?.length) {
+    candidate.finishReason = "UNEXPECTED_TOOL_CALL";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "stop-length-mid-tool") {
+    // Object arguments cannot be partial; preserve only text preceding the cut.
+    candidate.content.parts = content ? [{ text: content }] : [];
+    candidate.finishReason = "MAX_TOKENS";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "empty-response") {
+    candidate.content.parts = [{ text: "" }];
+    candidate.finishReason = "STOP";
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "content-filter") {
+    candidate.finishReason = "SAFETY";
+    candidate.safetyRatings = [
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", probability: "HIGH", blocked: true },
+    ];
+    chunks = [{ candidates: [candidate] }];
+  } else if (fault === "reasoning-only") {
+    candidate.content.parts = [{ text: plan.reasoning ?? "", thought: true }];
+    candidate.finishReason = "MAX_TOKENS";
+    chunks = [{ candidates: [candidate] }];
+  } else {
+    const reasoning = resolveReasoningForModel(response.reasoning, request.model, strict, logger);
+    if (fault === "tool-unknown-name") overrides.finishReason = "stop";
+    if (combined) {
+      chunks = streaming
+        ? buildGeminiContentWithToolCallsStreamChunks(
+            content,
+            calls,
+            chunkSize,
+            logger,
+            reasoning,
+            overrides,
+            response.blocks,
+          )
+        : [
+            buildGeminiContentWithToolCallsResponse(
+              content,
+              calls,
+              logger,
+              reasoning,
+              overrides,
+              response.blocks,
+            ),
+          ];
+    } else if (isToolCallResponse(response)) {
+      chunks = streaming
+        ? buildGeminiToolCallStreamChunks(calls, chunkSize, logger, reasoning, overrides)
+        : [buildGeminiToolCallResponse(calls, logger, reasoning, overrides)];
+    } else {
+      chunks = streaming
+        ? buildGeminiTextStreamChunks(content, chunkSize, reasoning, overrides)
+        : [buildGeminiTextResponse(content, reasoning, overrides)];
+    }
+  }
+  const parts = chunks.flatMap((chunk) =>
+    chunk.candidates.flatMap((item) => item.content?.parts ?? []),
+  );
+  const servedToolCalls = parts.flatMap((part) =>
+    part.functionCall
+      ? [
+          {
+            name: part.functionCall.name,
+            arguments: JSON.stringify(part.functionCall.args),
+            ...(part.functionCall.id ? { id: part.functionCall.id } : {}),
+          },
+        ]
+      : [],
+  );
+  const prompt = request.messages
+    .map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : (message.content ?? []).map((part) => part.text ?? "").join(""),
+    )
+    .join("");
+  const output = parts
+    .map(
+      (part) =>
+        part.text ??
+        (part.functionCall ? part.functionCall.name + JSON.stringify(part.functionCall.args) : ""),
+    )
+    .join("");
+  const usage = resolveUsage(undefined, prompt, output);
+  for (const chunk of chunks) delete chunk.usageMetadata;
+  chunks[chunks.length - 1].usageMetadata = {
+    promptTokenCount: usage.prompt_tokens,
+    candidatesTokenCount: usage.completion_tokens,
+    totalTokenCount: usage.total_tokens,
+  };
+  return { chunks, summary: { ...plan.summary, servedToolCalls } };
+}
+
 // ─── Request handler ────────────────────────────────────────────────────────
 
 export async function handleGemini(
@@ -1031,20 +1170,98 @@ export async function handleGemini(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "gemini",
+    toolCallIdMode: "authored-nonempty",
+    fixture,
+    response,
+    request: completionReq,
+    stream: streaming,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture, error: misbehavior.message },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    if (misbehavior.summary?.evaluations.length === 0) {
+      logger.error(`${req.method ?? "POST"} ${path}: ${misbehavior.message}`);
+    }
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({
+        error: {
+          code: misbehavior.status,
+          message: misbehavior.message,
+          status: misbehavior.status === 400 ? "INVALID_ARGUMENT" : "UNIMPLEMENTED",
+        },
+      }),
+    );
+    return;
+  }
+
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
 
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareGeminiMisbehavior(
+      misbehavior,
+      completionReq,
+      streaming,
+      chunkSize,
+      logger,
+      resolveStrictMode(defaults.strict, req.headers),
+    );
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.summary, defaults, testId });
+    if (!streaming) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(prepared.chunks[0]));
+    } else {
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeGeminiSSEStream(res, prepared.chunks, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        recordedTimings: fixture.recordedTimings,
+        replaySpeed,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        entry.response.interrupted = true;
+        entry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
+    return;
+  }
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const errorEntry = journal.add({
       method: req.method ?? "POST",
       path,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({ entry: errorEntry, summary: misbehavior.summary, defaults, testId });
     // Gemini-style error format: { error: { code, message, status } }
     const geminiError = {
       error: {
@@ -1074,6 +1291,12 @@ export async function handleGemini(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     if (!streaming) {
       const body = buildGeminiAudioResponse(response, logger, effReasoning);
@@ -1119,6 +1342,12 @@ export async function handleGemini(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     if (!streaming) {
       const body = buildGeminiContentWithToolCallsResponse(
@@ -1180,6 +1409,12 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (!streaming) {
       const body = buildGeminiTextResponse(response.content, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1230,6 +1465,12 @@ export async function handleGemini(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     if (!streaming) {
       const body = buildGeminiToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1262,13 +1503,14 @@ export async function handleGemini(
   }
 
   // Unknown response type
-  journal.add({
+  const unknownEntry = journal.add({
     method: req.method ?? "POST",
     path,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: unknownEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,

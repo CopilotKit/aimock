@@ -6,7 +6,8 @@
  * handler, but as individual WebSocket text frames.
  */
 
-import type { ChatCompletionRequest, Fixture } from "./types.js";
+import type { Fixture, HandlerDefaults } from "./types.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
   responsesToCompletionRequest,
@@ -15,6 +16,8 @@ import {
   buildTextStreamEvents,
   buildToolCallStreamEvents,
   buildContentWithToolCallsStreamEvents,
+  prepareResponsesMisbehavior,
+  buildResponsesMisbehavior,
   type ResponsesSSEEvent,
 } from "./responses.js";
 import {
@@ -34,8 +37,14 @@ import {
 import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
-import type { Logger } from "./logger.js";
 import type { WebSocketConnection } from "./ws-framing.js";
+
+type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
+  replaySpeed?: number;
+  model: string;
+  testId?: string;
+  upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+};
 
 interface ResponseCreateMessage {
   type: "response.create";
@@ -73,24 +82,18 @@ export function handleWebSocketResponses(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: {
-    latency: number;
-    chunkSize: number;
-    replaySpeed?: number;
-    model: string;
-    logger: Logger;
-    strict?: boolean;
-    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
-    testId?: string;
-    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-  },
+  defaults: ResponsesWebSocketDefaults,
+  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   // Serialize message processing to prevent event interleaving
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
-    pending = pending.then(() =>
-      processMessage(raw, ws, fixtures, journal, defaults).catch((err: unknown) => {
+    pending = pending.then(async () => {
+      try {
+        beforeProcessMessage?.();
+        await processMessage(raw, ws, fixtures, journal, defaults);
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket responses error: ${msg}`);
         try {
@@ -100,8 +103,8 @@ export function handleWebSocketResponses(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
           );
         }
-      }),
-    );
+      }
+    });
   });
 }
 
@@ -110,17 +113,7 @@ async function processMessage(
   ws: WebSocketConnection,
   fixtures: Fixture[],
   journal: Journal,
-  defaults: {
-    latency: number;
-    chunkSize: number;
-    replaySpeed?: number;
-    model: string;
-    logger: Logger;
-    strict?: boolean;
-    requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
-    testId?: string;
-    upgradeHeaders?: import("node:http").IncomingHttpHeaders;
-  },
+  defaults: ResponsesWebSocketDefaults,
 ): Promise<void> {
   let parsed: unknown;
   try {
@@ -245,8 +238,106 @@ async function processMessage(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehaviorDefaults: HandlerDefaults = {
+    ...defaults,
+    replaySpeed: defaults.replaySpeed ?? 1,
+  };
+  const misbehavior = planMisbehavior({
+    wire: "openai-responses",
+    fixture,
+    response,
+    request: completionReq,
+    // Responses WebSocket always emits streaming events, even with stream:false.
+    stream: true,
+    emitsToolCallIds: true,
+    defaults: misbehaviorDefaults,
+    // The server has already resolved the upgrade's header/query test ID.
+    rawHeaders: { ...defaults.upgradeHeaders, "x-test-id": testId },
+    url: "/v1/responses",
+  });
+  const recordOutcome = (entry: ReturnType<Journal["add"]>) =>
+    recordMisbehaviorOutcome({
+      entry,
+      summary: misbehavior.summary,
+      defaults: misbehaviorDefaults,
+      testId,
+    });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: "WS",
+      path: "/v1/responses",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordOutcome(entry);
+    if (!misbehavior.summary?.evaluations.length) {
+      defaults.logger.error(
+        `[misbehavior] ${misbehavior.code}: ${misbehavior.message} (testId=${testId})`,
+      );
+    }
+    ws.send(
+      JSON.stringify(
+        buildErrorEvent(misbehavior.message, "invalid_request_error", misbehavior.code),
+      ),
+    );
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareResponsesMisbehavior(misbehavior);
+    const output = buildResponsesMisbehavior(
+      prepared,
+      completionReq,
+      chunkSize,
+      emitEncryptedReasoning,
+    );
+    const entry = journal.add({
+      method: "WS",
+      path: "/v1/responses",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry,
+      summary: prepared.summary,
+      defaults: misbehaviorDefaults,
+      testId,
+    });
+    const timings = fixture.recordedTimings;
+    const gaps = timings?.interChunkDelaysMs;
+    // K4 can add events; extend only its replay using the last recorded gap.
+    const appliedTimings =
+      prepared.duplicateId && timings && gaps
+        ? {
+            ...timings,
+            interChunkDelaysMs: Array.from(
+              { length: Math.max(gaps.length, output.events.length - 1) },
+              (_, index) => gaps[index] ?? gaps.at(-1) ?? 0,
+            ),
+          }
+        : timings;
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await sendEvents(
+      ws,
+      output.events,
+      latency,
+      interruption?.signal,
+      interruption?.tick,
+      appliedTimings,
+      fixture.replaySpeed ?? defaults.replaySpeed,
+    );
+    if (!completed) {
+      ws.destroy();
+      entry.response.interrupted = true;
+      entry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
+    return;
+  }
 
   // The WS path has no per-request `req.headers`; strict is resolved from the
   // connection's upgrade headers (see the `!fixture` branch above). Used below
@@ -256,13 +347,14 @@ async function processMessage(
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const entry = journal.add({
       method: "WS",
       path: "/v1/responses",
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
+    recordOutcome(entry);
     ws.send(
       JSON.stringify(
         buildErrorEvent(response.error.message, response.error.type, response.error.code),
@@ -280,6 +372,7 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
 
     let events: ResponsesSSEEvent[];
     try {
@@ -333,6 +426,7 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
 
     const events = buildTextStreamEvents(
       response.content,
@@ -377,6 +471,7 @@ async function processMessage(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
     let events: ResponsesSSEEvent[];
     try {
       events = buildToolCallStreamEvents(
@@ -421,13 +516,14 @@ async function processMessage(
   }
 
   // Unknown response type
-  journal.add({
+  const entry = journal.add({
     method: "WS",
     path: "/v1/responses",
     headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordOutcome(entry);
   ws.send(
     JSON.stringify(
       buildErrorEvent("Fixture response did not match any known type", "server_error"),
