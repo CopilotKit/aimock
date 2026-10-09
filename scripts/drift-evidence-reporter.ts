@@ -15,6 +15,7 @@ export type EvidenceReporterRecord =
       ancestors: string[];
       title: string;
     }
+  | { kind: "console-unavailable"; taskId: string }
   | { kind: "unavailable" }
   | { kind: "complete" };
 
@@ -28,13 +29,17 @@ export default class DriftEvidenceReporter implements Reporter {
   private emit(record: EvidenceReporterRecord) {
     if (this.broken) return;
     try {
-      const encoded = JSON.stringify(record);
-      writeFileSync(
-        3,
-        (Buffer.byteLength(encoded) <= MAX_EVIDENCE_RECORD_BYTES
-          ? encoded
-          : '{"kind":"unavailable"}') + "\n",
-      );
+      let encoded = JSON.stringify(record);
+      if (Buffer.byteLength(encoded) > MAX_EVIDENCE_RECORD_BYTES) {
+        encoded = JSON.stringify(
+          record.kind === "console" && record.taskId
+            ? { kind: "console-unavailable", taskId: record.taskId }
+            : { kind: "unavailable" },
+        );
+        if (Buffer.byteLength(encoded) > MAX_EVIDENCE_RECORD_BYTES)
+          encoded = '{"kind":"unavailable"}';
+      }
+      writeFileSync(3, encoded + "\n");
     } catch {
       this.broken = true;
       // A missing completion record makes the parent mark the channel unavailable.

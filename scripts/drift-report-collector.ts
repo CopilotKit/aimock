@@ -211,6 +211,14 @@ function parseEvidenceRecord(line: string): EvidenceReporterRecord | null {
   if (!value || typeof value !== "object" || !("kind" in value)) return null;
   if (value.kind === "complete" || value.kind === "unavailable") return { kind: value.kind };
   if (
+    value.kind === "console-unavailable" &&
+    "taskId" in value &&
+    typeof value.taskId === "string" &&
+    value.taskId.length > 0
+  )
+    return { kind: "console-unavailable", taskId: value.taskId };
+
+  if (
     value.kind === "console" &&
     "taskId" in value &&
     typeof value.taskId === "string" &&
@@ -257,6 +265,23 @@ function captureReporterChannel(leg: LegEvidence, stream: string) {
     records.push(record);
   }
   if (records.filter((record) => record.kind === "complete").length !== 1) return;
+  const identities = records.filter((record) => record.kind === "identity");
+  for (const record of records) {
+    if (record.kind !== "console-unavailable") continue;
+    const owners = identities.filter((identity) => identity.id === record.taskId);
+    if (owners.length !== 1) return;
+    const owner = owners[0];
+    if (
+      identities.filter(
+        (identity) =>
+          identity.entity === owner.entity &&
+          resolve(identity.file) === resolve(owner.file) &&
+          identity.title === owner.title &&
+          JSON.stringify(identity.ancestors) === JSON.stringify(owner.ancestors),
+      ).length !== 1
+    )
+      return;
+  }
   reporterChannels.set(leg, records);
 }
 
@@ -272,6 +297,23 @@ function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
   const records = reporterChannels.get(leg) ?? [];
   const identities = records.filter((record) => record.kind === "identity");
   const logs = records.filter((record) => record.kind === "console");
+  const taintedIds = new Set(
+    records
+      .filter((record) => record.kind === "console-unavailable")
+      .map((record) => record.taskId),
+  );
+  const taintedOwners = identities.filter((identity) => taintedIds.has(identity.id));
+  const isTainted = (identity: Extract<EvidenceReporterRecord, { kind: "identity" }>) =>
+    taintedOwners.some((owner) => {
+      if (resolve(identity.file) !== resolve(owner.file)) return false;
+      if (owner.entity === "module") return true;
+      if (owner.entity === "test") return identity.id === owner.id;
+      const path = [...owner.ancestors, owner.title];
+      return (
+        identity.id === owner.id || path.every((part, index) => identity.ancestors[index] === part)
+      );
+    });
+
   const key = (file: string | undefined, ancestors: string[], title: string) =>
     JSON.stringify([file === undefined ? null : resolve(file), ancestors, title]);
   const rows = result.testResults.flatMap((file) =>
@@ -285,6 +327,7 @@ function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
   leg.consoleScopes = [];
   for (const identity of identities) {
     if (!identity.id || identities.filter((item) => item.id === identity.id).length !== 1) continue;
+    if (isTainted(identity)) continue;
     const messages = logs.filter((log) => log.taskId === identity.id);
     if (identity.entity !== "test") {
       matchedIds.add(identity.id);
