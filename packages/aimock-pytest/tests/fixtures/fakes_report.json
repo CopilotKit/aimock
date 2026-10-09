@@ -1,0 +1,14 @@
+{
+  "mcpFakes": {
+    "scope": { "testId": "tests/test_fakes_report.py::test_default_id_served" },
+    "tools": [
+      {
+        "name": "lookup",
+        "calls": [
+          { "id": "lookup-a", "args": { "q": "a" }, "result": "A" },
+          { "id": "never-called", "args": { "q": "z" }, "result": "Z" }
+        ]
+      }
+    ]
+  }
+}
