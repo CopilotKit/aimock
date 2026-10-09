@@ -1,14 +1,22 @@
 /**
  * Byte-identity guard for #505 (namespaced and custom tool calls).
  *
- * Fixtures WITHOUT `type`, `namespace` or `input` must keep producing exactly
- * the Responses wire output they produced before #505. This suite drives a real
- * aimock over HTTP (streaming and non-streaming) and WebSocket for the
- * tool-only, content+toolCalls and ordered-blocks shapes (with and without the
- * reasoning / web-search prefix), normalizes only the random ids and
- * timestamps, and compares the result to a golden file captured on the
- * pre-#505 base (7062bdce).
+ * Fixtures WITHOUT `type`, `namespace` or `input` must keep producing the
+ * Responses output they produced before #505. This suite drives a real aimock
+ * over HTTP (streaming and non-streaming) and WebSocket for four fixtures:
+ * tool-only, tool-only with a reasoning + web-search prefix, content+toolCalls,
+ * and ordered blocks with a reasoning prefix. It records the HTTP status and
+ * the parsed JSON of the non-streaming body, of every SSE `data:` payload and
+ * of every WebSocket message, in order; replaces the random ids and
+ * `created_at` timestamps with stable placeholders; and compares the result to
+ * a golden file. Key order and values are compared exactly; SSE `event:` lines
+ * and JSON whitespace are not.
+ *
+ * The golden is read-only here. It is never written or updated by the test
+ * run (`vitest -u` cannot rebaseline it), and a missing golden fails the test.
  */
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
 import type { Fixture } from "../types.js";
@@ -52,6 +60,10 @@ const fixtures: Fixture[] = [
     },
   },
 ];
+
+const GOLDEN = fileURLToPath(
+  new URL("./__snapshots__/responses-tool-call-byte-identity.json", import.meta.url),
+);
 
 const CASES = ["bi tool-only", "bi tool-prefix", "bi content-tools", "bi blocks"];
 const MODEL = "o3-mini";
@@ -97,33 +109,46 @@ async function postResponses(input: string, stream: boolean): Promise<unknown> {
     body: JSON.stringify({ model: MODEL, input, stream }),
   });
   const text = await res.text();
-  if (!stream) return { status: res.status, body: JSON.parse(text) };
+  const parse = (raw: string): unknown => {
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`${input} (stream=${stream}): not JSON (${String(err)}): ${raw}`);
+    }
+  };
+  if (!stream) return { status: res.status, body: parse(text) };
   const events = text
     .split("\n\n")
     .filter((b) => b.trim())
-    .map((b) =>
-      JSON.parse(
-        b
-          .split("\n")
-          .find((l) => l.startsWith("data: "))!
-          .slice(6),
-      ),
-    );
+    .map((block) => {
+      const data = block.split("\n").find((l) => l.startsWith("data: "));
+      if (data === undefined) throw new Error(`${input}: SSE block has no data line: ${block}`);
+      return parse(data.slice(6));
+    });
   return { status: res.status, events };
 }
 
 async function wsResponses(input: string): Promise<unknown> {
   const ws = await connectWebSocket(mock.url, "/v1/responses");
-  ws.send(JSON.stringify({ type: "response.create", model: MODEL, input }));
-  const deadline = Date.now() + 5000;
-  let msgs: string[] = [];
-  while (Date.now() < deadline) {
-    msgs = ws.getMessages();
-    if (msgs.some((m) => m.includes('"response.completed"'))) break;
-    await new Promise((r) => setTimeout(r, 10));
+  try {
+    ws.send(JSON.stringify({ type: "response.create", model: MODEL, input }));
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const msgs = ws.getMessages();
+      const error = msgs.find((m) => m.includes('"type":"error"'));
+      if (error !== undefined) throw new Error(`WS "${input}": error event: ${error}`);
+      if (msgs.some((m) => m.includes('"type":"response.completed"'))) {
+        return msgs.map((m) => JSON.parse(m) as unknown);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const got = ws.getMessages();
+    throw new Error(
+      `WS "${input}": no response.completed or error within 3s; got ${got.length} messages: ${got.join("\n")}`,
+    );
+  } finally {
+    ws.close();
   }
-  ws.close();
-  return msgs.map((m) => JSON.parse(m));
 }
 
 describe("Responses tool-call output is byte-identical for fixtures without #505 fields", () => {
@@ -136,8 +161,7 @@ describe("Responses tool-call output is byte-identical for fixtures without #505
         websocket: await wsResponses(c),
       });
     }
-    await expect(JSON.stringify(capture, null, 2) + "\n").toMatchFileSnapshot(
-      "./__snapshots__/responses-tool-call-byte-identity.json",
-    );
+    expect(existsSync(GOLDEN), `golden file missing: ${GOLDEN}`).toBe(true);
+    expect(JSON.stringify(capture, null, 2) + "\n").toBe(readFileSync(GOLDEN, "utf8"));
   });
 });

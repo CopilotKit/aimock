@@ -29,6 +29,7 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
   generateMessageId,
   generateToolUseId,
   extractOverrides,
@@ -735,6 +736,7 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     if (response.blocks && response.blocks.length > 0) {
       // NEW PATH: honor the fixture's ordered `blocks` in the positionally
       // observable Anthropic-style content array (tool-first expressible).
@@ -756,7 +758,7 @@ export async function handleBedrock(
       overrides,
     );
     const toolBody = buildBedrockToolCallResponse(
-      response.toolCalls ?? [],
+      functionToolCalls,
       completionReq.model,
       logger,
       // Reasoning is rendered by the text response in this merged path; pass
@@ -827,8 +829,9 @@ export async function handleBedrock(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     const body = buildBedrockToolCallResponse(
-      response.toolCalls,
+      functionToolCalls,
       completionReq.model,
       logger,
       effReasoning,
@@ -1674,9 +1677,10 @@ export async function handleBedrockStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     const events = buildBedrockStreamContentWithToolCallsEvents(
       response.content ?? "",
-      response.toolCalls ?? [],
+      functionToolCalls,
       completionReq.model,
       chunkSize,
       logger,
@@ -1765,8 +1769,9 @@ export async function handleBedrockStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock InvokeModel");
     const events = buildBedrockStreamToolCallEvents(
-      response.toolCalls,
+      functionToolCalls,
       completionReq.model,
       chunkSize,
       logger,

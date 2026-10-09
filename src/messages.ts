@@ -28,6 +28,9 @@ import {
   generateMessageId,
   generateToolUseId,
   extractOverrides,
+  requireEmittedFunctionToolCalls,
+  requireFunctionToolCalls,
+  toolCallFixtureBlock,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -1196,7 +1199,14 @@ export function prepareClaudeMisbehavior(
     isContentWithToolCallsResponse(response) && response.blocks?.length
       ? resolveFixtureBlockOutcome(response.blocks)
       : undefined;
-  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  // The planner skips a custom-call fixture on this wire, so this narrowing
+  // never throws; the normal path's guard rejects it instead.
+  const calls =
+    outcome?.toolCalls ??
+    requireFunctionToolCalls(
+      "toolCalls" in response ? (response.toolCalls ?? []) : [],
+      "Anthropic Messages",
+    );
   const toolCalls = calls.map((call, index) => ({
     ...call,
     // Captured Claude max_tokens tool output has input {}, even for a cut JSON prefix.
@@ -1219,7 +1229,7 @@ export function prepareClaudeMisbehavior(
       content: outcome.content,
       toolCalls,
       blocks: outcome.ordered.map((block) =>
-        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
+        block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[index++]),
       ),
     };
   } else if ("toolCalls" in response) {
@@ -1367,7 +1377,7 @@ export function prepareClaudeMisbehavior(
     const events = isContentWithToolCallsResponse(preparedResponse)
       ? buildClaudeContentWithToolCallsStreamEvents(
           preparedResponse.content ?? "",
-          preparedResponse.toolCalls ?? [],
+          toolCalls,
           model,
           Math.max(1, context.chunkSize),
           context.logger,
@@ -1376,7 +1386,7 @@ export function prepareClaudeMisbehavior(
         )
       : isToolCallResponse(preparedResponse)
         ? buildClaudeToolCallStreamEvents(
-            preparedResponse.toolCalls,
+            toolCalls,
             model,
             Math.max(1, context.chunkSize),
             context.logger,
@@ -1412,14 +1422,14 @@ export function prepareClaudeMisbehavior(
   const body = isContentWithToolCallsResponse(preparedResponse)
     ? buildClaudeContentWithToolCallsResponse(
         preparedResponse.content ?? "",
-        preparedResponse.toolCalls ?? [],
+        toolCalls,
         model,
         context.logger,
         ...args,
         preparedResponse.blocks,
       )
     : isToolCallResponse(preparedResponse)
-      ? buildClaudeToolCallResponse(preparedResponse.toolCalls, model, context.logger, ...args)
+      ? buildClaudeToolCallResponse(toolCalls, model, context.logger, ...args)
       : buildClaudeTextResponse(content, model, ...args);
   return { stream: false, body, plan: preparedPlan, usage };
 }
@@ -1904,10 +1914,11 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         logger,
         effReasoning,
@@ -1921,7 +1932,7 @@ export async function handleMessages(
     } else {
       const events = buildClaudeContentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         logger,
@@ -2062,9 +2073,10 @@ export async function handleMessages(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Anthropic Messages");
     if (claudeReq.stream !== true) {
       const body = buildClaudeToolCallResponse(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         logger,
         effReasoning,
@@ -2076,7 +2088,7 @@ export async function handleMessages(
       res.end(JSON.stringify(body));
     } else {
       const events = buildClaudeToolCallStreamEvents(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         logger,

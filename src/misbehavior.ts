@@ -3,7 +3,9 @@ import {
   isErrorResponse,
   isTextResponse,
   isToolCallResponse,
-  resolveFixtureBlockOutcome,
+  rebuildOrderedBlocks,
+  resolveFixtureBlockCallOutcome,
+  toolCallFixtureBlock,
   resolveTestId,
   toolArgsForWire,
 } from "./helpers.js";
@@ -14,11 +16,13 @@ import type {
   Fixture,
   FixtureBlock,
   FixtureResponse,
+  FixtureToolCall,
   HandlerDefaults,
   JournalEntry,
   MisbehaviorConfig,
   MisbehaviorFault,
   MisbehaviorFaultId,
+  ToolCall,
   WireId,
 } from "./types.js";
 
@@ -189,6 +193,49 @@ function invalidJsonArguments(
   }
 }
 
+/**
+ * The ordered blocks a fault sees. Custom tool calls and namespaces are kept so
+ * an OpenAI Responses rewrite serves them unchanged; the planner never reaches
+ * here with a custom call on any other wire.
+ */
+function faultBlockOutcome(response: FixtureResponse) {
+  return isContentWithToolCallsResponse(response) && response.blocks?.length
+    ? resolveFixtureBlockCallOutcome(response.blocks)
+    : undefined;
+}
+
+/**
+ * Index of a tool fault's target: the first function call, or the first one
+ * named `tool`. A custom tool call has no JSON arguments, so it is never a
+ * fault target; -1 when no function call qualifies.
+ */
+function faultTargetIndex(calls: readonly FixtureToolCall[], tool: string | undefined): number {
+  return calls.findIndex(
+    (call) => call.type !== "custom" && (tool === undefined || call.name === tool),
+  );
+}
+
+/** The function call at `index`, or undefined when absent or custom. */
+function functionCallAt(calls: readonly FixtureToolCall[], index: number): ToolCall | undefined {
+  const call = calls[index];
+  return call !== undefined && call.type !== "custom" ? call : undefined;
+}
+
+/** Replace a response's tool calls one-for-one, rebuilding ordered blocks when present. */
+function rewriteFaultToolCalls(
+  response: FixtureResponse,
+  outcome: ReturnType<typeof faultBlockOutcome>,
+  toolCalls: FixtureToolCall[],
+): FixtureResponse {
+  if (!outcome) return { ...response, toolCalls };
+  return {
+    ...response,
+    content: outcome.content,
+    toolCalls,
+    blocks: rebuildOrderedBlocks(outcome.ordered, toolCalls),
+  };
+}
+
 /** Prepare K1 without selecting a fault, spending counters, or mutating input. */
 export function prepareInvalidJsonCandidate(
   context: MisbehaviorCandidateContext,
@@ -198,11 +245,10 @@ export function prepareInvalidJsonCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   const canonical = args.kind === "parsed" ? args.text : args.raw;
@@ -210,19 +256,12 @@ export function prepareInvalidJsonCandidate(
   const argumentsText = invalidJsonArguments(canonical, style);
   if (argumentsText === undefined)
     return { kind: "not-applicable", detail: `${style} cannot produce changed invalid JSON` };
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: { response: rewritten, target: { tool: target.name, index }, detail: style },
@@ -238,11 +277,10 @@ export function prepareMissingRequiredCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   if (args.kind !== "parsed" || !isObject(args.value))
@@ -260,19 +298,12 @@ export function prepareMissingRequiredCandidate(
   const copied = { ...value };
   delete copied[property];
   const argumentsText = JSON.stringify(copied);
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: {
@@ -309,11 +340,10 @@ export function prepareWrongTypeCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   if (args.kind !== "parsed" || !isObject(args.value))
@@ -351,19 +381,12 @@ export function prepareWrongTypeCandidate(
       detail: "No present declared property has a provably wrong replacement",
     };
   const argumentsText = JSON.stringify({ ...value, [mutation.property]: mutation.replacement });
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: {
@@ -383,11 +406,10 @@ export function prepareExtraPropertyCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   if (args.kind !== "parsed" || !isObject(args.value))
@@ -412,19 +434,12 @@ export function prepareExtraPropertyCandidate(
     }
   }
   const argumentsText = JSON.stringify({ ...value, [property]: true });
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: {
@@ -444,11 +459,10 @@ export function prepareEnumMismatchCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   if (args.kind !== "parsed" || !isObject(args.value))
@@ -477,19 +491,12 @@ export function prepareEnumMismatchCandidate(
       detail: "No present declared enum property has a changed out-of-enum replacement",
     };
   const argumentsText = JSON.stringify({ ...value, [mutation.property]: mutation.replacement });
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: {
@@ -511,29 +518,21 @@ export function prepareNotObjectCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   if (args.kind !== "parsed" || !isObject(args.value))
     return { kind: "not-applicable", detail: "Arguments must parse to an object" };
   const argumentsText = JSON.stringify(args.text);
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: argumentsText } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, arguments: toolCalls[callIndex++].arguments };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index && call.type !== "custom"
+      ? { ...call, arguments: argumentsText }
+      : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: {
@@ -1027,14 +1026,17 @@ export function validateFixtureMisbehavior(
       } else {
         const calls =
           combined && response.blocks?.length
-            ? resolveFixtureBlockOutcome(response.blocks).toolCalls
+            ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
             : "toolCalls" in response
               ? (response.toolCalls ?? [])
               : [];
-        const target =
-          fault.tool === undefined ? calls[0] : calls.find((call) => call.name === fault.tool);
         const toolFault = fault.fault.startsWith("tool-") || fault.fault === "stop-length-mid-tool";
-        if ((toolFault || fault.tool !== undefined) && !target)
+        // Tool faults target function calls only; other faults may scope to any call.
+        const target = toolFault
+          ? functionCallAt(calls, faultTargetIndex(calls, fault.tool))
+          : undefined;
+        if (toolFault && !target) reason = "misbehavior/not-applicable";
+        else if (fault.tool !== undefined && !calls.some((call) => call.name === fault.tool))
           reason = "misbehavior/not-applicable";
         else if (target) {
           const args = toolArgsForWire(target);
@@ -1109,11 +1111,10 @@ export function prepareUnknownNameCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const declared = new Set((context.request.tools ?? []).map((tool) => tool.function.name));
   let name = fault.name ?? `${target.name}_v2`;
@@ -1128,19 +1129,10 @@ export function prepareUnknownNameCandidate(
   }
   if (name === target.name)
     return { kind: "not-applicable", detail: "Replacement tool name is unchanged" };
-  const toolCalls = calls.map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { name } : {}),
-  }));
-  let rewritten: FixtureResponse = { ...response, toolCalls };
-  if (outcome) {
-    let callIndex = 0;
-    const blocks = outcome.ordered.map((block) => {
-      if (block.type === "text") return { ...block };
-      return { ...block, name: toolCalls[callIndex++].name };
-    });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
-  }
+  const toolCalls = calls.map((call, callIndex) =>
+    callIndex === index ? { ...call, name } : { ...call },
+  );
+  const rewritten = rewriteFaultToolCalls(response, outcome, toolCalls);
   return {
     kind: "ready",
     candidate: { response: rewritten, target: { tool: target.name, index }, detail: name },
@@ -1166,12 +1158,10 @@ export function prepareDuplicateIdCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const sourceIndex =
-    fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const source = calls[sourceIndex];
+  const sourceIndex = faultTargetIndex(calls, fault.tool);
+  const source = functionCallAt(calls, sourceIndex);
   if (!source) return { kind: "not-applicable", detail: "Target tool call is absent" };
   if (context.toolCallIdMode === "authored-nonempty") {
     const emitsToolCallIds = Boolean(source.id);
@@ -1193,9 +1183,7 @@ export function prepareDuplicateIdCandidate(
     let callIndex = 0;
     const blocks = outcome.ordered.flatMap<FixtureBlock>((block) => {
       if (block.type === "text") return [{ ...block }];
-      const call = toolCalls[callIndex++];
-      const rewrittenBlock = { ...block, ...call };
-      if (call.id === undefined) delete rewrittenBlock.id;
+      const rewrittenBlock = toolCallFixtureBlock(toolCalls[callIndex++]);
       return calls.length === 1 ? [rewrittenBlock, { ...rewrittenBlock }] : [rewrittenBlock];
     });
     rewritten = { ...response, content: outcome.content, toolCalls, blocks };
@@ -1219,11 +1207,10 @@ export function prepareLengthCandidate(
   const combined = isContentWithToolCallsResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
-  const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const outcome = faultBlockOutcome(response);
   const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
-  const index = fault.tool === undefined ? 0 : calls.findIndex((call) => call.name === fault.tool);
-  const target = calls[index];
+  const index = faultTargetIndex(calls, fault.tool);
+  const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
   const args = toolArgsForWire(target);
   const canonical = args.kind === "parsed" ? args.text : args.raw;
@@ -1231,10 +1218,13 @@ export function prepareLengthCandidate(
   const cut = Math.max(1, Math.floor(canonical.length * at));
   if (canonical.length < 2 || !(cut < canonical.length))
     return { kind: "not-applicable", detail: "Arguments have no strict nonempty proper prefix" };
-  const toolCalls = calls.slice(0, index + 1).map((call, callIndex) => ({
-    ...call,
-    ...(callIndex === index ? { arguments: canonical.slice(0, cut) } : {}),
-  }));
+  const toolCalls = calls
+    .slice(0, index + 1)
+    .map((call, callIndex) =>
+      callIndex === index && call.type !== "custom"
+        ? { ...call, arguments: canonical.slice(0, cut) }
+        : { ...call },
+    );
   let rewritten: FixtureResponse = { ...response, toolCalls };
   if (outcome) {
     const blocks: FixtureBlock[] = [];
@@ -1245,7 +1235,7 @@ export function prepareLengthCandidate(
         content += block.text;
         blocks.push({ ...block });
       } else {
-        blocks.push({ ...block, arguments: toolCalls[callIndex].arguments });
+        blocks.push(toolCallFixtureBlock(toolCalls[callIndex]));
         if (callIndex++ === index) break;
       }
     }
@@ -1289,7 +1279,7 @@ export function prepareEmptyCandidate(
   if (fault.tool !== undefined) {
     const calls =
       isContentWithToolCallsResponse(response) && response.blocks?.length
-        ? resolveFixtureBlockOutcome(response.blocks).toolCalls
+        ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
         : "toolCalls" in response
           ? (response.toolCalls ?? [])
           : [];
@@ -1419,9 +1409,16 @@ export interface MisbehaviorEvaluation {
   ordinal?: number;
 }
 export interface ServedMisbehaviorToolCall {
+  /**
+   * `"custom"` marks an OpenAI Responses custom tool call; its free-text
+   * `input` is carried in `arguments`, as in a `ToolCallMessage`.
+   */
+  type?: "custom";
   name: string;
   arguments: string;
   id?: string;
+  /** OpenAI Responses namespace, recorded only when the call had one. */
+  namespace?: string;
 }
 export interface MisbehaviorSummary {
   applied: boolean;
@@ -1476,6 +1473,20 @@ function misbehaviorRoll(seed: number): number {
   return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
 }
 
+/**
+ * Whether a response would emit a custom tool call. Non-empty ordered `blocks`
+ * are authoritative (the legacy `toolCalls` are then never emitted), as in
+ * `requireEmittedFunctionToolCalls`.
+ */
+function hasCustomToolCall(response: FixtureResponse): boolean {
+  if (typeof response !== "object" || response === null) return false;
+  const blocks = "blocks" in response ? response.blocks : undefined;
+  if (Array.isArray(blocks) && blocks.length > 0)
+    return blocks.some((block) => isObject(block) && block.type === "customToolCall");
+  const calls = "toolCalls" in response ? response.toolCalls : undefined;
+  return Array.isArray(calls) && calls.some((call) => isObject(call) && call.type === "custom");
+}
+
 /** Complete preparation precedes selection; every candidate sees the original response. */
 export function planMisbehavior(input: {
   wire: WireId;
@@ -1515,6 +1526,10 @@ export function planMisbehavior(input: {
       message: `${wire}: ${parsed.issue.message}`,
       summary: { applied: false, source, wire, evaluations: [] },
     };
+  // Only the OpenAI Responses API can serve a custom tool call. Elsewhere the
+  // fixture is unservable, so no fault is evaluated and the wire's own guard
+  // rejects it with the coded aimock_unsupported_tool_call error.
+  if (wire !== "openai-responses" && hasCustomToolCall(input.response)) return { kind: "skipped" };
   const config = parsed.config;
   const explicit = source === "header" || source === "fixture";
   const evaluations: MisbehaviorEvaluation[] = [];

@@ -227,6 +227,9 @@ export {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   resolveFixtureBlocks,
+  UnsupportedToolCallError,
+  InvalidFixtureToolCallError,
+  requireFunctionToolCalls,
   isErrorResponse,
   isEmbeddingResponse,
   isImageResponse,
@@ -240,7 +243,7 @@ export {
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
-export type { EmbeddingAPIResponse } from "./helpers.js";
+export type { EmbeddingAPIResponse, FunctionFixtureBlock } from "./helpers.js";
 
 // Interruption
 export { createInterruptionSignal } from "./interruption.js";
@@ -488,6 +491,8 @@ export type {
   FixtureMatch,
   TextResponse,
   ToolCall,
+  CustomToolCall,
+  FixtureToolCall,
   FixtureBlock,
   ToolCallResponse,
   ErrorResponse,

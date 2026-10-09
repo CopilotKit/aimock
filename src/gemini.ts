@@ -28,6 +28,8 @@ import {
   isErrorResponse,
   isAudioResponse,
   extractOverrides,
+  requireFunctionToolCalls,
+  requireEmittedFunctionToolCalls,
   validateToolsField,
   formatToMime,
   flattenHeaders,
@@ -715,6 +717,7 @@ function resolveAudioInlineData(audio: AudioResponse): { mimeType: string; data:
 // would never emit.
 function buildGeminiAudioParts(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiPart[] {
@@ -726,22 +729,26 @@ function buildGeminiAudioParts(
   if (audio.content) {
     parts.push({ text: audio.content });
   }
-  if (audio.toolCalls?.length) {
-    parts.push(...audio.toolCalls.map((tc) => parseToolCallPart(tc, logger)));
+  if (toolCalls.length) {
+    parts.push(...toolCalls.map((tc) => parseToolCallPart(tc, logger)));
   }
   return parts;
 }
 
 function buildGeminiAudioResponse(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiResponseChunk {
   return {
     candidates: [
       {
-        content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
-        finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
+        content: {
+          role: "model",
+          parts: buildGeminiAudioParts(audio, toolCalls, logger, effReasoning),
+        },
+        finishReason: toolCalls.length ? "FUNCTION_CALL" : "STOP",
         index: 0,
       },
     ],
@@ -751,6 +758,7 @@ function buildGeminiAudioResponse(
 
 function buildGeminiAudioStreamChunks(
   audio: AudioResponse,
+  toolCalls: ToolCall[],
   logger: Logger,
   effReasoning: string | undefined,
 ): GeminiResponseChunk[] {
@@ -758,8 +766,11 @@ function buildGeminiAudioStreamChunks(
     {
       candidates: [
         {
-          content: { role: "model", parts: buildGeminiAudioParts(audio, logger, effReasoning) },
-          finishReason: audio.toolCalls?.length ? "FUNCTION_CALL" : "STOP",
+          content: {
+            role: "model",
+            parts: buildGeminiAudioParts(audio, toolCalls, logger, effReasoning),
+          },
+          finishReason: toolCalls.length ? "FUNCTION_CALL" : "STOP",
           index: 0,
         },
       ],
@@ -833,7 +844,11 @@ function prepareGeminiMisbehavior(
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
-  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
+  // The planner skips a custom-call fixture on this wire, so this narrowing
+  // never throws; the normal path's guard rejects it instead.
+  const calls =
+    outcome?.toolCalls ??
+    requireFunctionToolCalls("toolCalls" in response ? (response.toolCalls ?? []) : [], "Gemini");
   const overrides = extractOverrides(response);
   delete overrides.usage;
   const fault = plan.summary.fault;
@@ -965,6 +980,7 @@ export async function handleGemini(
   providerKey: RecordProviderKey = "gemini",
 ): Promise<void> {
   const { logger } = defaults;
+  const wire = providerKey === "vertexai" ? "Vertex AI" : "Gemini";
   setCorsHeaders(res);
 
   let geminiReq: GeminiRequest;
@@ -1298,12 +1314,16 @@ export async function handleGemini(
       defaults,
       testId,
     });
+    // A non-array companion `toolCalls` emits no tool parts, as before custom calls existed.
+    const audioToolCalls = Array.isArray(response.toolCalls)
+      ? requireFunctionToolCalls(response.toolCalls, wire)
+      : [];
     if (!streaming) {
-      const body = buildGeminiAudioResponse(response, logger, effReasoning);
+      const body = buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const chunks = buildGeminiAudioStreamChunks(response, logger, effReasoning);
+      const chunks = buildGeminiAudioStreamChunks(response, audioToolCalls, logger, effReasoning);
       const interruption = createInterruptionSignal(fixture);
       const completed = await writeGeminiSSEStream(res, chunks, {
         latency,
@@ -1349,10 +1369,11 @@ export async function handleGemini(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
       const body = buildGeminiContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         logger,
         effReasoning,
         overrides,
@@ -1363,7 +1384,7 @@ export async function handleGemini(
     } else {
       const chunks = buildGeminiContentWithToolCallsStreamChunks(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
@@ -1471,13 +1492,14 @@ export async function handleGemini(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, wire);
     if (!streaming) {
-      const body = buildGeminiToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
+      const body = buildGeminiToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const chunks = buildGeminiToolCallStreamChunks(
-        response.toolCalls,
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,

@@ -21,6 +21,8 @@ import {
   type ResponsesSSEEvent,
 } from "./responses.js";
 import {
+  fixtureToolCallErrorCode,
+  isFixtureToolCallError,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -97,7 +99,8 @@ export function handleWebSocketResponses(
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket responses error: ${msg}`);
         try {
-          ws.send(JSON.stringify(buildErrorEvent(msg, "server_error")));
+          const code = isFixtureToolCallError(err) ? fixtureToolCallErrorCode(err) : undefined;
+          ws.send(JSON.stringify(buildErrorEvent(msg, "server_error", code)));
         } catch (sendErr) {
           defaults.logger.debug(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
@@ -395,6 +398,7 @@ async function processMessage(
       );
     } catch (error) {
       journalEntry.response.status = 500;
+      journalEntry.response.error = error instanceof Error ? error.message : String(error);
       throw error;
     }
 
@@ -494,6 +498,7 @@ async function processMessage(
       );
     } catch (error) {
       journalEntry.response.status = 500;
+      journalEntry.response.error = error instanceof Error ? error.message : String(error);
       throw error;
     }
     const interruption = createInterruptionSignal(fixture);

@@ -1,0 +1,380 @@
+/**
+ * #505 — load-time validation and request-time guards for namespaced and
+ * custom tool calls: the validating doors (`aimock validate`, the control API,
+ * `addFixturesFromJSON`) reject a malformed call at load, and a fixture file
+ * loaded without validation fails at request time with a coded 500 (or a
+ * failed Realtime `response.done`).
+ */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import { LLMock } from "../llmock.js";
+import { runValidateCli } from "../validate-cli.js";
+import type { FixtureFileEntry } from "../types.js";
+import { connectWebSocket } from "./ws-test-client.js";
+
+const entry = (response: Record<string, unknown>): FixtureFileEntry =>
+  ({ match: { userMessage: "go" }, response }) as FixtureFileEntry;
+
+function issuesFor(response: Record<string, unknown>) {
+  return validateFixtures([entryToFixture(entry(response))]).map((r) => [r.severity, r.message]);
+}
+
+const rows: Array<{
+  id: string;
+  response: Record<string, unknown>;
+  expected: [string, string];
+}> = [
+  {
+    // Loaded before custom calls existed: a warning, still a function call.
+    id: "unknown type",
+    response: { toolCalls: [{ type: "toolCall", name: "f", arguments: "{}" }] },
+    expected: [
+      "warning",
+      'toolCalls[0].type "toolCall" is read as a function call; use "function" (or omit type), or "custom" for a custom tool call',
+    ],
+  },
+  {
+    id: "empty namespace",
+    response: { toolCalls: [{ name: "f", namespace: "", arguments: "{}" }] },
+    expected: ["error", "toolCalls[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "non-string namespace",
+    response: { toolCalls: [{ type: "custom", name: "f", namespace: 3, input: "x" }] },
+    expected: ["error", "toolCalls[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "custom empty name",
+    response: { toolCalls: [{ type: "custom", name: "", input: "x" }] },
+    expected: ["error", "toolCalls[0].name is empty"],
+  },
+  {
+    id: "custom missing input",
+    response: { toolCalls: [{ type: "custom", name: "apply_patch" }] },
+    expected: ["error", "toolCalls[0].input must be a string for a custom tool call"],
+  },
+  {
+    id: "custom non-string input",
+    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: { a: 1 } }] },
+    expected: ["error", "toolCalls[0].input must be a string for a custom tool call"],
+  },
+  {
+    id: "custom with arguments",
+    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "x", arguments: "{}" }] },
+    expected: ["error", "toolCalls[0].arguments is not valid on a custom tool call; use input"],
+  },
+  {
+    id: "custom empty input",
+    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "" }] },
+    expected: ["warning", "toolCalls[0].input is empty"],
+  },
+  {
+    // Loaded before custom calls existed: a warning, the input is ignored.
+    id: "function with input",
+    response: { toolCalls: [{ name: "f", arguments: "{}", input: "x" }] },
+    expected: [
+      "warning",
+      'toolCalls[0].input is ignored on a function call; it is only valid when type is "custom"',
+    ],
+  },
+  {
+    id: "function invalid JSON (content+toolCalls)",
+    response: { content: "c", toolCalls: [{ type: "function", name: "f", arguments: "{" }] },
+    expected: [
+      "error",
+      "toolCalls[0].arguments is not valid JSON: {; to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`",
+    ],
+  },
+  {
+    id: "customToolCall block missing input",
+    response: { blocks: [{ type: "customToolCall", name: "apply_patch" }] },
+    expected: ["error", "blocks[0].input must be a string for a custom tool call"],
+  },
+  {
+    id: "customToolCall block with arguments",
+    response: {
+      blocks: [{ type: "customToolCall", name: "apply_patch", input: "x", arguments: "{}" }],
+    },
+    expected: ["error", "blocks[0].arguments is not valid on a custom tool call; use input"],
+  },
+  {
+    id: "customToolCall block empty input",
+    response: { blocks: [{ type: "customToolCall", name: "apply_patch", input: "" }] },
+    expected: ["warning", "blocks[0].input is empty"],
+  },
+  {
+    id: "customToolCall block empty namespace",
+    response: { blocks: [{ type: "customToolCall", name: "run", namespace: "", input: "x" }] },
+    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "customToolCall block empty name",
+    response: { blocks: [{ type: "customToolCall", name: "", input: "x" }] },
+    expected: ["error", "blocks[0].name must be a non-empty string"],
+  },
+  {
+    id: "customToolCall block non-string id",
+    response: { blocks: [{ type: "customToolCall", name: "apply_patch", input: "x", id: 7 }] },
+    expected: ["error", "blocks[0].id must be a string, got number"],
+  },
+  {
+    id: "customToolCall block non-string namespace",
+    response: { blocks: [{ type: "customToolCall", name: "run", namespace: 7, input: "x" }] },
+    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "toolCall block non-string namespace",
+    response: { blocks: [{ type: "toolCall", name: "f", namespace: 7, arguments: "{}" }] },
+    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "toolCall block with input",
+    response: { blocks: [{ type: "toolCall", name: "f", arguments: "{}", input: "x" }] },
+    expected: ["error", 'blocks[0].input is only valid on a "customToolCall" block'],
+  },
+  {
+    id: "unknown block type",
+    response: { blocks: [{ type: "custom", name: "apply_patch", input: "x" }] },
+    expected: [
+      "error",
+      'blocks[0].type must be "text", "toolCall" or "customToolCall", got "custom"',
+    ],
+  },
+];
+
+describe("validateFixtures: namespace and custom tool call rules", () => {
+  // Each row has exactly one defect, so it yields exactly one issue.
+  it.each(rows)("$id", ({ response, expected }) => {
+    expect(issuesFor(response)).toEqual([expected]);
+  });
+
+  it("does not stringify object arguments on a custom call (they stay invalid, not JSON)", () => {
+    const fixture = entryToFixture(
+      entry({
+        toolCalls: [{ type: "custom", name: "apply_patch", input: "x", arguments: { a: 1 } }],
+      }),
+    );
+    const stored: unknown = (fixture.response as { toolCalls: unknown[] }).toolCalls[0];
+    expect(stored).toEqual({
+      type: "custom",
+      name: "apply_patch",
+      input: "x",
+      arguments: { a: 1 },
+    });
+    expect(validateFixtures([fixture]).map((r) => [r.severity, r.message])).toEqual([
+      ["error", "toolCalls[0].arguments is not valid on a custom tool call; use input"],
+    ]);
+  });
+
+  it("accepts valid namespaced and custom calls with no issues, and never parses or stringifies input", () => {
+    const input = '{"looks":"like json"} but is free text';
+    const fixture = entryToFixture(
+      entry({
+        toolCalls: [
+          { name: "f", namespace: "ns", arguments: { a: 1 } },
+          { type: "custom", name: "apply_patch", namespace: "sandbox", input },
+        ],
+        blocks: [
+          { type: "toolCall", name: "f", namespace: "ns", arguments: "{}" },
+          { type: "customToolCall", name: "apply_patch", input },
+        ],
+      }),
+    );
+    expect(validateFixtures([fixture]).filter((r) => r.severity === "error")).toEqual([]);
+    const calls = (fixture.response as { toolCalls: Array<Record<string, unknown>> }).toolCalls;
+    expect(calls[0].arguments).toBe('{"a":1}');
+    expect(calls[1]).toEqual({ type: "custom", name: "apply_patch", namespace: "sandbox", input });
+  });
+});
+
+describe("validating doors reject at load; unvalidated loads fail at request time", () => {
+  let dir: string | undefined;
+  let mock: LLMock | undefined;
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const bad = { toolCalls: [{ type: "custom", name: "apply_patch", arguments: { a: 1 } }] };
+
+  it("aimock validate", () => {
+    dir = mkdtempSync(join(tmpdir(), "aimock-505-validate-"));
+    const file = join(dir, "custom.json");
+    writeFileSync(file, JSON.stringify({ fixtures: [entry(bad)] }));
+    const logs: string[] = [];
+    let code: number | null = null;
+    runValidateCli({
+      argv: [file],
+      log: (m) => logs.push(m),
+      logError: (m) => logs.push(m),
+      exit: (c) => {
+        code = c;
+      },
+    });
+    expect(code).toBe(1);
+    expect(logs.join("\n")).toContain("toolCalls[0].input must be a string for a custom tool call");
+  });
+
+  it("control API", async () => {
+    mock = new LLMock({ port: 0, logLevel: "silent" });
+    await mock.start();
+    const res = await fetch(`${mock.url}/__aimock/fixtures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fixtures: [entry(bad)] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain(
+      "toolCalls[0].arguments is not valid on a custom tool call; use input",
+    );
+  });
+
+  it("addFixturesFromJSON", () => {
+    const unstarted = new LLMock({ port: 0 });
+    expect(() => unstarted.addFixturesFromJSON([entry(bad)])).toThrow(
+      /toolCalls\[0\]\.input must be a string for a custom tool call/,
+    );
+  });
+
+  /** Load `response` through the unvalidated file door and start the server. */
+  async function startUnvalidated(response: Record<string, unknown>): Promise<LLMock> {
+    dir = mkdtempSync(join(tmpdir(), "aimock-505-unvalidated-"));
+    const file = join(dir, "custom.json");
+    writeFileSync(file, JSON.stringify({ fixtures: [entry(response)] }));
+    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.loadFixtureFile(file);
+    await mock.start();
+    return mock;
+  }
+
+  async function hit(m: LLMock, path: string, body: Record<string, unknown>) {
+    const res = await fetch(`${m.url}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    });
+    return { status: res.status, text: await res.text() };
+  }
+
+  it("an unvalidated file load fails at request time with an explicit 500 on /v1/responses", async () => {
+    const m = await startUnvalidated(bad);
+    const r = await hit(m, "/v1/responses", { model: "gpt-5", input: "go" });
+    expect(r.status, r.text).toBe(500);
+    const message =
+      'Invalid fixture tool call: "input" must be a string for a custom tool call (toolCalls[0])';
+    expect((JSON.parse(r.text) as { error: unknown }).error).toEqual({
+      message,
+      type: "server_error",
+      code: "aimock_invalid_fixture_tool_call",
+    });
+    expect(m.getLastRequest()?.response).toMatchObject({ status: 500, error: message });
+  });
+
+  const UNSUPPORTED =
+    'aimock: fixture tool call "apply_patch" is a custom tool call, which only the OpenAI Responses API supports';
+
+  it.each([
+    {
+      wire: "Chat Completions",
+      path: "/v1/chat/completions",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "go" }] },
+    },
+    {
+      wire: "Anthropic Messages",
+      path: "/v1/messages",
+      body: { model: "claude", max_tokens: 64, messages: [{ role: "user", content: "go" }] },
+    },
+  ])(
+    "an unvalidated file load on $wire answers 500 aimock_unsupported_tool_call and journals the error",
+    async ({ path, body }) => {
+      const m = await startUnvalidated(bad);
+      const r = await hit(m, path, body);
+      expect(r.status, r.text).toBe(500);
+      // Both wires carry `error.code` and `error.message` in their envelope.
+      const json = JSON.parse(r.text) as { error?: { code?: unknown; message?: unknown } };
+      expect(json.error?.code, r.text).toBe("aimock_unsupported_tool_call");
+      expect(String(json.error?.message)).toContain(UNSUPPORTED);
+      const journaled = m.getLastRequest()?.response;
+      expect(journaled?.status).toBe(500);
+      expect(journaled?.error).toContain(UNSUPPORTED);
+    },
+  );
+
+  it.each([
+    {
+      id: "non-string id on a customToolCall block",
+      block: { type: "customToolCall", name: "apply_patch", input: "x", id: 7 },
+      message: '"customToolCall" block "id" must be a string when present',
+    },
+    {
+      id: "empty namespace on a toolCall block",
+      block: { type: "toolCall", name: "f", namespace: "", arguments: "{}" },
+      message: '"namespace" must be a non-empty string when present',
+    },
+    {
+      id: "non-string namespace on a customToolCall block",
+      block: { type: "customToolCall", name: "run", namespace: 7, input: "x" },
+      message: '"namespace" must be a non-empty string when present',
+    },
+  ])(
+    "an unvalidated block with $id fails at request time on /v1/responses",
+    async ({ block, message }) => {
+      const m = await startUnvalidated({ blocks: [{ type: "text", text: "hi" }, block] });
+      const r = await hit(m, "/v1/responses", { model: "gpt-5", input: "go", stream: true });
+      expect(r.status, r.text).toBe(500);
+      const json = JSON.parse(r.text) as { error?: { code?: unknown; message?: unknown } };
+      expect(json.error?.message).toBe(`Invalid fixture block at index 1: ${message}`);
+      expect(json.error?.code, r.text).toBe("aimock_invalid_fixture_tool_call");
+      expect(m.getLastRequest()?.response.error).toBe(
+        `Invalid fixture block at index 1: ${message}`,
+      );
+    },
+  );
+
+  it("an unvalidated file load on the Realtime WebSocket fails the response and journals the error", async () => {
+    const m = await startUnvalidated(bad);
+    const ws = await connectWebSocket(m.url, "/v1/realtime");
+    let done: { response: { status: string; status_details: { error: unknown } } } | undefined;
+    try {
+      await ws.waitForMessages(1); // session.created
+      ws.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+        }),
+      );
+      await ws.waitForMessages(2);
+      ws.send(JSON.stringify({ type: "response.create" }));
+      // Realtime reports the rejection as a failed response.done, not an `error` event.
+      const deadline = Date.now() + 5000;
+      while (done === undefined) {
+        done = ws
+          .getMessages()
+          .map((x) => JSON.parse(x) as { type: string } & NonNullable<typeof done>)
+          .find((e) => e.type === "response.done");
+        if (done !== undefined) break;
+        if (Date.now() > deadline) {
+          throw new Error(`no response.done within 5s; got: ${ws.getMessages().join("\n")}`);
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    } finally {
+      ws.close();
+    }
+    expect(done.response.status).toBe("failed");
+    expect(done.response.status_details.error).toEqual({
+      message: expect.stringContaining(UNSUPPORTED),
+      type: "server_error",
+      code: "aimock_unsupported_tool_call",
+    });
+    const journaled = m.getLastRequest()?.response;
+    expect(journaled?.status).toBe(500);
+    expect(journaled?.error).toContain(UNSUPPORTED);
+  });
+});

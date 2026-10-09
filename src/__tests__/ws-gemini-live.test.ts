@@ -802,6 +802,14 @@ describe("WebSocket Gemini Live BidiGenerateContent", () => {
         code: 13,
         status: "INTERNAL",
         message: expect.stringContaining('fixture tool call "search" has invalid JSON arguments'),
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "AIMOCK_INVALID_TOOL_ARGUMENTS",
+            domain: "aimock",
+            metadata: { code: "aimock_invalid_tool_arguments" },
+          },
+        ],
       },
     });
 

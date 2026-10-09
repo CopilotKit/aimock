@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { entryToFixture, loadFixtureFile, loadFixturesFromDir } from "../fixture-loader.js";
 import type {
   FixtureFileEntry,
+  FixtureToolCall,
+  ToolCall,
   ToolCallResponse,
   TextResponse,
   ContentWithToolCallsResponse,
@@ -866,6 +868,26 @@ describe("validateFixtures", () => {
           r.severity === "error" && r.message.includes("blocks[0]") && r.message.includes("text"),
       ),
     ).toBe(true);
+  });
+
+  it("error: an array block is rejected as a non-object, like any other non-object block", () => {
+    const withBlock = (block: unknown) =>
+      validateFixtures([makeFixture({ response: { blocks: [block] } as never })]);
+    const expected = [
+      { severity: "error", fixtureIndex: 0, message: "blocks[0] must be an object" },
+    ];
+    expect(withBlock("x")).toEqual(expected);
+    expect(withBlock(["x"])).toEqual(expected);
+    expect(withBlock([])).toEqual(expected);
+  });
+
+  it("error: an array toolCalls entry gets the same results as any other non-object entry", () => {
+    const withEntry = (entry: unknown) =>
+      validateFixtures([makeFixture({ response: { toolCalls: [entry] } as never })]);
+    const nonObject = withEntry("x");
+    expect(nonObject.some((r) => r.severity === "error")).toBe(true);
+    expect(withEntry(["x"])).toEqual(nonObject);
+    expect(withEntry([])).toEqual(nonObject);
   });
 
   it("error: toolCall block with non-string name", () => {
@@ -2006,6 +2028,13 @@ describe("validateFixtures", () => {
  *  Auto-stringify: object arguments / content in fixture files        *
  * ------------------------------------------------------------------ */
 
+/** Narrow a fixture tool call to a function call; fails loudly on a missing or custom call. */
+function functionCall(tc: FixtureToolCall | undefined): ToolCall {
+  if (tc === undefined) throw new Error("expected a tool call, got none");
+  if (tc.type === "custom") throw new Error(`expected a function call, got custom "${tc.name}"`);
+  return tc;
+}
+
 describe("auto-stringify JSON objects in fixture entries", () => {
   it("stringifies object arguments in toolCalls", () => {
     const entry: FixtureFileEntry = {
@@ -2015,7 +2044,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tc = (fixture.response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixture.response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBe('{"city":"SF","temp":72}');
   });
 
@@ -2027,7 +2056,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tc = (fixture.response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixture.response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBe('{"city":"SF"}');
   });
 
@@ -2091,7 +2120,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tc = (fixture.response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixture.response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBe('{"outer":{"inner":[1,2,3]},"flag":true}');
   });
 
@@ -2106,7 +2135,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
     const fixture = entryToFixture(entry);
     const resp = fixture.response as ContentWithToolCallsResponse;
     expect(resp.content).toBe('{"summary":"done"}');
-    expect(resp.toolCalls![0].arguments).toBe('{"id":1}');
+    expect(functionCall(resp.toolCalls?.[0]).arguments).toBe('{"id":1}');
   });
 
   it("preserves ResponseOverrides fields through normalization", () => {
@@ -2162,7 +2191,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tc = (fixture.response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixture.response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBe("[1,2]");
   });
 
@@ -2174,7 +2203,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tc = (fixture.response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixture.response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBeNull();
   });
 
@@ -2189,7 +2218,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
       },
     };
     const fixture = entryToFixture(entry);
-    const tcs = (fixture.response as ToolCallResponse).toolCalls;
+    const tcs = (fixture.response as ToolCallResponse).toolCalls.map(functionCall);
     expect(tcs[0].arguments).toBe('{"a":1}');
     expect(tcs[1].arguments).toBe('{"b":2}');
   });
@@ -2233,7 +2262,7 @@ describe("auto-stringify JSON objects in fixture entries", () => {
 
     expect(fixtures).toHaveLength(2);
 
-    const tc = (fixtures[0].response as ToolCallResponse).toolCalls[0];
+    const tc = functionCall((fixtures[0].response as ToolCallResponse).toolCalls[0]);
     expect(tc.arguments).toBe('{"city":"SF","temp":72}');
 
     expect((fixtures[1].response as TextResponse).content).toBe(

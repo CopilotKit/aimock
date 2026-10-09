@@ -29,6 +29,7 @@ import {
   generateToolCallId,
   generateDeterministicEmbedding,
   extractOverrides,
+  requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -1261,10 +1262,11 @@ export async function handleCohere(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
       const body = buildCohereContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         logger,
         effReasoning,
         overrides,
@@ -1275,7 +1277,7 @@ export async function handleCohere(
     } else {
       const events = buildCohereContentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
@@ -1394,13 +1396,14 @@ export async function handleCohere(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Cohere");
     if (cohereReq.stream !== true) {
-      const body = buildCohereToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
+      const body = buildCohereToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
       const events = buildCohereToolCallStreamEvents(
-        response.toolCalls,
+        functionToolCalls,
         chunkSize,
         logger,
         effReasoning,
