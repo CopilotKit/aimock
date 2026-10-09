@@ -382,6 +382,8 @@ describe("recorded /models family waves are classified", () => {
       "claude-opus-5-5",
       // 2026-09-24..30 wave (first listed 09-29): Sonnet 5.5 point release
       "claude-sonnet-5-5",
+      // 2026-10-08 wave: Haiku 5.5 point release
+      "claude-haiku-5-5",
     ];
     expect(unclassifiedFamilies(anthropicLive, "anthropic")).toEqual([]);
   });
