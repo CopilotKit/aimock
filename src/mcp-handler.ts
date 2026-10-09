@@ -241,7 +241,7 @@ type FakeFailure = { message: string; aimock: Record<string, unknown> } & (
  * The 9.2 error for a failed claim (`mismatch`, `exhausted`, `evicted`), or
  * for an undeclared tool under `deny` (`not_declared`).
  */
-function fakeFailure(
+export function fakeFailure(
   claim: Exclude<McpFakeClaim, { kind: "answer" } | { kind: "none" }> | { kind: "not_declared" },
   tool: string,
   ctx: FakeRequestContext,

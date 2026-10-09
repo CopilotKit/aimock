@@ -1,5 +1,5 @@
 import * as http from "node:http";
-import type { McpFakeSource, Mountable } from "./types.js";
+import type { McpFakeSource, McpRecordConfig, Mountable } from "./types.js";
 import type { Journal } from "./journal.js";
 import type { MetricsRegistry } from "./metrics.js";
 import type { Logger } from "./logger.js";
@@ -34,6 +34,8 @@ import {
 } from "./mcp-fakes.js";
 import { build, fixed, msg, plainText, quote } from "./message-text.js";
 import { flattenHeaders, readBody } from "./helpers.js";
+import { McpRecorder, mcpRecordEnv, type RecorderHost } from "./mcp-recorder.js";
+import { validateSecretValues } from "./record-sanitize.js";
 
 export class MCPMock implements Mountable {
   private tools: Map<
@@ -67,6 +69,8 @@ export class MCPMock implements Mountable {
   private logger: Logger | null = null;
   /** T1: recorded timing (`durationMs`, `atMs`) plays at value / speed. */
   private replaySpeed = 1;
+  /** MR1: the recorder while recording is on, else null (AM1). */
+  private recorder: McpRecorder | null = null;
   private options: MCPMockOptions;
   private requestHandler: ReturnType<typeof createMCPRequestHandler>;
 
@@ -148,10 +152,54 @@ export class MCPMock implements Mountable {
   clearMcpFakes(): void {
     this.fakes.clear();
     this.fakeBlocks = 0;
+    this.recorder?.reset();
   }
 
   resetScenarioState(testId?: string): void {
     this.fakes.resetState(testId);
+    this.recorder?.reset(testId);
+  }
+
+  // ---- MCP recording (MR1) ----
+
+  /**
+   * Record a real upstream MCP server (MR1): from now on every request to
+   * this mount is forwarded to `config.upstream` (all paths and methods), a
+   * fake that applies still answers locally, and each forwarded `tools/list`
+   * and `tools/call` is written to an `mcpFakes` file under
+   * `config.fixturePath`. `secretValues` and `upstreamAuth` that are
+   * `undefined` come from `AIMOCK_RECORD_SECRET_VALUES` and
+   * `AIMOCK_MCP_UPSTREAM_AUTH`, as on the CLI and config paths. Throws on an
+   * invalid upstream URL, a malformed `upstreamAuth` (or env auth), or a
+   * `secretValues` entry shorter than 8 characters.
+   */
+  enableRecording(config: McpRecordConfig): this {
+    let resolved = config;
+    if (config.secretValues === undefined || config.upstreamAuth === undefined) {
+      const fromEnv = mcpRecordEnv(process.env);
+      resolved = {
+        ...config,
+        secretValues: config.secretValues ?? fromEnv.secretValues,
+        upstreamAuth: config.upstreamAuth ?? fromEnv.upstreamAuth,
+      };
+    }
+    validateSecretValues(resolved.secretValues ?? []);
+    const recorder = new McpRecorder(this.recorderHost(), resolved);
+    this.recorder?.close();
+    this.recorder = recorder;
+    return this;
+  }
+
+  /** Stop recording: the mount serves exactly as before `enableRecording`. */
+  disableRecording(): this {
+    this.recorder?.close();
+    this.recorder = null;
+    return this;
+  }
+
+  /** @internal MR13: the recorder's write hashes and write listener, or null when not recording. */
+  recorderEvents(): Pick<McpRecorder, "lastWrittenHash" | "onWrite"> | null {
+    return this.recorder;
   }
 
   setLogger(logger: Logger): void {
@@ -175,6 +223,12 @@ export class MCPMock implements Mountable {
     res: http.ServerResponse,
     pathname: string,
   ): Promise<boolean> {
+    // AM1 (a): in record mode every path and method under the mount is the
+    // recorder's, before the off-root check and the B1 GET answer.
+    if (this.recorder) {
+      await this.recorder.handle(req, res, mountPathOf(req.url, pathname), pathname);
+      return true;
+    }
     // Off the mount root: not this mount's request (fall through).
     if (pathname !== "/" && pathname !== "") {
       return false;
@@ -301,6 +355,16 @@ export class MCPMock implements Mountable {
       // path is 405 (`Allow: POST, DELETE`) and journaled, so the SDK's
       // optional GET SSE stream is declined, not mishandled.
       const srv = http.createServer((req, res) => {
+        // AM1 (b): in record mode the recorder takes every request first. A
+        // standalone server serves every path as its root, so every request
+        // maps to the upstream endpoint itself (review r2 N3).
+        if (this.recorder) {
+          this.recorder.handle(req, res, "/", "/").catch((err: unknown) => {
+            console.error("MCPMock request error:", err);
+            if (!res.writableEnded) res.end();
+          });
+          return;
+        }
         if (req.method === "GET") {
           this.answerMethodNotAllowed(req, res);
           return;
@@ -467,6 +531,19 @@ export class MCPMock implements Mountable {
         msg`MCP-FAKE: ${fixed(label)} value ${quote(fallback.raw)} on session ${session} is not valid percent-encoding; ${fixed(fate)}`,
       ),
     );
+  }
+
+  /** The recorder's view of this mount (fakes, journal, logger, replay speed, side channels). */
+  private recorderHost(): RecorderHost {
+    const fakes = this.fakes;
+    return {
+      fakes,
+      addMcpFakes: (blocks, origin) => this.addMcpFakes(blocks, origin),
+      journalEntry: (entry) => void this.journal?.add(entry),
+      logger: () => this.logger,
+      replaySpeed: () => this.replaySpeed,
+      onFakeEvent: (evt) => this.onFakeEvent(evt),
+    };
   }
 
   private buildHandler() {
