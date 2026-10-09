@@ -26,6 +26,16 @@
 - New exports: `UnsupportedToolCallError` (raised for a custom tool call on a non-Responses API), `InvalidFixtureToolCallError` (raised for a malformed fixture tool call; its `code` is `aimock_invalid_fixture_tool_call`), `requireFunctionToolCalls(calls, wire)` (narrows a `FixtureToolCall[]` to `ToolCall[]`, throwing `UnsupportedToolCallError` on a custom entry and `InvalidFixtureToolCallError` on a malformed entry), and the types `CustomToolCall` and `FixtureToolCall` (#505).
 - New `match.toolNamespace` key: matches the exact `namespace` of an offered tool, alone or paired with `toolName` on the same tool. Supported in file fixtures, the control API and aimock-pytest. It matches any request tool that carries a `namespace` field. The Responses API sets one on each tool inside a `namespace` tool; Chat Completions passes request tools through unchanged, so a top-level `namespace` field that a client sends there also matches; Anthropic Messages does not carry the field. A fixture validator (`aimock validate`, `--validate-on-load`) warns about a file fixture that sets `toolNamespace` with an `endpoint` other than `"chat"`. aimock-pytest forwards the key, but its default server pin (1.44.0) predates it: run against the first release that contains this change, via `--aimock-version` or `AIMOCK_CLI_PATH` (#505).
 - Model misbehavior faults and #505 tool calls: tool faults target function calls only. On the OpenAI Responses API, custom tool calls and namespaces pass through a faulted response unchanged, and the journal's `servedToolCalls` records a custom call as `type: "custom"` with its input in `arguments`. A fixture the wire cannot serve (a custom tool call on any other API, or a malformed tool call) is never faulted and returns its coded 500 (#505).
+- Record live MCP servers into `mcpFakes` files and replay them offline: `--mcp-record <mount>=<url>` and `--mcp-proxy-only <mount>=<url>` on the `llmock` bin and Docker image, `llm.record.mcp` for `aimock --config`, and `MCPMock.enableRecording()` / `disableRecording()`.
+- Recording settings `AIMOCK_RECORD_SECRET_VALUES` and `AIMOCK_MCP_UPSTREAM_AUTH`. Recordings never contain headers, redact known secrets, and are not written while a secret remains.
+- `mcpFakes` accepts the recorded keys `list`, `recorded` and `timing` (block) and `notifications` and `durationMs` (call entry). Older aimock versions reject files with these keys.
+- In MCP record mode, a mount forwards every path and method, forwards fake misses to the upstream, and does not answer from its registered tools.
+- A replayed MCP tool call with recorded notifications can be answered as SSE, with progress notifications at the recorded timing (scaled by `--replay-speed`).
+- An MCP mount holding recorded log notifications advertises `logging` and answers `logging/setLevel`.
+- Per-test MCP fake report: `GET /__aimock/mcp/fakes/report`.
+- Vitest and Jest plugins: `useAimock({ fakesReport: "warn" | "fail" })` checks each test's fake report in `afterEach`; handle methods `fakesFor()` and `fakesReport()`, with a per-test default test id; Jest option `testIdRoot`.
+- New exports `assertFakesReport`, `AimockFakesReportError` and `AimockTestIdCollisionError`.
+- aimock-pytest: `fakes_for`, `fakes_report` and `assert_fakes_report`.
 
 ### Changed
 
@@ -40,6 +50,7 @@
 
 ### Fixed
 
+- Retain sanitized drift evidence for each test and retry attempt in CI artifacts.
 - Align Cohere streaming length-stop faults with captured tool closure, `TOOL_CALL`, and terminal `[DONE]` framing while preserving incomplete argument bytes. Object length stops retain modeled `MAX_TOKENS`; recurring comparisons distinguish valid object nontriggers from failures.
 - Responses requests: tools inside a `namespace` tool, `custom` tools and tools in `additional_tools` and `tool_search_output` input items are now visible to `toolName`, `toolNamespace` and predicates (#505).
 - Responses requests: malformed tool collections are now rejected with HTTP 400 `invalid_request_error` (an `error` event over WebSocket) instead of being dropped: a `tools` value that is not an array (a falsy value such as `false` or `""`, or an object whose `length` is 0, counts as no tools), a `null` tool entry, and a `namespace` tool with an empty or missing `name`. The same checks apply to the tools inside a `namespace` tool and to the tools of `additional_tools` and `tool_search_output` input items (#505).

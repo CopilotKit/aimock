@@ -123,6 +123,25 @@
               <td><code>silent</code></td>
               <td>Log verbosity</td>
             </tr>
+            <tr>
+              <td><code>fakesReport</code></td>
+              <td><code>string</code></td>
+              <td><code>"off"</code></td>
+              <td>
+                <code>"off"</code>, <code>"warn"</code> or <code>"fail"</code>: check each
+                test&rsquo;s <a href="#fakes-report">MCP fake report</a> in <code>afterEach</code>.
+                <code>"fail"</code> fails the test, <code>"warn"</code> prints the report text
+              </td>
+            </tr>
+            <tr>
+              <td><code>testIdRoot</code></td>
+              <td><code>string</code></td>
+              <td>working directory</td>
+              <td>
+                Jest only: the directory <a href="#fakes-for">default test ids</a> are relative to
+                (<code>process.cwd()</code> when <code>useAimock</code> is called)
+              </td>
+            </tr>
           </tbody>
         </table>
 
@@ -149,6 +168,25 @@
               <td><code>url</code></td>
               <td><code>string</code></td>
               <td>The server URL (e.g., <code>http://127.0.0.1:4010</code>)</td>
+            </tr>
+            <tr>
+              <td><code>fakesFor()</code></td>
+              <td><code>function</code></td>
+              <td>
+                <code>fakesFor(testId?, { context?, mount? })</code> returns
+                <code>{ testId, mcpUrl, headers }</code>: the MCP URL and headers that reach the
+                fakes for a test id. It also registers that test id for this test&rsquo;s report.
+                See
+                <a href="#fakes-for">below</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>fakesReport()</code></td>
+              <td><code>function</code></td>
+              <td>
+                <code>fakesReport(testId?, { context? })</code> resolves to the
+                <a href="/mcp-mock#fakes-report">MCP fake report</a> for a test id
+              </td>
             </tr>
           </tbody>
         </table>
@@ -178,6 +216,10 @@
             entry as unused
           </li>
           <li>
+            <strong><code>afterEach</code></strong> &mdash; with <code>fakesReport</code> set to
+            <code>"warn"</code> or <code>"fail"</code>, checks the test&rsquo;s MCP fake report
+          </li>
+          <li>
             <strong><code>afterAll</code></strong> &mdash; stops the server and restores the
             original environment variables
           </li>
@@ -204,6 +246,109 @@
           the aimock server is a release without MCP fakes, <code>load_fixtures</code> raises
           <code>RuntimeError</code> (<code>aimock server too old for mcpFakes: ...</code>) and adds
           nothing from the file.
+        </p>
+
+        <h3 id="fakes-for">Fakes for a test: <code>fakesFor()</code></h3>
+        <p>
+          <code>mock().fakesFor()</code> returns the test id, the MCP URL with
+          <code>?testId=</code>, and the matching <code>X-Test-Id</code> (and
+          <code>X-AIMock-Context</code>) headers. Give the URL or the headers to your MCP client.
+          <code>mount</code> picks the MCP mount (default <code>/mcp</code>). With no test id,
+          <code>fakesFor()</code> uses a default made from the running test:
+        </p>
+        <ul>
+          <li>
+            <strong>Vitest:</strong>
+            <code>&lt;file&gt; › &lt;describe&gt; › … › &lt;test&gt;</code>.
+            <code>&lt;file&gt;</code> is the test file relative to the Vitest project root, with
+            <code>/</code> separators.
+          </li>
+          <li>
+            <strong>Jest:</strong> <code>&lt;file&gt; › &lt;describe and test names&gt;</code>,
+            where the names are Jest&rsquo;s <code>currentTestName</code> (joined by single spaces)
+            and <code>&lt;file&gt;</code> is relative to <code>testIdRoot</code>.
+          </li>
+        </ul>
+        <p>
+          The default test id is used only by <code>fakesFor()</code> and
+          <code>fakesReport()</code>. It is not added to LLM or control requests, and an explicit
+          test id always wins. In Vitest, two tests that would get the same default (the same names
+          in one file), a <code>concurrent</code> test, and a call outside a test throw
+          <code>AimockTestIdCollisionError</code>; a retry of the same test reuses its id. Jest
+          cannot tell two tests with the same full name apart, so they share one default id: pass an
+          explicit test id for them. In <code>test.concurrent</code>, Jest can report another
+          test&rsquo;s name, so pass an explicit test id there too.
+        </p>
+        <p>
+          <code>fakesReport</code> is not supported in concurrent tests. The report keeps one state
+          per <code>useAimock()</code>, so concurrent tests would clear and read each other&rsquo;s
+          test ids. In Vitest, with <code>fakesReport: "warn"</code> or <code>"fail"</code>, a
+          <code>test.concurrent</code> or <code>describe.concurrent</code> test fails in
+          <code>beforeEach</code> with &ldquo;fakesReport is not supported in concurrent
+          tests&rdquo;. Jest cannot tell the plugin that a test is concurrent, so it does not stop
+          you: keep <code>fakesReport: "off"</code> for a suite with <code>test.concurrent</code>,
+          or run its tests sequentially. With <code>"off"</code>, concurrent tests can still use
+          <code>fakesFor()</code> with an explicit test id.
+        </p>
+        <div class="code-block" data-sample="inline:fakes-for-test">
+          <div class="code-block-header">test/weather.spec.ts <span class="lang-tag">ts</span></div>
+          <pre><code><span class="kw">import</span> { Client } <span class="kw">from</span> <span class="str">"@modelcontextprotocol/sdk/client/index.js"</span>;
+<span class="kw">import</span> { StreamableHTTPClientTransport } <span class="kw">from</span> <span class="str">"@modelcontextprotocol/sdk/client/streamableHttp.js"</span>;
+<span class="kw">import</span> { describe, expect, it } <span class="kw">from</span> <span class="str">"vitest"</span>;
+<span class="kw">import</span> { useAimock } <span class="kw">from</span> <span class="str">"@copilotkit/aimock/vitest"</span>;
+
+<span class="kw">const</span> mock = <span class="fn">useAimock</span>({ <span class="prop">fixtures</span>: <span class="str">"./fixtures"</span>, <span class="prop">fakesReport</span>: <span class="str">"fail"</span> });
+
+<span class="fn">describe</span>(<span class="str">"weather"</span>, () =&gt; {
+  <span class="fn">it</span>(<span class="str">"seattle"</span>, <span class="kw">async</span> () =&gt; {
+    <span class="cm">// The default test id here is "test/weather.spec.ts › weather › seattle".</span>
+    <span class="kw">const</span> { mcpUrl } = <span class="fn">mock</span>().<span class="fn">fakesFor</span>();
+    <span class="kw">const</span> client = <span class="kw">new</span> <span class="fn">Client</span>({ <span class="prop">name</span>: <span class="str">"weather-test"</span>, <span class="prop">version</span>: <span class="str">"1.0.0"</span> });
+    <span class="kw">await</span> client.<span class="fn">connect</span>(<span class="kw">new</span> <span class="fn">StreamableHTTPClientTransport</span>(<span class="kw">new</span> URL(mcpUrl)));
+    <span class="kw">const</span> result = <span class="kw">await</span> client.<span class="fn">callTool</span>({
+      <span class="prop">name</span>: <span class="str">"get_weather"</span>,
+      <span class="prop">arguments</span>: { <span class="prop">city</span>: <span class="str">"Seattle"</span> },
+    });
+    <span class="fn">expect</span>(result.content).<span class="fn">toEqual</span>([{ <span class="prop">type</span>: <span class="str">"text"</span>, <span class="prop">text</span>: <span class="str">"rain"</span> }]);
+    <span class="kw">await</span> client.<span class="fn">close</span>();
+  });
+});</code></pre>
+        </div>
+        <div class="code-block" data-sample="inline:fakes-for-fixture">
+          <div class="code-block-header">
+            fixtures/weather.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"test/weather.spec.ts › weather › seattle"</span> },
+    <span class="prop">"undeclaredTools"</span>: <span class="str">"deny"</span>,
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"get_weather"</span>,
+        <span class="prop">"calls"</span>: [{ <span class="prop">"args"</span>: { <span class="prop">"city"</span>: <span class="str">"Seattle"</span> }, <span class="prop">"result"</span>: <span class="str">"rain"</span> }]
+      }
+    ]
+  }
+}</code></pre>
+        </div>
+
+        <h3 id="fakes-report">Fake reports: <code>fakesReport</code></h3>
+        <p>
+          A test can pass while its MCP fakes went wrong: many agent frameworks catch a tool error
+          and give it to the model, and nothing fails when a declared fake is never called. With
+          <code>fakesReport: "fail"</code>, <code>afterEach</code> reads the
+          <a href="/mcp-mock#fakes-report">fake report</a> and throws
+          <code>AimockFakesReportError</code> when it is not ok: a fake error (such as
+          <code>MCP_FAKE_MISMATCH</code>), an unused entry, or lost state. The message lists the
+          failures first, then the unused entry ids. <code>"warn"</code> prints the same text with
+          <code>console.warn</code>, and <code>"off"</code> (the default) checks nothing.
+        </p>
+        <p>
+          The check covers every test id registered with <code>fakesFor()</code> in the test, and
+          every test id (and context) that MCP requests to this server carried during the test, read
+          from the journal. A test with neither is not checked. If the journal is cleared during a
+          test, only the requests still in it are checked. <code>mock().fakesReport()</code> returns
+          the report itself.
         </p>
 
         <h2>Without Plugins (Manual)</h2>

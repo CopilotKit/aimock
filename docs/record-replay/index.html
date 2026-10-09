@@ -1242,6 +1242,201 @@ describe(<span class="str">"agent chat"</span>, () => {
           first 8 hex characters of a random UUID).
         </p>
 
+        <h2 id="mcp-recording">Recording MCP servers</h2>
+        <p>
+          aimock can record a real MCP server and replay it offline. In record mode an MCP mount is
+          a pass-through proxy: it forwards each request to the upstream server, sends the answer
+          back to your client unchanged, and writes the <code>tools/list</code> and
+          <code>tools/call</code> exchanges to an
+          <a href="/mcp-mock#recorded-fakes"><code>mcpFakes</code></a> file. Later runs load that
+          file like any hand-written fake, with no upstream server. A call that does not match the
+          recording fails with <code>MCP_FAKE_MISMATCH</code>, and the
+          <a href="/mcp-mock#fakes-report">fakes report</a> lists it, so a changed call is never
+          hidden.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Minimum version:</strong> MCP recording and recorded <code>mcpFakes</code> files
+            need aimock 1.45.0 or later. An older aimock rejects a recorded file at load, because it
+            does not know the keys <code>list</code>, <code>recorded</code>,
+            <code>notifications</code>, <code>durationMs</code> and <code>timing</code>.
+          </p>
+        </div>
+
+        <h3>Record</h3>
+        <p>
+          The recording flags are on the flag-driven <code>llmock</code> bin, which is also the
+          Docker image&rsquo;s entry point.
+          <code>--mcp-record &lt;mount&gt;=&lt;url&gt;</code> records the MCP server at
+          <code>&lt;url&gt;</code> through the mount <code>&lt;mount&gt;</code>. Repeat the flag for
+          more servers. It needs a local <code>--fixtures</code> path: recordings go to
+          <code>&lt;fixtures&gt;/recorded</code>.
+          <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code> forwards in the same way but
+          writes nothing, and it does not need <code>--fixtures</code>. With
+          <code>aimock --config</code>, use <code>llm.record.mcp</code> instead (see the
+          <a href="/aimock-cli#mcp-record-config">aimock CLI</a>).
+        </p>
+        <div class="cli-docker-tabs">
+          <div class="tab-cli">
+            <div class="code-block" data-sample="inline:mcp-record-cli">
+              <div class="code-block-header">
+                Record an MCP server <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ npx -p @copilotkit/aimock llmock -f ./fixtures \
+  --mcp-record /mcp=http://localhost:3001/mcp</code></pre>
+            </div>
+          </div>
+          <div class="tab-docker">
+            <div class="code-block" data-sample="inline:mcp-record-docker">
+              <div class="code-block-header">
+                Record an MCP server <span class="lang-tag">shell</span>
+              </div>
+              <pre><code>$ docker run -d -p 4010:4010 \
+  -v $(pwd)/fixtures:/fixtures \
+  ghcr.io/copilotkit/aimock \
+  -f /fixtures -h 0.0.0.0 \
+  --mcp-record /mcp=http://host.docker.internal:3001/mcp</code></pre>
+            </div>
+          </div>
+        </div>
+        <p>
+          Point your MCP client at <code>http://localhost:4010/mcp</code> instead of the real
+          server, and send a test id with each request: the <code>X-Test-Id</code> header
+          (percent-encoded) or <code>?testId=</code> on the URL. The test plugins&rsquo;
+          <a href="/test-plugins#fakes-for"><code>fakesFor()</code></a> returns both. A call with
+          neither a test id nor a context (<code>X-AIMock-Context</code>) is forwarded but not
+          written, and aimock warns once per mount.
+        </p>
+        <p>Each test id gets its own file. For the test id <code>search › refund policy</code>:</p>
+        <div class="code-block" data-sample="inline:mcp-record-layout">
+          <div class="code-block-header">Recording layout <span class="lang-tag">text</span></div>
+          <pre><code>fixtures/recorded/
+  search--refund-policy/
+    mcp.json</code></pre>
+        </div>
+        <p>
+          The directory name is the test id slugified as for
+          <a href="#snapshot-style-recording">snapshot-style recording</a>, and the file prefix
+          (<code>file.spec.ts ›</code>) is dropped. With only a context, the context is slugified.
+          The file has one block per scope and mount: the block&rsquo;s <code>scope</code> is the
+          test id (and context), and its <code>mount</code> is the mount path. A new call is added
+          at the end of its tool&rsquo;s <code>calls</code>; existing entries never change or move.
+          A completed <code>tools/list</code> replaces the block&rsquo;s <code>list</code>. Each
+          write validates the whole file first, then writes a temporary file and renames it (mode
+          <code>0600</code>).
+        </p>
+
+        <h3>Replay</h3>
+        <p>
+          Stop the upstream and start aimock with the same <code>--fixtures</code> path and without
+          <code>--mcp-record</code>. The recorded file loads like any <code>mcpFakes</code> file and
+          serves the same answers, in the recorded order, with the recorded progress notifications
+          and timing (<code>--replay-speed</code> scales the timing). See
+          <a href="/mcp-mock#recorded-fakes">Recorded fakes</a>.
+        </p>
+        <p>
+          While recording, a call that the file already answers is answered from the file, and only
+          a miss is forwarded and added. To re-record a test, delete its
+          <code>mcp.json</code> first. Under <code>undeclaredTools: "deny"</code>, a call to an
+          undeclared tool gets <code>MCP_FAKE_NOT_DECLARED</code> and is not forwarded. In strict
+          mode (<code>--strict</code> or <code>X-AIMock-Strict</code>) a miss is not forwarded
+          either: it gets the replay error.
+        </p>
+
+        <h3>What is recorded</h3>
+        <ul>
+          <li>
+            <code>tools/list</code>, as the block&rsquo;s <code>list</code> (all pages, once the
+            last page arrives).
+          </li>
+          <li>
+            Each <code>tools/call</code>: its arguments, the full result (or the error text when the
+            result is one text block with <code>isError: true</code>), the notifications sent before
+            the result, and the response time.
+          </li>
+          <li>
+            Where the recording came from, as <code>recorded</code>: the upstream origin (never its
+            path or query), the protocol version, the server info, the aimock version and the time.
+          </li>
+        </ul>
+        <p>
+          These are forwarded but not recorded, and the journal entry gets
+          <code>response.recordSkipped</code> with the reason: every method other than
+          <code>tools/list</code> and <code>tools/call</code>, JSON-RPC error responses, non-2xx
+          responses, batches, responses larger than the record buffer (64 MiB), results that ask for
+          more input or are task handles, calls during which the server sent a request to the
+          client, and sessions with a protocol version other than <code>2025-03-26</code>,
+          <code>2025-06-18</code> or <code>2025-11-25</code>. Recording the
+          <code>2026-07-28</code> protocol is not supported yet. Only Streamable HTTP servers can be
+          recorded.
+        </p>
+        <p>
+          While recording, the mount&rsquo;s registered tools and config tools do not answer: their
+          calls are forwarded. <code>tools/list</code> returns the upstream&rsquo;s list unchanged,
+          so tools that exist only as fakes are not listed while recording.
+        </p>
+
+        <h3>Credentials</h3>
+        <ul>
+          <li>
+            <code>Authorization</code> and API-key headers from your client are forwarded unchanged.
+          </li>
+          <li>
+            <code>AIMOCK_MCP_UPSTREAM_AUTH="Name: value"</code> (or <code>upstreamAuth</code> in the
+            config) sets that header on every forwarded request and replaces a client header of the
+            same name. It is required when aimock&rsquo;s inbound API-key auth
+            (<code>AIMOCK_API_KEYS</code>) is on, because aimock then removes the client&rsquo;s
+            key; without it, the answer is HTTP 502 <code>No configured upstream credential</code>.
+          </li>
+          <li>
+            OAuth is not supported through the recorder. An upstream 401, or a 403 with
+            <code>insufficient_scope</code>, is not passed on: aimock answers HTTP 502 and logs an
+            error. Record with a token you already have.
+          </li>
+        </ul>
+
+        <h3>Secrets</h3>
+        <p>
+          No request or response header is written to a recording. aimock replaces every occurrence
+          of a known secret with <code>[REDACTED]</code>, also in URL-encoded and re-encoded forms,
+          and adds a <code>_warnings</code> entry that names the JSON pointer, never the value.
+          Known secrets are the forwarded credential headers (and their token parts), the configured
+          upstream credential, the userinfo and query values of the URLs, and the values in
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> (one per line; each at least 8 characters, or
+          aimock does not start). A credential in a header name aimock does not recognize, or in a
+          URL path, is covered only when you list it in <code>AIMOCK_RECORD_SECRET_VALUES</code>. If
+          a known secret is still in the result after redaction, nothing is written. Strings that
+          look like tokens (<code>sk-</code>, <code>ghp_</code>, <code>AKIA…</code>, JWTs) add a
+          warning but are not changed; <code>aimock validate</code> prints the warnings.
+        </p>
+        <p>
+          When a write fails (an invalid merged file, an unsafe value, or a file system error),
+          aimock logs an error, journals <code>recordSkipped</code>, and adds an
+          <code>X-AIMock-Record-Error</code> header to a JSON answer. Your client still gets the
+          upstream answer.
+        </p>
+
+        <h3>Watch mode</h3>
+        <p>
+          With <code>--watch</code>, the recorder&rsquo;s own writes do not reload the fixtures. A
+          reload started by any other change accepts the recorded files as they are. An edit of your
+          own to the fakes in a recorded file is rejected, as for any <code>mcpFakes</code> file.
+        </p>
+
+        <h3>Code API</h3>
+        <p>
+          <code
+            >MCPMock.enableRecording({ upstream, fixturePath?, proxyOnly?, upstreamAuth?,
+            secretValues?, strict?, maxRecordBufferBytes? })</code
+          >
+          turns on record mode, and <code>disableRecording()</code> turns it off. A standalone
+          <code>MCPMock</code> (<code>mcp.start()</code>) records with <code>"mount": "/"</code>;
+          replay that file with <code>mcp.loadFakes()</code> on a standalone mock. When
+          <code>secretValues</code> or <code>upstreamAuth</code> is not given,
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> and <code>AIMOCK_MCP_UPSTREAM_AUTH</code> apply,
+          as on the CLI.
+        </p>
+
         <h2 id="misbehavior-overlays">Model Misbehavior During Replay</h2>
         <p>
           <a href="/model-misbehavior">Model misbehavior</a> applies to matched fixture responses on

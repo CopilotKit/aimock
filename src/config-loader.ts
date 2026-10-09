@@ -3,13 +3,16 @@ import * as path from "node:path";
 import { LLMock, createLLMockWithResolvedAuth } from "./llmock.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
 import { MCPMock } from "./mcp-mock.js";
+import { configToolHandlers } from "./mcp-handler.js";
 import { A2AMock } from "./a2a-mock.js";
 import { AGUIMock } from "./agui-mock.js";
 import type {
   ApiKeyAuthConfig,
   ChaosConfig,
+  McpRecordConfig,
   MisbehaviorConfig,
   MisbehaviorFaultId,
+  Mountable,
   RecordConfig,
 } from "./types.js";
 import { parseMisbehavior } from "./misbehavior.js";
@@ -20,6 +23,7 @@ import { buildTextResponse } from "./agui-handler.js";
 import { VectorMock } from "./vector-mock.js";
 import type { QueryResult } from "./vector-types.js";
 import { Logger } from "./logger.js";
+import { wireMcpRecording } from "./mcp-recorder.js";
 
 export interface MCPConfigTool extends MCPToolDefinition {
   result?: string;
@@ -95,6 +99,12 @@ export interface VectorConfig {
   collections?: VectorConfigCollection[];
 }
 
+/** `llm.record` in a config file: the LLM `RecordConfig`, plus MCP record mounts (C10). */
+export interface AimockRecordConfig extends RecordConfig {
+  /** MR1: mount path → upstream URL, or a full MCP record config. */
+  mcp?: Record<string, string | McpRecordConfig>;
+}
+
 export interface AimockConfig {
   auth?: ApiKeyAuthConfig;
   llm?: {
@@ -105,7 +115,7 @@ export interface AimockConfig {
     logLevel?: "silent" | "warn" | "info" | "debug";
     chaos?: ChaosConfig;
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
-    record?: RecordConfig;
+    record?: AimockRecordConfig;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -116,6 +126,14 @@ export interface AimockConfig {
   strict?: boolean;
   port?: number;
   host?: string;
+}
+
+/** C10: the LLM part of `llm.record`. `mcp` is MCP-only; no `providers` means no LLM recording. */
+function llmRecordOf(record: AimockRecordConfig | undefined): RecordConfig | undefined {
+  if (!record) return undefined;
+  const { mcp: _mcp, ...llm } = record;
+  void _mcp; // repo pattern for an intentionally unused binding (byteplus-video.ts:1379-1380)
+  return llm.providers === undefined ? undefined : llm;
 }
 
 export function loadConfig(configPath: string): AimockConfig {
@@ -157,12 +175,15 @@ export async function startFromConfig(
       logLevel: config.llm?.logLevel,
       chaos: config.llm?.chaos,
       misbehavior,
-      record: config.llm?.record,
+      record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
     },
     resolvedAuth,
   );
+
+  // What this function mounted, by path (MR1: llm.record.mcp records through an MCP mount).
+  const configMounts = new Map<string, Mountable>();
 
   if (config.llm?.fixtures) {
     const fixturePath = path.resolve(config.llm.fixtures);
@@ -186,7 +207,9 @@ export async function startFromConfig(
         const { result, ...def } = tool;
         mcp.addTool(def);
         if (result !== undefined) {
-          mcp.onToolCall(def.name, () => result);
+          const answer = () => result;
+          configToolHandlers.add(answer);
+          mcp.onToolCall(def.name, answer);
         }
       }
     }
@@ -215,6 +238,7 @@ export async function startFromConfig(
 
     const mcpPath = mcpConfig.path ?? "/mcp";
     llmock.mount(mcpPath, mcp);
+    configMounts.set(mcpPath, mcp);
     logger.info(`MCPMock mounted at ${mcpPath}`);
   }
 
@@ -250,6 +274,7 @@ export async function startFromConfig(
 
     const a2aPath = a2aConfig.path ?? "/a2a";
     llmock.mount(a2aPath, a2a);
+    configMounts.set(a2aPath, a2a);
     logger.info(`A2AMock mounted at ${a2aPath}`);
   }
 
@@ -303,6 +328,7 @@ export async function startFromConfig(
 
     const aguiPath = aguiConfig.path ?? "/agui";
     llmock.mount(aguiPath, agui);
+    configMounts.set(aguiPath, agui);
     logger.info(`AGUIMock mounted at ${aguiPath}`);
   }
 
@@ -327,7 +353,21 @@ export async function startFromConfig(
 
     const vectorPath = vectorConfig.path ?? "/vector";
     llmock.mount(vectorPath, vector);
+    configMounts.set(vectorPath, vector);
     logger.info(`VectorMock mounted at ${vectorPath}`);
+  }
+
+  // MR1: llm.record.mcp — record mounts (auto-mount an MCPMock where none is).
+  const mcpRecord = config.llm?.record?.mcp;
+  if (mcpRecord) {
+    wireMcpRecording(llmock, mcpRecord, {
+      mounted: configMounts,
+      mcpMock: MCPMock,
+      fixtures: config.llm?.fixtures,
+      fixturePath: config.llm?.record?.fixturePath,
+      strict: config.strict,
+      env: process.env,
+    });
   }
 
   // Services — configure default catch-all responses

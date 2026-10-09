@@ -340,6 +340,14 @@ export type {
   McpFakeBlockSnapshot,
   McpFakeDeclaredEntry,
 } from "./mcp-fakes.js";
+export {
+  assertFakesReport,
+  AimockFakesReportError,
+  AimockTestIdCollisionError,
+} from "./mcp-fakes-report.js";
+export type { McpFakesReport } from "./mcp-fakes-report.js";
+export type { McpFakeReportPart, McpFakeReportEvent, RecordReplayLoadRule } from "./mcp-fakes.js";
+export type { McpRecordConfig, McpFakeNotification, McpFakeRecorded } from "./types.js";
 
 // Vector
 export { VectorMock } from "./vector-mock.js";
