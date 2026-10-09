@@ -731,6 +731,28 @@ try {
           faithfully block order is reconstructable on each provider's wire.
         </p>
 
+        <h2 id="recording-responses-tool-calls">
+          Recording Responses Namespaced and Custom Tool Calls
+        </h2>
+        <p>
+          A streamed OpenAI Responses turn keeps the
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >namespaced and custom tool calls</a
+          >
+          it contains. A <code>function_call</code> with a <code>namespace</code> is saved as a
+          <code>toolCalls</code> entry with that <code>namespace</code>. A
+          <code>custom_tool_call</code> is saved as
+          <code>{ "type": "custom", "name", "input" }</code>, with the full free-text
+          <code>input</code> and its <code>namespace</code> if it has one. It never gets an
+          <code>arguments</code> field. In an interleaved turn, the ordered <code>blocks</code> hold
+          the same calls as <code>toolCall</code> and <code>customToolCall</code> blocks. The replay
+          sends the same items that the upstream sent.
+        </p>
+        <p>
+          This applies to streamed (SSE) Responses recordings. Recording a non-streaming Responses
+          reply, or a Responses WebSocket session, is not supported yet.
+        </p>
+
         <h2 id="recording-usage">Recording Token Usage &amp; Cost</h2>
         <p>
           OpenAI-compatible recordings (including <a href="/openrouter-chat">OpenRouter</a>) keep
