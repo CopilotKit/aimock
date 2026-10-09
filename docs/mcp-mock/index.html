@@ -1043,7 +1043,8 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
         <p>
           <a href="/record-replay#mcp-recording">MCP recording</a> writes an ordinary
           <code>mcpFakes</code> file with a few more keys. You can also write these keys by hand. A
-          file without them reads as before. A malformed key fails the load with its own rule
+          file without them reads as before. A malformed key fails the load with the rule
+          <code>mcp-fakes/bad-block:h</code>; the message names the key&rsquo;s own rule after it
           (<code>record-replay/fa-list</code>, <code>fa-recorded</code>,
           <code>fa-notifications</code>, <code>fa-duration</code> or <code>fa-timing</code>).
           Recorded files need aimock 1.45.0 or later.

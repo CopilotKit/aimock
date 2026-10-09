@@ -148,7 +148,10 @@
         <h2>The Handle</h2>
         <p>
           The getter function returned by <code>useAimock()</code> returns an
-          <code>AimockHandle</code>:
+          <code>AimockFakesHandle</code>: an <code>AimockHandle</code> (<code>llm</code> and
+          <code>url</code>) plus the MCP fakes helpers <code>fakesFor()</code> and
+          <code>fakesReport()</code>. Both types are exported from <code>/vitest</code> and
+          <code>/jest</code>:
         </p>
         <table class="endpoint-table">
           <thead>

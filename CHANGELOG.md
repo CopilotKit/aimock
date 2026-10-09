@@ -33,7 +33,7 @@
 - A replayed MCP tool call with recorded notifications can be answered as SSE, with progress notifications at the recorded timing (scaled by `--replay-speed`).
 - An MCP mount holding recorded log notifications advertises `logging` and answers `logging/setLevel`.
 - Per-test MCP fake report: `GET /__aimock/mcp/fakes/report`.
-- Vitest and Jest plugins: `useAimock({ fakesReport: "warn" | "fail" })` checks each test's fake report in `afterEach`; handle methods `fakesFor()` and `fakesReport()`, with a per-test default test id; Jest option `testIdRoot`.
+- Vitest and Jest plugins: `useAimock({ fakesReport: "warn" | "fail" })` checks each test's fake report in `afterEach`; handle methods `fakesFor()` and `fakesReport()`, with a per-test default test id; Jest option `testIdRoot`. `useAimock()` now returns `() => AimockFakesHandle`, a new type that extends the unchanged `AimockHandle` with the two methods; both are exported from `/vitest` and `/jest`.
 - New exports `assertFakesReport`, `AimockFakesReportError` and `AimockTestIdCollisionError`.
 - aimock-pytest: `fakes_for`, `fakes_report` and `assert_fakes_report`.
 
