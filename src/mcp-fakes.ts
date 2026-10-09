@@ -34,11 +34,37 @@ import type {
   McpFakeCallMatch,
   McpFakeDeepReadonly,
   McpFakeIdentity,
+  McpFakeNotification,
+  McpFakeRecorded,
   McpFakeResult,
   McpFakeScope,
   McpFakeSource,
   McpFakeUndeclaredPolicy,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Load rules of the recorded keys FA1-FA5 (the record-replay LE values)
+
+/**
+ * The `FixtureLoadError` rules of the recorded `mcpFakes` keys FA1-FA5. A
+ * recorded file that breaks a `fakes:` rule still throws its `mcp-fakes/`
+ * value; only a malformed FA key throws one of these.
+ */
+export const RECORD_REPLAY_LOAD_RULES = [
+  "record-replay/fa-list",
+  "record-replay/fa-recorded",
+  "record-replay/fa-notifications",
+  "record-replay/fa-duration",
+  "record-replay/fa-timing",
+] as const;
+
+export type RecordReplayLoadRule = (typeof RECORD_REPLAY_LOAD_RULES)[number];
+
+declare module "./fixture-loader.js" {
+  interface FixtureLoadRuleRegistry {
+    "record-replay": RecordReplayLoadRule;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,9 +109,38 @@ const DEPTH_REASON = msg`nested deeper than ${MCP_FAKES_MAX_DEPTH} levels`;
 /** Longest `firstDifference` text (path plus both values), cut the same way. */
 const DIFF_LIMIT = 1_000;
 
-const BLOCK_KEYS = new Set(["scope", "mount", "undeclaredTools", "tools"]);
+const BLOCK_KEYS = new Set([
+  "scope",
+  "mount",
+  "undeclaredTools",
+  "tools",
+  "list",
+  "recorded",
+  "timing",
+]);
 const TOOL_KEYS = new Set(["name", "description", "inputSchema", "calls"]);
-const CALL_KEYS = new Set(["args", "anyArgs", "result", "error", "id"]);
+const CALL_KEYS = new Set([
+  "args",
+  "anyArgs",
+  "result",
+  "error",
+  "id",
+  "notifications",
+  "durationMs",
+]);
+
+/**
+ * C9: most events one fake event log keeps (per test id, and the untagged
+ * log). Past it the oldest event is dropped and the log's report says
+ * `evicted: true`. Report-only: claims and snapshots never read it.
+ */
+export const MCP_FAKES_MAX_EVENTS_PER_LOG = 1000;
+
+/**
+ * Largest `args` (JSON, UTF-8 bytes) an event keeps. A larger one is stored as
+ * `{ __aimock_truncated: true, originalByteSize }`, the journal `capBody` shape.
+ */
+export const MCP_FAKES_MAX_EVENT_ARGS_BYTES = 4096;
 const SCOPE_KEYS = new Set(["testId", "context"]);
 
 // ---------------------------------------------------------------------------
@@ -103,6 +158,10 @@ export type ValidatedCall = Readonly<{
   id: string;
   /** Position in its tool's `calls`. */
   index: number;
+  /** FA3: recorded notifications, in stream order. */
+  notifications?: McpFakeDeepReadonly<McpFakeNotification[]>;
+  /** FA4: recorded response time in ms. */
+  durationMs?: number;
 }> &
   McpFakeDeepReadonly<McpFakeCallMatch> &
   McpFakeDeepReadonly<McpFakeCallAnswer>;
@@ -138,6 +197,12 @@ export interface ValidatedBlock {
   readonly mount: string;
   readonly undeclaredTools?: McpFakeUndeclaredPolicy;
   readonly tools: readonly ValidatedTool[];
+  /** FA1: the recorded `tools/list`, verbatim. */
+  readonly list?: McpFakeDeepReadonly<Record<string, unknown>[]>;
+  /** FA2: provenance; never used for matching. */
+  readonly recorded?: McpFakeDeepReadonly<McpFakeRecorded>;
+  /** FA5: `"recorded"` unless the block says `"immediate"`. */
+  readonly timing: "recorded" | "immediate";
 }
 
 /**
@@ -237,6 +302,73 @@ export interface McpFakeBlockSnapshot {
   >;
 }
 
+/** `Omit` over each member of a union. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/**
+ * RP2: one `tools/call` on a mount, as its fake event log keeps it. Every
+ * `tools/call` is logged, fakes or not.
+ */
+export type McpFakeReportEvent = {
+  /** Process-wide increasing counter (module-level in mcp-fakes.ts), set by logEvent; orders events across mounts (S4). */
+  seq: number;
+  tool: string;
+  args: unknown;
+  context: string | null;
+  mount: string;
+} & (
+  | { outcome: "answered"; entryId: string }
+  | {
+      outcome: "mismatch" | "exhausted" | "not_declared" | "evicted" | "internal_error";
+      code: string;
+    }
+  | {
+      outcome: "unfaked";
+      answeredBy: "handler" | "config" | "empty" | "unknown-tool" | "upstream";
+    }
+);
+
+/** What callers pass to logEvent: the event without `seq` (the store assigns it). */
+export type McpFakeReportEventInput = DistributiveOmit<McpFakeReportEvent, "seq">;
+
+/**
+ * RP3: this mount's part of a fake report, for one test id and context.
+ * `served` and `failures` rows carry `seq`, which the report module sorts on
+ * across mounts and strips from the JSON it serves.
+ */
+export interface McpFakeReportPart {
+  evicted: boolean;
+  served: { entryId: string; mount: string; tool: string; args: unknown; seq: number }[];
+  unconsumed: { entryId: string; mount: string; tool: string; args?: unknown; anyArgs?: true }[];
+  unfaked: { mount: string; tool: string; args: unknown; answeredBy: string }[];
+  failures: { code: string; mount: string; tool: string; args: unknown; seq: number }[];
+  sharedUnconsumed: { entryId: string; mount: string; tool: string }[];
+}
+
+/** The last `seq` given to an event, shared by every store in the process. */
+let lastEventSeq = 0;
+
+/**
+ * An event's `args` as the log keeps it: a frozen copy when its JSON is at
+ * most `MCP_FAKES_MAX_EVENT_ARGS_BYTES` UTF-8 bytes, else the journal's
+ * truncation marker. A value with no JSON text (`undefined`, or one whose
+ * `JSON.stringify` throws) is kept as its rendered text.
+ */
+function boundedArgs(args: unknown): unknown {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(args) as string | undefined;
+  } catch {
+    text = undefined;
+  }
+  if (text === undefined) return args === undefined ? undefined : echo(args);
+  const size = Buffer.byteLength(text, "utf8");
+  if (size > MCP_FAKES_MAX_EVENT_ARGS_BYTES) {
+    return Object.freeze({ __aimock_truncated: true, originalByteSize: size });
+  }
+  return deepFreeze(JSON.parse(text) as unknown);
+}
+
 export interface McpFakeAddOrigin {
   /**
    * `file`: blocks keep their `source` and `blockIndex`, and the per-source
@@ -246,8 +378,10 @@ export interface McpFakeAddOrigin {
    * input is one `mcpFakes` value of that addition: a single item with a null
    * `blockIndex` is the single-object form (no `[<i>]`); otherwise each block
    * is numbered by its position in the input (`[0]`, `[1]`, ...).
+   * `record`: a run-time addition written by the MCP recorder (MR12), numbered
+   * as `code` / `control-api` are, with the source `record#<n>`.
    */
-  kind: "file" | "code" | "control-api";
+  kind: "file" | "code" | "control-api" | "record";
 }
 
 /** What a successful `McpFakeStore.add` / `Mountable.addMcpFakes` returns. */
@@ -1107,6 +1241,11 @@ function shape(
 const ISO_DATETIME =
   /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 
+const mustBeIsoDateTime: FieldCheck = (v, p) =>
+  typeof v === "string" && ISO_DATETIME.test(v)
+    ? null
+    : msg`${pathPart(p)} must be an ISO 8601 date-time with seconds and an offset, got ${shown(v)}`;
+
 const ANNOTATIONS = shape(
   {},
   {
@@ -1115,10 +1254,7 @@ const ANNOTATIONS = shape(
       typeof v === "number" && v >= 0 && v <= 1
         ? null
         : msg`${pathPart(p)} must be a number from 0 to 1, got ${shown(v)}`,
-    lastModified: (v, p) =>
-      typeof v === "string" && ISO_DATETIME.test(v)
-        ? null
-        : msg`${pathPart(p)} must be an ISO 8601 date-time with seconds and an offset, got ${shown(v)}`,
+    lastModified: mustBeIsoDateTime,
   },
 );
 
@@ -1258,6 +1394,71 @@ function inputSchemaProblem(schema: unknown): Message | null {
   return jsonProblem(schema, "inputSchema") ?? INPUT_SCHEMA(schema, "inputSchema");
 }
 
+// ---------------------------------------------------------------------------
+// Recorded keys FA1-FA5
+
+/** A finite number >= 0 (FA3 `atMs`, FA4 `durationMs`). */
+const mustBeNonNegative: FieldCheck = (v, p) =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0
+    ? null
+    : msg`${pathPart(p)} must be a number >= 0, got ${shown(v)}`;
+
+/** FA2 `recorded`. Other keys are not checked. */
+const RECORDED = shape(
+  {
+    upstream: mustBeString,
+    protocolVersion: mustBeString,
+    aimockVersion: mustBeString,
+    at: mustBeIsoDateTime,
+  },
+  { serverInfo: mustBeObject },
+);
+
+/** One FA3 notification. Other keys are not checked. */
+const NOTIFICATION = shape({ atMs: mustBeNonNegative, method: mustBeString, params: mustBeObject });
+
+/** FA1: an array of JSON objects, each with a string `name`, no name twice. */
+function listProblem(v: unknown): Message | null {
+  if (!Array.isArray(v)) return msg`list must be an array of tool objects, got ${shown(v)}`;
+  const json = jsonProblem(v, "list");
+  if (json) return json;
+  const names = new Set<string>();
+  for (let i = 0; i < v.length; i++) {
+    const tool: unknown = v[i];
+    if (!isPlainObject(tool) || typeof tool.name !== "string") {
+      return msg`list[${i}] must be a tool object with a string name, got ${shown(tool)}`;
+    }
+    if (names.has(tool.name)) return msg`list[${i}] repeats the tool name ${quote(tool.name)}`;
+    names.add(tool.name);
+  }
+  return null;
+}
+
+/** FA2. */
+function recordedProblem(v: unknown): Message | null {
+  if (!isPlainObject(v)) return msg`recorded must be a JSON object, got ${shown(v)}`;
+  return jsonProblem(v, "recorded") ?? RECORDED(v, "recorded");
+}
+
+/** FA3. */
+function notificationsProblem(v: unknown): Message | null {
+  if (!Array.isArray(v)) return msg`notifications must be an array, got ${shown(v)}`;
+  return (
+    jsonProblem(v, "notifications") ??
+    arrayOf(NOTIFICATION, "an array of notifications")(v, "notifications")
+  );
+}
+
+/** A `record-replay/fa-*` error of one block (and, for FA3/FA4, one entry). */
+function faError(
+  ctx: { source: string | null; blockId: string | null },
+  rule: RecordReplayLoadRule,
+  detail: Message,
+  entryId: string | null = null,
+): FixtureLoadError {
+  return new FixtureLoadError({ rule, file: ctx.source, blockId: ctx.blockId, entryId, detail });
+}
+
 /**
  * Validate one call entry of the input snapshot. Every error goes to
  * `errors`; returns its entry id whether or not it is clean, so that the
@@ -1312,6 +1513,20 @@ function validateCall(
     const problem = validateResult(raw.result);
     if (problem) bad("d", problem);
   }
+  if (has(raw, "notifications")) {
+    const problem = notificationsProblem(raw.notifications);
+    if (problem) {
+      errors.push(
+        faError(ctx, "record-replay/fa-notifications", msg`${where} ${problem}`, entryId),
+      );
+    }
+  }
+  if (has(raw, "durationMs")) {
+    const problem = mustBeNonNegative(raw.durationMs, "durationMs");
+    if (problem) {
+      errors.push(faError(ctx, "record-replay/fa-duration", msg`${where} ${problem}`, entryId));
+    }
+  }
   if (errors.length > before) return { entryId, call: null };
   // Frozen copies of the snapshot: nothing the store keeps can be changed.
   const match: McpFakeCallMatch = hasArgs
@@ -1320,7 +1535,15 @@ function validateCall(
   const answer: McpFakeCallAnswer = hasResult
     ? { result: copyJson(raw.result, true) as McpFakeResult }
     : { error: raw.error as string };
-  return { entryId, call: Object.freeze({ id: entryId, index, ...match, ...answer }) };
+  const recorded: { notifications?: McpFakeNotification[]; durationMs?: number } = {};
+  if (has(raw, "notifications")) {
+    recorded.notifications = copyJson(raw.notifications, true) as McpFakeNotification[];
+  }
+  if (has(raw, "durationMs")) recorded.durationMs = raw.durationMs as number;
+  return {
+    entryId,
+    call: Object.freeze({ id: entryId, index, ...match, ...answer, ...recorded }),
+  };
 }
 
 /**
@@ -1459,6 +1682,28 @@ function validateBlock(
   if (scope === "shared" && undeclared === "deny") {
     errors.push(badBlock(ctx, "c", msg`scope "shared" cannot have undeclaredTools "deny"`));
   }
+  if (has(raw, "list")) {
+    const problem = listProblem(raw.list);
+    if (problem) errors.push(faError(ctx, "record-replay/fa-list", problem));
+  }
+  if (has(raw, "recorded")) {
+    const problem = recordedProblem(raw.recorded);
+    if (problem) errors.push(faError(ctx, "record-replay/fa-recorded", problem));
+  }
+  let timing: "recorded" | "immediate" = "recorded";
+  if (has(raw, "timing")) {
+    if (raw.timing === "recorded" || raw.timing === "immediate") {
+      timing = raw.timing;
+    } else {
+      errors.push(
+        faError(
+          ctx,
+          "record-replay/fa-timing",
+          msg`timing must be "recorded" or "immediate", got ${shown(raw.timing)}`,
+        ),
+      );
+    }
+  }
   let mount = MCP_FAKES_DEFAULT_MOUNT;
   if (has(raw, "mount")) {
     if (typeof raw.mount === "string" && raw.mount.startsWith("/")) {
@@ -1548,6 +1793,9 @@ function validateBlock(
     mount,
     ...(undeclared !== undefined ? { undeclaredTools: undeclared } : {}),
     tools: Object.freeze(tools),
+    ...(has(raw, "list") ? { list: copyJson(raw.list, true) as Record<string, unknown>[] } : {}),
+    ...(has(raw, "recorded") ? { recorded: copyJson(raw.recorded, true) as McpFakeRecorded } : {}),
+    timing,
   });
   return { block, entryIds, warnings };
 }
@@ -1822,6 +2070,21 @@ export class McpFakeStore {
    */
   private loadCounts = new Map<string, number>();
   private maxTestIds: number;
+  /**
+   * RP2 fake event logs: supplied test id → its events, oldest first. Map
+   * insertion order is the FIFO order of the test-id cap.
+   */
+  private events = new Map<string, McpFakeReportEvent[]>();
+  /** The event log of requests with no test id: a ring of the newest events. */
+  private untaggedEvents: McpFakeReportEvent[] = [];
+  /** The untagged event log dropped an event (C9). */
+  private untaggedOverflow = false;
+  /**
+   * C9: test ids whose event log overflowed or was evicted, so their report
+   * is incomplete (`evicted: true`). Report-only: `claim`, `snapshot` and
+   * `policy` never read it, so tool calls are unchanged.
+   */
+  private reportOverflow = new Set<string>();
 
   constructor(options: McpFakeStoreOptions = {}) {
     this.maxTestIds = checkCap(options.maxTestIds ?? MCP_FAKES_DEFAULT_MAX_TEST_IDS);
@@ -1869,9 +2132,9 @@ export class McpFakeStore {
   add(sources: readonly McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult {
     const originData = snapshotInput(origin);
     const kind = isPlainObject(originData) ? originData.kind : undefined;
-    if (kind !== "file" && kind !== "code" && kind !== "control-api") {
+    if (kind !== "file" && kind !== "code" && kind !== "control-api" && kind !== "record") {
       const detail = isPlainObject(originData)
-        ? msg`origin.kind must be "file", "code" or "control-api", got ${shown(kind)}`
+        ? msg`origin.kind must be "file", "code", "control-api" or "record", got ${shown(kind)}`
         : msg`origin must be an object { kind }, got ${shown(originData)}`;
       throw new McpFakesAddError([badBlock({ source: null, blockId: null }, "i", detail)], []);
     }
@@ -2049,7 +2312,7 @@ export class McpFakeStore {
    * and fail, and a failed add does not advance `<n>`. Blocks loaded after a
    * run-time add still collide with it as usual (the later block fails).
    */
-  private nextRuntimeNumber(kind: "code" | "control-api"): number {
+  private nextRuntimeNumber(kind: "code" | "control-api" | "record"): number {
     let n = this.runtimeAdds + 1;
     while (this.blockIdPrefixTaken(`${kind}#${n}`)) n += 1;
     return n;
@@ -2092,11 +2355,172 @@ export class McpFakeStore {
       this.consumed.clear();
       this.untagged.clear();
       this.evicted.clear();
+      this.events.clear();
+      this.reportOverflow.clear();
+      this.untaggedEvents = [];
+      this.untaggedOverflow = false;
       return;
     }
     this.consumed.delete(testId);
     this.evicted.delete(testId);
-    if (testId === MCP_FAKES_DEFAULT_TEST_ID) this.untagged.clear();
+    this.events.delete(testId);
+    this.reportOverflow.delete(testId);
+    if (testId === MCP_FAKES_DEFAULT_TEST_ID) {
+      this.untagged.clear();
+      this.untaggedEvents = [];
+      this.untaggedOverflow = false;
+    }
+  }
+
+  /**
+   * MR12: mark entries consumed for `testId` (null = untagged), as a claim
+   * would. Ids not loaded on this mount are ignored, and so is a test id the
+   * cap evicted (its claims fail as `evicted` until it is reset).
+   */
+  markConsumed(testId: string | null, entryIds: readonly string[]): void {
+    if (testId !== null && this.evicted.has(testId)) return;
+    const known = entryIds.filter((entryId) => this.ids.has(entryId));
+    if (known.length === 0) return;
+    const state = this.stateFor(testId);
+    for (const entryId of known) state.add(entryId);
+  }
+
+  /**
+   * AM7/FA1: the `list` of the most specific applicable tier that has one,
+   * else null. Inside a tier, the first block in load order with a `list`.
+   */
+  recordedList(identity: McpFakeIdentity): readonly Record<string, unknown>[] | null {
+    const blocks = this.applicable(identity);
+    for (const tier of TIER_ORDER) {
+      const block = blocks.find((b) => b.tier === tier && b.list !== undefined);
+      if (block?.list) return block.list;
+    }
+    return null;
+  }
+
+  /** FA5 timing and the FA3/FA4 values of an answered entry (for MR15 framing). */
+  replayOf(entryId: string): {
+    timing: "recorded" | "immediate";
+    notifications: readonly McpFakeNotification[];
+    durationMs: number | undefined;
+  } | null {
+    for (const block of this.blocks) {
+      for (const tool of block.tools) {
+        const entry = tool.calls.find((c) => c.id === entryId);
+        if (entry) {
+          return {
+            timing: block.timing,
+            notifications: entry.notifications ?? NO_NOTIFICATIONS,
+            durationMs: entry.durationMs,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** C7: true when any loaded call entry has a `notifications/message` (gates logging). */
+  hasRecordedLogs(): boolean {
+    return this.blocks.some((block) =>
+      block.tools.some((tool) =>
+        tool.calls.some((call) =>
+          call.notifications?.some((n) => n.method === "notifications/message"),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * RP2: append one event to the identity's log, with the next process-wide
+   * `seq` and its `args` bounded (`MCP_FAKES_MAX_EVENT_ARGS_BYTES`). A log
+   * past `MCP_FAKES_MAX_EVENTS_PER_LOG` drops its oldest event and its report
+   * says `evicted: true`; a new test id past the test-id cap evicts the
+   * oldest test id's log the same way (C9). Never touches consumption state.
+   */
+  logEvent(identity: McpFakeIdentity, event: McpFakeReportEventInput): void {
+    lastEventSeq += 1;
+    const stored = Object.freeze({
+      ...event,
+      args: boundedArgs(event.args),
+      seq: lastEventSeq,
+    }) satisfies McpFakeReportEvent;
+    const testId = identity.testId;
+    if (testId === null) {
+      this.untaggedEvents.push(stored);
+      if (this.untaggedEvents.length > MCP_FAKES_MAX_EVENTS_PER_LOG) {
+        this.untaggedEvents.shift();
+        this.untaggedOverflow = true;
+      }
+      return;
+    }
+    let log = this.events.get(testId);
+    if (!log) {
+      log = [];
+      this.events.set(testId, log);
+      this.enforceEventCap();
+    }
+    log.push(stored);
+    if (log.length > MCP_FAKES_MAX_EVENTS_PER_LOG) {
+      log.shift();
+      this.reportOverflow.add(testId);
+    }
+  }
+
+  /**
+   * RP3 parts for this mount (report assembly is src/mcp-fakes-report.ts).
+   * `served`, `failures` and `unfaked` come from the events whose context is
+   * exactly `context`, in `seq` order; `unconsumed` (tiers `testId+context`
+   * and `testId`) and `sharedUnconsumed` (tiers `context` and `shared`) are
+   * the applicable entries on `mount` that `testId` has not consumed. Reads
+   * only: building a report changes no state.
+   */
+  reportPart(testId: string | null, context: string | null, mount: string): McpFakeReportPart {
+    const part: McpFakeReportPart = {
+      evicted:
+        testId === null
+          ? this.untaggedOverflow
+          : this.evicted.has(testId) || this.reportOverflow.has(testId),
+      served: [],
+      unconsumed: [],
+      unfaked: [],
+      failures: [],
+      sharedUnconsumed: [],
+    };
+    const log = testId === null ? this.untaggedEvents : (this.events.get(testId) ?? []);
+    for (const event of log) {
+      if (event.context !== context) continue;
+      const { seq, tool, args } = event;
+      if (event.outcome === "answered") {
+        part.served.push({ entryId: event.entryId, mount: event.mount, tool, args, seq });
+      } else if (event.outcome === "unfaked") {
+        part.unfaked.push({ mount: event.mount, tool, args, answeredBy: event.answeredBy });
+      } else {
+        part.failures.push({ code: event.code, mount: event.mount, tool, args, seq });
+      }
+    }
+    const used = this.stateOf(testId);
+    for (const block of this.applicable({ testId, context, undeclared: null })) {
+      if (block.mount !== mount) continue;
+      const own = block.tier === "testId+context" || block.tier === "testId";
+      for (const tool of block.tools) {
+        for (const call of tool.calls) {
+          if (used?.has(call.id)) continue;
+          if (!own) {
+            part.sharedUnconsumed.push({ entryId: call.id, mount, tool: tool.name });
+          } else if (call.args) {
+            part.unconsumed.push({
+              entryId: call.id,
+              mount,
+              tool: tool.name,
+              args: copyJson(call.args),
+            });
+          } else {
+            part.unconsumed.push({ entryId: call.id, mount, tool: tool.name, anyArgs: true });
+          }
+        }
+      }
+    }
+    return part;
   }
 
   /** Every entry id on this mount, in load order. */
@@ -2300,9 +2724,28 @@ export class McpFakeStore {
       if (this.consumed.size <= this.maxTestIds) break;
       this.consumed.delete(oldest);
       this.evicted.add(oldest);
+      // Its events no longer match its consumption state (C9).
+      if (this.events.delete(oldest)) this.reportOverflow.add(oldest);
+    }
+    this.enforceEventCap();
+  }
+
+  /**
+   * The test-id FIFO cap on event logs: evict the oldest logs until the cap
+   * holds, marking each in the report-only `reportOverflow` (never `evicted`).
+   */
+  private enforceEventCap(): void {
+    if (this.maxTestIds === 0) return;
+    for (const oldest of this.events.keys()) {
+      if (this.events.size <= this.maxTestIds) break;
+      this.events.delete(oldest);
+      this.reportOverflow.add(oldest);
     }
   }
 }
+
+/** `replayOf` notifications of an entry that recorded none. */
+const NO_NOTIFICATIONS: readonly McpFakeNotification[] = Object.freeze([]);
 
 /**
  * The detail of a block-id collision (bad block (f)). The message prefix
