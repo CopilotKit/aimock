@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import type {
   ChatCompletionRequest,
   ChatMessage,
+  ContentPart,
   CustomToolCall,
   Fixture,
   FixtureBlock,
@@ -59,14 +60,21 @@ import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 
 // ─── Responses API request types ────────────────────────────────────────────
 
-interface ResponsesInputItem {
+export interface ResponsesInputItem {
   role?: string;
   type?: string;
   content?: string | ResponsesContentPart[];
   call_id?: string;
   name?: string;
+  /** `function_call` / `custom_tool_call`: the namespace of the called tool. */
+  namespace?: string;
   arguments?: string;
-  output?: string;
+  /** `custom_tool_call`: the free-text input. */
+  input?: string;
+  /** `function_call_output` / `custom_tool_call_output`: a string or content parts. */
+  output?: string | ResponsesContentPart[];
+  /** `additional_tools` / `tool_search_output`: tools made available at this item. */
+  tools?: ResponsesToolDef[];
   id?: string;
 }
 
@@ -94,13 +102,37 @@ interface ResponsesRequest {
   [key: string]: unknown;
 }
 
-interface ResponsesToolDef {
+interface ResponsesFunctionToolDef {
   type: "function";
   name: string;
   description?: string;
   parameters?: object;
   strict?: boolean;
 }
+
+interface ResponsesCustomToolDef {
+  type: "custom";
+  name: string;
+  description?: string;
+  format?: unknown;
+}
+
+interface ResponsesNamespaceToolDef {
+  type: "namespace";
+  name: string;
+  description?: string;
+  tools: Array<ResponsesFunctionToolDef | ResponsesCustomToolDef>;
+}
+
+/**
+ * A Responses request tool. `function`, `custom` and `namespace` tools are
+ * flattened for matching; any other tool type is accepted and ignored.
+ */
+export type ResponsesToolDef =
+  | ResponsesFunctionToolDef
+  | ResponsesCustomToolDef
+  | ResponsesNamespaceToolDef
+  | { type: string; name?: string; [key: string]: unknown };
 
 // ─── Input conversion: Responses → ChatCompletions messages ─────────────────
 
@@ -110,6 +142,29 @@ function extractTextContent(content: string | ResponsesContentPart[] | undefined
   return content
     .filter((p) => p.type === "input_text" || p.type === "output_text")
     .map((p) => p.text ?? "")
+    .join("");
+}
+
+/**
+ * A `custom_tool_call_output.output` is a string or a list of content parts
+ * (`input_text` / `input_image` / `input_file`). Flatten a list to its
+ * concatenated `input_text` text so text matchers such as
+ * `toolResultContains` see it.
+ *
+ * The value comes straight from the request body, so it is read as `unknown`.
+ * Like `function_call_output`, a malformed output never fails the request:
+ * any other value (null, an object, a number) yields empty text, and list
+ * entries that are not `input_text` parts with string text are skipped.
+ */
+function customToolOutputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (!Array.isArray(output)) return "";
+  return output
+    .map((p: unknown) => {
+      if (p === null || typeof p !== "object") return "";
+      const part = p as { type?: unknown; text?: unknown };
+      return part.type === "input_text" && typeof part.text === "string" ? part.text : "";
+    })
     .join("");
 }
 
@@ -146,19 +201,45 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           {
             id: item.call_id ?? generateToolCallId(),
             type: "function",
+            ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}),
             function: { name: item.name ?? "", arguments: item.arguments ?? "" },
           },
         ],
       });
-    } else if (item.type === "function_call_output") {
+    } else if (item.type === "custom_tool_call") {
+      // Previous assistant custom tool call. The pushed assistant message makes
+      // turn counting see the call; the free-text input rides in
+      // `function.arguments` so predicates can read it.
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: item.call_id ?? generateToolCallId(),
+            type: "custom",
+            ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}),
+            // A non-string input (malformed history) becomes "", the same
+            // coercion customToolOutputText applies to a custom output, so
+            // predicates can always treat `arguments` as a string.
+            function: {
+              name: item.name ?? "",
+              arguments: typeof item.input === "string" ? item.input : "",
+            },
+          },
+        ],
+      });
+    } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
       // Bug 1 fix: If there's no preceding assistant message with a matching
-      // tool_call for this call_id, synthesize one. This happens when the AI SDK
+      // tool_call for this call_id (function_call_output or
+      // custom_tool_call_output), synthesize one. This happens when the AI SDK
       // sends [user, item_reference, function_call_output] — the item_reference
       // placeholder (see below) has no tool_calls, so we need a real assistant
       // message with the tool_call for turnIndex counting.
       const hasMatchingToolCall = messages.some(
         (m) => m.role === "assistant" && m.tool_calls?.some((tc) => tc.id === item.call_id),
       );
+      // A synthesized call carries the kind of the output it answers.
+      const synthesizedType = item.type === "custom_tool_call_output" ? "custom" : "function";
       if (!hasMatchingToolCall) {
         // Check if the last message is an item_reference placeholder — if so,
         // upgrade it to carry the tool_call instead of synthesizing a duplicate.
@@ -173,15 +254,16 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           lastMsg.tool_calls = [
             {
               id: item.call_id ?? generateToolCallId(),
-              type: "function",
+              type: synthesizedType,
               function: { name: "", arguments: "" },
             },
           ];
           itemReferencePlaceholders.delete(lastMsg);
         } else {
-          // Multi-fco case: look for a recent assistant with tool_calls that
-          // belongs to the same turn. After the first fco upgrades a placeholder,
-          // subsequent fco's see [assistant(call_A), tool(call_A)] — the last
+          // Multi-output case: look for a recent assistant with tool_calls that
+          // belongs to the same turn. After the first tool output (function or
+          // custom) upgrades a placeholder, later outputs see
+          // [assistant(call_A), tool(call_A)] — the last
           // assistant with tool_calls (right before the trailing tool messages)
           // is the correct target.
           let appended = false;
@@ -190,7 +272,7 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
             if (m.role === "assistant" && m.tool_calls) {
               m.tool_calls.push({
                 id: item.call_id ?? generateToolCallId(),
-                type: "function",
+                type: synthesizedType,
                 function: { name: "", arguments: "" },
               });
               appended = true;
@@ -206,7 +288,7 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
               tool_calls: [
                 {
                   id: item.call_id ?? generateToolCallId(),
-                  type: "function",
+                  type: synthesizedType,
                   function: { name: "", arguments: "" },
                 },
               ],
@@ -216,13 +298,22 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
       }
       messages.push({
         role: "tool",
-        content: item.output ?? "",
+        content:
+          item.type === "custom_tool_call_output"
+            ? customToolOutputText(item.output)
+            : // function_call_output keeps its handling from before custom
+              // tool calls existed: an array output passes through as content
+              // parts, so text matchers do not see it. Changing that would
+              // change which fixtures existing requests match.
+              ((item.output ?? "") as string | ContentPart[]),
         tool_call_id: item.call_id,
       });
     } else if (item.type === "item_reference") {
-      // Bug 6 fix: item_reference items represent prior assistant turns (text
-      // or function_call). Push a placeholder so they count in assistantCount.
-      // If a subsequent function_call_output arrives, the handler above will
+      // Bug 6 fix: item_reference items represent prior assistant turns (text,
+      // function_call or custom_tool_call). Push a placeholder so they count
+      // in assistantCount.
+      // If a subsequent function_call_output or custom_tool_call_output
+      // arrives, the handler above will
       // upgrade this placeholder to carry tool_calls (avoiding double-count).
       const placeholder: ChatMessage = { role: "assistant", content: "" };
       itemReferencePlaceholders.add(placeholder);
@@ -236,16 +327,145 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
   return messages;
 }
 
-function responsesToolsToCompletionsTools(
-  tools?: ResponsesToolDef[],
-): ToolDefinition[] | undefined {
-  if (!tools || tools.length === 0) return undefined;
-  return tools
-    .filter((t) => t.type === "function")
-    .map((t) => ({
-      type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }));
+/** One `function` or `custom` Responses tool in aimock's normalized form. */
+function normalizeResponsesTool(tool: unknown, namespace?: string): ToolDefinition | undefined {
+  if (tool === null || typeof tool !== "object") return undefined;
+  const t = tool as Record<string, unknown>;
+  const ns = namespace !== undefined ? { namespace } : {};
+  if (t.type === "function") {
+    const fn = t as unknown as ResponsesFunctionToolDef;
+    return {
+      type: "function",
+      ...ns,
+      function: {
+        name: fn.name,
+        description: fn.description,
+        parameters: fn.parameters,
+      },
+    };
+  }
+  if (t.type === "custom") {
+    const custom = t as unknown as ResponsesCustomToolDef;
+    return {
+      type: "custom",
+      ...ns,
+      function: { name: custom.name, description: custom.description },
+      ...(custom.format !== undefined ? { format: custom.format } : {}),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Input items whose `tools` add to the request's tools:
+ * `additional_tools` (Codex responses-lite) and `tool_search_output` (tools
+ * loaded by tool search, e.g. Codex's deferred MCP namespaces). Both carry the
+ * same function / custom / namespace tool shapes as `req.tools`.
+ */
+function isToolCarryingItemType(type: unknown): boolean {
+  return type === "additional_tools" || type === "tool_search_output";
+}
+
+/**
+ * Error text for a `namespace` tool whose name is not a non-empty string, whose
+ * `tools` is not an array, or whose `tools` has a `null` entry.
+ *
+ * The name rule follows OpenAI's published spec: openai/openai-openapi
+ * `openapi.yaml` (version 2.3.0), schema `NamespaceToolParam`, has
+ * `name: { type: string, minLength: 1 }` and
+ * `required: [type, name, description, tools]`. aimock is deliberately more
+ * lenient on the rest of that schema: it accepts a missing `description` and an
+ * empty `tools` (the spec has `minItems: 1`).
+ */
+function namespaceToolError(tool: unknown, path: string): string | undefined {
+  if (tool === null || typeof tool !== "object") return undefined;
+  const t = tool as { type?: unknown; name?: unknown; tools?: unknown };
+  if (t.type !== "namespace") return undefined;
+  if (typeof t.name !== "string" || t.name === "") {
+    return `${path}.name must be a non-empty string for a namespace tool`;
+  }
+  if (!Array.isArray(t.tools)) return `${path}.tools must be an array for a namespace tool`;
+  if (t.tools.some((inner) => inner === null)) return `${path}.tools entries must not be null`;
+  return undefined;
+}
+
+/**
+ * Validate the request's tool collections before conversion. Shared by the
+ * HTTP and WebSocket transports so both reject the same shapes with the same
+ * message. Returns the first error, or `undefined` when the tools are usable.
+ *
+ * - `tools` keeps its falsy/empty bypass; otherwise it must be an array with
+ *   no `null` entries.
+ * - A `namespace` tool, in `tools` or in a tool-carrying input item,
+ *   must have a non-empty string `name`: without one its inner tools would
+ *   silently lose their namespace, and `toolNamespace` could never match them.
+ *   Its `tools` must be an array with no `null` entries, for the same reason.
+ * - A tool-carrying input item's `tools`, when present, must be an array with
+ *   no `null` entries, the same rule as the top-level `tools`.
+ *
+ * Other entries and tool types stay accepted and ignored by flattening.
+ */
+export function validateResponsesTools(tools: unknown, input: unknown): string | undefined {
+  if (tools && (tools as { length?: unknown }).length !== 0) {
+    if (!Array.isArray(tools)) return "tools must be an array";
+    if (tools.some((tool) => tool === null)) return "tools entries must not be null";
+    for (const [i, tool] of tools.entries()) {
+      const error = namespaceToolError(tool, `tools[${i}]`);
+      if (error) return error;
+    }
+  }
+  if (Array.isArray(input)) {
+    for (const [i, item] of input.entries()) {
+      const t = item as { type?: unknown; tools?: unknown } | null;
+      if (!isToolCarryingItemType(t?.type) || t?.tools === undefined) continue;
+      if (!Array.isArray(t.tools)) return `input[${i}].tools must be an array`;
+      if (t.tools.some((tool) => tool === null))
+        return `input[${i}].tools entries must not be null`;
+      for (const [j, tool] of t.tools.entries()) {
+        const error = namespaceToolError(tool, `input[${i}].tools[${j}]`);
+        if (error) return error;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Flatten Responses tools into `ChatCompletionRequest.tools` so `toolName`,
+ * `toolNamespace` and predicates see them. Sources, in order:
+ * `req.tools`, then the `tools` of every `additional_tools` or
+ * `tool_search_output` input item, in input order.
+ * `namespace` tools contribute one entry per inner function/custom tool, each
+ * carrying the namespace; other tool types are ignored.
+ */
+function flattenResponsesTools(req: ResponsesRequest): ToolDefinition[] | undefined {
+  const sources: unknown[] = Array.isArray(req.tools) ? [...req.tools] : [];
+  if (Array.isArray(req.input)) {
+    for (const item of req.input) {
+      if (isToolCarryingItemType(item?.type) && Array.isArray(item?.tools))
+        sources.push(...item.tools);
+    }
+  }
+  if (sources.length === 0) return undefined;
+  const flat: ToolDefinition[] = [];
+  for (const tool of sources) {
+    const t = tool as { type?: unknown; name?: unknown; tools?: unknown } | null;
+    if (t?.type === "namespace" && Array.isArray(t.tools)) {
+      // Both transports (handleResponses and the WebSocket processMessage) run
+      // validateResponsesTools before responsesToCompletionRequest, and it
+      // rejects a namespace tool without a non-empty string name. A direct
+      // caller that skips it gets un-namespaced inner tools, not a throw.
+      const ns = typeof t.name === "string" ? t.name : undefined;
+      for (const inner of t.tools) {
+        const normalized = normalizeResponsesTool(inner, ns);
+        if (normalized) flat.push(normalized);
+      }
+      continue;
+    }
+    const normalized = normalizeResponsesTool(tool);
+    if (normalized) flat.push(normalized);
+  }
+  return flat;
 }
 
 export function responsesToCompletionRequest(req: ResponsesRequest): ChatCompletionRequest {
@@ -255,7 +475,7 @@ export function responsesToCompletionRequest(req: ResponsesRequest): ChatComplet
     stream: req.stream,
     temperature: req.temperature,
     max_tokens: req.max_output_tokens,
-    tools: responsesToolsToCompletionsTools(req.tools),
+    tools: flattenResponsesTools(req),
     tool_choice: req.tool_choice,
     response_format: req.response_format,
   };
@@ -1435,17 +1655,8 @@ export async function handleResponses(
       }
     }
   }
-  // Keep the converter's empty/falsy bypass and ignored non-function entries.
-  // Only reject collections that would throw when the converter reads them.
-  let toolsError: string | undefined;
-  if (responsesReq.tools && responsesReq.tools.length !== 0) {
-    if (!Array.isArray(responsesReq.tools)) {
-      toolsError = "tools must be an array";
-    } else if (responsesReq.tools.some((tool) => tool === null)) {
-      toolsError = "tools entries must not be null";
-    }
-  }
-  const validationError = inputError ?? toolsError;
+  const validationError =
+    inputError ?? validateResponsesTools(responsesReq.tools, responsesReq.input);
   if (validationError) {
     journal.add({
       method: req.method ?? "POST",

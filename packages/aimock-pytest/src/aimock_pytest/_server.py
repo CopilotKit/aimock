@@ -203,6 +203,7 @@ class AIMockServer:
             "toolCallId",
             "toolResultContains",
             "toolName",
+            "toolNamespace",
             "model",
             "responseFormat",
             "endpoint",

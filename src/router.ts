@@ -498,10 +498,16 @@ export function matchFixtureDiagnostic(
       if (text === null || !text.includes(match.toolResultContains)) continue;
     }
 
-    // toolName — match against any tool definition by function.name
-    if (match.toolName !== undefined) {
+    // toolName — match against any tool definition by function.name.
+    // toolNamespace — exact OpenAI Responses namespace of an offered tool; with
+    // toolName, ONE tool must carry both (Codex routes by the exact pair).
+    if (match.toolName !== undefined || match.toolNamespace !== undefined) {
       const tools = Array.isArray(effective.tools) ? effective.tools : [];
-      const found = tools.some((t) => t?.function?.name === match.toolName);
+      const found = tools.some(
+        (t) =>
+          (match.toolName === undefined || t?.function?.name === match.toolName) &&
+          (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
+      );
       if (!found) continue;
     }
 

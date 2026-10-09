@@ -116,6 +116,9 @@ export function entryToFixture(
       toolCallId: entry.match.toolCallId,
       toolResultContains: entry.match.toolResultContains,
       toolName: entry.match.toolName,
+      ...(entry.match.toolNamespace !== undefined && {
+        toolNamespace: entry.match.toolNamespace,
+      }),
       model: entry.match.model,
       responseFormat: entry.match.responseFormat,
       endpoint: entry.match.endpoint,
@@ -1491,6 +1494,41 @@ export function validateFixtures(
         });
       }
     }
+    if (f.match.toolNamespace !== undefined) {
+      if (typeof f.match.toolNamespace !== "string") {
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: `match.toolNamespace must be a string, got ${typeof f.match.toolNamespace}`,
+        });
+      } else if (f.match.toolNamespace.length === 0) {
+        // A request never carries an empty namespace: aimock rejects a
+        // namespace tool named "" with a 400 (validateResponsesTools), as
+        // OpenAI's spec requires (openai/openai-openapi openapi.yaml 2.3.0,
+        // NamespaceToolParam: `name` has `minLength: 1`), so this value never
+        // matches. Reject it as an authoring mistake.
+        results.push({
+          severity: "error",
+          fixtureIndex: i,
+          message: "match.toolNamespace must be a non-empty string",
+        });
+      }
+    }
+    if (
+      typeof f.match.toolNamespace === "string" &&
+      f.match.toolNamespace !== "" &&
+      f.match.endpoint !== undefined &&
+      f.match.endpoint !== "chat"
+    ) {
+      // Only the OpenAI Responses adapter attaches tool namespaces. Its
+      // requests carry endpoint "chat", which every chat-style adapter shares,
+      // so any other endpoint never sees a namespace.
+      results.push({
+        severity: "warning",
+        fixtureIndex: i,
+        message: `match.toolNamespace never matches with endpoint ${JSON.stringify(f.match.endpoint)} — only OpenAI Responses requests (endpoint "chat") carry tool namespaces`,
+      });
+    }
     const customCallPath =
       f.match.endpoint !== undefined && f.match.endpoint !== "chat"
         ? firstCustomToolCallPath(f.response)
@@ -1550,8 +1588,9 @@ export function validateFixtures(
     // duplicates when they would match the SAME requests, so the dedup key must
     // include EVERY match discriminator the router (matchFixtureDiagnostic in
     // router.ts) actually gates on: userMessage, systemMessage, inputText,
-    // toolCallId, toolResultContains, toolName, model, responseFormat, endpoint,
-    // context, sequenceIndex, turnIndex, and hasToolResult. Omitting any of these
+    // toolCallId, toolResultContains, toolName, toolNamespace, model,
+    // responseFormat, endpoint, context, sequenceIndex, turnIndex, and
+    // hasToolResult. Omitting any of these
     // (the old key only carried turnIndex/hasToolResult/toolResultContains/
     // sequenceIndex/context) flags two legitimately-distinct fixtures — e.g. two
     // that differ ONLY in toolCallId or model — as false duplicates.
@@ -1564,30 +1603,36 @@ export function validateFixtures(
     // Values are serialised kind-aware so RegExp / string[] matchers do not
     // collide (a template literal would coerce a RegExp to its source and an
     // array via join, losing the distinction) — mirroring describeMatch in
-    // router.ts.
+    // router.ts. The field tuple is JSON-encoded rather than joined with a
+    // delimiter, so a "|" inside a value (e.g. toolName "a|" + toolNamespace
+    // "b" vs toolName "a" + toolNamespace "|b") cannot shift field boundaries.
+    // The key is not collision-free: an absent field and an empty-string
+    // field both encode as "", so e.g. toolCallId (or toolName, context)
+    // absent vs "" share a key.
     const um = f.match.userMessage;
     if (typeof um === "string" && um) {
       const m = f.match;
       const dedupKey =
         m.predicate !== undefined
           ? `predicate:${i}`
-          : [
-              serializeMatcher(m.userMessage),
-              serializeMatcher(m.systemMessage),
-              serializeMatcher(m.inputText),
-              m.toolCallId,
-              m.toolResultContains,
-              m.toolName,
-              serializeMatcher(m.model),
-              m.responseFormat,
-              m.endpoint,
-              m.context,
-              m.sequenceIndex,
-              m.turnIndex,
-              m.hasToolResult,
-            ]
-              .map((v) => (v === undefined ? "" : String(v)))
-              .join("|");
+          : JSON.stringify(
+              [
+                serializeMatcher(m.userMessage),
+                serializeMatcher(m.systemMessage),
+                serializeMatcher(m.inputText),
+                m.toolCallId,
+                m.toolResultContains,
+                m.toolName,
+                m.toolNamespace,
+                serializeMatcher(m.model),
+                m.responseFormat,
+                m.endpoint,
+                m.context,
+                m.sequenceIndex,
+                m.turnIndex,
+                m.hasToolResult,
+              ].map((v) => (v === undefined ? "" : String(v))),
+            );
       const prev = seenUserMessages.get(dedupKey);
       if (prev !== undefined) {
         const ref: ValidationRef = {
@@ -1618,6 +1663,7 @@ export function validateFixtures(
       match.toolCallId !== undefined ||
       match.toolResultContains !== undefined ||
       match.toolName !== undefined ||
+      match.toolNamespace !== undefined ||
       match.model !== undefined ||
       match.predicate !== undefined ||
       match.turnIndex !== undefined ||

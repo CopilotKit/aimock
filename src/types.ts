@@ -55,7 +55,13 @@ export interface ChatMessage {
 
 export interface ToolCallMessage {
   id: string;
-  type: "function";
+  /**
+   * `"custom"` marks an OpenAI Responses `custom_tool_call` history item; its
+   * free-text `input` is carried in `function.arguments`.
+   */
+  type: "function" | "custom";
+  /** OpenAI Responses namespace of the called tool, when the history item had one. */
+  namespace?: string;
   function: { name: string; arguments: string };
 }
 
@@ -116,9 +122,23 @@ export interface ChatCompletionRequest {
   [key: string]: unknown;
 }
 
+/**
+ * aimock's normalized request tool. OpenAI Responses `function` and `custom`
+ * tools, including those inside a `namespace` tool, are flattened into this
+ * form (the name always lives under `function.name`); other Responses tool
+ * types are dropped. `format` is set only on a Responses `custom` tool. The
+ * Responses adapter sets `namespace` only on a tool from inside a `namespace`
+ * tool. Chat Completions passes its request tools through unchanged, so a
+ * non-standard top-level `namespace` there is kept, but no other API's tool
+ * format defines one.
+ */
 export interface ToolDefinition {
-  type: "function";
+  type: "function" | "custom";
   function: { name: string; description?: string; parameters?: object };
+  /** OpenAI Responses namespace the tool was offered in. */
+  namespace?: string;
+  /** OpenAI Responses custom-tool input format (grammar or text), carried verbatim. */
+  format?: unknown;
 }
 
 // Fixture matching
@@ -151,6 +171,12 @@ export interface FixtureMatch {
    */
   toolResultContains?: string;
   toolName?: string;
+  /**
+   * Exact OpenAI Responses tool namespace. Alone, it matches when any offered
+   * tool sits in this namespace; with `toolName`, a single offered tool must
+   * carry both the name and the namespace.
+   */
+  toolNamespace?: string;
   model?: string | RegExp;
   responseFormat?: string;
   predicate?: (req: ChatCompletionRequest) => boolean;
@@ -941,6 +967,8 @@ export interface FixtureFileEntry {
      */
     toolResultContains?: string;
     toolName?: string;
+    /** Mirrors the runtime FixtureMatch.toolNamespace. */
+    toolNamespace?: string;
     model?: string;
     responseFormat?: string;
     sequenceIndex?: number;

@@ -1459,6 +1459,20 @@ describe("validateFixtures", () => {
     expect(duplicateWarnings).toHaveLength(0);
   });
 
+  it('no warning: "|" inside toolName/toolNamespace does not make distinct fixtures collide', () => {
+    const fixtures = [
+      makeFixture({ match: { userMessage: "d", toolName: "a|", toolNamespace: "b" } }),
+      makeFixture({ match: { userMessage: "d", toolName: "a", toolNamespace: "|b" } }),
+      makeFixture({ match: { userMessage: "t", toolName: "x", toolNamespace: "y" } }),
+      makeFixture({ match: { userMessage: "t", toolName: "x", toolNamespace: "y" } }),
+    ];
+    const duplicateWarnings = validateFixtures(fixtures).filter(
+      (r) => r.severity === "warning" && r.message.includes("duplicate"),
+    );
+    // Positive control: the true duplicate (index 3 of 2) still warns.
+    expect(duplicateWarnings.map((r) => r.fixtureIndex)).toEqual([3]);
+  });
+
   it("no warning: same userMessage but different toolResultContains", () => {
     const fixtures = [
       makeFixture({ match: { userMessage: "hello", toolResultContains: "cancelled" } }),
