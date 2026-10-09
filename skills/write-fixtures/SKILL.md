@@ -195,8 +195,8 @@ Rates are evaluated per-request. When triggered, the chaos failure replaces the 
 ### Bad model output and retry recovery
 
 Use `misbehavior` to change a valid fixture response. Keep `chaos` for transport failures.
-Semantic fault rendering currently supports only the `openai-chat` wire, including Azure and OpenRouter chat endpoints.
-Do not claim support for Responses, Realtime, Anthropic, Gemini, Bedrock, Cohere or Ollama semantic faults.
+Semantic fault support varies by wire, fault, and mode; consult the [support matrix](../../docs/model-misbehavior/index.html#support) before authoring a fixture. The example below uses `openai-chat`, including Azure and OpenRouter chat endpoints.
+Local support does not establish native fidelity; preserve the [modeled contracts and native capture limits](../../docs/model-misbehavior/index.html#fidelity).
 
 Save this fixture as `bad-tool.json`. Its first matching request receives invalid tool JSON; the next receives valid arguments.
 
