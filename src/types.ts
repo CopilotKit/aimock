@@ -1,3 +1,4 @@
+import type { MisbehaviorSummary } from "./misbehavior.js";
 import type * as http from "node:http";
 import type * as net from "node:net";
 import type { Journal } from "./journal.js";
@@ -680,6 +681,71 @@ export type ResponseFactory = (
 
 // Fixture
 
+/** Provider wire identifiers, independent of endpoint response families. */
+export type WireId =
+  | "openai-chat"
+  | "openai-responses"
+  | "openai-realtime"
+  | "anthropic"
+  | "bedrock-invoke"
+  | "bedrock-converse"
+  | "gemini"
+  | "gemini-live"
+  | "gemini-interactions"
+  | "cohere"
+  | "ollama";
+
+interface MisbehaviorCommon {
+  rate?: number;
+  times?: number;
+  tool?: string;
+  providers?: WireId[];
+}
+
+export type MisbehaviorFault = MisbehaviorCommon &
+  (
+    | { fault: "tool-args-invalid-json"; style?: "truncated" | "trailing-comma" | "single-quotes" }
+    | {
+        fault: "tool-args-schema-violation";
+        violation?:
+          | "missing-required"
+          | "wrong-type"
+          | "extra-property"
+          | "enum-mismatch"
+          | "not-object";
+        property?: string;
+      }
+    | { fault: "tool-unknown-name"; name?: string }
+    | { fault: "tool-call-id-duplicate" }
+    | { fault: "stop-length-mid-tool"; at?: number }
+    | { fault: "empty-response" }
+    | { fault: "refusal"; message?: string; category?: string | null }
+    | { fault: "content-filter" }
+    | { fault: "reasoning-only"; reasoning?: string }
+  );
+
+export type MisbehaviorFaultId = MisbehaviorFault["fault"];
+export interface MisbehaviorConfig {
+  seed?: number | "random";
+  faults: MisbehaviorFault[];
+}
+
+export interface MisbehaviorCounterKey {
+  testId: string;
+  sourceKey: string;
+  entryIndex: number;
+}
+export interface MisbehaviorCounters {
+  getFiringCount(key: MisbehaviorCounterKey): number;
+  nextOrdinal(key: MisbehaviorCounterKey): number;
+  recordFiring(key: MisbehaviorCounterKey): void;
+  clearMisbehaviorCounters(testId?: string): void;
+}
+export interface MisbehaviorScope {
+  baseline?: MisbehaviorConfig;
+  byTestId: Map<string, MisbehaviorConfig>;
+}
+
 export interface Fixture {
   match: FixtureMatch;
   response: FixtureResponse | ResponseFactory;
@@ -690,6 +756,7 @@ export interface Fixture {
   streamingProfile?: StreamingProfile;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /**
    * Opt into OpenRouter's `: OPENROUTER PROCESSING` SSE keepalive comment
@@ -869,6 +936,7 @@ export interface FixtureFileEntry {
   streamingProfile?: StreamingProfile;
   recordedTimings?: RecordedTimings;
   replaySpeed?: number;
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /** See {@link Fixture.openRouterProcessing}. */
   openRouterProcessing?: boolean;
@@ -948,6 +1016,8 @@ export interface JournalEntry {
      */
     error?: string;
     chaosAction?: ChaosAction;
+    /** Full prepared fault output; interrupted delivery is recorded separately above. */
+    misbehavior?: MisbehaviorSummary;
     /** When the X-AIMock-Strict header overrode the server default. */
     strictOverride?: boolean;
   };
@@ -1017,9 +1087,19 @@ export interface SSEChoice {
   native_finish_reason?: string | null;
 }
 
+/** OpenRouter text reasoning detail, paired with the same logical reasoning text. */
+export interface ReasoningTextDetail {
+  type: "reasoning.text";
+  text: string;
+  format: "unknown";
+  index: number;
+}
+
 export interface SSEDelta {
   role?: string;
   content?: string | null;
+  reasoning?: string;
+  reasoning_details?: ReasoningTextDetail[];
   reasoning_content?: string;
   tool_calls?: SSEToolCallDelta[];
 }
@@ -1069,6 +1149,7 @@ export interface ChatCompletionMessage {
   role: string;
   content: string | null;
   refusal: string | null;
+  reasoning_details?: ReasoningTextDetail[];
   reasoning_content?: string;
   /**
    * OpenRouter emits `reasoning` (null when absent) on the response message.
@@ -1224,6 +1305,7 @@ export interface MockServerOptions {
   replaySpeed?: number;
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "warn" | "info" | "debug";
+  misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /** Enable Prometheus-compatible /metrics endpoint. */
   metrics?: boolean;
@@ -1348,6 +1430,8 @@ export interface FalQueueConfig {
 // Handler defaults — the common shape passed from server.ts to every handler
 
 export interface HandlerDefaults {
+  misbehavior?: MisbehaviorScope;
+  misbehaviorCounters?: MisbehaviorCounters;
   latency: number;
   chunkSize: number;
   replaySpeed: number;

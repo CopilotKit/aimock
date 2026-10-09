@@ -1,3 +1,4 @@
+import type { MisbehaviorPlan } from "./misbehavior.js";
 import type { LiveFixtureResponse } from "./live-types.js";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
@@ -540,6 +541,85 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
   });
 }
 
+/** Allocate the exact OpenAI call identities once for both wire output and observations. */
+export function prepareOpenAIChatMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const duplicate = plan.duplicateId;
+  const toolCalls = calls.map((call, index) => ({
+    ...call,
+    ...(index === duplicate?.destinationIndex ? {} : { id: call.id || generateToolCallId() }),
+  }));
+  if (duplicate) {
+    toolCalls[duplicate.destinationIndex].id = toolCalls[duplicate.sourceIndex].id;
+  }
+  let preparedResponse = { ...response };
+  if ("usage" in preparedResponse) delete preparedResponse.usage;
+  if (plan.stop === "length") preparedResponse = { ...preparedResponse, finishReason: "length" };
+  if (outcome) {
+    let index = 0;
+    const blocks = outcome.ordered.map((block) =>
+      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
+    );
+    preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
+  } else if (combined || isToolCallResponse(response)) {
+    preparedResponse = { ...preparedResponse, toolCalls };
+  }
+  return {
+    ...plan,
+    response: preparedResponse,
+    summary: {
+      ...plan.summary,
+      servedToolCalls: toolCalls.map(({ name, arguments: args, id }) => ({
+        name,
+        arguments: args,
+        id,
+      })),
+    },
+  };
+}
+
+/** Estimate once from the full applied output, before any delivery interruption. */
+export function resolveOpenAIChatMisbehaviorUsage(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  exposeReasoning = true,
+): ReturnType<typeof resolveUsage> {
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const content =
+    outcome?.content ??
+    ("content" in response && typeof response.content === "string" ? response.content : "");
+  const reasoning =
+    plan.reasoning ??
+    ("reasoning" in response && typeof response.reasoning === "string" ? response.reasoning : "");
+  const promptText = request.messages
+    .map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content.map((part) => part.text ?? "").join("")
+          : "",
+    )
+    .join("");
+  const completionText =
+    content +
+    calls.map((call) => call.name + call.arguments).join("") +
+    (plan.refusal ?? "") +
+    (exposeReasoning ? reasoning : "");
+  return resolveUsage(undefined, promptText, completionText);
+}
+
 /** Project normalized ordered blocks without changing the fixture or generating ids. */
 export function resolveFixtureBlockOutcome(blocks: FixtureFileBlock[]) {
   const ordered = resolveFixtureBlocks(blocks);
@@ -831,6 +911,189 @@ export function buildTextChunks(
   });
 
   return chunks;
+}
+
+/** K9 exposure is selected by the provider path, never the echoed response model. */
+export function buildOpenAIReasoningChunks(
+  reasoning: string,
+  model: string,
+  chunkSize: number,
+  exposeReasoning: boolean,
+  overrides?: ResponseOverrides,
+): SSEChunk[] {
+  return buildTextChunks(exposeReasoning ? reasoning : "", model, chunkSize, undefined, {
+    ...overrides,
+    role: "assistant",
+    finishReason: "length",
+  }).map((chunk) => ({
+    ...chunk,
+    choices: chunk.choices.map((choice) => ({
+      ...choice,
+      delta:
+        choice.delta.role !== undefined
+          ? { role: "assistant", content: null }
+          : typeof choice.delta.content === "string"
+            ? {
+                role: "assistant",
+                content: "",
+                reasoning: choice.delta.content,
+                reasoning_details: [
+                  {
+                    type: "reasoning.text" as const,
+                    text: choice.delta.content,
+                    format: "unknown" as const,
+                    index: 0,
+                  },
+                ],
+              }
+            : {},
+    })),
+  }));
+}
+
+/** Render exposed reasoning or native OpenAI's empty length completion. */
+export function buildOpenAIReasoningCompletion(
+  reasoning: string,
+  model: string,
+  exposeReasoning: boolean,
+  overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
+): ChatCompletion {
+  const visible = exposeReasoning ? reasoning : "";
+  const completion = buildTextCompletion(
+    visible,
+    model,
+    undefined,
+    {
+      ...overrides,
+      role: "assistant",
+      finishReason: "length",
+      usage: undefined,
+    },
+    requestMessages,
+  );
+  return {
+    ...completion,
+    choices: completion.choices.map((choice) => ({
+      ...choice,
+      message: {
+        role: "assistant",
+        content: null,
+        refusal: null,
+        ...(exposeReasoning
+          ? {
+              reasoning: visible,
+              reasoning_details: [
+                {
+                  type: "reasoning.text" as const,
+                  text: visible,
+                  format: "unknown" as const,
+                  index: 0,
+                },
+              ],
+            }
+          : {}),
+      },
+    })),
+  };
+}
+
+/** Render withheld output with only the role and native content-filter terminal. */
+export function buildOpenAIContentFilterChunks(
+  model: string,
+  overrides?: ResponseOverrides,
+): SSEChunk[] {
+  return buildTextChunks("", model, 1, undefined, {
+    ...overrides,
+    role: "assistant",
+    finishReason: "content_filter",
+  }).map((chunk) => ({
+    ...chunk,
+    choices: chunk.choices.map((choice) => ({
+      ...choice,
+      delta: choice.delta.role !== undefined ? { role: "assistant", content: null } : {},
+    })),
+  }));
+}
+
+/** Non-streaming filtered output contains no answer, refusal text, reasoning, or calls. */
+export function buildOpenAIContentFilterCompletion(
+  model: string,
+  overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
+): ChatCompletion {
+  const completion = buildTextCompletion(
+    "",
+    model,
+    undefined,
+    {
+      ...overrides,
+      role: "assistant",
+      finishReason: "content_filter",
+      usage: undefined,
+    },
+    requestMessages,
+  );
+  return {
+    ...completion,
+    choices: completion.choices.map((choice) => ({
+      ...choice,
+      message: { role: "assistant", content: null, refusal: null },
+    })),
+  };
+}
+
+/** Render an applied refusal on its own channel without ordinary content or reasoning. */
+export function buildOpenAIRefusalChunks(
+  refusal: string,
+  model: string,
+  chunkSize: number,
+  overrides?: ResponseOverrides,
+) {
+  return buildTextChunks(refusal, model, chunkSize, undefined, {
+    ...overrides,
+    role: "assistant",
+    finishReason: "stop",
+  }).map((chunk) => ({
+    ...chunk,
+    choices: chunk.choices.map((choice) => {
+      const delta: typeof choice.delta & { refusal?: string } =
+        choice.delta.role !== undefined
+          ? { role: "assistant", content: null }
+          : typeof choice.delta.content === "string"
+            ? { refusal: choice.delta.content }
+            : {};
+      return { ...choice, delta };
+    }),
+  }));
+}
+
+/** Refusal-only counterpart of the ordinary text completion builder. */
+export function buildOpenAIRefusalCompletion(
+  refusal: string,
+  model: string,
+  overrides?: ResponseOverrides,
+  requestMessages?: ChatCompletionRequest["messages"],
+): ChatCompletion {
+  const completion = buildTextCompletion(
+    refusal,
+    model,
+    undefined,
+    {
+      ...overrides,
+      role: "assistant",
+      finishReason: "stop",
+      usage: undefined,
+    },
+    requestMessages,
+  );
+  return {
+    ...completion,
+    choices: completion.choices.map((choice) => ({
+      ...choice,
+      message: { role: "assistant", content: null, refusal },
+    })),
+  };
 }
 
 export function buildToolCallChunks(
