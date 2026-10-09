@@ -2471,8 +2471,12 @@ export class McpFakeStore {
    * `served`, `failures` and `unfaked` come from the events whose context is
    * exactly `context`, in `seq` order; `unconsumed` (tiers `testId+context`
    * and `testId`) and `sharedUnconsumed` (tiers `context` and `shared`) are
-   * the applicable entries on `mount` that `testId` has not consumed. Reads
-   * only: building a report changes no state.
+   * the applicable entries of this store that `testId` has not consumed,
+   * labelled with `mount`, the path the store's mock is served at. Every
+   * block in the store answers there (`claim` does not read `block.mount`),
+   * so none is left out by its own `mount` value: a mock that loaded its own
+   * fakes (default mount "/mcp") and is mounted at another path still reports
+   * them. Reads only: building a report changes no state.
    */
   reportPart(testId: string | null, context: string | null, mount: string): McpFakeReportPart {
     const part: McpFakeReportPart = {
@@ -2500,7 +2504,6 @@ export class McpFakeStore {
     }
     const used = this.stateOf(testId);
     for (const block of this.applicable({ testId, context, undeclared: null })) {
-      if (block.mount !== mount) continue;
       const own = block.tier === "testId+context" || block.tier === "testId";
       for (const tool of block.tools) {
         for (const call of tool.calls) {

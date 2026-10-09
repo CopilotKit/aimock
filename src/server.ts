@@ -311,6 +311,7 @@ import {
   mountConflictDetail,
   type MountList,
 } from "./mcp-fakes-mount.js";
+import { handleFakesReportRoute } from "./mcp-fakes-report.js";
 import { MCP_FAKES_DEFAULT_MOUNT, McpFakeStore, McpFakesAddError, blockIdOf } from "./mcp-fakes.js";
 import { MCPMock } from "./mcp-mock.js";
 import { build, msg, quote } from "./message-text.js";
@@ -1149,6 +1150,11 @@ async function handleControlAPI(
       return reply(404, { error: build(msg`No MCP mount at ${quote(mount ?? "")}`) });
     }
     return reply(200, { testId, context, mounts: listed });
+  }
+
+  // GET /__aimock/mcp/fakes/report — the per-test fake report (RP6).
+  if (subPath === "/mcp/fakes/report" && req.method === "GET") {
+    return handleFakesReportRoute(res, searchParams, mounts);
   }
 
   // POST /__aimock/fixtures — add fixtures dynamically

@@ -279,7 +279,7 @@ describe("unconsumed tiers (RP4) and RP9", () => {
     return store;
   }
 
-  it("splits unconsumed by tier and filters by mount", () => {
+  it("splits unconsumed by tier", () => {
     const store = tieredStore();
     store.claim("t", { v: 1 }, id("T", "C"));
     const part = store.reportPart("T", "C", "/mcp");
@@ -287,6 +287,8 @@ describe("unconsumed tiers (RP4) and RP9", () => {
       { entryId: "tc:tc#0", mount: "/mcp", tool: "tc", args: { v: 1 } },
       { entryId: "tc:tc#1", mount: "/mcp", tool: "tc", anyArgs: true },
       { entryId: "t:t#1", mount: "/mcp", tool: "t", anyArgs: true },
+      { entryId: "other:o#0", mount: "/mcp", tool: "o", args: { v: 1 } },
+      { entryId: "other:o#1", mount: "/mcp", tool: "o", anyArgs: true },
     ]);
     expect(part.sharedUnconsumed).toEqual([
       { entryId: "c:c#0", mount: "/mcp", tool: "c" },
@@ -294,10 +296,22 @@ describe("unconsumed tiers (RP4) and RP9", () => {
       { entryId: "s:s#0", mount: "/mcp", tool: "s" },
       { entryId: "s:s#1", mount: "/mcp", tool: "s" },
     ]);
-    expect(store.reportPart("T", "C", "/other").unconsumed.map((u) => u.entryId)).toEqual([
-      "other:o#0",
-      "other:o#1",
+  });
+
+  it("reports every block of the store under the mount it is asked for, whatever each block's own mount (G1 A1)", () => {
+    // A mock answers every block it holds at the path it is served at
+    // (`claim` does not read `block.mount`), so its report must list them all
+    // there: a mock that loaded its own fakes (default mount "/mcp") and is
+    // mounted at "/tools" would otherwise report an unused fake as ok.
+    const store = tieredStore();
+    expect(store.claim("o", { v: 1 }, id("T")).kind).toBe("answer");
+    const part = store.reportPart("T", null, "/tools");
+    expect(part.unconsumed).toEqual([
+      { entryId: "t:t#0", mount: "/tools", tool: "t", args: { v: 1 } },
+      { entryId: "t:t#1", mount: "/tools", tool: "t", anyArgs: true },
+      { entryId: "other:o#1", mount: "/tools", tool: "o", anyArgs: true },
     ]);
+    expect(part.sharedUnconsumed.map((u) => u.mount)).toEqual(["/tools", "/tools"]);
   });
 
   it("building a report does not change snapshot()", () => {
