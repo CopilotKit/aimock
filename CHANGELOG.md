@@ -31,6 +31,7 @@
 
 ### Fixed
 
+- Keep drift evidence available for unrelated assertions when a scoped console record exceeds the capture limit; the affected assertion or scope remains unavailable.
 - Retain sanitized drift evidence for each test and retry attempt in CI artifacts.
 - Align Cohere streaming length-stop faults with captured tool closure, `TOOL_CALL`, and terminal `[DONE]` framing while preserving incomplete argument bytes. Object length stops retain modeled `MAX_TOKENS`; recurring comparisons distinguish valid object nontriggers from failures.
 - Preserve malformed tool-call argument strings on string-based response wires instead of silently replacing them with `{}`. Object-based wires now return an explicit error (HTTP 500, or a Gemini Live WebSocket error) before response content. Valid JSON, empty or omitted legacy arguments, and fixture validation retain their existing behavior.

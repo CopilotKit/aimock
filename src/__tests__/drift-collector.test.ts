@@ -73,6 +73,7 @@ import type { DriftReport } from "../../scripts/drift-types.js";
 // Exercise the real CLI and installed Vitest reporter, without provider credentials.
 async function withCollectorFixture(
   mode:
+    | "console-overflow"
     | "mixed"
     | "unknown-surface"
     | "secondary-malformed"
@@ -196,7 +197,7 @@ async function withCollectorFixture(
       `,
       );
     }
-    if (mode === "bedrock-markers") {
+    if (mode === "bedrock-markers" || mode === "console-overflow") {
       const markerFixture = `
         import { it, describe, expect } from 'vitest';
         const marker = (fault, stream, source, outcome) => ({ nativeComparison: {wire:'invoke',fault,stream},source,outcome,sends:1,requestedOutputTokens:32,request:'fixture-provider-body-912',raw:process.env.FIXTURE_SECRET });
@@ -215,7 +216,7 @@ async function withCollectorFixture(
       writeFileSync(join(tests, "bedrock-misbehavior-live.drift.ts"), markerFixture);
       writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
     }
-    if (mode === "vertex-markers") {
+    if (mode === "vertex-markers" || mode === "console-overflow") {
       const markerFixture = `
         import { it, describe, beforeAll, expect } from 'vitest';
         const cells = ['k5-object','k5-stream','k9-object','k9-stream'];
@@ -233,7 +234,7 @@ async function withCollectorFixture(
       writeFileSync(join(tests, "vertex-misbehavior.drift.ts"), markerFixture);
       writeFileSync(join(tests, "unrelated.drift.ts"), markerFixture);
     }
-    if (mode === "cohere-markers") {
+    if (mode === "cohere-markers" || mode === "console-overflow") {
       const markerFixture = `
         import { it, expect } from 'vitest';
         const marker = {cohereK5:[{stream:false,classification:'NOT_TRIGGERED',finish:'COMPLETE',usage:{tokens:{inputTokens:1,outputTokens:1}}},{stream:true,classification:'TARGET',finish:'TOOL_CALL',usage:{tokens:{inputTokens:1,outputTokens:1}}}],raw:process.env.FIXTURE_SECRET,request:'fixture-provider-body-912'};
@@ -366,6 +367,194 @@ async function withCollectorFixture(
 }
 
 describe("collector invocation evidence", async () => {
+  it.each(["test", "suite", "module"] as const)(
+    "isolates attributable console overflow at %s scope",
+    async (scope) => {
+      await withCollectorFixture("console-overflow", async ({ directory, invoke }) => {
+        const file =
+          scope === "test"
+            ? "bedrock-misbehavior-live"
+            : scope === "suite"
+              ? "vertex-misbehavior"
+              : "cohere";
+        const fixture = join(directory, `src/__tests__/drift/${file}.drift.ts`);
+        const before = readFileSync(fixture, "utf8");
+        const trigger =
+          scope === "test"
+            ? "it('invoke K5 stream=false', () => console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))));"
+            : scope === "suite"
+              ? "beforeAll(() => console.info("
+              : "const marker =";
+        expect(before).toContain(trigger);
+        writeFileSync(
+          fixture,
+          before.replace(
+            trigger,
+            scope === "test"
+              ? "it('invoke K5 stream=false', async () => { console.log('x'.repeat(262145)); await Promise.resolve(); console.log(JSON.stringify(marker('K5',false,'native','TARGET_COMPARED'))); });"
+              : scope === "suite"
+                ? "beforeAll(() => console.log('x'.repeat(262145))); beforeAll(() => console.info("
+                : "console.log('x'.repeat(262145)); const marker =",
+          ),
+        );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const serialized = readFileSync(
+          join(evidenceDirectory, readdirSync(evidenceDirectory)[0]),
+          "utf8",
+        );
+        const evidence = JSON.parse(serialized);
+        for (const row of evidence.drift.assertions) {
+          const tainted =
+            row.file === `src/__tests__/drift/${file}.drift.ts` &&
+            (scope === "module" ||
+              (scope === "test"
+                ? row.title === "invoke K5 stream=false"
+                : row.ancestors[0] === "Vertex native recurring modeled-contract observations"));
+          expect(row.consoleContext.availability, `${row.file}: ${row.title}`).toBe(
+            tainted ? "unavailable" : "available",
+          );
+          if (tainted) {
+            expect(row.consoleContext.recordCount).toBe(0);
+            expect(row.observations).toBeUndefined();
+            expect(row.source).toBe("unknown");
+          }
+        }
+        // Vitest batches synchronous stdout: the yielded marker must survive separately.
+        if (scope === "test") expect(evidence.drift.unboundConsoleRecordCount).toBe(1);
+        if (scope === "suite")
+          expect(evidence.drift.consoleScopes).not.toContainEqual(
+            expect.objectContaining({
+              file: `src/__tests__/drift/${file}.drift.ts`,
+              title: "Vertex native recurring modeled-contract observations",
+            }),
+          );
+        expect(serialized).not.toContain("x".repeat(256));
+        expect(serialized).not.toContain("fixture-provider-body-912");
+      });
+    },
+    60_000,
+  );
+
+  it.each([
+    "missing-owner",
+    "duplicate-id",
+    "duplicate-owner",
+    "empty-id",
+    "non-string-id",
+    "missing-completion",
+    "duplicate-completion",
+    "malformed",
+    "truncated",
+    "oversized-identity",
+    "bounded-marker",
+    "unbounded-marker",
+    "unattributed-overflow",
+  ])(
+    "keeps console overflow channel validation fail-closed: %s",
+    async (fault) => {
+      await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+        const config = join(directory, "vitest.config.drift.ts");
+        const reporter = resolve(import.meta.dirname, "../../scripts/drift-evidence-reporter.ts");
+        const id =
+          fault === "bounded-marker"
+            ? "i".repeat(8192)
+            : fault === "unbounded-marker"
+              ? "i".repeat(262145)
+              : "transport-owner";
+        const owner = {
+          kind: "identity",
+          id,
+          entity: "suite",
+          file: join(directory, "src/__tests__/drift/fixture.drift.ts"),
+          ancestors: [],
+          title: "transport owner",
+        };
+        const records: unknown[] = [];
+        if (!["missing-owner", "unattributed-overflow"].includes(fault)) records.push(owner);
+        if (fault === "duplicate-id") records.push({ ...owner, title: "other owner" });
+        if (fault === "duplicate-owner") records.push({ ...owner, id: "other id" });
+        if (fault === "oversized-identity") records.push({ ...owner, title: "x".repeat(262145) });
+        if (fault === "duplicate-completion") records.push({ kind: "complete" });
+        const emitsOverflow = [
+          "bounded-marker",
+          "unbounded-marker",
+          "unattributed-overflow",
+        ].includes(fault);
+        if (!emitsOverflow)
+          records.push({
+            kind: "console-unavailable",
+            taskId: fault === "empty-id" ? "" : fault === "non-string-id" ? 4 : id,
+          });
+        const transport =
+          records.map((record) => JSON.stringify(record) + "\n").join("") +
+          (fault === "malformed" ? "not json\n" : fault === "truncated" ? '{"kind":' : "");
+        writeFileSync(
+          config,
+          readFileSync(config, "utf8") +
+            `
+      import { closeSync } from 'node:fs';
+      import EvidenceReporter from ${JSON.stringify(reporter)};
+      writeSync(3, ${JSON.stringify(transport)});
+      ${emitsOverflow ? `new EvidenceReporter().onUserConsoleLog({type:'stdout',taskId:${JSON.stringify(fault === "unattributed-overflow" ? "" : id)},content:'x'.repeat(262145),time:0,size:1});` : ""}
+      ${fault === "missing-completion" ? "closeSync(3);" : ""}
+    `,
+        );
+        const child = await invoke();
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(2);
+        const evidenceDirectory = join(directory, "drift-evidence");
+        const evidence = JSON.parse(
+          readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+        );
+        expect(evidence.drift.assertions.length).toBeGreaterThan(0);
+        for (const row of evidence.drift.assertions) {
+          expect(row.consoleContext.availability).toBe(
+            fault === "bounded-marker" ? "available" : "unavailable",
+          );
+          expect(row.observations).toBeUndefined();
+        }
+      });
+    },
+    60_000,
+  );
+
+  it("compares tainted suite ancestors by path elements", async () => {
+    await withCollectorFixture("mixed", async ({ directory, invoke }) => {
+      writeFileSync(
+        join(directory, "src/__tests__/drift/scope.drift.ts"),
+        `
+      import {describe,it,beforeAll} from 'vitest';
+      describe('a',()=>{
+        describe('b',()=>{
+          beforeAll(()=>console.log('x'.repeat(262145)));
+          it('tainted',()=>console.log('valid child'));
+          describe('c',()=>{beforeAll(()=>console.log('valid nested scope'));it('tainted nested',()=>console.log('valid nested child'));});
+        });
+        describe('b > c',()=>{it('sibling',()=>console.log('valid sibling'));});
+      });
+      describe('a > b',()=>{it('joined name',()=>console.log('valid separate path'));});
+    `,
+      );
+      const child = await invoke();
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(2);
+      const evidenceDirectory = join(directory, "drift-evidence");
+      const evidence = JSON.parse(
+        readFileSync(join(evidenceDirectory, readdirSync(evidenceDirectory)[0]), "utf8"),
+      );
+      for (const row of evidence.drift.assertions)
+        expect(row.consoleContext.availability).toBe(
+          row.title.startsWith("tainted") ? "unavailable" : "available",
+        );
+      expect(evidence.drift.consoleScopes).not.toContainEqual(
+        expect.objectContaining({ title: "c" }),
+      );
+    });
+  }, 60_000);
+
   it("retains Responses WS exact counts beyond the numeric cap", async () => {
     await withCollectorFixture("responses-markers", async ({ directory, invoke }) => {
       const fixture = join(directory, "src/__tests__/drift/ws-responses.drift.ts");
