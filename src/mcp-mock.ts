@@ -29,6 +29,8 @@ import {
   type McpFakeAddOrigin,
   type McpFakeAddResult,
   type McpFakeBlockSnapshot,
+  type McpFakeReportEventInput,
+  type McpFakeReportPart,
 } from "./mcp-fakes.js";
 import { build, fixed, msg, plainText, quote } from "./message-text.js";
 import { flattenHeaders, readBody } from "./helpers.js";
@@ -63,6 +65,8 @@ export class MCPMock implements Mountable {
   private registry: MetricsRegistry | null = null;
   /** Mount logger for L1, L2 and L10; none (lines dropped) until `setLogger`. */
   private logger: Logger | null = null;
+  /** T1: recorded timing (`durationMs`, `atMs`) plays at value / speed. */
+  private replaySpeed = 1;
   private options: MCPMockOptions;
   private requestHandler: ReturnType<typeof createMCPRequestHandler>;
 
@@ -152,6 +156,16 @@ export class MCPMock implements Mountable {
 
   setLogger(logger: Logger): void {
     this.logger = logger;
+  }
+
+  /** T1: the speed recorded fake timing plays at; a non-positive or non-finite value is ignored. */
+  setReplaySpeed(speed: number): void {
+    if (Number.isFinite(speed) && speed > 0) this.replaySpeed = speed;
+  }
+
+  /** @internal RP2 report part for this mount (src/mcp-fakes-report.ts reads it). */
+  fakesReportPart(testId: string | null, context: string | null, mount: string): McpFakeReportPart {
+    return this.fakes.reportPart(testId, context, mount);
   }
 
   // ---- Mountable interface ----
@@ -395,6 +409,8 @@ export class MCPMock implements Mountable {
    * like a failure, under `MCP_FAKE_INTERNAL_ERROR`.
    */
   private onFakeEvent(evt: McpFakeEvent): void {
+    // RP2, C9: every fake outcome goes to the event log.
+    this.fakes.logEvent(evt.identity, toReportEvent(evt));
     if (evt.kind === "answered") return;
     this.registry?.incrementCounter("aimock_mcp_fake_failures_total", { code: evt.code });
     if (!this.logger) return;
@@ -406,6 +422,18 @@ export class MCPMock implements Mountable {
         ? msg`MCP-FAKE: evicted testId ${quote(evt.testId)} (cap ${evt.cap}) for tools/call ${plainText(evt.tool)} (${where})`
         : msg`MCP-FAKE: ${fixed(kind)} for tools/call ${plainText(evt.tool)} (${describeMcpIdentity(evt.identity)}, ${where}): ${plainText(evt.message)}`;
     this.logger.error(build(line));
+  }
+
+  /** RP2, C9: a tools/call no fake applied to is always logged, with who answered it. */
+  private logUnfaked(evt: Parameters<MCPState["onUnfaked"]>[0]): void {
+    this.fakes.logEvent(evt.identity, {
+      outcome: "unfaked",
+      answeredBy: evt.answeredBy,
+      tool: evt.tool,
+      args: evt.args,
+      context: evt.identity.context,
+      mount: evt.mount,
+    });
   }
 
   /**
@@ -453,9 +481,19 @@ export class MCPMock implements Mountable {
       onFakeEvent: (evt) => this.onFakeEvent(evt),
       onDecodeFallback: (sessionId, fallback) => this.onDecodeFallback(sessionId, fallback),
       onSessionClosed: (sessionId) => void this.decodeWarned.delete(sessionId),
+      onUnfaked: (evt) => this.logUnfaked(evt),
+      replaySpeed: () => this.replaySpeed,
     };
     return createMCPRequestHandler(state);
   }
+}
+
+/** RP2: a fake outcome as an event-log entry (the store assigns `seq`). */
+function toReportEvent(evt: McpFakeEvent): McpFakeReportEventInput {
+  const base = { tool: evt.tool, args: evt.args, context: evt.identity.context, mount: evt.mount };
+  return evt.kind === "answered"
+    ? { ...base, outcome: "answered", entryId: evt.entryId }
+    : { ...base, outcome: evt.kind, code: evt.code };
 }
 
 /** B1: the only methods the mounted mount root serves; every other one is 405. */

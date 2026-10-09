@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { LLMock, createLLMockWithResolvedAuth } from "./llmock.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
 import { MCPMock } from "./mcp-mock.js";
+import { configToolHandlers } from "./mcp-handler.js";
 import { A2AMock } from "./a2a-mock.js";
 import { AGUIMock } from "./agui-mock.js";
 import type { ApiKeyAuthConfig, ChaosConfig, RecordConfig } from "./types.js";
@@ -169,7 +170,9 @@ export async function startFromConfig(
         const { result, ...def } = tool;
         mcp.addTool(def);
         if (result !== undefined) {
-          mcp.onToolCall(def.name, () => result);
+          const answer = () => result;
+          configToolHandlers.add(answer);
+          mcp.onToolCall(def.name, answer);
         }
       }
     }

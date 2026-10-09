@@ -742,6 +742,7 @@ function planControlApiFakes(
             journal: wiring.journal,
             registry: wiring.defaults.registry,
             logger: wiring.defaults.logger,
+            replaySpeed: wiring.defaults.replaySpeed,
           },
           wiring.defaults.logger,
         );
@@ -2984,6 +2985,7 @@ async function startServer(
     if (handler.setJournal) handler.setJournal(journal);
     if (registry && handler.setRegistry) handler.setRegistry(registry);
     if (handler.setLogger) handler.setLogger(logger);
+    if (handler.setReplaySpeed) handler.setReplaySpeed(defaults.replaySpeed);
   }
 
   // Set initial fixtures-loaded gauge

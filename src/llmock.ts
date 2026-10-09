@@ -173,6 +173,7 @@ export class LLMock {
           journal: server.journal,
           ...(registry ? { registry } : {}),
           logger,
+          replaySpeed: server.defaults.replaySpeed,
         },
         logger,
       );
@@ -475,6 +476,7 @@ export class LLMock {
       if (registry && handler.setRegistry) handler.setRegistry(registry);
       const logger = this.serverInstance.defaults.logger;
       if (handler.setLogger) handler.setLogger(logger);
+      handler.setReplaySpeed?.(this.serverInstance.defaults.replaySpeed);
       if (shadowedBy) {
         logger.warn(
           build(
