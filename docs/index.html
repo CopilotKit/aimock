@@ -88,8 +88,9 @@
       html {
         font-size: 16px;
         scroll-behavior: smooth;
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
+        /* No -webkit-font-smoothing / -moz-osx-font-smoothing override: forcing
+           antialiased/grayscale makes small regular-weight text on this dark
+           background render thin and grainy on macOS. Keep the platform default. */
       }
 
       body {
