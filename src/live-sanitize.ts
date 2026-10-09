@@ -1,4 +1,5 @@
 import { validateLiveTranscript } from "./live-fixture.js";
+import { CREDENTIAL_KEY as credentialKey, scrubUrl } from "./record-sanitize.js";
 import type { LiveJson, LiveObject, LiveOptions, LiveTranscript } from "./live-types.js";
 
 /** Exact transcript-rooted pointer to an observed removable credential metadata field. */
@@ -15,8 +16,6 @@ export class LiveUnsafeExportError extends Error {
   }
 }
 
-const credentialKey =
-  /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret|token|sec-websocket-protocol)$/i;
 // These branches carry conversation, tool schema, or PCM semantics. A key named
 // "authorization" inside tool parameters is a schema property, not a header.
 const semanticKey = new Set([
@@ -38,13 +37,6 @@ const unsafeKey = new Set(["__proto__", "constructor", "prototype"]);
 const redacted = "[REDACTED]";
 function fail(): never {
   throw new LiveUnsafeExportError();
-}
-function decodeUrlComponent(value: string): string {
-  // Tolerate malformed escapes while exposing encoded secrets. Protect literal
-  // form separators so the entire component remains one value.
-  return new URLSearchParams(`value=${value.replace(/\+/g, "%2B").replace(/&/g, "%26")}`).get(
-    "value",
-  )!;
 }
 function escapePointer(key: string): string {
   return key.replace(/~/g, "~0").replace(/\//g, "~1");
@@ -129,39 +121,7 @@ export function sanitizeLiveTranscript(
       setIdentifier(result.entries[binding.entry].event, binding.pointer, identity.value);
       binding.name = identity.name;
     }
-    function sanitizeUrl(value: string): string {
-      // Leave non-URLs and clean URLs byte-for-byte intact.
-      if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return value;
-      let url: URL;
-      try {
-        url = new URL(value);
-      } catch {
-        return value;
-      }
-      // A path identifies the resource; changing it could change replay semantics.
-      if (hasSecret(decodeUrlComponent(url.pathname))) fail();
-      let changed = false;
-      if (url.username || url.password) {
-        url.username = "";
-        url.password = "";
-        changed = true;
-      }
-      for (const [key, val] of [...url.searchParams]) {
-        if (credentialKey.test(key) || hasSecret(key) || hasSecret(val)) {
-          url.searchParams.delete(key);
-          changed = true;
-        }
-      }
-      const decodedHash = decodeUrlComponent(url.hash);
-      if (
-        url.hash &&
-        (hasSecret(decodedHash) || /(?:token|secret|password|api[_-]?key)=/i.test(decodedHash))
-      ) {
-        url.hash = "";
-        changed = true;
-      }
-      return changed ? url.href : value;
-    }
+    const sanitizeUrl = (v: string) => scrubUrl(v, hasSecret, fail);
     function providerMetadata(pointer: string): boolean {
       const match =
         /^\/entries\/(\d+)\/event\/event\/(?:response\/(?:user|prompt_cache_key|safety_identifier)|item\/encrypted_content)$/.exec(
