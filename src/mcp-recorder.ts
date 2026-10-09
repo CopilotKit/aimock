@@ -558,8 +558,49 @@ export class McpRecorder {
     const { req, res } = x;
     const status = up.statusCode ?? 502;
     const sessionId = headerOf(req, "mcp-session-id");
-    up.on("error", () => {
-      if (!res.writableEnded) res.end();
+    const rpcId = x.rpcId;
+    const UPSTREAM_ABORTED_ERROR = "aimock MCP recorder: the upstream response failed";
+    // Set by the recordable paths below; true once the call was recorded or skipped.
+    let processed = false;
+    // A client that goes away makes forward() destroy the upstream request,
+    // which errors `up`: that is not an upstream failure.
+    let clientGone = false;
+    res.on("close", () => {
+      if (!res.writableFinished) clientGone = true;
+    });
+    // Set by the SSE path: a JSON-RPC error for the open request, so a client
+    // waiting on the stream fails at once instead of at its own timeout.
+    let sseError: (() => string) | null = null;
+    // An upstream that dies mid-body is never relayed as a complete answer, on
+    // any path: a 502 before headers, a terminated stream after them.
+    up.on("error", (err: Error) => {
+      // A client that left, or an answer already complete (MR14), has nothing to fail.
+      if (clientGone || res.writableEnded) {
+        finish();
+        return;
+      }
+      // An SSE call recorded before the stream died keeps its recording; one
+      // whose response was already relayed gets no second answer.
+      const answered = processed;
+      const recorded = answered && x.recordSkipped === undefined && x.recordError === undefined;
+      processed = true;
+      if (!recorded) x.recordSkipped = "upstream-aborted";
+      this.log().error(
+        build(
+          msg`MCP-RECORD: the upstream response failed mid-body (${fixed("upstream-aborted")}) for ${plainText(x.rpcMethod ?? req.method ?? "?")} on mount ${plainText(x.mount)}: ${plainText(err.message)}`,
+        ),
+      );
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: UPSTREAM_ABORTED_ERROR }));
+        finish();
+        return;
+      }
+      if (!answered && sseError !== null && !res.writableEnded) {
+        res.write(sseError(), () => res.destroy());
+      } else {
+        res.destroy();
+      }
       finish();
     });
 
@@ -603,9 +644,7 @@ export class McpRecorder {
     }
 
     const isSse = String(up.headers["content-type"] ?? "").includes("text/event-stream");
-    const rpcId = x.rpcId;
     const messages: TimedMessage[] = [];
-    let processed = false;
     let size = 0;
     let overflow = false;
     const process = (): void => {
@@ -630,6 +669,18 @@ export class McpRecorder {
       res.flushHeaders();
       const decoder = new StringDecoder("utf8");
       let pending = "";
+      if (rpcId !== undefined) {
+        const error = { code: -32603, message: UPSTREAM_ABORTED_ERROR };
+        sseError = () => {
+          // A half-sent upstream event is closed under a type clients ignore,
+          // so it never merges into the error event.
+          const close =
+            pending === ""
+              ? ""
+              : `${/[\r\n]$/.test(pending) ? "" : "\n"}event: aimock-discarded\n\n`;
+          return `${close}event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: rpcId, error })}\n\n`;
+        };
+      }
       up.on("data", (chunk: Buffer) => {
         if (!processed && !overflow) {
           size += chunk.length;
