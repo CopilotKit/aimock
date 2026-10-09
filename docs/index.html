@@ -975,7 +975,7 @@
         font-weight: 700;
         letter-spacing: -0.02em;
         text-align: center;
-        margin-bottom: 3.5rem;
+        margin-bottom: 3rem;
       }
       .section-switch,
       .section-realworld {
@@ -1259,9 +1259,25 @@
       .agent-tools-table tbody td.col-aimock:last-child {
         border-right: 2px solid var(--accent);
       }
-      .agent-tools-title {
-        margin: 3rem 0 1rem;
+      /* One heading row per comparison table: the title on the left and an
+         optional muted note on the right, aligned with the table's right edge
+         and sitting just above its top border. */
+      .comparison-table-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.25rem 1rem;
+        margin: 3rem 0 0.75rem;
+      }
+      .comparison-table-title {
+        margin: 0;
         font-size: 1.25rem;
+      }
+      .comparison-table-note {
+        margin: 0 0 0 auto;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
       }
       .yes {
         color: var(--accent);
@@ -3052,6 +3068,9 @@
       <div class="container">
         <h2 class="fade-in">How aimock compares</h2>
 
+        <div class="comparison-table-head fade-in">
+          <h3 class="comparison-table-title">LLM and protocol mocking</h3>
+        </div>
         <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
           <table class="comparison-table">
             <thead>
@@ -3538,16 +3557,16 @@
           </table>
         </div>
 
-        <h3 class="agent-tools-title fade-in">Agent tool mocking</h3>
-        <p
+        <div
           id="mcp-fakes-preview"
-          class="fade-in"
+          class="comparison-table-head fade-in"
           style="scroll-margin-top: calc(var(--nav-h) + 3rem)"
         >
-          MCP scenario fakes are included in aimock 1.44.0. To use the
-          <a href="/mcp-mock#scenario-fakes">MCP fakes examples</a>, install:
-          <code style="overflow-wrap: anywhere">npm install @copilotkit/aimock@1.44.0</code>.
-        </p>
+          <h3 class="comparison-table-title">Agent tool mocking</h3>
+          <p class="comparison-table-note">
+            Requires <a href="/mcp-mock#scenario-fakes">1.44.0+</a>
+          </p>
+        </div>
         <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
           <table class="agent-tools-table">
             <thead>
