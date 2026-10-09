@@ -280,6 +280,23 @@ export const FEATURE_WATCH: readonly WatchSource[] = [
     ],
   },
   {
+    id: "mockserver-lr-chaos",
+    competitor: "MockServer",
+    claims: ["C-S40"],
+    target: {
+      kind: "html",
+      url: MOCKSERVER_LR_URL,
+      section: { kind: "heading", text: "Chaos / Fault Injection" },
+    },
+    checks: [
+      {
+        id: "tool-argument-fault",
+        question: "Are tool-call argument faults or unknown tools documented?",
+        pattern: "tool.?call[^.]{0,40}(argument|json|schema)|unknown.?tool|undeclared.?tool",
+      },
+    ],
+  },
+  {
     id: "mockserver-ao-record",
     competitor: "MockServer",
     claims: ["C-S10"],

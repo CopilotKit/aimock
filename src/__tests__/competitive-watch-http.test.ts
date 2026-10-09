@@ -1,10 +1,19 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
   FEATURE_WATCH,
   MOCKSERVER_LR_URL,
   extractSection,
   formatWatchSection,
+  watchNeedsReview,
 } from "../../scripts/competitive-watch.js";
+import {
+  COMPETITOR_MIGRATION_PAGES,
+  parseCurrentMatrix,
+  runMatrixUpdate,
+} from "../../scripts/update-competitive-matrix.js";
 import {
   cannedWatchHtml,
   fixtureHtml,
@@ -17,6 +26,7 @@ import {
 // real section checker, against a local node:http server. No network.
 
 const ID = "mockserver-lr-sessions";
+const CHAOS_ID = "mockserver-lr-chaos";
 
 const lr = (session: string, chaos = "<p>malformedSse Inject a broken-JSON SSE chunk</p>") =>
   fixtureHtml([
@@ -94,8 +104,9 @@ describe("feature watch over real HTTP", () => {
   it("H6. HTTP 503 fails the run through the D8 path", async () => {
     server = await startWatchFixtureServer({ "/lr": { status: 503 } });
     await expect(runWatchAgainstFixture({ server, pages })).rejects.toThrow(
-      `Feature watch incomplete: 1 of 1 source(s) could not be checked:\n  - ${ID} (${server.url("/lr")}): HTTP 503`,
+      `Feature watch incomplete: 2 of 2 source(s) could not be checked:\n  - ${ID} (${server.url("/lr")}): HTTP 503\n  - ${CHAOS_ID} (${server.url("/lr")}): HTTP 503`,
     );
+    expect(server.hits("/lr")).toBe(1);
   });
 
   it("H7. an unmapped page throws before any request", async () => {
@@ -114,5 +125,82 @@ describe("feature watch over real HTTP", () => {
       const section = s.target.section;
       expect(() => extractSection(html, section), s.id).not.toThrow();
     }
+  });
+
+  it("C-S40 reports tool-argument evidence through the real dry-run without promoting Partial", async () => {
+    server = await startWatchFixtureServer({ "/lr": lr(SESSION) });
+    const baseline = await runWatchAgainstFixture({ server, pages });
+    expect(baseline.reports.find((r) => r.id === CHAOS_ID)?.status).toBe("baseline");
+    expect(baseline.state[CHAOS_ID].checks["tool-argument-fault"]).toBe(false);
+    expect(server.hits("/lr")).toBe(1);
+    server.set(
+      "/lr",
+      lr(SESSION, "<p>toolCallArgumentFault Send tool-call arguments that are invalid JSON</p>"),
+    );
+    const changed = await runWatchAgainstFixture({ server, pages, previous: baseline.state });
+    const report = changed.reports.find((r) => r.id === CHAOS_ID);
+    expect(report?.status).toBe("changed");
+    expect(report?.claims).toEqual(["C-S40"]);
+    expect(report?.evidence["tool-argument-fault"]).toContain("toolCallArgumentFault");
+    expect(report?.details.some((d) => d.includes("false -> true"))).toBe(true);
+    expect(report?.url).toBe(server.url("/lr"));
+    expect(changed.state[CHAOS_ID].url).toBe(MOCKSERVER_LR_URL);
+    expect(changed.reports.find((r) => r.id === ID)?.status).toBe("no change");
+    expect(watchNeedsReview(changed)).toBe(true);
+    expect(server.hits("/lr")).toBe(2);
+
+    const root = mkdtempSync(join(tmpdir(), "c-s40-watch-"));
+    try {
+      const paths = [
+        "docs/index.html",
+        ...Object.values(COMPETITOR_MIGRATION_PAGES),
+        "scripts/competitive-watch-state.json",
+      ];
+      for (const path of paths) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        copyFileSync(resolve(__dirname, "../..", path), join(root, path));
+      }
+      const before = paths.map((path) => readFileSync(join(root, path), "utf8"));
+      const row = "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)";
+      expect(parseCurrentMatrix(before[0]).rows.get(row)?.get("MockServer")).toContain(
+        '<span class="partial">Partial</span>',
+      );
+      const summaryPath = join(root, "summary.md");
+      runMatrixUpdate({
+        repoRoot: root,
+        competitorFeatures: new Map(),
+        competitorProviderCounts: new Map(),
+        dryRun: true,
+        summaryPath,
+        watch: {
+          result: changed,
+          statePath: join(root, "scripts/competitive-watch-state.json"),
+          stateRelPath: "scripts/competitive-watch-state.json",
+        },
+      });
+      expect(paths.map((path) => readFileSync(join(root, path), "utf8"))).toEqual(before);
+      const summary = readFileSync(summaryPath, "utf8");
+      expect(summary).toContain("Feature watch changes need a review.");
+      expect(summary).toContain("C-S40");
+      expect(summary).toContain(`[${CHAOS_ID}](${server.url("/lr")})`);
+      expect(summary).toContain(report?.evidence["tool-argument-fault"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("C-S40 ignores markup-only edits and does not infer tool faults from bare chaos", async () => {
+    server = await startWatchFixtureServer({
+      "/lr": lr(SESSION, "<p>Chaos testing delays streams</p>"),
+    });
+    const baseline = await runWatchAgainstFixture({ server, pages });
+    const unchanged = await runWatchAgainstFixture({ server, pages, previous: baseline.state });
+    expect(unchanged.reports.find((r) => r.id === CHAOS_ID)?.status).toBe("no change");
+    server.set("/lr", lr(SESSION, "<p><b>Chaos</b> testing   delays streams</p>"));
+    const markup = await runWatchAgainstFixture({ server, pages, previous: unchanged.state });
+    expect(markup.reports.find((r) => r.id === CHAOS_ID)?.status).toBe("no change");
+    expect(markup.state[CHAOS_ID].checks["tool-argument-fault"]).toBe(false);
+    expect(watchNeedsReview(markup)).toBe(false);
+    expect(server.hits("/lr")).toBe(3);
   });
 });
