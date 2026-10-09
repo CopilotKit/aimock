@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // These tests exercise the REAL functions from the competitive-matrix script
@@ -16,8 +17,11 @@ import {
   applyChanges,
   findUnmatchedCompetitors,
   COMPETITOR_MIGRATION_PAGES,
+  MIGRATION_COMBINED_ROWS,
+  runMatrixUpdate,
   type DetectedChange,
 } from "../../scripts/update-competitive-matrix.js";
+import { migrationCell, seedCells, withMigrationCell } from "./competitive-watch-fixture.js";
 
 // Repo root: this file lives at <root>/src/__tests__/, so up two levels.
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -1003,5 +1007,201 @@ describe("model misbehavior feature detection", () => {
     const actual = extractFeatures(source)[row];
     console.log(JSON.stringify({ source, actual: actual ?? null, expected: false }));
     expect(actual).toBe(false);
+  });
+});
+
+describe("MCP feature rules (spec D5)", () => {
+  const hit = (text: string, label: string) => extractFeatures(text)[label] === true;
+  const MOCKING = "MCP tool mocking";
+  const SCOPED = "Scenario-scoped MCP tool fakes";
+  const UNDECLARED = "Fail on undeclared MCP tool";
+
+  it.each([
+    "Mock MCP tools in your tests",
+    "Use mocked MCP servers in CI",
+    "MCP tool mocking",
+    "MCP server mocks",
+    // mock-llm README heading
+    "## MCP (Model Context Protocol) Mocking",
+  ])('"MCP tool mocking" matches mock + MCP close together, in either order: %s', (text) => {
+    expect(hit(text, MOCKING)).toBe(true);
+  });
+
+  it.each([
+    "Ships an MCP server for your IDE",
+    "ships an MCP server and a mock HTTP server",
+    "a mock HTTP server, and an MCP server",
+    // Inflections match in both orders, but only when at most one word
+    // separates "mock" and "MCP". Wider phrasings are given up so that a README
+    // listing an MCP server next to an unrelated mock server stays false.
+    "MCP servers can be mocked",
+    "MCP servers you can mock",
+  ])('"MCP tool mocking" does not match MCP and mock far apart: %s', (text) => {
+    expect(hit(text, MOCKING)).toBe(false);
+  });
+
+  it.each([
+    "MCP fixtures answer tools/call in sequence per test",
+    "MCP fixtures answer tools/call in sequences",
+    "MCP mocks return different results per scenario",
+    "MCP mocking with scenarios",
+    "MCP fakes keyed on tool arguments",
+    "tools/call fixture answers per scenario",
+    "tools/call fixtures cover several scenarios",
+  ])('"Scenario-scoped MCP tool fakes" matches scoping wording: %s', (text) => {
+    expect(hit(text, SCOPED)).toBe(true);
+  });
+
+  it.each(["mock MCP tools", "MCP tool mocking"])(
+    '"Scenario-scoped MCP tool fakes" needs scoping, not just MCP mocking: %s',
+    (text) => {
+      expect(hit(text, SCOPED)).toBe(false);
+    },
+  );
+
+  it.each([
+    "An undeclared tool call fails the test",
+    "Calls to undeclared tools fail the test",
+    "Unmocked tools fail the run",
+    "an unmocked tool call fails",
+    "unmocked tool calls are denied",
+    "deny unmocked tool calls",
+    "the server denies unmocked tool calls",
+  ])('"Fail on undeclared MCP tool" matches deny/fail wording: %s', (text) => {
+    expect(hit(text, UNDECLARED)).toBe(true);
+  });
+
+  it("matches a bare undeclared tool with no deny/fail wording, by design", () => {
+    // "undeclared tool" alone names the closed-world behavior, so the rule does
+    // not ask for deny/fail wording next to it.
+    expect(hit("Lists every undeclared tool in the journal", UNDECLARED)).toBe(true);
+  });
+
+  it.each(["an undeclared variable", "unmocked responses are passed through"])(
+    '"Fail on undeclared MCP tool" does not match: %s',
+    (text) => {
+      expect(hit(text, UNDECLARED)).toBe(false);
+    },
+  );
+
+  it("matches the mock-llm README MCP section", () => {
+    const section = [
+      "## MCP (Model Context Protocol) Mocking",
+      "",
+      "Mock-LLM exposes MCP servers and tools which support testing the MCP protocol.",
+    ].join("\n");
+    expect(hit(section, MOCKING)).toBe(true);
+  });
+
+  // Text that names mocks, MCP, or unmocked/undeclared things but does not
+  // describe MCP tool mocking. None of the three MCP rows may flip on it.
+  // "mock server MCP endpoint" is a mock HTTP server that also has an MCP
+  // endpoint. That endpoint can be a real control API for the mock server, so
+  // the phrase does not say that MCP tools are mocked. A false Yes on the public
+  // homepage costs more than a missed detection, so it stays false.
+  it.each([
+    "Unmocked requests fail with a 404 so tests never hit the network.",
+    "By default, unmocked HTTP calls are denied.",
+    "unmocked calls pass through to the real API. This is the denominator",
+    "an undeclared variable is used as the denominator",
+    "unmocked calls pass through to a dense cache",
+    "Run the mock server MCP endpoint",
+    "mockserver mcp support",
+    "MCP server mode: mock responses for chat completions; set arguments via CLI flags",
+    "ships an MCP server and a mock HTTP server",
+  ])("no MCP row matches unrelated text: %s", (text) => {
+    expect(hit(text, MOCKING)).toBe(false);
+    expect(hit(text, SCOPED)).toBe(false);
+    expect(hit(text, UNDECLARED)).toBe(false);
+  });
+});
+
+describe("MCP detections on the migration pages", () => {
+  const MOCKING = "MCP tool mocking";
+  const read = (rel: string) => readFileSync(resolve(REPO_ROOT, rel), "utf-8");
+  const CROSS = '<td style="color: var(--error)">&#10007;</td>';
+
+  it("maps MCP tool mocking to the per-competitor MCP rows and the combined rows", () => {
+    const patterns = buildMigrationRowPatterns(MOCKING);
+    expect(patterns).toContain("MCP protocol mocking");
+    expect(patterns).toContain("MCP mock");
+    expect(MIGRATION_COMBINED_ROWS["MCP / A2A / AG-UI / Vector"]).toContain(MOCKING);
+    expect(MIGRATION_COMBINED_ROWS["MCP / A2A / AG-UI / Vector mocking"]).toContain(MOCKING);
+  });
+
+  // Each page's own "no" cell for the competitor (VidaiMock's page writes "No").
+  const VIDAI_NO = "<td>No</td>";
+  it.each([
+    ["mock-llm", "MCP protocol mocking", "flipped", CROSS],
+    ["mokksy/ai-mocks", "MCP mock", "flipped", CROSS],
+    ["piyook/llm-mock", "MCP / A2A / AG-UI / Vector mocking", "combined-row", CROSS],
+    ["VidaiMock", "MCP / A2A / AG-UI / Vector", "combined-row", VIDAI_NO],
+  ] as const)("%s: an MCP tool mocking detection reaches %s (%s)", (comp, row, status, noCell) => {
+    // The scan bot flips live cells, so always seed the competitor's cell (its
+    // column, found through the table header) with the page's "no" cell first.
+    const html = withMigrationCell(read(COMPETITOR_MIGRATION_PAGES[comp]), comp, row, noCell);
+    expect(migrationCell(html, comp, row)).toBe(noCell);
+    const result = updateMigrationPage(html, comp, { [MOCKING]: true }, 0);
+    expect(result.outcomes).toEqual([
+      { rule: MOCKING, row, combined: status === "combined-row", status },
+    ]);
+  });
+});
+
+describe("a homepage flip with no migration-page row is reported loudly", () => {
+  const HOME_NO = '<td><span class="no" role="img" aria-label="No">&#10007;</span></td>';
+  const CROSS = '<td style="color: var(--error)">&#10007;</td>';
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "cm-norow-"));
+    for (const rel of ["docs/index.html", ...Object.values(COMPETITOR_MIGRATION_PAGES)]) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      copyFileSync(resolve(REPO_ROOT, rel), join(root, rel));
+    }
+    // The scan bot flips these live cells; seed every cell the tests assert on.
+    seedCells(root, [
+      { page: "home", competitor: "mock-llm", row: "MCP tool mocking", cell: HOME_NO },
+      { page: "home", competitor: "mock-llm", row: "Fail on undeclared MCP tool", cell: HOME_NO },
+      { page: "migration", competitor: "mock-llm", row: "MCP protocol mocking", cell: CROSS },
+    ]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("lists the detection under the manual-check section with reason no-row", () => {
+    const RULE = "Fail on undeclared MCP tool";
+    const summary = join(root, "summary.md");
+    runMatrixUpdate({
+      repoRoot: root,
+      competitorFeatures: new Map([["mock-llm", { [RULE]: true }]]),
+      competitorProviderCounts: new Map(),
+      dryRun: true,
+      summaryPath: summary,
+    });
+    const md = readFileSync(summary, "utf-8");
+    expect(md).toContain(`| mock-llm | ${RULE} | No -> Yes |`);
+    const manual = md.slice(md.indexOf("## Migration Page Rows To Check By Hand"));
+    expect(md).toContain("## Migration Page Rows To Check By Hand");
+    expect(manual).toContain(
+      `| \`docs/migrate-from-mock-llm/index.html\` | mock-llm | ${RULE} | none | no-row |`,
+    );
+  });
+
+  it("does not list a homepage flip whose migration page has a row for it", () => {
+    const summary = join(root, "summary.md");
+    runMatrixUpdate({
+      repoRoot: root,
+      competitorFeatures: new Map([["mock-llm", { "MCP tool mocking": true }]]),
+      competitorProviderCounts: new Map(),
+      dryRun: true,
+      summaryPath: summary,
+    });
+    const md = readFileSync(summary, "utf-8");
+    expect(md).toContain("| mock-llm | MCP tool mocking | No -> Yes |");
+    expect(md).toContain("mock-llm: MCP protocol mocking ✗ -> ✓");
+    expect(md).not.toContain("no-row |");
   });
 });
