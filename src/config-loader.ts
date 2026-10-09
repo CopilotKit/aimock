@@ -358,8 +358,9 @@ export async function startFromConfig(
   }
 
   // MR1: llm.record.mcp — record mounts (auto-mount an MCPMock where none is).
+  // Any value that is present is validated, so null, false, 0 and "" fail at start too.
   const mcpRecord = config.llm?.record?.mcp;
-  if (mcpRecord) {
+  if (mcpRecord !== undefined) {
     wireMcpRecording(llmock, mcpRecord, {
       mounted: configMounts,
       mcpMock: MCPMock,
