@@ -173,6 +173,23 @@ function stepByName(name: string, job: string = DRIFT_JOB): Step {
   return hits[0];
 }
 
+it("uploads every invocation sidecar with the final drift report", () => {
+  const step = stepByName("Upload drift report");
+  expect(step.uses).toBe(
+    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
+  );
+  expect(wf).toContain(`      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: drift-report
+          path: |
+            drift-report.json
+            drift-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 30`);
+});
+
 /**
  * A step's run body with shell COMMENT lines removed.
  *
