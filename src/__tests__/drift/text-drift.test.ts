@@ -495,3 +495,36 @@ describe("the 2026-09-24..30 model-family wave is classified", () => {
     expect(unclassifiedFamilies(["gemini-3.8-pro-tts"], "gemini")).toEqual(["gemini-3.8-pro-tts"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The 2026-10-08 wave — BEHAVIOURAL coverage of `claude-haiku-5-5`, in the same
+// shape as the blocks above. Classified INCLUDE in model-registry.ts (evidence
+// beside the entry and in drift-proposals/).
+//
+// `claude-haiku-5-5` is NOT a prefix case: no `claude-haiku-5` family exists,
+// so the nearest included key is `claude-haiku-4-5`.
+// ---------------------------------------------------------------------------
+
+describe("the 2026-10-08 model-family wave is classified", () => {
+  it("claude-haiku-5-5 is INCLUDED in a /models-shaped payload", () => {
+    expect(isClassifiedFamily("claude-haiku-5-5", "anthropic")).toBe(true);
+    expect(
+      unclassifiedFamilies(
+        [
+          "claude-haiku-4-5", // the previous Haiku point release, already included
+          "claude-haiku-5-5",
+          "claude-haiku-5-5-20261007", // dated snapshot collapses onto the family
+        ],
+        "anthropic",
+      ),
+    ).toEqual([]);
+  });
+
+  it("the claude-haiku-5-5 key does not classify a neighbouring family", () => {
+    // NEGATIVE CONTROLS: without these, `toEqual([])` above is also what a
+    // neutered `unclassifiedFamilies` would produce.
+    expect(normalizeModelFamily("claude-haiku-5-5", "anthropic")).toBe("claude-haiku-5-5");
+    expect(unclassifiedFamilies(["claude-haiku-5"], "anthropic")).toEqual(["claude-haiku-5"]);
+    expect(unclassifiedFamilies(["claude-haiku-5-6"], "anthropic")).toEqual(["claude-haiku-5-6"]);
+  });
+});
