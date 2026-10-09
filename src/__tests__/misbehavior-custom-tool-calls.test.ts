@@ -452,6 +452,87 @@ describe("Responses: a schema-violation fault uses the called namespace's schema
   });
 });
 
+describe("Responses: tool-unknown-name judges the name within the call's own namespace", () => {
+  const fn = (name: string) => ({ type: "function", name, parameters: { type: "object" } });
+  const ns = (name: string, ...tools: string[]) => ({
+    type: "namespace",
+    name,
+    tools: tools.map(fn),
+  });
+  const searchCall = (namespace?: string) => ({
+    toolCalls: [
+      {
+        name: "search",
+        arguments: '{"q":"x"}',
+        id: "call_search",
+        ...(namespace !== undefined ? { namespace } : {}),
+      },
+    ],
+  });
+
+  async function send(response: Record<string, unknown>, tools: unknown[], fault: string) {
+    const m = await start(response);
+    return post(m, "/v1/responses", { model: "gpt-4o", input: "go", tools }, fault);
+  }
+  const servedCall = (text: string) =>
+    responsesOutput(text, false).find((item) => item.type === "function_call");
+
+  it.each([false, true])(
+    "an explicit name declared only in another namespace is unknown here, stream=%s",
+    async (stream) => {
+      const m = await start(searchCall("B"));
+      const r = await post(
+        m,
+        "/v1/responses",
+        { model: "gpt-4o", input: "go", tools: [ns("A", "lookup"), ns("B", "search")], stream },
+        "tool-unknown-name; name=lookup",
+      );
+      expect(r.status, r.text).toBe(200);
+      const call = responsesOutput(r.text, stream).find((item) => item.type === "function_call");
+      expect(call).toMatchObject({ name: "lookup", namespace: "B" });
+    },
+  );
+
+  it("the default name skips only names declared in the call's own namespace", async () => {
+    const tools = [ns("B", "search"), ns("C", "search_v2")];
+    const r = await send(searchCall("B"), tools, "tool-unknown-name");
+    expect(r.status, r.text).toBe(200);
+    expect(servedCall(r.text)).toMatchObject({ name: "search_v2", namespace: "B" });
+  });
+
+  it("a non-namespaced call is judged against top-level tools only", async () => {
+    const r = await send(
+      searchCall(),
+      [fn("search"), ns("A", "lookup")],
+      "tool-unknown-name; name=lookup",
+    );
+    expect(r.status, r.text).toBe(200);
+    const call = servedCall(r.text);
+    expect(call).toMatchObject({ name: "lookup" });
+    expect(call?.namespace).toBeUndefined();
+  });
+
+  it("control: an explicit name declared in the call's own namespace is refused", async () => {
+    const r = await send(
+      searchCall("B"),
+      [ns("B", "search", "lookup")],
+      "tool-unknown-name; name=lookup",
+    );
+    expect(r.status, r.text).toBe(501);
+    expect(JSON.parse(r.text).error.code).toBe("aimock_misbehavior_not_applicable");
+  });
+
+  it("control: a top-level declared explicit name is refused for a top-level call", async () => {
+    const r = await send(
+      searchCall(),
+      [fn("search"), fn("lookup")],
+      "tool-unknown-name; name=lookup",
+    );
+    expect(r.status, r.text).toBe(501);
+    expect(JSON.parse(r.text).error.code).toBe("aimock_misbehavior_not_applicable");
+  });
+});
+
 describe("Responses WebSocket: a server fault keeps custom and namespaced calls", () => {
   it("tool-args-invalid-json", async () => {
     const m = await start(mixedCalls);

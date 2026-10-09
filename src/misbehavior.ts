@@ -1142,7 +1142,14 @@ export function prepareUnknownNameCandidate(
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
-  const declared = new Set((context.request.tools ?? []).map((tool) => tool.function.name));
+  // The renamed call keeps its namespace, so on OpenAI Responses a name is
+  // "declared" only within the target's own namespace (top-level tools for an
+  // un-namespaced call): the same (namespace, name) rule as targetToolSchema.
+  const inScope = (tool: { namespace?: string }) =>
+    context.wire !== "openai-responses" || tool.namespace === target.namespace;
+  const declared = new Set(
+    (context.request.tools ?? []).filter(inScope).map((tool) => tool.function.name),
+  );
   let name = fault.name ?? `${target.name}_v2`;
   if (fault.name !== undefined && declared.has(name))
     return {
