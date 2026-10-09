@@ -33,6 +33,9 @@ import {
   validateToolsField,
   normalizeEmbeddingInput,
   resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
+  estimatePromptTokens,
+  estimateTokens,
   serializeErrorResponse,
   generateDeterministicEmbedding,
   flattenHeaders,
@@ -54,6 +57,7 @@ import { writeNDJSONStream } from "./ndjson-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import { applyChaosAsync } from "./chaos.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Ollama request types ────────────────────────────────────────────────────
@@ -489,6 +493,141 @@ function buildOllamaChatContentWithToolCallsResponse(
   };
 }
 
+/** Prepare fault output and its observations together before sending any bytes. */
+function prepareOllamaMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  stream: boolean,
+  chunkSize: number,
+  effectiveStrict: boolean,
+  logger: HandlerDefaults["logger"],
+) {
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
+  const model = request.model;
+
+  if (plan.summary.fault === "tool-args-invalid-json") {
+    const target = calls[plan.target?.index ?? 0];
+    if (!target || toolArgsForWire(target).kind !== "verbatim") {
+      throw new Error("Ollama invalid-JSON fault requires an invalid prepared target");
+    }
+    const diagnostic = new InvalidToolArgumentsError(target).parseDiagnostic;
+    const error = `error parsing tool call: raw='${target.arguments}', err=${diagnostic}`;
+    let priorContent = content;
+    if (outcome) {
+      priorContent = "";
+      let index = 0;
+      for (const block of outcome.ordered) {
+        if (block.type === "text") priorContent += block.text;
+        else if (index++ === plan.target?.index) break;
+      }
+    }
+    // A configured parser failure is a modeled error line, not an ordinary
+    // malformed fixture. Suppress all tool objects and any success terminal.
+    const chunks = stream
+      ? [...buildOllamaChatTextChunks(priorContent, model, chunkSize).slice(0, -1), { error }]
+      : [{ error }];
+    return {
+      chunks,
+      status: stream ? 200 : 500,
+      summary: { ...plan.summary, servedToolCalls: [] },
+    };
+  }
+
+  // Object wires record the canonical values that their builders emit, with
+  // no fabricated tool IDs. The stored fixture and original plan stay intact.
+  const servedToolCalls = calls.map((call) => {
+    const parsed = toolArgsForWire(call);
+    if (parsed.kind === "verbatim") throw new InvalidToolArgumentsError(call);
+    return { name: call.name, arguments: parsed.text };
+  });
+  let chunks: object[];
+  let reasoning = "";
+  if (plan.summary.fault === "reasoning-only") {
+    reasoning = plan.reasoning ?? "";
+    const createdAt = new Date().toISOString();
+    const base = { model, created_at: createdAt };
+    if (stream) {
+      chunks = [];
+      for (let i = 0; i < reasoning.length; i += chunkSize) {
+        chunks.push({
+          ...base,
+          message: { role: "assistant", content: "", thinking: reasoning.slice(i, i + chunkSize) },
+          done: false,
+        });
+      }
+      chunks.push({
+        ...base,
+        message: { role: "assistant", content: "" },
+        done: true,
+        ...DURATION_FIELDS,
+        done_reason: "length",
+      });
+    } else {
+      chunks = [
+        {
+          ...base,
+          message: { role: "assistant", content: "", thinking: reasoning },
+          done: true,
+          ...DURATION_FIELDS,
+          done_reason: "length",
+        },
+      ];
+    }
+  } else {
+    reasoning =
+      resolveReasoningForModel(
+        "reasoning" in response ? response.reasoning : undefined,
+        model,
+        effectiveStrict,
+        logger,
+      ) ?? "";
+    if (combined) {
+      chunks = stream
+        ? buildOllamaChatContentWithToolCallsChunks(
+            content,
+            calls,
+            model,
+            chunkSize,
+            reasoning,
+            response.blocks,
+          )
+        : [
+            buildOllamaChatContentWithToolCallsResponse(
+              content,
+              calls,
+              model,
+              reasoning,
+              response.blocks,
+            ),
+          ];
+    } else if (isToolCallResponse(response)) {
+      chunks = stream
+        ? buildOllamaChatToolCallChunks(calls, model, chunkSize, reasoning)
+        : [buildOllamaChatToolCallResponse(calls, model, reasoning)];
+    } else {
+      chunks = stream
+        ? buildOllamaChatTextChunks(content, model, chunkSize, reasoning)
+        : [buildOllamaChatTextResponse(content, model, reasoning)];
+    }
+  }
+  const completion =
+    content + reasoning + servedToolCalls.map((call) => call.name + call.arguments).join("");
+  const terminal = chunks.length - 1;
+  chunks[terminal] = {
+    ...chunks[terminal],
+    prompt_eval_count: estimatePromptTokens(request.messages),
+    eval_count: estimateTokens(completion),
+  };
+  return { chunks, status: 200, summary: { ...plan.summary, servedToolCalls } };
+}
+
 // ─── Response builders: /api/generate ────────────────────────────────────────
 
 function buildOllamaGenerateTextChunks(
@@ -773,21 +912,91 @@ export async function handleOllama(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "ollama",
+    fixture,
+    response,
+    request: completionReq,
+    stream: ollamaReq.stream !== false,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    const message = `${misbehavior.code}: ${misbehavior.message}`;
+    if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
+    writeErrorResponse(res, misbehavior.status, JSON.stringify({ error: message }));
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
   // Ollama defaults to streaming when stream is absent or true
   const streaming = ollamaReq.stream !== false;
 
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareOllamaMisbehavior(
+      misbehavior,
+      completionReq,
+      streaming,
+      chunkSize,
+      resolveStrictMode(defaults.strict, req.headers),
+      logger,
+    );
+    const journalEntry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: prepared.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry: journalEntry, summary: prepared.summary, defaults, testId });
+    if (!streaming) {
+      res.writeHead(prepared.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(prepared.chunks[0]));
+    } else {
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeNDJSONStream(res, prepared.chunks, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        recordedTimings: fixture.recordedTimings,
+        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        journalEntry.response.interrupted = true;
+        journalEntry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
+    return;
+  }
+
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(res, status, serializeErrorResponse(response), {
       retryAfter: response.retryAfter,
@@ -806,6 +1015,12 @@ export async function handleOllama(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -865,6 +1080,12 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     const effReasoning = resolveReasoningForModel(
@@ -915,6 +1136,12 @@ export async function handleOllama(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
+    });
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     const effReasoning = resolveReasoningForModel(
@@ -958,13 +1185,14 @@ export async function handleOllama(
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,
@@ -1186,6 +1414,31 @@ export async function handleOllamaGenerate(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "ollama",
+    faultRenderingAvailable: false,
+    fixture,
+    response,
+    request: completionReq,
+    stream: generateReq.stream !== false,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (misbehavior.kind === "error") {
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    const message = `${misbehavior.code}: ${misbehavior.message}`;
+    if (!misbehavior.summary?.evaluations.length) defaults.logger.error(message);
+    writeErrorResponse(res, misbehavior.status, JSON.stringify({ error: message }));
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
 
@@ -1195,12 +1448,18 @@ export async function handleOllamaGenerate(
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(res, status, serializeErrorResponse(response), {
       retryAfter: response.retryAfter,
@@ -1216,6 +1475,12 @@ export async function handleOllamaGenerate(
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -1261,12 +1526,18 @@ export async function handleOllamaGenerate(
 
   // Tool call fixtures matched but not supported on /api/generate
   if (isToolCallResponse(response) || isContentWithToolCallsResponse(response)) {
-    journal.add({
+    const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
       body: completionReq,
       response: { status: 400, fixture },
+    });
+    recordMisbehaviorOutcome({
+      entry: journalEntry,
+      summary: misbehavior.summary,
+      defaults,
+      testId,
     });
     writeErrorResponse(
       res,
@@ -1282,13 +1553,14 @@ export async function handleOllamaGenerate(
   }
 
   // Unknown response type
-  journal.add({
+  const journalEntry = journal.add({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
     body: completionReq,
     response: { status: 500, fixture },
   });
+  recordMisbehaviorOutcome({ entry: journalEntry, summary: misbehavior.summary, defaults, testId });
   writeErrorResponse(
     res,
     500,

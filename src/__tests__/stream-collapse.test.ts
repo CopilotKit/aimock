@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { LLMock } from "../llmock.js";
 import { describe, it, expect, vi } from "vitest";
 import {
   collapseOpenAISSE,
@@ -5061,5 +5065,105 @@ describe("collapseOpenAISSE transcription usage capture guards", () => {
       'data: {"type":"transcript.text.done","text":"hi","usage":{"total_tokens":5}}\n\n',
     );
     expect(result.transcription!.usage).toEqual({ total_tokens: 5 });
+  });
+});
+
+describe("Invoke PayloadPart recording", () => {
+  it("preserves text, tools and reasoning over real localhost proxy recording", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aimock-invoke-envelope-"));
+    const upstream = new LLMock({ port: 0, chunkSize: 2 });
+    upstream.addFixture({
+      match: {},
+      response: {
+        content: "Answer",
+        reasoning: "Thinking",
+        toolCalls: [{ id: "tool_wire", name: "lookup", arguments: '{"city":"Paris"}' }],
+      },
+    });
+    const recorder = new LLMock({ port: 0 });
+    try {
+      await upstream.start();
+      recorder.enableRecording({ providers: { bedrock: upstream.url }, fixturePath: directory });
+      await recorder.start();
+      const response = await fetch(
+        `${recorder.url}/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke-with-response-stream`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anthropic_version: "bedrock-2023-05-31",
+            max_tokens: 128,
+            messages: [{ role: "user", content: "lookup" }],
+          }),
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const firstLength = bytes.readUInt32BE(0);
+      const firstHeaderLength = bytes.readUInt32BE(4);
+      const firstPayload = JSON.parse(
+        bytes.subarray(12 + firstHeaderLength, firstLength - 4).toString(),
+      );
+      const collapsed = collapseBedrockEventStream(bytes);
+      await vi.waitFor(() => expect(recorder.getFixtures()).toHaveLength(1));
+      console.log(
+        JSON.stringify({
+          transport: "localhost-invoke-proxy-record",
+          status: response.status,
+          firstPayload,
+          rawBase64: bytes.toString("base64"),
+          collapsed,
+          recorded: recorder.getFixtures(),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(firstPayload).toEqual({ bytes: expect.any(String) });
+      expect(collapsed).toMatchObject({
+        content: "Answer",
+        reasoning: "Thinking",
+        toolCalls: [{ id: "tool_wire", name: "lookup", arguments: '{"city":"Paris"}' }],
+      });
+      expect(collapsed.droppedChunks).toBeUndefined();
+      expect(recorder.getFixtures()[0].response).toMatchObject({
+        content: "Answer",
+        reasoning: "Thinking",
+        toolCalls: [{ id: "tool_wire", name: "lookup", arguments: '{"city":"Paris"}' }],
+      });
+    } finally {
+      await recorder.stop();
+      await upstream.stop();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("unwraps valid frames and retains legacy flat Invoke recording", () => {
+    const event = {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "legacy" },
+    };
+    const wrapped = encodeEventStreamMessage("chunk", {
+      bytes: Buffer.from(JSON.stringify(event)).toString("base64"),
+    });
+    const legacy = encodeEventStreamMessage("chunk", event);
+    expect(collapseBedrockEventStream(wrapped)).toEqual(collapseBedrockEventStream(legacy));
+    expect(collapseBedrockEventStream(wrapped).content).toBe("legacy");
+  });
+
+  it.each([
+    null,
+    12,
+    "",
+    "%%%",
+    "e30",
+    Buffer.from("not JSON").toString("base64"),
+    Buffer.from("null").toString("base64"),
+    Buffer.from("[]").toString("base64"),
+    Buffer.from("{}").toString("base64"),
+  ])("diagnoses malformed present bytes envelope %j", (bytes) => {
+    const raw = encodeEventStreamMessage("chunk", { bytes });
+    const result = collapseBedrockEventStream(raw);
+    expect(result.droppedChunks).toBe(1);
+    expect(result.firstDroppedSample).toContain("PayloadPart");
   });
 });

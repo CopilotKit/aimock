@@ -14,7 +14,9 @@ import type {
   AudioResponse,
   ToolCall,
   JournalEntry,
+  HandlerDefaults,
 } from "./types.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
   InvalidToolArgumentsError,
@@ -28,6 +30,7 @@ import {
   formatToMime,
   generateToolCallId,
   resolveFixtureBlocks,
+  resolveFixtureBlockOutcome,
   resolveResponse,
   resolveStrictMode,
   strictOverrideField,
@@ -59,6 +62,7 @@ interface GeminiLiveFunctionDeclaration {
   name: string;
   description?: string;
   parameters?: object;
+  parametersJsonSchema?: object;
 }
 
 interface GeminiLiveToolDef {
@@ -220,7 +224,7 @@ function convertTools(geminiTools?: GeminiLiveToolDef[]): ToolDefinition[] {
     function: {
       name: d.name,
       description: d.description,
-      parameters: d.parameters,
+      parameters: d.parameters ?? d.parametersJsonSchema,
     },
   }));
 }
@@ -229,6 +233,54 @@ function liveToolArguments(tc: ToolCall) {
   const args = toolArgsForWire(tc);
   if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
   return args.value;
+}
+
+/** Prepare native object arguments and IDs once for both output and the journal. */
+function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
+  if (plan.summary.fault === "tool-args-invalid-json" || plan.summary.fault === "empty-response") {
+    return { ...plan, summary: { ...plan.summary, servedToolCalls: [] } };
+  }
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  const calls =
+    outcome?.toolCalls ??
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+  const duplicate = plan.duplicateId;
+  const toolCalls = calls.map((call, index) => {
+    const args = toolArgsForWire(call);
+    // Preserve authored-invalid arguments for the existing journaled preflight error.
+    return {
+      ...call,
+      arguments: args.kind === "parsed" ? args.text : args.raw,
+      ...(index === duplicate?.destinationIndex ? {} : { id: call.id ?? generateToolCallId() }),
+    };
+  });
+  if (duplicate) toolCalls[duplicate.destinationIndex].id = toolCalls[duplicate.sourceIndex].id;
+  let preparedResponse = { ...response };
+  if ("usage" in preparedResponse) delete preparedResponse.usage;
+  if (outcome) {
+    let index = 0;
+    const blocks = outcome.ordered.map((block) =>
+      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
+    );
+    preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
+  } else if (combined || isToolCallResponse(response)) {
+    preparedResponse = { ...preparedResponse, toolCalls };
+  }
+  return {
+    ...plan,
+    response: preparedResponse,
+    summary: {
+      ...plan.summary,
+      servedToolCalls: toolCalls.map(({ name, arguments: args, id }) => ({
+        name,
+        arguments: args,
+        id,
+      })),
+    },
+  };
 }
 
 /** Validate the whole selected response before audio, text, or any tool is sent. */
@@ -261,7 +313,11 @@ export function handleWebSocketGeminiLive(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
   },
+  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const session: SessionState = {
@@ -273,8 +329,11 @@ export function handleWebSocketGeminiLive(
 
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
-    pending = pending.then(() =>
-      processMessage(raw, ws, fixtures, journal, defaults, session).catch((err: unknown) => {
+    pending = pending.then(async () => {
+      try {
+        beforeProcessMessage?.();
+        await processMessage(raw, ws, fixtures, journal, defaults, session);
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket Gemini Live error: ${msg}`);
         try {
@@ -288,8 +347,8 @@ export function handleWebSocketGeminiLive(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
           );
         }
-      }),
-    );
+      }
+    });
   });
 }
 
@@ -308,6 +367,9 @@ async function processMessage(
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
   },
   session: SessionState,
 ): Promise<void> {
@@ -462,20 +524,113 @@ async function processMessage(
   // Commit messages to conversation history only after successful fixture match
   session.conversationHistory.push(...newMessages);
 
-  const response = await resolveResponse(fixture, completionReq);
-  const latency = fixture.latency ?? defaults.latency;
-  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
-
-  // Error response
-  if (isErrorResponse(response)) {
-    const status = response.status ?? 500;
-    journal.add({
+  let response = await resolveResponse(fixture, completionReq);
+  const plannerDefaults = { ...defaults, replaySpeed: defaults.replaySpeed ?? 1 };
+  let misbehavior = planMisbehavior({
+    wire: "gemini-live",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: true,
+    defaults: plannerDefaults,
+    rawHeaders: defaults.upgradeHeaders ?? {},
+    // The server resolves both header and query-string session scopes.
+    url: `${path}?testId=${encodeURIComponent(testId)}`,
+  });
+  if (misbehavior.kind === "applied") {
+    misbehavior = prepareLiveMisbehavior(misbehavior);
+    response = misbehavior.response;
+  }
+  const addResponseEntry = (status: number) => {
+    const entry = journal.add({
       method: "WS",
       path,
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry,
+      summary: misbehavior.summary,
+      defaults: plannerDefaults,
+      testId,
+    });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    addResponseEntry(misbehavior.status);
+    if (!misbehavior.summary?.evaluations.length) {
+      defaults.logger.error(`[misbehavior] ${misbehavior.message} (testId=${testId})`);
+    }
+    ws.send(
+      JSON.stringify({
+        error: {
+          code: httpToGrpc(misbehavior.status),
+          message: misbehavior.message,
+          status: misbehavior.status === 400 ? "INVALID_ARGUMENT" : "UNIMPLEMENTED",
+        },
+      }),
+    );
+    return;
+  }
+  const latency = fixture.latency ?? defaults.latency;
+  if (
+    misbehavior.kind === "applied" &&
+    (misbehavior.summary.fault === "tool-args-invalid-json" ||
+      misbehavior.summary.fault === "empty-response")
+  ) {
+    const journalEntry = addResponseEntry(200);
+    const interruption = createInterruptionSignal(fixture);
+    const markInterrupted = () => {
+      journalEntry.response.interrupted = true;
+      journalEntry.response.interruptReason = interruption?.reason();
+      ws.destroy();
+    };
+    try {
+      if (ws.isClosed) return;
+      const chunkDelay = calculateDelay(
+        0,
+        undefined,
+        latency,
+        fixture.recordedTimings,
+        fixture.replaySpeed ?? defaults.replaySpeed,
+      );
+      if (chunkDelay > 0) await delay(chunkDelay, interruption?.signal);
+      if (interruption?.signal.aborted) {
+        markInterrupted();
+        return;
+      }
+      if (ws.isClosed) return;
+      const malformed = misbehavior.summary.fault === "tool-args-invalid-json";
+      ws.send(
+        JSON.stringify({
+          serverContent: malformed
+            ? { turnComplete: true, turnCompleteReason: "MALFORMED_FUNCTION_CALL" }
+            : { modelTurn: { parts: [{ text: "" }] } },
+        }),
+      );
+      interruption?.tick();
+      if (interruption?.signal.aborted) {
+        markInterrupted();
+        return;
+      }
+      // Like ordinary text streaming, completion follows the counted content chunk.
+      if (!malformed && !ws.isClosed) {
+        ws.send(JSON.stringify({ serverContent: { turnComplete: true } }));
+        session.conversationHistory.push({ role: "assistant", content: "" });
+      }
+    } finally {
+      interruption?.cleanup();
+    }
+    return;
+  }
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  // Error response
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    addResponseEntry(status);
     ws.send(
       JSON.stringify({
         error: {
@@ -516,13 +671,7 @@ async function processMessage(
   // reasoning from the audio branch alone would invent a Live-wide capability
   // out of one fixture field. That gap is real but separate.
   if (isAudioResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const audioResp = response as AudioResponse;
     preflightToolArguments(audioResp.toolCalls ?? [], journalEntry);
@@ -591,13 +740,7 @@ async function processMessage(
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
   if (isContentWithToolCallsResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     // BLOCKS path (#274): when the fixture carries an ordered `blocks` array,
     // honor it instead of the legacy `content ?? ""` / `toolCalls ?? []` path.
@@ -883,13 +1026,7 @@ async function processMessage(
 
   // Text response — stream chunks with serverContent
   if (isTextResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const content = response.content;
 
@@ -978,13 +1115,7 @@ async function processMessage(
 
   // Tool call response
   if (isToolCallResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path,
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     preflightToolArguments(response.toolCalls ?? [], journalEntry);
 
@@ -1064,13 +1195,7 @@ async function processMessage(
   }
 
   // Unknown response type
-  journal.add({
-    method: "WS",
-    path,
-    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-    body: completionReq,
-    response: { status: 500, fixture },
-  });
+  addResponseEntry(500);
   ws.send(
     JSON.stringify({
       error: {

@@ -10,9 +10,12 @@ import type {
   ApiKeyAuthConfig,
   ChaosConfig,
   McpRecordConfig,
+  MisbehaviorConfig,
+  MisbehaviorFaultId,
   Mountable,
   RecordConfig,
 } from "./types.js";
+import { parseMisbehavior } from "./misbehavior.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
 import type { A2AAgentDefinition, A2APart, A2AArtifact, A2AStreamEvent } from "./a2a-types.js";
 import type { AGUIEvent } from "./agui-types.js";
@@ -111,6 +114,7 @@ export interface AimockConfig {
     replaySpeed?: number;
     logLevel?: "silent" | "warn" | "info" | "debug";
     chaos?: ChaosConfig;
+    misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
     record?: AimockRecordConfig;
   };
   mcp?: MCPConfig;
@@ -142,6 +146,14 @@ export async function startFromConfig(
   overrides?: { port?: number; host?: string },
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  let misbehavior: MisbehaviorConfig | undefined;
+  if (config.llm?.misbehavior !== undefined) {
+    const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
+    if (!parsed.ok) {
+      throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+    }
+    misbehavior = parsed.config;
+  }
 
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the
   // full delay rather than none. Mirrors the fixture-level guard in fixture-loader.ts.
@@ -162,6 +174,7 @@ export async function startFromConfig(
       replaySpeed,
       logLevel: config.llm?.logLevel,
       chaos: config.llm?.chaos,
+      misbehavior,
       record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,

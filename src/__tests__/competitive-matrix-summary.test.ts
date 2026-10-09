@@ -5,15 +5,22 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FEATURE_RULES,
+  COMPETITOR_MIGRATION_PAGES,
+  parseCurrentMatrix,
+  computeChanges,
+  applyChanges,
+  runMatrixUpdate,
   MATRIX_ROWLESS_RULES,
   isRowlessRule,
   formatSummary,
   writeMatrixUpdate,
   type DetectedChange,
   type FetchFailure,
+  type MigrationManualCheck,
   type MigrationPageChange,
   type RowlessDetection,
 } from "../../scripts/update-competitive-matrix.js";
+import type { FeatureWatchResult, WatchSourceReport } from "../../scripts/competitive-watch.js";
 
 // These tests call the exported formatSummary from the script, so a change to
 // the real summary output fails them. They check the sections and their rows;
@@ -283,5 +290,228 @@ describe("formatSummary headline", () => {
     const md = formatSummary(APPLIED, [], [], WARNINGS);
     expect(md.split("\n")[0]).toBe(INCOMPLETE);
     expect(headings(md)).toEqual([APPLIED_HEADING, "## Fetch Warnings"]);
+  });
+});
+
+// The Stage 7 row is an explicit dependency; it is never synthesized here.
+describe("model misbehavior direct consumer preservation", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const label = "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)";
+
+  it("does not promote documentation-unknown or partial cells", () => {
+    const html = readFileSync(join(root, "docs/index.html"), "utf8");
+    const matrix = parseCurrentMatrix(html);
+    expect(matrix.rows.has(label)).toBe(true);
+    const features = new Map([
+      ["VidaiMock", { [label]: true }],
+      ["MockServer", { [label]: true }],
+      ["WireMock", { [label]: true }],
+    ]);
+    const changes = computeChanges(html, matrix, features);
+    expect(changes).toEqual([]);
+    const result = applyChanges(html, changes);
+    expect(result.html).toBe(html);
+    expect(result.applied).toEqual([]);
+    expect(result.unapplied).toEqual([]);
+  });
+
+  it("runs the actual dry-run pipeline without writing homepage or migrations", () => {
+    const paths = ["docs/index.html", ...Object.values(COMPETITOR_MIGRATION_PAGES)];
+    const before = paths.map((path) => readFileSync(join(root, path), "utf8"));
+    const statePath = join(root, "scripts/competitive-watch-state.json");
+    const beforeState = existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined;
+    runMatrixUpdate({
+      repoRoot: root,
+      competitorFeatures: new Map([["VidaiMock", { [label]: true }]]),
+      competitorProviderCounts: new Map(),
+      dryRun: true,
+      summaryPath: null,
+    });
+    expect(paths.map((path) => readFileSync(join(root, path), "utf8"))).toEqual(before);
+    expect(existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined).toBe(beforeState);
+  });
+});
+
+describe("feature watch section (D9)", () => {
+  const NO_CHANGES = "No competitive matrix changes detected this week.";
+  const WATCH_REVIEW =
+    "No homepage competitive matrix changes this week. Feature watch changes need a review.";
+  const WATCH_HEADING = "## Feature watch";
+  const firstLine = (md: string): string => md.split("\n")[0];
+
+  const report = (status: WatchSourceReport["status"]): WatchSourceReport => ({
+    id: "mockserver-lr-sessions",
+    competitor: "MockServer",
+    claims: ["C-S4"],
+    url: "https://www.mock-server.com/mock_server/llm_response_mocking.html",
+    status,
+    details: status === "no change" ? [] : ["section text changed"],
+    evidence: {},
+  });
+  const watchOf = (...statuses: WatchSourceReport["status"][]): FeatureWatchResult => ({
+    reports: statuses.map(report),
+    state: {},
+    stateChanged: statuses.some((s) => s !== "no change"),
+  });
+
+  it("headlines a watch that needs review when nothing else changed", () => {
+    const md = formatSummary([], [], [], [], [], watchOf("baseline"));
+    expect(firstLine(md)).toBe(WATCH_REVIEW);
+    expect(md).not.toContain(NO_CHANGES);
+    expect(headings(md).at(-1)).toBe(WATCH_HEADING);
+    expect(md).toContain("| baseline |");
+  });
+
+  it("keeps the no-changes headline when every watch source is unchanged", () => {
+    const md = formatSummary([], [], [], [], [], watchOf("no change", "no change"));
+    expect(firstLine(md)).toBe(NO_CHANGES);
+    expect(headings(md)).toEqual([WATCH_HEADING]);
+  });
+
+  it("puts the feature watch section after Fetch Warnings, last", () => {
+    const warnings: FetchFailure[] = [
+      {
+        competitor: "Mock LLM",
+        repo: "dwmkerr/mock-llm",
+        source: "package.json",
+        reason: "HTTP 500",
+      },
+    ];
+    const md = formatSummary(APPLIED, MIGRATION, ROWLESS, warnings, [], watchOf("changed"));
+    expect(headings(md)).toEqual([
+      APPLIED_HEADING,
+      MIGRATION_HEADING,
+      ROWLESS_HEADING,
+      "## Fetch Warnings",
+      WATCH_HEADING,
+    ]);
+  });
+
+  it("is byte-identical to the old output when no watch is given", () => {
+    // The literal is formatSummary's output before the watch parameter existed
+    // (scripts/update-competitive-matrix.ts at the PR's merge base).
+    const OLD_OUTPUT = [
+      APPLIED_HEADING,
+      "",
+      "| Competitor | Capability | Change |",
+      "| --- | --- | --- |",
+      "| VidaiMock | Chat Completions SSE | No -> Yes |",
+      "| VidaiMock | Embeddings API | No -> Yes |",
+      "| mock-llm | Error injection | No -> Yes |",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      '  subgraph VidaiMock["VidaiMock"]',
+      '    n0["Chat Completions SSE"]',
+      '    n1["Embeddings API"]',
+      "  end",
+      '  subgraph mock-llm["mock-llm"]',
+      '    n2["Error injection"]',
+      "  end",
+      "```",
+      "",
+      MIGRATION_HEADING,
+      "",
+      "- `docs/migrate-from-vidaimock/index.html`: Embeddings API: No -> Yes",
+      "",
+      ROWLESS_HEADING,
+      "",
+      "These rules have no homepage row. The last column says what the competitor's migration page did with each. Check them by hand.",
+      "",
+      "| Competitor | Capability | Migration page |",
+      "| --- | --- | --- |",
+      '| mock-llm | Helm chart | "Kubernetes / Helm" ✗ -> ✓ |',
+      "| VidaiMock | CLI server | no row |",
+      "",
+    ].join("\n");
+    expect(formatSummary(APPLIED, MIGRATION, ROWLESS)).toBe(OLD_OUTPUT);
+    expect(formatSummary(APPLIED, MIGRATION, ROWLESS, [], [], null)).toBe(OLD_OUTPUT);
+    expect(formatSummary([], [], [], [], [])).toBe(`${NO_CHANGES}\n`);
+    expect(formatSummary([], [], [])).toBe(`${NO_CHANGES}\n`);
+  });
+
+  // F13: in every other headline branch the watch review is an added line, so
+  // merging a docs PR (which also commits the watch state) never hides it.
+  const REVIEW_LINE = "Feature watch changes need a review; see the Feature watch section.";
+  const MANUAL: MigrationManualCheck[] = [
+    {
+      page: "docs/migrate-from-mokksy/index.html",
+      competitor: "mokksy/ai-mocks",
+      capability: "Docker image",
+      row: "Docker / Helm",
+      reason: "combined-row",
+    },
+  ];
+  const WARNINGS: FetchFailure[] = [
+    {
+      competitor: "Mock LLM",
+      repo: "dwmkerr/mock-llm",
+      source: "package.json",
+      reason: "HTTP 500",
+    },
+  ];
+  const INCOMPLETE =
+    'Competitor scan results are incomplete for dwmkerr/mock-llm. See "Fetch Warnings" below.';
+  const MANUAL_HEADLINE =
+    "No homepage competitive matrix changes this week. Detections below need a manual check.";
+  const headline = (md: string): string[] => md.slice(0, md.search(/^## /m)).trimEnd().split("\n");
+
+  it("adds the review line under the migration-only headline", () => {
+    const md = formatSummary([], MIGRATION, [], [], [], watchOf("changed"));
+    expect(headline(md)).toEqual([
+      "No homepage competitive matrix changes this week.",
+      REVIEW_LINE,
+    ]);
+    expect(headings(md)).toEqual([MIGRATION_HEADING, WATCH_HEADING]);
+  });
+
+  it("adds the review line under the row-less headline", () => {
+    const md = formatSummary([], [], ROWLESS, [], [], watchOf("baseline"));
+    expect(headline(md)).toEqual([MANUAL_HEADLINE, REVIEW_LINE]);
+    expect(headings(md)).toEqual([ROWLESS_HEADING, WATCH_HEADING]);
+  });
+
+  it("adds the review line under the manual-check headline", () => {
+    const md = formatSummary([], [], [], [], MANUAL, watchOf("changed"));
+    expect(headline(md)).toEqual([MANUAL_HEADLINE, REVIEW_LINE]);
+    expect(headings(md).at(-1)).toBe(WATCH_HEADING);
+  });
+
+  it("keeps the incomplete-scan headline first and adds the review line", () => {
+    const md = formatSummary([], [], [], WARNINGS, [], watchOf("changed"));
+    expect(headline(md)).toEqual([INCOMPLETE, REVIEW_LINE]);
+    const applied = formatSummary(APPLIED, [], [], WARNINGS, [], watchOf("baseline"));
+    expect(headline(applied)).toEqual([INCOMPLETE, REVIEW_LINE]);
+    expect(headings(applied)[0]).toBe(APPLIED_HEADING);
+  });
+
+  it("puts the review line above the applied-changes table", () => {
+    const md = formatSummary(APPLIED, MIGRATION, ROWLESS, [], [], watchOf("changed"));
+    expect(headline(md)).toEqual([REVIEW_LINE]);
+    expect(md.startsWith(`${REVIEW_LINE}\n\n${APPLIED_HEADING}\n`)).toBe(true);
+  });
+
+  it("leaves every headline unchanged when the watch needs no review", () => {
+    const quiet = watchOf("no change", "no change");
+    const cases: Parameters<typeof formatSummary>[] = [
+      [[], MIGRATION, []],
+      [[], [], ROWLESS],
+      [[], [], [], [], MANUAL],
+      [[], [], [], WARNINGS],
+      [APPLIED, MIGRATION, ROWLESS],
+      [APPLIED, [], [], WARNINGS],
+    ];
+    for (const [c, m, r, w = [], mc = []] of cases) {
+      const without = formatSummary(c, m, r, w, mc);
+      const withQuiet = formatSummary(c, m, r, w, mc, quiet);
+      expect(withQuiet.startsWith(without)).toBe(true);
+      expect(withQuiet).not.toContain(REVIEW_LINE);
+    }
+  });
+
+  it("keeps the watch-only headline as the single D9 sentence", () => {
+    const md = formatSummary([], [], [], [], [], watchOf("changed"));
+    expect(headline(md)).toEqual([WATCH_REVIEW]);
+    expect(md).not.toContain(REVIEW_LINE);
   });
 });

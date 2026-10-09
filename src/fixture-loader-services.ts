@@ -89,7 +89,7 @@ function loadServicesFile(
       out.mcpFakes.push({ source, blockIndex: null, raw });
     }
   }
-  out.fixtures.push(...fixturesOf(parsed, filePath, logger, liveOptions, withFakes));
+  out.fixtures.push(...fixturesOf(parsed, filePath, logger, liveOptions, withFakes, source));
 }
 
 /**

@@ -7,11 +7,25 @@ import type {
   ChaosConfig,
   ChaosDefaults,
   HandlerDefaults,
+  MisbehaviorScope,
+  MisbehaviorConfig,
   JournalEntry,
   MockServerOptions,
   Mountable,
   RecordProviderKey,
 } from "./types.js";
+import {
+  getFixtureMisbehaviorPosition,
+  setFixtureMisbehaviorPosition,
+  MISBEHAVIOR_CATALOG,
+  WIRE_SUPPORT,
+  parseMisbehavior,
+  parseMisbehaviorHeader,
+  resolveMisbehaviorSeed,
+  planMisbehavior,
+  recordMisbehaviorOutcome,
+  resolveMisbehaviorShortCircuit,
+} from "./misbehavior.js";
 import { Journal } from "./journal.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import {
@@ -29,6 +43,14 @@ import {
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import {
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
+  buildOpenAIRefusalChunks,
+  buildOpenAIRefusalCompletion,
+  buildOpenAIContentFilterChunks,
+  buildOpenAIContentFilterCompletion,
+  buildOpenAIReasoningChunks,
+  buildOpenAIReasoningCompletion,
   buildTextChunks,
   buildToolCallChunks,
   buildTextCompletion,
@@ -503,6 +525,7 @@ export function performFullReset(fixtures: Fixture[], targets: FullResetTargets 
   // isolation barrier every parallel harness leans on; chaos leaking past it
   // poisons later tests with 500s that look like application bugs.
   targets.defaults.chaos = undefined;
+  targets.defaults.misbehavior?.byTestId.clear();
   targets.videoStates.clear();
   targets.openRouterVideoJobs.clear();
   targets.veoVideoJobs.clear();
@@ -820,6 +843,9 @@ function listControlApiFakes(
   return mount !== null && listed.length === 0 ? null : listed;
 }
 
+// Per-server addition identities survive fixture deletion and full resets.
+const controlFixtureAdditions = new WeakMap<HandlerDefaults, number>();
+
 /**
  * Handle requests under `/__aimock/`. Returns `true` if the request was
  * handled, `false` if the path doesn't match the control prefix.
@@ -992,6 +1018,64 @@ async function handleControlAPI(
       }),
     );
     return true;
+  }
+
+  if (subPath === "/misbehavior/catalog" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ catalog: MISBEHAVIOR_CATALOG, WIRE_SUPPORT }));
+    return true;
+  }
+
+  if (
+    subPath === "/misbehavior" &&
+    (req.method === "GET" || req.method === "POST" || req.method === "DELETE")
+  ) {
+    const scopeId = chaosScopeId(req);
+    if (scopeId === null) return writeBlankTestId(res);
+    const reply = (status: number, body: unknown): true => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return true;
+    };
+    const scope = defaults.misbehavior;
+    if (req.method === "POST") {
+      let raw: string;
+      try {
+        raw = await readBody(req);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        defaults.logger.error(`POST /__aimock/misbehavior: failed to read body: ${msg}`);
+        return reply(400, { error: `Failed to read request body: ${msg}` });
+      }
+      let input: unknown;
+      try {
+        input = JSON.parse(raw);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        defaults.logger.error(`POST /__aimock/misbehavior: invalid JSON: ${msg}`);
+        return reply(400, { error: `Invalid JSON: ${msg}` });
+      }
+      // Only this route treats an empty object as an explicit opt-out.
+      if (isJsonObject(input) && Object.keys(input).length === 0) input = { faults: [] };
+      const parsed = parseMisbehavior(input);
+      if (!parsed.ok) {
+        return reply(400, {
+          error: "Validation failed",
+          rule: parsed.issue.rule,
+          message: parsed.issue.message,
+        });
+      }
+      const config =
+        parsed.config.seed === "random"
+          ? { ...parsed.config, seed: resolveMisbehaviorSeed(parsed.config.seed, defaults.logger) }
+          : parsed.config;
+      scope?.byTestId.set(scopeId, config);
+    } else if (req.method === "DELETE") {
+      scope?.byTestId.delete(scopeId);
+    }
+    return reply(200, {
+      misbehavior: scope?.byTestId.get(scopeId) ?? scope?.baseline ?? { faults: [] },
+    });
   }
 
   // GET /__aimock/chaos — read the chaos config in effect for THIS caller's
@@ -1220,8 +1304,22 @@ async function handleControlAPI(
       return true;
     }
 
-    const converted = entries.map((e) => entryToFixture(e));
-    const issues = validateFixtures(converted);
+    const addition = controlFixtureAdditions.get(defaults) ?? 0;
+    controlFixtureAdditions.set(defaults, addition + 1);
+    const converted: Fixture[] = [];
+    const loadErrors: FixtureLoadError[] = [];
+    for (const [index, entry] of entries.entries()) {
+      try {
+        converted.push(
+          entryToFixture(entry, undefined, undefined, { file: `control-api#${addition}`, index }),
+        );
+      } catch (error) {
+        if (!(error instanceof FixtureLoadError)) throw error;
+        loadErrors.push(error);
+      }
+    }
+    // Only a fully converted batch preserves the original validation indices.
+    const issues = loadErrors.length === 0 ? validateFixtures(converted) : [];
     const errors = issues.filter((i) => i.severity === "error");
     // The whole body is checked before anything is added (W6): the LLM
     // fixtures, then every `mcpFakes` block against the live mounts.
@@ -1232,8 +1330,12 @@ async function handleControlAPI(
       res.end(JSON.stringify({ error: "Validation failed", details }));
       return true;
     };
-    if (errors.length > 0 || fakeErrors.length > 0) {
-      return validationFailed([...errors, ...fakeErrors.map((e) => e.toJSON())]);
+    if (loadErrors.length > 0 || errors.length > 0 || fakeErrors.length > 0) {
+      return validationFailed([
+        ...loadErrors.map((e) => e.toJSON()),
+        ...errors,
+        ...fakeErrors.map((e) => e.toJSON()),
+      ]);
     }
 
     let mcpFakesAdded = 0;
@@ -1261,6 +1363,7 @@ async function handleControlAPI(
   // DELETE /__aimock/fixtures — clear all fixtures, and every MCP fake (R3)
   if (subPath === "/fixtures" && req.method === "DELETE") {
     clearFixtureQueue(fixtures);
+    journal.clearMisbehaviorCounters();
     for (const { handler } of mounts) handler.clearMcpFakes?.();
     if (defaults.registry) {
       defaults.registry.setGauge("aimock_fixtures_loaded", {}, fixtures.length);
@@ -1416,9 +1519,11 @@ async function handleCompletions(
   fixtures: Fixture[],
   journal: Journal,
   defaults: HandlerDefaults,
+  getRequestEntry: () => JournalEntry | null,
   modelFallback?: string,
   providerKey?: RecordProviderKey,
   openRouter = false,
+  beforeFixtureSelection?: () => void,
 ): Promise<void> {
   setCorsHeaders(res);
 
@@ -1689,6 +1794,7 @@ async function handleCompletions(
     counts: ReturnType<typeof journal.getFixtureMatchCountsForTest>,
   ): ReturnType<typeof matchFixtureDiagnostic> => {
     for (;;) {
+      beforeFixtureSelection?.();
       const attempt = matchFixtureDiagnostic(
         fixtures,
         probe,
@@ -1873,6 +1979,25 @@ async function handleCompletions(
   const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
   const missWouldProxy = wouldProxyMiss(effectiveStrict, defaults.record, providerKey);
   const noFixtureSource = missWouldProxy ? "proxy" : "internal";
+  // Chaos writes its own entry. Resolve by request identity, including after
+  // awaited proxy hooks, so concurrent requests cannot receive each other's marker.
+  const recordBypass = (reason: "proxied" | "chaos-fired"): void => {
+    const entry = getRequestEntry();
+    if (!entry) return; // A skipped chaos action did not write a response.
+    recordMisbehaviorOutcome({
+      entry,
+      summary: resolveMisbehaviorShortCircuit({
+        wire: "openai-chat",
+        fixture: fixture ?? undefined,
+        defaults,
+        rawHeaders: req.headers,
+        url: req.url,
+        reason,
+      }),
+      defaults,
+      testId,
+    });
+  };
 
   if (chaosAction === "drop" || chaosAction === "disconnect" || chaosAction === "rateLimit") {
     applyChaosAction(
@@ -1885,6 +2010,7 @@ async function handleCompletions(
       defaults.registry,
       defaults.logger,
     );
+    recordBypass("chaos-fired");
     // The chaos action, not the fixture, answered this request — a claimed
     // one-shot's error body was never written, so put it back in the queue.
     releaseOneShotError(fixtures, fixture);
@@ -1912,6 +2038,7 @@ async function handleCompletions(
       defaults.registry,
       defaults.logger,
     );
+    recordBypass("chaos-fired");
     // Same as the terminal actions above: malformed replaces the body, so a
     // claimed one-shot's error was never served.
     releaseOneShotError(fixtures, fixture);
@@ -1982,6 +2109,7 @@ async function handleCompletions(
                   defaults.registry,
                   defaults.logger,
                 );
+                recordBypass("chaos-fired");
                 return true;
               },
               // Streaming responses can't be mutated post-facto (bytes already
@@ -2055,6 +2183,7 @@ async function handleCompletions(
               : {}),
           },
         });
+        recordBypass("proxied");
         return;
       }
       // outcome === "not_configured" — nothing was written; fall through to
@@ -2071,6 +2200,7 @@ async function handleCompletions(
           defaults.registry,
           defaults.logger,
         );
+        recordBypass("chaos-fired");
         return;
       }
     }
@@ -2105,7 +2235,77 @@ async function handleCompletions(
 
   // Reuse the response already resolved by the OpenRouter fallback loop (so a
   // response factory is not invoked twice); otherwise resolve it now.
-  const response = preResolvedResponse ?? (await resolveResponse(fixture, body));
+  const resolvedResponse = preResolvedResponse ?? (await resolveResponse(fixture, body));
+  const evaluation = planMisbehavior({
+    wire: "openai-chat",
+    fixture,
+    response: resolvedResponse,
+    request: body,
+    stream: body.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  if (evaluation.kind === "error") {
+    const entry = journal.add({
+      method,
+      path,
+      headers: flatHeaders,
+      body,
+      response: { status: evaluation.status, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: evaluation.summary, defaults, testId });
+    if (!evaluation.summary?.evaluations.some((row) => row.outcome === "error")) {
+      defaults.logger.error(`${evaluation.code}: ${evaluation.message}`);
+    }
+
+    writeErrorResponse(
+      res,
+      evaluation.status,
+      openRouter
+        ? serializeOpenRouterError(evaluation.status, `${evaluation.code}: ${evaluation.message}`)
+        : JSON.stringify({
+            error: {
+              message: evaluation.message,
+              type: "invalid_request_error",
+              param: null,
+              code: evaluation.code,
+            },
+          }),
+    );
+    return;
+  }
+  const appliedPlan =
+    evaluation.kind === "applied" ? prepareOpenAIChatMisbehavior(evaluation) : undefined;
+  const response = appliedPlan?.response ?? resolvedResponse;
+  const summary = appliedPlan?.summary ?? evaluation.summary;
+  const recordOutcome = (entry: JournalEntry): void => {
+    recordMisbehaviorOutcome({ entry, summary, defaults, testId });
+  };
+  // Resolve ordinary applied reasoning once, before usage and delivery, using
+  // the same strict/model gate as the selected response builder.
+  const appliedReasoning =
+    appliedPlan &&
+    appliedPlan.reasoning === undefined &&
+    (isTextResponse(response) ||
+      isToolCallResponse(response) ||
+      isContentWithToolCallsResponse(response))
+      ? resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          resolveStrictMode(defaults.strict, req.headers),
+          defaults.logger,
+        )
+      : undefined;
+  // Only the existing OpenRouter route exposes K9 reasoning. Use that same
+  // decision for full-output estimation, before any transport interruption.
+  const appliedUsage = appliedPlan
+    ? resolveOpenAIChatMisbehaviorUsage(
+        appliedPlan,
+        body,
+        appliedPlan.reasoning === undefined ? appliedReasoning !== undefined : openRouter,
+      )
+    : undefined;
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
   // OpenRouter always accounts usage (cost) in the response, including as the
@@ -2134,7 +2334,20 @@ async function handleCompletions(
     overrides: ResponseOverrides | undefined,
     completionText: string,
   ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } =>
-    resolveUsage(overrides, streamingPromptText, completionText);
+    appliedUsage ?? resolveUsage(overrides, streamingPromptText, completionText);
+
+  const resolveRecordedTimings = (chunks: SSEChunk[]) => {
+    const timings = fixture.recordedTimings;
+    if (!appliedPlan?.duplicateId || !timings) return timings;
+    const gaps = timings.interChunkDelaysMs;
+    return {
+      ...timings,
+      interChunkDelaysMs: Array.from(
+        { length: Math.max(gaps.length, chunks.length - 1) },
+        (_, index) => gaps[index] ?? gaps.at(-1) ?? 0,
+      ),
+    };
+  };
 
   // OpenRouter response shaping (no-op for OpenAI callers). Applied as a
   // post-pass over the objects the shared OpenAI builders produce so the
@@ -2145,6 +2358,7 @@ async function handleCompletions(
     completion: ChatCompletion,
     overrides: ResponseOverrides | undefined,
   ): ChatCompletion => {
+    if (appliedUsage) completion.usage = appliedUsage;
     if (!openRouter) return completion;
     return shapeOpenRouterCompletion(
       completion,
@@ -2170,13 +2384,14 @@ async function handleCompletions(
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
       response: { status, fixture },
     });
+    recordOutcome(entry);
     writeErrorResponse(
       res,
       status,
@@ -2192,13 +2407,14 @@ async function handleCompletions(
 
   // Audio responses are not supported on the chat completions endpoint
   if (isAudioResponse(response)) {
-    journal.add({
+    const entry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
       headers: flattenHeaders(req.headers),
       body,
       response: { status: 422, fixture },
     });
+    recordOutcome(entry);
     writeErrorResponse(
       res,
       422,
@@ -2218,6 +2434,88 @@ async function handleCompletions(
     return;
   }
 
+  // Fault-specific terminals have distinct native message/delta shapes. Keep
+  // ordinary builders and their historical finishReason mapping unchanged.
+  if (
+    appliedPlan &&
+    isTextResponse(response) &&
+    (appliedPlan.stop === "refusal" ||
+      appliedPlan.stop === "content_filter" ||
+      appliedPlan.reasoning !== undefined)
+  ) {
+    const overrides = extractOverrides(response);
+    const entry = journal.add({
+      method,
+      path,
+      headers: flatHeaders,
+      body,
+      response: { status: 200, fixture },
+    });
+    recordOutcome(entry);
+    if (body.stream !== true) {
+      const completion =
+        appliedPlan.stop === "refusal"
+          ? buildOpenAIRefusalCompletion(
+              appliedPlan.refusal ?? "",
+              responseModel,
+              overrides,
+              body.messages,
+            )
+          : appliedPlan.stop === "content_filter"
+            ? buildOpenAIContentFilterCompletion(responseModel, overrides, body.messages)
+            : buildOpenAIReasoningCompletion(
+                appliedPlan.reasoning ?? "",
+                responseModel,
+                openRouter,
+                overrides,
+                body.messages,
+              );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
+    } else {
+      const chunks =
+        appliedPlan.stop === "refusal"
+          ? buildOpenAIRefusalChunks(appliedPlan.refusal ?? "", responseModel, chunkSize, overrides)
+          : appliedPlan.stop === "content_filter"
+            ? buildOpenAIContentFilterChunks(responseModel, overrides)
+            : buildOpenAIReasoningChunks(
+                appliedPlan.reasoning ?? "",
+                responseModel,
+                chunkSize,
+                openRouter,
+                overrides,
+              );
+      const usageChunk = emitStreamingUsage
+        ? buildUsageChunk(
+            chunks[0].id,
+            overrides?.model ?? responseModel,
+            chunks[0].created,
+            resolveStreamingUsageTokens(overrides, ""),
+            overrides?.systemFingerprint,
+          )
+        : undefined;
+      shapeORChunks(chunks, usageChunk, overrides);
+      const interruption = createInterruptionSignal(fixture);
+      const completed = await writeSSEStream(res, chunks, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+        usageChunk,
+        recordedTimings: resolveRecordedTimings(chunks),
+        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+        openRouterProcessing,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        entry.response.interrupted = true;
+        entry.response.interruptReason = interruption?.reason();
+      }
+      interruption?.cleanup();
+    }
+    return;
+  }
+
   // Content + tool calls response
   if (isContentWithToolCallsResponse(response)) {
     if (response.webSearches?.length) {
@@ -2227,12 +2525,14 @@ async function handleCompletions(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
     // Validate authoritative blocks before recording success in either mode.
     // Reuse their normalized payload for nonstream responses and usage estimates.
     const streaming = body.stream === true;
@@ -2247,6 +2547,7 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
     if (!streaming) {
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
@@ -2296,7 +2597,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: fixture.recordedTimings,
+        recordedTimings: resolveRecordedTimings(chunks),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2319,12 +2620,14 @@ async function handleCompletions(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -2332,6 +2635,7 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
     if (body.stream !== true) {
       const completion = buildTextCompletion(
         response.content,
@@ -2367,7 +2671,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: fixture.recordedTimings,
+        recordedTimings: resolveRecordedTimings(chunks),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2390,12 +2694,14 @@ async function handleCompletions(
     }
     const overrides = extractOverrides(response);
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
-    const effReasoning = resolveReasoningForModel(
-      response.reasoning,
-      responseModel,
-      effectiveStrict,
-      defaults.logger,
-    );
+    const effReasoning = appliedPlan
+      ? appliedReasoning
+      : resolveReasoningForModel(
+          response.reasoning,
+          responseModel,
+          effectiveStrict,
+          defaults.logger,
+        );
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -2403,6 +2709,7 @@ async function handleCompletions(
       body,
       response: { status: 200, fixture },
     });
+    recordOutcome(journalEntry);
     if (body.stream !== true) {
       const completion = buildToolCallCompletion(
         response.toolCalls,
@@ -2439,7 +2746,7 @@ async function handleCompletions(
         signal: interruption?.signal,
         onChunkSent: interruption?.tick,
         usageChunk,
-        recordedTimings: fixture.recordedTimings,
+        recordedTimings: resolveRecordedTimings(chunks),
         replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
         openRouterProcessing,
       });
@@ -2454,13 +2761,14 @@ async function handleCompletions(
   }
 
   // Fixture response matched no known type — guard against silent hang
-  journal.add({
+  const entry = journal.add({
     method: req.method ?? "POST",
     path: req.url ?? COMPLETIONS_PATH,
     headers: flattenHeaders(req.headers),
     body,
     response: { status: 500, fixture },
   });
+  recordOutcome(entry);
   writeErrorResponse(
     res,
     500,
@@ -2545,6 +2853,24 @@ async function startServer(
   serviceFixtures: ServiceFixtures | undefined,
   commitHandOff: () => void,
 ): Promise<ServerInstance> {
+  // Keep raw entries in the caller's live array, assigning only absent identities.
+  let rawFixtureAddition = 0;
+  function ensureRawFixturePositions(): void {
+    const existingPositions = new Set(
+      fixtures.map(getFixtureMisbehaviorPosition).filter((position) => position !== undefined),
+    );
+    for (const fixture of fixtures) {
+      if (getFixtureMisbehaviorPosition(fixture) !== undefined) continue;
+      let position: string;
+      do {
+        position = `createServer#${rawFixtureAddition++}`;
+      } while (existingPositions.has(position));
+      setFixtureMisbehaviorPosition(fixture, position);
+      existingPositions.add(position);
+    }
+  }
+  ensureRawFixturePositions();
+
   const host = options?.host ?? "127.0.0.1";
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
@@ -2556,12 +2882,39 @@ async function startServer(
   // one operation and neither can accidentally take the other's overrides with
   // it; only assigning `undefined` (a full reset) clears the map.
   const chaosByTestId = new Map<string, ChaosConfig>();
+  let misbehaviorBaseline: MisbehaviorConfig | undefined;
+  const misbehavior: MisbehaviorScope = {
+    byTestId: new Map(),
+    // The default-ID override is the runtime baseline for every unnamed scope.
+    // Keep its construction/setter fallback separate so DELETE reveals it.
+    get baseline() {
+      return this.byTestId.get(DEFAULT_TEST_ID) ?? misbehaviorBaseline;
+    },
+    set baseline(config: MisbehaviorConfig | undefined) {
+      misbehaviorBaseline = config;
+      if (config === undefined) this.byTestId.delete(DEFAULT_TEST_ID);
+      else if (this.byTestId.has(DEFAULT_TEST_ID)) this.byTestId.set(DEFAULT_TEST_ID, config);
+    },
+  };
+  if (serverOptions.misbehavior !== undefined) {
+    const parsed = parseMisbehavior(serverOptions.misbehavior);
+    if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
+    misbehavior.baseline =
+      parsed.config.seed === "random"
+        ? { ...parsed.config, seed: resolveMisbehaviorSeed(parsed.config.seed, logger) }
+        : parsed.config;
+  }
+
   const defaults = {
     latency: serverOptions.latency ?? 0,
     chunkSize: Math.max(1, serverOptions.chunkSize ?? DEFAULT_CHUNK_SIZE),
     replaySpeed: serverOptions.replaySpeed ?? 1.0,
     logger,
     chaosByTestId,
+    misbehavior,
+    get misbehaviorCounters(): Journal {
+      return journal;
+    },
     // Handlers get a SCOPE, not a flat config: chaos.ts picks the override for
     // the request's X-Test-Id and falls back to the baseline.
     get chaos(): ChaosDefaults {
@@ -2765,6 +3118,36 @@ async function startServer(
       return JSON.stringify({ __type: "InternalServerException", message });
     }
     return JSON.stringify({ error: { message, type: "server_error", code } });
+  }
+
+  function invalidMisbehaviorHeaderEnvelope(pathname: string, detail: string): string {
+    const code = "aimock_misbehavior_invalid";
+    const message = `${code}: ${detail}`;
+    if (pathname === OLLAMA_CHAT_PATH || pathname === OLLAMA_GENERATE_PATH) {
+      return JSON.stringify({ error: message });
+    }
+    if (pathname === COHERE_CHAT_PATH) return JSON.stringify({ message });
+    if (pathname === GEMINI_INTERACTIONS_PATH) {
+      return JSON.stringify({ error: { code, message } });
+    }
+    if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
+      return JSON.stringify({ error: { code: 400, message, status: "INVALID_ARGUMENT" } });
+    }
+    if (pathname === MESSAGES_PATH) {
+      return JSON.stringify({
+        type: "error",
+        error: { type: "invalid_request_error", code, message },
+      });
+    }
+    if (
+      BEDROCK_INVOKE_RE.test(pathname) ||
+      BEDROCK_STREAM_RE.test(pathname) ||
+      BEDROCK_CONVERSE_RE.test(pathname) ||
+      BEDROCK_CONVERSE_STREAM_RE.test(pathname)
+    ) {
+      return JSON.stringify({ __type: "ValidationException", message });
+    }
+    return JSON.stringify({ error: { message, type: "invalid_request_error", code } });
   }
 
   /**
@@ -3154,6 +3537,7 @@ async function startServer(
 
     // Control API — must be checked before mounts and path rewrites
     if (pathname.startsWith(CONTROL_PREFIX)) {
+      ensureRawFixturePositions();
       await handleControlAPI(
         req,
         res,
@@ -3168,6 +3552,30 @@ async function startServer(
         bytePlusVideoJobs,
         defaults,
         mountList,
+      );
+      return;
+    }
+
+    // Validate the entire Node-normalized value before any provider can serve
+    // or skip unsupported faults. Repeated fields must parse as one grammar;
+    // never select only the first value. Keep valid headers intact for planning.
+    const misbehaviorHeader = parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"]);
+    if (misbehaviorHeader && !misbehaviorHeader.ok) {
+      const detail = misbehaviorHeader.issue.message;
+      const message = `aimock_misbehavior_invalid: ${detail}`;
+      logger.error(`${req.method ?? "?"} ${pathname}: ${message}`);
+      journal.add({
+        method: req.method ?? "?",
+        path: req.url ?? pathname,
+        headers: flattenHeaders(req.headers),
+        body: null,
+        response: { status: 400, fixture: null, source: "internal", error: message },
+      });
+      setCorsHeaders(res);
+      writeErrorResponse(
+        res,
+        400,
+        invalidMisbehaviorHeaderEnvelope(normalizeCompatPath(pathname), detail),
       );
       return;
     }
@@ -3192,6 +3600,7 @@ async function startServer(
     if (pathname === OLLAMA_CHAT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllama(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -3202,6 +3611,7 @@ async function startServer(
     if (pathname === OLLAMA_GENERATE_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllamaGenerate(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -3215,6 +3625,7 @@ async function startServer(
     ) {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOllamaEmbeddings(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -3273,6 +3684,7 @@ async function startServer(
     // status RE, whose [^/]+ segment would otherwise capture "models")
     if (pathname === OPENROUTER_VIDEO_MODELS_PATH && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleOpenRouterVideoModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -3284,6 +3696,7 @@ async function startServer(
     const openRouterVideoStatusMatch = pathname.match(OPENROUTER_VIDEO_STATUS_RE);
     if (openRouterVideoStatusMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleOpenRouterVideoStatus(
           req,
           res,
@@ -3309,6 +3722,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleOpenRouterVideoCreate(
           req,
           res,
@@ -3341,6 +3755,7 @@ async function startServer(
     const bytePlusVideoStatusMatch = pathname.match(BYTEPLUS_VIDEO_STATUS_RE);
     if (bytePlusVideoStatusMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleBytePlusVideoStatus(
           req,
           res,
@@ -3361,6 +3776,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBytePlusVideoCreate(
           req,
           res,
@@ -3382,6 +3798,7 @@ async function startServer(
     // COMPAT_SUFFIXES — so they would otherwise 404), mirroring the
     // /api/v1/videos ordering above. Read-only metadata; no body.
     if (pathname === OPENROUTER_MODELS_PATH && req.method === "GET") {
+      ensureRawFixturePositions();
       handleOpenRouterModels(req, res, fixtures, journal, defaults, setCorsHeaders);
       return;
     }
@@ -3923,6 +4340,7 @@ async function startServer(
     if (pathname === RESPONSES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleResponses(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
@@ -3937,6 +4355,7 @@ async function startServer(
     if (pathname === MESSAGES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleMessages(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
@@ -3951,6 +4370,7 @@ async function startServer(
     if (pathname === COHERE_CHAT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleCohere(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
@@ -3965,6 +4385,7 @@ async function startServer(
     if (pathname === COHERE_EMBED_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleCohereEmbed(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -3995,6 +4416,7 @@ async function startServer(
             // Fall through for parse errors — let handleEmbeddings report them
           }
         }
+        ensureRawFixturePositions();
         await handleEmbeddings(
           req,
           res,
@@ -4016,6 +4438,7 @@ async function startServer(
     if (pathname === IMAGES_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImages(
           req,
           res,
@@ -4038,6 +4461,7 @@ async function startServer(
     if (pathname === IMAGES_EDIT_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImageEdit(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4049,6 +4473,7 @@ async function startServer(
     if (pathname === IMAGES_VARIATIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImageVariations(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4060,6 +4485,7 @@ async function startServer(
     if (pathname === SPEECH_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleSpeech(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4071,6 +4497,7 @@ async function startServer(
     if (pathname === TRANSCRIPTIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleTranscription(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4082,6 +4509,7 @@ async function startServer(
     if (pathname === TRANSLATIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleTranscription(
           req,
           res,
@@ -4107,6 +4535,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGrokVideoCreate(
           req,
           res,
@@ -4127,6 +4556,7 @@ async function startServer(
     if (pathname === VIDEOS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleVideoCreate(
           req,
           res,
@@ -4152,6 +4582,7 @@ async function startServer(
     const grokVideoStatusMatch = pathname.match(GROK_VIDEO_STATUS_RE);
     if (grokVideoStatusMatch && grokVideoStatusMatch[1] !== "generations" && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleGrokVideoStatus(
           req,
           res,
@@ -4177,6 +4608,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleVeoVideoCreate(
           req,
           res,
@@ -4199,6 +4631,7 @@ async function startServer(
     const veoOperationMatch = pathname.match(VEO_OPERATION_RE);
     if (veoOperationMatch && req.method === "GET") {
       try {
+        ensureRawFixturePositions();
         await handleVeoVideoStatus(
           req,
           res,
@@ -4221,6 +4654,7 @@ async function startServer(
       const predictModel = geminiPredictMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleImages(
           req,
           res,
@@ -4242,6 +4676,7 @@ async function startServer(
     if (pathname === GEMINI_INTERACTIONS_PATH && req.method === "POST") {
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGeminiInteractions(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
@@ -4257,6 +4692,7 @@ async function startServer(
       const embedModel = geminiEmbedMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGeminiEmbedContent(
           req,
           res,
@@ -4280,6 +4716,7 @@ async function startServer(
       const streaming = geminiMatch[2] === "streamGenerateContent";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGemini(
           req,
           res,
@@ -4306,6 +4743,7 @@ async function startServer(
       const streaming = vertexMatch[2] === "streamGenerateContent";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleGemini(
           req,
           res,
@@ -4332,6 +4770,7 @@ async function startServer(
       const bedrockModelId = bedrockMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBedrock(
           req,
           res,
@@ -4354,6 +4793,7 @@ async function startServer(
       const bedrockModelId = bedrockStreamMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleBedrockStream(
           req,
           res,
@@ -4376,6 +4816,7 @@ async function startServer(
       const converseModelId = converseMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleConverse(
           req,
           res,
@@ -4398,6 +4839,7 @@ async function startServer(
       const converseStreamModelId = converseStreamMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleConverseStream(
           req,
           res,
@@ -4482,6 +4924,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, "sound-generation");
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4494,6 +4937,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsVoiceDesign(req, res, raw, fixtures, defaults, journal);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, { service: "elevenlabs-voice" });
@@ -4506,6 +4950,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsVoiceCreate(req, res, raw, fixtures, defaults, journal);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, { service: "elevenlabs-voice" });
@@ -4554,8 +4999,10 @@ async function startServer(
       }
       try {
         if (req.method === "GET") {
+          ensureRawFixturePositions();
           await handleElevenLabsVoiceGet(req, res, voiceId, fixtures, defaults, journal);
         } else {
+          ensureRawFixturePositions();
           await handleElevenLabsVoiceDelete(req, res, voiceId, fixtures, defaults, journal);
         }
       } catch (err: unknown) {
@@ -4571,6 +5018,7 @@ async function startServer(
       const voiceId = elevenLabsTTSMatch[1];
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsTTS(req, res, raw, fixtures, defaults, journal, voiceId);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4585,6 +5033,7 @@ async function startServer(
       const musicSubType = musicMatch[1] ?? "music";
       try {
         const raw = await readBody(req);
+        ensureRawFixturePositions();
         await handleElevenLabsAudio(req, res, raw, fixtures, defaults, journal, musicSubType);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4685,6 +5134,7 @@ async function startServer(
             return;
           }
         }
+        ensureRawFixturePositions();
         const outcome = await handleFal(req, res, raw, pathname, fixtures, defaults, journal);
         if (outcome === "handled") return;
         // passthrough: fall through to legacy fal-audio routes below
@@ -4700,6 +5150,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = falBody ?? (await readBody(req));
+        ensureRawFixturePositions();
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4782,6 +5233,7 @@ async function startServer(
           );
           return;
         }
+        ensureRawFixturePositions();
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4795,6 +5247,7 @@ async function startServer(
       setCorsHeaders(res);
       try {
         const raw = falBody ?? (await readBody(req));
+        ensureRawFixturePositions();
         await handleFalQueue(req, res, raw, pathname, fixtures, defaults, journal);
       } catch (err: unknown) {
         routeError(req, res, err, pathname);
@@ -4842,9 +5295,11 @@ async function startServer(
         fixtures,
         journal,
         defaults,
+        () => lastJournalEntryFor(req),
         azureDeploymentId,
         completionsProvider,
         isOpenRouter,
+        ensureRawFixturePositions,
       );
     } catch (err: unknown) {
       routeError(req, res, err, pathname, {
@@ -5000,6 +5455,25 @@ async function startServer(
       return;
     }
 
+    if (pathname !== LIVE_PATH && req.headers["x-aimock-misbehavior"] !== undefined) {
+      const code = "aimock_misbehavior_invalid";
+      const message = "use the runtime scope: POST /__aimock/misbehavior with X-Test-Id";
+      const body = JSON.stringify({
+        error:
+          pathname === GEMINI_LIVE_PATH
+            ? { code: 400, status: "INVALID_ARGUMENT", message: `${code}: ${message}` }
+            : { type: "invalid_request_error", code, message },
+      });
+      socket.end(
+        "HTTP/1.1 400 Bad Request\r\n" +
+          "Content-Type: application/json\r\n" +
+          `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+          "Connection: close\r\n\r\n" +
+          body,
+      );
+      return;
+    }
+
     let liveId: symbol | undefined;
     if (pathname === LIVE_PATH) {
       if (req.method !== "GET" || parsedUrl.searchParams.has("model")) {
@@ -5065,31 +5539,49 @@ async function startServer(
       });
       liveSessions.set(sessionId, { testId: wsTestId, dispose });
     } else if (pathname === RESPONSES_PATH) {
-      handleWebSocketResponses(ws, fixtures, journal, {
-        ...defaults,
-        model: "gpt-4",
-        testId: wsTestId,
-        upgradeHeaders: req.headers,
-      });
+      handleWebSocketResponses(
+        ws,
+        fixtures,
+        journal,
+        {
+          ...defaults,
+          model: "gpt-4",
+          testId: wsTestId,
+          upgradeHeaders: req.headers,
+        },
+        ensureRawFixturePositions,
+      );
     } else if (pathname === REALTIME_PATH) {
       const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
       const model = transcriptionIntent
         ? "gpt-transcribe"
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
-      handleWebSocketRealtime(ws, fixtures, journal, {
-        ...defaults,
-        model,
-        transcriptionIntent,
-        testId: wsTestId,
-        upgradeHeaders: req.headers,
-      });
+      handleWebSocketRealtime(
+        ws,
+        fixtures,
+        journal,
+        {
+          ...defaults,
+          model,
+          transcriptionIntent,
+          testId: wsTestId,
+          upgradeHeaders: req.headers,
+        },
+        ensureRawFixturePositions,
+      );
     } else if (pathname === GEMINI_LIVE_PATH) {
-      handleWebSocketGeminiLive(ws, fixtures, journal, {
-        ...defaults,
-        model: "gemini-2.0-flash",
-        testId: wsTestId,
-        upgradeHeaders: req.headers,
-      });
+      handleWebSocketGeminiLive(
+        ws,
+        fixtures,
+        journal,
+        {
+          ...defaults,
+          model: "gemini-2.0-flash",
+          testId: wsTestId,
+          upgradeHeaders: req.headers,
+        },
+        ensureRawFixturePositions,
+      );
     }
   }
 

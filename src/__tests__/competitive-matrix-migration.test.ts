@@ -25,6 +25,15 @@ import {
   updateMigrationPage,
   updateProviderCounts,
 } from "../../scripts/update-competitive-matrix.js";
+import {
+  MIGRATION_HEADER as HEADER,
+  homeCell,
+  migrationCell,
+  migrationColumn,
+  migrationRow,
+  withHomeCell as setHomeCell,
+  withMigrationCell as setMigrationCell,
+} from "./competitive-watch-fixture.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOMEPAGE_REL = "docs/index.html";
@@ -41,69 +50,20 @@ const ROWLESS_HEADING = "## Row-Less Detections (Manual Follow-Up)";
 const MANUAL_HEADING = "## Migration Page Rows To Check By Hand";
 
 // ── Independent readers (do not share code with the script under test) ─────
+// The column-aware cell readers and seeders live in competitive-watch-fixture.
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const toHtml = (label: string) => label.replace(/&/g, "&amp;");
-
-/** The competitor's 0-based cell index in each row of a migration-page table. */
-function migrationColumn(html: string, header: string): number {
-  const thead = html.match(/<thead>([\s\S]*?)<\/thead>/)![1];
-  const cells = [...thead.matchAll(/<(th|td)\b[^>]*>([\s\S]*?)<\/\1>/g)].map((m) => m[2].trim());
-  const idx = cells.indexOf(header);
-  expect(idx, `header ${header}`).toBeGreaterThan(0);
-  return idx;
-}
-
-/** The migration-page header text for each competitor. */
-const HEADER: Record<string, string> = {
-  VidaiMock: "VidaiMock",
-  "mock-llm": "mock-llm",
-  "piyook/llm-mock": "piyook/llm-mock",
-  "mokksy/ai-mocks": "Mokksy",
-};
-
-function migrationRow(html: string, rowLabel: string): string | undefined {
-  return html.match(
-    new RegExp(`<tr>\\s*<td>${escapeRe(toHtml(rowLabel))}</td>[\\s\\S]*?</tr>`),
-  )?.[0];
-}
-
-/** The competitor's cell in the row labeled `rowLabel` on a migration page. */
-function migrationCell(html: string, competitor: string, rowLabel: string): string | undefined {
-  const tr = migrationRow(html, rowLabel);
-  if (tr === undefined) return undefined;
-  const col = migrationColumn(html, HEADER[competitor]);
-  return [...tr.matchAll(/<td\b[^>]*>[\s\S]*?<\/td>/g)][col]?.[0];
-}
-
-/** `html` with the competitor's cell in row `rowLabel` replaced by `cell`. */
+/** `html` with the competitor's migration cell set to `cell`; asserts the seed took effect. */
 function withMigrationCell(html: string, competitor: string, rowLabel: string, cell: string) {
-  const tr = migrationRow(html, rowLabel);
-  if (tr === undefined) throw new Error(`migration row not found: ${rowLabel}`);
-  const col = migrationColumn(html, HEADER[competitor]);
-  let idx = 0;
-  const newTr = tr.replace(/<td\b[^>]*>[\s\S]*?<\/td>/g, (c) => (idx++ === col ? cell : c));
-  const out = html.replace(tr, () => newTr);
+  const out = setMigrationCell(html, competitor, rowLabel, cell);
   expect(migrationCell(out, competitor, rowLabel)).toBe(cell);
   return out;
 }
 
-/** `html` (the homepage) with the competitor's cell in row `rowLabel` replaced by `cell`. */
+/** `html` (the homepage) with the competitor's cell set to `cell`; asserts the seed took effect. */
 function withHomeCell(html: string, competitor: string, rowLabel: string, cell: string): string {
-  const table = html.match(/<table class="comparison-table">([\s\S]*?)<\/table>/)![1];
-  const thead = table.match(/<thead>([\s\S]*?)<\/thead>/)![1];
-  const headers = [...thead.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)].map((m) =>
-    m[1].replace(/<[^>]*>/g, "").trim(),
-  );
-  const col = headers.indexOf(competitor);
-  expect(col, competitor).toBeGreaterThan(0);
-  const tr = html.match(
-    new RegExp(`<tr\\b[^>]*>\\s*<th scope="row">${escapeRe(toHtml(rowLabel))}</th>[\\s\\S]*?</tr>`),
-  )?.[0];
-  if (tr === undefined) throw new Error(`homepage row not found: ${rowLabel}`);
-  let idx = 0;
-  const newTr = tr.replace(/<(th|td)\b[^>]*>[\s\S]*?<\/\1>/g, (c) => (idx++ === col ? cell : c));
-  return html.replace(tr, () => newTr);
+  const out = setHomeCell(html, competitor, rowLabel, cell);
+  expect(homeCell(out, competitor, rowLabel)).toBe(cell);
+  return out;
 }
 
 /** The body of the summary section under `heading`, up to the next "## " heading. */
@@ -488,6 +448,7 @@ const EXPECTED_ROWS: Record<string, { rule: string; row: string; combined: boole
     { rule: "Drift detection", row: "Drift detection", combined: false },
     { rule: "Request journal", row: "Request journal", combined: false },
     { rule: "AG-UI event mocking", row: "MCP / A2A / AG-UI / Vector", combined: true },
+    { rule: "MCP tool mocking", row: "MCP / A2A / AG-UI / Vector", combined: true },
     { rule: "Docker image", row: "Docker", combined: false },
   ],
   "mock-llm": [
@@ -506,6 +467,7 @@ const EXPECTED_ROWS: Record<string, { rule: string; row: string; combined: boole
     { rule: "AWS Bedrock", row: "AWS Bedrock", combined: false },
     { rule: "Docker image", row: "Docker image", combined: false },
     { rule: "Helm chart", row: "Kubernetes / Helm", combined: false },
+    { rule: "MCP tool mocking", row: "MCP protocol mocking", combined: false },
   ],
   "piyook/llm-mock": [
     { rule: "Chat Completions SSE", row: "OpenAI Chat Completions", combined: false },
@@ -534,6 +496,7 @@ const EXPECTED_ROWS: Record<string, { rule: string; row: string; combined: boole
     { rule: "Drift detection", row: "Drift detection", combined: false },
     { rule: "Request journal", row: "Request journal", combined: false },
     { rule: "AG-UI event mocking", row: "MCP / A2A / AG-UI / Vector mocking", combined: true },
+    { rule: "MCP tool mocking", row: "MCP / A2A / AG-UI / Vector mocking", combined: true },
   ],
   "mokksy/ai-mocks": [
     { rule: "Chat Completions SSE", row: "Streaming SSE", combined: false },
@@ -541,6 +504,7 @@ const EXPECTED_ROWS: Record<string, { rule: string; row: string; combined: boole
     { rule: "Drift detection", row: "Drift detection", combined: false },
     { rule: "Docker image", row: "Docker / Helm", combined: true },
     { rule: "Helm chart", row: "Docker / Helm", combined: true },
+    { rule: "MCP tool mocking", row: "MCP mock", combined: false },
   ],
 };
 

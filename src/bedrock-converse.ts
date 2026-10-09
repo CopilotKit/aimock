@@ -20,6 +20,8 @@ import type {
 } from "./types.js";
 import {
   generateToolUseId,
+  estimatePromptTokens,
+  estimateTokens,
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
@@ -47,6 +49,7 @@ import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 
 // ─── Converse request types ─────────────────────────────────────────────────
 
@@ -718,6 +721,176 @@ function buildConverseContentWithToolCallsResponse(
   };
 }
 
+interface PreparedConverseMisbehavior {
+  plan: MisbehaviorPlan;
+  blocks: FixtureBlock[];
+  reasoning: string;
+  stopReason: string;
+  usage: ReturnType<typeof converseUsage>;
+}
+
+/** Prepare actual emitted calls and identities before journaling or writing bytes. */
+function prepareConverseMisbehavior(
+  plan: MisbehaviorPlan,
+  request: ChatCompletionRequest,
+  stream: boolean,
+  defaults: HandlerDefaults,
+  headers: http.IncomingHttpHeaders,
+): PreparedConverseMisbehavior {
+  const response = plan.response;
+  const combined = isContentWithToolCallsResponse(response);
+  const outcome =
+    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  let blocks: FixtureBlock[] = outcome?.ordered.map((block) => ({ ...block })) ?? [
+    ...("content" in response && response.content
+      ? [{ type: "text" as const, text: response.content }]
+      : []),
+    ...(combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []).map((call) => ({
+      type: "toolCall" as const,
+      ...call,
+    })),
+  ];
+  const calls = blocks.filter((block) => block.type === "toolCall");
+  const preparedCalls = calls.map((call, index) => {
+    const args = toolArgsForWire(call);
+    return {
+      ...call,
+      arguments: args.kind === "parsed" ? args.text : args.raw,
+      ...(index === plan.duplicateId?.destinationIndex
+        ? {}
+        : { id: call.id || generateToolUseId() }),
+    };
+  });
+  if (plan.duplicateId) {
+    preparedCalls[plan.duplicateId.destinationIndex].id =
+      preparedCalls[plan.duplicateId.sourceIndex].id;
+  }
+  let callIndex = 0;
+  blocks = blocks.map((block) => (block.type === "toolCall" ? preparedCalls[callIndex++] : block));
+  let stopReason = converseStopReason(
+    "finishReason" in response ? response.finishReason : undefined,
+    calls.length ? "tool_use" : "end_turn",
+  );
+  if (plan.stop === "stop") stopReason = "end_turn";
+  if (plan.stop === "length") stopReason = "max_tokens";
+  if (plan.stop === "content_filter") stopReason = "content_filtered";
+  if (!stream && plan.summary.fault === "tool-args-invalid-json") {
+    // This native signal carries no malformed object and no toolUse blocks.
+    blocks = blocks.filter((block) => block.type !== "toolCall");
+    stopReason = "malformed_tool_use";
+  }
+  if (!stream && plan.summary.fault === "stop-length-mid-tool") {
+    // Captured Converse max_tokens output retains the unfinished call with empty input.
+    let index = 0;
+    blocks = blocks.map((block) => {
+      if (block.type !== "toolCall") return block;
+      return index++ === plan.target?.index ? { ...block, arguments: "{}" } : block;
+    });
+  }
+  const reasoning =
+    plan.reasoning ??
+    resolveReasoningForModel(
+      "reasoning" in response ? response.reasoning : undefined,
+      request.model,
+      resolveStrictMode(defaults.strict, headers),
+      defaults.logger,
+    ) ??
+    "";
+  const servedToolCalls = blocks.flatMap((block) =>
+    block.type === "toolCall"
+      ? [{ name: block.name, arguments: block.arguments, id: block.id }]
+      : [],
+  );
+  const inputTokens = estimatePromptTokens(request.messages);
+  const outputTokens = estimateTokens(
+    reasoning +
+      blocks
+        .map((block) => (block.type === "text" ? block.text : block.name + block.arguments))
+        .join(""),
+  );
+  return {
+    plan: { ...plan, summary: { ...plan.summary, servedToolCalls } },
+    blocks,
+    reasoning,
+    stopReason,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+  };
+}
+
+function buildConverseMisbehaviorResponse(prepared: PreparedConverseMisbehavior): object {
+  const content: object[] =
+    prepared.reasoning || prepared.plan.summary.fault === "reasoning-only"
+      ? [{ reasoningContent: { reasoningText: { text: prepared.reasoning } } }]
+      : [];
+  for (const block of prepared.blocks) {
+    if (block.type === "text") content.push({ text: block.text });
+    else {
+      const args = toolArgsForWire(block);
+      if (args.kind === "verbatim") throw new InvalidToolArgumentsError(block);
+      content.push({ toolUse: { toolUseId: block.id, name: block.name, input: args.value } });
+    }
+  }
+  return {
+    output: { message: { role: "assistant", content } },
+    stopReason: prepared.stopReason,
+    usage: prepared.usage,
+    metrics: { latencyMs: 0 },
+  };
+}
+
+function buildConverseMisbehaviorEvents(
+  prepared: PreparedConverseMisbehavior,
+  chunkSize: number,
+): Array<{ eventType: string; payload: object }> {
+  const events: Array<{ eventType: string; payload: object }> = [
+    { eventType: "messageStart", payload: { role: "assistant" } },
+  ];
+  let index = 0;
+  if (prepared.reasoning || prepared.plan.summary.fault === "reasoning-only") {
+    events.push({
+      eventType: "contentBlockStart",
+      payload: { contentBlockIndex: index, start: { reasoningContent: {} } },
+    });
+    for (let i = 0; i < prepared.reasoning.length; i += chunkSize) {
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: index,
+          delta: { reasoningContent: { text: prepared.reasoning.slice(i, i + chunkSize) } },
+        },
+      });
+    }
+    events.push({ eventType: "contentBlockStop", payload: { contentBlockIndex: index++ } });
+  }
+  for (const block of prepared.blocks) {
+    events.push({
+      eventType: "contentBlockStart",
+      payload: {
+        contentBlockIndex: index,
+        start:
+          block.type === "toolCall" ? { toolUse: { toolUseId: block.id, name: block.name } } : {},
+      },
+    });
+    const value = block.type === "text" ? block.text : block.arguments;
+    for (let i = 0; i < value.length; i += chunkSize) {
+      const part = value.slice(i, i + chunkSize);
+      events.push({
+        eventType: "contentBlockDelta",
+        payload: {
+          contentBlockIndex: index,
+          delta: block.type === "text" ? { text: part } : { toolUse: { input: part } },
+        },
+      });
+    }
+    events.push({ eventType: "contentBlockStop", payload: { contentBlockIndex: index++ } });
+  }
+  events.push(
+    { eventType: "messageStop", payload: { stopReason: prepared.stopReason } },
+    { eventType: "metadata", payload: { usage: prepared.usage, metrics: { latencyMs: 0 } } },
+  );
+  return events;
+}
+
 // ─── Request handlers ───────────────────────────────────────────────────────
 
 export async function handleConverse(
@@ -934,11 +1107,71 @@ export async function handleConverse(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  let misbehavior = planMisbehavior({
+    wire: "bedrock-converse",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: false,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) logger.error(misbehavior.message);
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture, error: misbehavior.message },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "InternalServerException";
+    res.setHeader("x-amzn-errortype", type);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({
+        __type: type,
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }),
+    );
+    return;
+  }
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareConverseMisbehavior(
+      misbehavior,
+      completionReq,
+      false,
+      defaults,
+      req.headers,
+    );
+    misbehavior = prepared.plan;
+    const body = buildConverseMisbehaviorResponse(prepared);
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -972,7 +1205,7 @@ export async function handleConverse(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1006,7 +1239,7 @@ export async function handleConverse(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1033,7 +1266,7 @@ export async function handleConverse(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1047,7 +1280,7 @@ export async function handleConverse(
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
@@ -1281,13 +1514,86 @@ export async function handleConverseStream(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  let misbehavior = planMisbehavior({
+    wire: "bedrock-converse",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) logger.error(misbehavior.message);
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture, error: misbehavior.message },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "InternalServerException";
+    res.setHeader("x-amzn-errortype", type);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({
+        __type: type,
+        message: misbehavior.message,
+        code: misbehavior.code,
+      }),
+    );
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareConverseMisbehavior(
+      misbehavior,
+      completionReq,
+      true,
+      defaults,
+      req.headers,
+    );
+    misbehavior = prepared.plan;
+    const events = buildConverseMisbehaviorEvents(prepared, chunkSize);
+    const entry = addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    const interruption = createInterruptionSignal(fixture);
+    const completed = await writeEventStream(res, events, {
+      latency,
+      streamingProfile: fixture.streamingProfile,
+      recordedTimings: fixture.recordedTimings,
+      replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+      signal: interruption?.signal,
+      onChunkSent: interruption?.tick,
+    });
+    if (!completed) {
+      if (!res.writableEnded) res.destroy();
+      entry.response.interrupted = true;
+      entry.response.interruptReason = interruption?.reason();
+    }
+    interruption?.cleanup();
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1321,7 +1627,7 @@ export async function handleConverseStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1369,7 +1675,7 @@ export async function handleConverseStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1414,7 +1720,7 @@ export async function handleConverseStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1447,7 +1753,7 @@ export async function handleConverseStream(
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),

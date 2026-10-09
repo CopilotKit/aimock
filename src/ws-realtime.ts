@@ -13,6 +13,8 @@ import type {
   Fixture,
   FixtureBlock,
   JournalEntry,
+  HandlerDefaults,
+  ToolDefinition,
 } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
@@ -25,11 +27,14 @@ import {
   isErrorResponse,
   resolveFixtureBlocks,
   resolveResponse,
+  prepareOpenAIChatMisbehavior,
+  resolveOpenAIChatMisbehaviorUsage,
   resolveStrictMode,
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
 } from "./helpers.js";
+import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
@@ -227,6 +232,29 @@ function serializeSession(session: SessionConfig, sessionId?: string): Record<st
 }
 
 // ─── Conversion helpers ─────────────────────────────────────────────────────
+
+/** Realtime declares functions directly, rather than under Chat's `function` key. */
+function realtimeToolDefinitions(tools: unknown[]): ToolDefinition[] {
+  return tools.flatMap((value): ToolDefinition[] => {
+    if (!value || typeof value !== "object") return [];
+    const tool = value as Record<string, unknown>;
+    if (tool.type !== "function" || typeof tool.name !== "string") return [];
+    return [
+      {
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+          ...(tool.parameters &&
+          typeof tool.parameters === "object" &&
+          !Array.isArray(tool.parameters)
+            ? { parameters: tool.parameters }
+            : {}),
+        },
+      },
+    ];
+  });
+}
 
 export function realtimeItemsToMessages(
   items: RealtimeItem[],
@@ -508,6 +536,9 @@ export function handleWebSocketRealtime(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
@@ -515,6 +546,7 @@ export function handleWebSocketRealtime(
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
     transcriptionIntent?: boolean;
   },
+  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const sessionId = realtimeId("sess");
@@ -561,17 +593,20 @@ export function handleWebSocketRealtime(
   // Serialize message processing to prevent event interleaving
   let pending = Promise.resolve();
   ws.on("message", (raw: string) => {
-    pending = pending.then(() =>
-      processMessage(
-        raw,
-        ws,
-        fixtures,
-        journal,
-        defaults,
-        session,
-        conversationItems,
-        isBeta,
-      ).catch((err: unknown) => {
+    pending = pending.then(async () => {
+      try {
+        beforeProcessMessage?.();
+        await processMessage(
+          raw,
+          ws,
+          fixtures,
+          journal,
+          defaults,
+          session,
+          conversationItems,
+          isBeta,
+        );
+      } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket realtime error: ${msg}`);
         try {
@@ -581,8 +616,8 @@ export function handleWebSocketRealtime(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
           );
         }
-      }),
-    );
+      }
+    });
   });
 }
 
@@ -596,6 +631,9 @@ async function processMessage(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
@@ -1124,6 +1162,9 @@ async function handleResponseCreate(
     chunkSize: number;
     replaySpeed?: number;
     model: string;
+    misbehavior?: HandlerDefaults["misbehavior"];
+    misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
+    registry?: HandlerDefaults["registry"];
     logger: Logger;
     strict?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
@@ -1153,10 +1194,14 @@ async function handleResponseCreate(
         ? realtimeContextHeader[0]
         : undefined;
 
+  const tools = realtimeToolDefinitions(
+    Array.isArray(responseOverrides?.tools) ? responseOverrides.tools : session.tools,
+  );
   const completionReq: ChatCompletionRequest = {
     model: session.model,
     messages,
     _endpointType: endpointType,
+    ...(tools.length > 0 ? { tools } : {}),
     _context: realtimeContext,
   };
 
@@ -1244,19 +1289,97 @@ async function handleResponseCreate(
   }
 
   const response = await resolveResponse(fixture, completionReq);
-  const latency = fixture.latency ?? defaults.latency;
-  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
-
-  // ── Error fixture ───────────────────────────────────────────────────
-  if (isErrorResponse(response)) {
-    const status = response.status ?? 500;
-    journal.add({
+  const plannerDefaults = { ...defaults, replaySpeed: defaults.replaySpeed ?? 1 };
+  let misbehavior = planMisbehavior({
+    wire: "openai-realtime",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: true,
+    defaults: plannerDefaults,
+    rawHeaders: defaults.upgradeHeaders ?? {},
+    // The server already resolved both header and query-string session scopes.
+    url: `/v1/realtime?testId=${encodeURIComponent(testId)}`,
+  });
+  if (misbehavior.kind === "applied") {
+    misbehavior = prepareOpenAIChatMisbehavior(misbehavior);
+  }
+  const addResponseEntry = (status: number) => {
+    const entry = journal.add({
       method: "WS",
       path: "/v1/realtime",
       headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
       body: completionReq,
       response: { status, fixture },
     });
+    recordMisbehaviorOutcome({
+      entry,
+      summary: misbehavior.summary,
+      defaults: plannerDefaults,
+      testId,
+    });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    addResponseEntry(misbehavior.status);
+    if (!misbehavior.summary?.evaluations.length) {
+      defaults.logger.error(`[misbehavior] ${misbehavior.message} (testId=${testId})`);
+    }
+    buildErrorRealtimeEvent(
+      ws,
+      misbehavior.message,
+      isBeta,
+      "invalid_request_error",
+      misbehavior.code,
+    );
+    return;
+  }
+  const latency = fixture.latency ?? defaults.latency;
+  const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = misbehavior.response;
+    const combined = isContentWithToolCallsResponse(prepared);
+    const blocks: FixtureBlock[] =
+      combined && prepared.blocks?.length
+        ? resolveFixtureBlocks(prepared.blocks)
+        : [
+            ...((isTextResponse(prepared) || combined) && prepared.content
+              ? [{ type: "text" as const, text: prepared.content }]
+              : []),
+            ...(isToolCallResponse(prepared) || combined
+              ? (prepared.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
+              : []),
+          ];
+    const usage = resolveOpenAIChatMisbehaviorUsage(misbehavior, completionReq, false);
+    await streamRealtimeBlocks(
+      ws,
+      blocks,
+      responseId,
+      fixture,
+      defaults,
+      latency,
+      chunkSize,
+      isBeta,
+      conversationItems,
+      addResponseEntry(200),
+      {
+        stop: misbehavior.stop,
+        usage: {
+          input_tokens: usage.prompt_tokens,
+          output_tokens: usage.completion_tokens,
+          total_tokens: usage.total_tokens,
+        },
+      },
+    );
+    return;
+  }
+
+  // ── Error fixture ───────────────────────────────────────────────────
+  if (isErrorResponse(response)) {
+    const status = response.status ?? 500;
+    addResponseEntry(status);
     sendEvent(
       ws,
       {
@@ -1299,13 +1422,7 @@ async function handleResponseCreate(
 
   // ── Content + tool calls response ──────────────────────────────────
   if (isContentWithToolCallsResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     // ── Ordered blocks path (#274) ──────────────────────────────────
     // When the fixture supplies an ordered `blocks` array, stream the items in
@@ -1718,13 +1835,7 @@ async function handleResponseCreate(
 
   // ── Text response ───────────────────────────────────────────────────
   if (isTextResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     const itemId = realtimeId("item");
     const contentIndex = 0;
@@ -1934,13 +2045,7 @@ async function handleResponseCreate(
 
   // ── Tool call response ──────────────────────────────────────────────
   if (isToolCallResponse(response)) {
-    const journalEntry = journal.add({
-      method: "WS",
-      path: "/v1/realtime",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: completionReq,
-      response: { status: 200, fixture },
-    });
+    const journalEntry = addResponseEntry(200);
 
     // response.created
     sendEvent(
@@ -2135,13 +2240,7 @@ async function handleResponseCreate(
   }
 
   // Unknown response type
-  journal.add({
-    method: "WS",
-    path: "/v1/realtime",
-    headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-    body: completionReq,
-    response: { status: 500, fixture },
-  });
+  addResponseEntry(500);
   buildErrorRealtimeEvent(
     ws,
     "Fixture response did not match any known type",
@@ -2170,6 +2269,10 @@ async function streamRealtimeBlocks(
   isBeta: boolean,
   conversationItems: RealtimeItem[],
   journalEntry: JournalEntry,
+  fault?: {
+    stop: MisbehaviorPlan["stop"];
+    usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  },
 ): Promise<void> {
   // response.created
   sendEvent(
@@ -2357,11 +2460,13 @@ async function streamRealtimeBlocks(
       const callId = block.id ?? generateToolCallId();
       const itemId = realtimeId("item");
       const args = block.arguments;
+      const itemStatus =
+        fault?.stop === "length" && outputIndex === blocks.length - 1 ? "incomplete" : "completed";
 
       const toolOutputItem = {
         id: itemId,
         type: "function_call",
-        status: "completed",
+        status: itemStatus,
         call_id: callId,
         name: block.name,
         arguments: args,
@@ -2466,7 +2571,7 @@ async function streamRealtimeBlocks(
             id: itemId,
             object: "realtime.item",
             type: "function_call",
-            status: "completed",
+            status: itemStatus,
             call_id: callId,
             name: block.name,
             arguments: args,
@@ -2500,9 +2605,18 @@ async function streamRealtimeBlocks(
       response: {
         id: responseId,
         object: "realtime.response",
-        status: "completed",
+        status:
+          fault?.stop === "length" || fault?.stop === "content_filter" ? "incomplete" : "completed",
+        ...(fault?.stop === "length" || fault?.stop === "content_filter"
+          ? {
+              status_details: {
+                type: "incomplete",
+                reason: fault.stop === "length" ? "max_output_tokens" : "content_filter",
+              },
+            }
+          : {}),
         output: allOutputItems,
-        usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+        usage: fault?.usage ?? { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
       },
     },
     isBeta,

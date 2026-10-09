@@ -111,7 +111,7 @@ function withCell(html: string, rowHtml: string, competitor: string, cell: strin
   expect(col, competitor).toBeGreaterThan(0);
   const label = rowHtml.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const tr = html.match(
-    new RegExp(`<tr\\b[^>]*>\\s*<th scope="row">${label}</th>[\\s\\S]*?</tr>`),
+    new RegExp(`<tr\\b[^>]*>\\s*<th scope="row">\\s*${label}\\s*</th>[\\s\\S]*?</tr>`),
   )?.[0];
   if (tr === undefined) throw new Error(`row not found: ${rowHtml}`);
   let idx = 0;
@@ -128,6 +128,60 @@ function firstRuleRowHtml(): string {
 }
 
 describe("parseCurrentMatrix on the real homepage", () => {
+  it("places model misbehavior after chaos with eight aligned sourced cells", () => {
+    const matrix = parseCurrentMatrix(HOMEPAGE);
+    const label = "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)";
+    const labels = [...matrix.rows.keys()];
+    expect(labels[labels.indexOf("Chaos testing") + 1]).toBe(label);
+    const row = matrix.rows.get(label);
+    expect(row?.size).toBe(matrix.headers.length);
+    expect(row?.get("aimock")).toContain("Built-in");
+    expect(row?.get("aimock")).toContain('href="/model-misbehavior"');
+    expect(row?.get("MockServer")).toContain("Partial");
+    expect(row?.get("MockServer")).toContain(
+      'href="https://www.mock-server.com/mock_server/llm_response_mocking.html"',
+    );
+    for (const name of ["MSW", "VidaiMock", "mock-llm", "WireMock"]) {
+      const cell = row?.get(name);
+      expect(cell).toContain("Not documented");
+      expect(cell).toContain("href=");
+      expect(cell).not.toMatch(NO_CELL);
+      expect(cell).not.toContain('aria-label="No"');
+    }
+  });
+
+  it.each([
+    {
+      name: "piyook/llm-mock",
+      links: ["https://github.com/piyook/llm-mock#truncated-and-refused-replies-stopreason"],
+    },
+    {
+      name: "mokksy/ai-mocks",
+      links: [
+        "https://mokksy.dev/docs/ai-mocks/openai/",
+        "https://mokksy.dev/docs/ai-mocks/anthropic/",
+      ],
+    },
+  ])("qualifies $name partial support with the reviewed stop-reason sources", ({ name, links }) => {
+    const row = parseCurrentMatrix(HOMEPAGE).rows.get(
+      "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)",
+    );
+    const cell = row?.get(name);
+    expect(cell).toContain('class="partial">Partial</span>');
+    expect(cell).toContain("stop-reason controls");
+    for (const link of links) expect(cell).toContain(`href="${link}"`);
+    expect(cell).not.toContain("Not documented");
+    expect(cell).not.toMatch(NO_CELL);
+  });
+
+  it("keeps nine cards while describing semantic faults in the existing Chaos card", () => {
+    expect([...HOMEPAGE.matchAll(/class="feature-card(?:\s|")/g)]).toHaveLength(9);
+    const card = HOMEPAGE.match(/<h3>Chaos Testing<\/h3>\s*<p>([\s\S]*?)<\/p>/)?.[1];
+    expect(card?.replace(/\s+/g, " ").trim()).toBe(
+      "Transport faults (drop, malformed, disconnect, 429) and model misbehavior: broken tool-call JSON, schema violations, unknown tools, and max-tokens cutoffs in every provider's real wire format.",
+    );
+  });
+
   it("has one row per <tbody> row, keyed by its <th scope=row> label", () => {
     const { rows } = parseCurrentMatrix(HOMEPAGE);
     const body = pageBodyRows();

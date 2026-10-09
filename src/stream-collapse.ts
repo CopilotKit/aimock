@@ -1598,6 +1598,37 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(frameStr) as Record<string, unknown>;
+      if (
+        frame.headers[":event-type"] === "chunk" &&
+        parsed !== null &&
+        typeof parsed === "object" &&
+        Object.hasOwn(parsed, "bytes")
+      ) {
+        try {
+          const bytes = parsed.bytes;
+          if (
+            typeof bytes !== "string" ||
+            bytes.length === 0 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(bytes)
+          ) {
+            throw new TypeError("bytes must be a nonempty base64 string");
+          }
+          const event: unknown = JSON.parse(Buffer.from(bytes, "base64").toString("utf8"));
+          if (
+            event === null ||
+            typeof event !== "object" ||
+            Array.isArray(event) ||
+            !("type" in event) ||
+            typeof event.type !== "string"
+          ) {
+            throw new TypeError("decoded bytes must contain a Claude event object");
+          }
+          parsed = event;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "unknown";
+          throw new TypeError(`Invalid Invoke PayloadPart: ${message}`);
+        }
+      }
     } catch (err) {
       droppedChunks++;
       if (droppedChunks === 1) {
@@ -1607,7 +1638,7 @@ export function collapseBedrockEventStream(rawBody: Buffer): CollapseResult {
       continue;
     }
 
-    // Anthropic Messages format (invoke-with-response-stream): flat payload with "type" field
+    // InvokeModel Claude event: decoded PayloadPart or legacy flat payload with "type" field
     if (parsed.type === "content_block_delta") {
       const delta = parsed.delta as Record<string, unknown> | undefined;
       if (delta?.type === "text_delta" && typeof delta.text === "string") {

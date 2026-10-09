@@ -5,6 +5,10 @@
  * Updated for GA protocol — uses gpt-realtime-mini and GA event names.
  */
 
+import { connect as connectSocket } from "node:net";
+import { OpenAIRealtimeWS } from "openai-current-sdk/realtime/ws";
+import type { RealtimeServerEvent } from "openai-current-sdk/resources/realtime/realtime";
+import { createServer } from "../../server.js";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { ServerInstance } from "../../server.js";
 import { extractShape, compareSSESequences, formatDriftReport } from "./schema.js";
@@ -295,4 +299,385 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Realtime API drift", () => {
   // API is no longer supported. Please use /v1/realtime for the GA API."}, which
   // quarantined the whole leg (exit 5). GA is the only live surface and the only
   // surface aimock mocks, so the drift suite probes GA exclusively.
+});
+
+// K5 is an approved modeled contract. Native absence is NOT_TRIGGERED, never
+// native agreement. Errors, malformed streams and contradictory target output
+// fail; only a complete valid response may be classified NOT_TRIGGERED.
+function readRealtimeK5(raw: unknown[]) {
+  function object(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Malformed Realtime object");
+    }
+    return value as Record<string, unknown>;
+  }
+  function string(value: unknown) {
+    if (typeof value !== "string") throw new Error("Malformed Realtime string");
+    return value;
+  }
+  const events = raw.map(object);
+  for (const event of events) {
+    string(event.type);
+    if (event.type === "error") throw new Error(`Realtime error: ${JSON.stringify(event)}`);
+  }
+  const terminals = events.filter((event) => event.type === "response.done");
+  expect(terminals).toHaveLength(1);
+  expect(events.at(-1)).toBe(terminals[0]);
+  const response = object(terminals[0].response);
+  string(response.id);
+  const created = events.filter((event) => event.type === "response.created");
+  expect(created).toHaveLength(1);
+  expect(object(created[0].response).id).toBe(response.id);
+  expect(events.indexOf(created[0])).toBeLessThan(events.indexOf(terminals[0]));
+  expect(["completed", "incomplete"]).toContain(response.status);
+  expect(Array.isArray(response.output)).toBe(true);
+  if (!Array.isArray(response.output)) throw new Error("Missing Realtime output");
+  const usage = object(response.usage);
+  for (const name of ["input_tokens", "output_tokens", "total_tokens"]) {
+    expect(typeof usage[name]).toBe("number");
+    expect(Number.isFinite(usage[name])).toBe(true);
+    expect(usage[name]).toBeGreaterThanOrEqual(0);
+  }
+  let limited = false;
+  if (response.status === "incomplete") {
+    const details = object(response.status_details);
+    expect(details.type).toBe("incomplete");
+    expect(["max_output_tokens", "content_filter"]).toContain(details.reason);
+    limited = details.reason === "max_output_tokens";
+  }
+  const calls: Record<string, unknown>[] = [];
+  for (const rawItem of response.output) {
+    const item = object(rawItem);
+    expect(["function_call", "message"]).toContain(item.type);
+    string(item.id);
+    expect(["completed", "incomplete"]).toContain(item.status);
+    const added = events.filter(
+      (event) => event.type === "response.output_item.added" && object(event.item).id === item.id,
+    );
+    const closed = events.filter(
+      (event) => event.type === "response.output_item.done" && object(event.item).id === item.id,
+    );
+    expect(added).toHaveLength(1);
+    expect(closed).toHaveLength(1);
+    // Item events may add SDK metadata (for example phase) omitted from final output.
+    // Every terminal output field must still agree with the closed item.
+    expect(closed[0].item).toMatchObject(item);
+    expect(events.indexOf(added[0])).toBeGreaterThan(events.indexOf(created[0]));
+    expect(events.indexOf(closed[0])).toBeGreaterThan(events.indexOf(added[0]));
+    expect(events.indexOf(closed[0])).toBeLessThan(events.indexOf(terminals[0]));
+    if (item.type === "function_call") {
+      string(item.name);
+      string(item.call_id);
+      string(item.arguments);
+      calls.push(item);
+    } else {
+      expect(Array.isArray(item.content)).toBe(true);
+      if (!Array.isArray(item.content)) throw new Error("Missing message content");
+      for (const part of item.content) {
+        const content = object(part);
+        expect(content.type).toBe("output_text");
+        string(content.text);
+      }
+    }
+  }
+  const output = response.output.map(object);
+  expect(new Set(output.map((item) => item.id)).size).toBe(output.length);
+  for (const event of events) {
+    const itemEvent =
+      event.type === "response.output_item.added" || event.type === "response.output_item.done";
+    const argumentEvent =
+      event.type === "response.function_call_arguments.delta" ||
+      event.type === "response.function_call_arguments.done";
+    if (!itemEvent && !argumentEvent) continue;
+    const eventItem = itemEvent ? object(event.item) : undefined;
+    const id = eventItem ? eventItem.id : event.item_id;
+    const index = output.findIndex((item) => item.id === id);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(event.response_id).toBe(response.id);
+    expect(event.output_index).toBe(index);
+    const item = output[index];
+    if (eventItem) {
+      expect(eventItem.type).toBe(item.type);
+      if (item.type === "function_call") {
+        expect(eventItem.name).toBe(item.name);
+        expect(eventItem.call_id).toBe(item.call_id);
+      }
+    } else {
+      expect(item.type).toBe("function_call");
+      expect(event.call_id).toBe(item.call_id);
+    }
+  }
+  const cut = calls.filter((call) => {
+    try {
+      JSON.parse(string(call.arguments));
+      return false;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return true;
+    }
+  });
+  // An invalid call without token exhaustion is a contradiction, not absence.
+  if (cut.length > 0) expect(limited).toBe(true);
+  for (const call of calls) {
+    const deltas = events.filter(
+      (event) =>
+        event.type === "response.function_call_arguments.delta" && event.item_id === call.id,
+    );
+    const args = deltas.map((event) => string(event.delta)).join("");
+    expect(args).toBe(call.arguments);
+    const done = events.filter(
+      (event) =>
+        event.type === "response.function_call_arguments.done" && event.item_id === call.id,
+    );
+    expect(done).toHaveLength(1);
+    expect(done[0].arguments).toBe(args);
+    const added = events.find(
+      (event) => event.type === "response.output_item.added" && object(event.item).id === call.id,
+    )!;
+    for (const delta of deltas) {
+      expect(events.indexOf(delta)).toBeGreaterThan(events.indexOf(added));
+      expect(events.indexOf(delta)).toBeLessThan(events.indexOf(done[0]));
+    }
+
+    expect(events.indexOf(done[0])).toBeGreaterThan(
+      events.indexOf(
+        deltas.at(-1) ??
+          events.find(
+            (event) =>
+              event.type === "response.output_item.added" && object(event.item).id === call.id,
+          )!,
+      ),
+    );
+    const closed = events.find(
+      (event) => event.type === "response.output_item.done" && object(event.item).id === call.id,
+    );
+    expect(closed).toBeDefined();
+    expect(events.indexOf(done[0])).toBeLessThan(events.indexOf(closed!));
+  }
+  return limited && cut.length > 0 ? ("MATCH" as const) : ("NOT_TRIGGERED" as const);
+}
+
+const k5Tool = {
+  type: "function" as const,
+  name: "write_report",
+  description: "Write a detailed weather report.",
+  parameters: {
+    type: "object",
+    properties: { report: { type: "string", minLength: 2500 } },
+    required: ["report"],
+    additionalProperties: false,
+  },
+};
+const k5Arguments = JSON.stringify({
+  report: "Paris weather report with a long explanation.",
+});
+
+async function localRealtimeK5(at: number) {
+  const server = await createServer(
+    [
+      {
+        match: {},
+        response: {
+          toolCalls: [{ name: k5Tool.name, arguments: k5Arguments }],
+        },
+        misbehavior: { faults: [{ fault: "stop-length-mid-tool", at }] },
+      },
+    ],
+    { logLevel: "silent" },
+  );
+  const address = new URL(server.url);
+  const sdk = new OpenAIRealtimeWS(
+    {
+      model: "gpt-realtime-mini",
+      options: {
+        createConnection: () => connectSocket(Number(address.port), address.hostname),
+      },
+    },
+    { apiKey: "local-drift", baseURL: `${server.url}/v1` },
+  );
+  sdk.on("error", () => {
+    /* Errors remain in the asserted event transcript. */
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      sdk.socket.once("open", resolve);
+      sdk.socket.once("error", reject);
+    });
+    const result = new Promise<RealtimeServerEvent[]>((resolve, reject) => {
+      const events: RealtimeServerEvent[] = [];
+      const timer = setTimeout(() => {
+        sdk.off("event", listener);
+        reject(new Error("Missing K5 terminal"));
+      }, 5000);
+      const listener = (event: RealtimeServerEvent) => {
+        events.push(event);
+        if (event.type === "response.done" || event.type === "error") {
+          clearTimeout(timer);
+          sdk.off("event", listener);
+          resolve(events);
+        }
+      };
+      sdk.on("event", listener);
+    });
+    sdk.send({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        output_modalities: ["text"],
+        tools: [k5Tool],
+      },
+    });
+    sdk.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Write the Paris weather report." }],
+      },
+    });
+    sdk.send({
+      type: "response.create",
+      response: {
+        max_output_tokens: 32,
+        tool_choice: { type: "function", name: k5Tool.name },
+      },
+    });
+    return await result;
+  } finally {
+    sdk.close();
+    await stopDriftServer(server);
+  }
+}
+
+describe("Realtime K5 modeled contract", () => {
+  it.each([0.001, 0.25, 0.5, 0.75])("official GA SDK retains cut arguments at %s", async (at) => {
+    const events = await localRealtimeK5(at);
+    console.log("Realtime K5 local", JSON.stringify(events));
+    expect(readRealtimeK5(events)).toBe("MATCH");
+    const terminal = events.find((event) => event.type === "response.done");
+    const call = terminal?.response.output?.find((item) => item.type === "function_call");
+    expect(call?.arguments).toBe(
+      k5Arguments.slice(0, Math.max(1, Math.floor(k5Arguments.length * at))),
+    );
+  });
+
+  it("rejects derived missing closing event and malformed terminal", async () => {
+    const events = await localRealtimeK5(0.5);
+    expect(() =>
+      readRealtimeK5(
+        events.filter((event) => event.type !== "response.function_call_arguments.done"),
+      ),
+    ).toThrow();
+    expect(() => readRealtimeK5(events.slice(0, -1))).toThrow();
+    expect(() =>
+      readRealtimeK5(
+        events.map((event) =>
+          event.type === "response.done"
+            ? {
+                ...event,
+                response: { ...event.response, status: ["incomplete"] },
+              }
+            : event,
+        ),
+      ),
+    ).toThrow();
+  });
+
+  it("validates empty argument prefixes and rejects contradictory item fields", async () => {
+    const events = await localRealtimeK5(0.5);
+    const empty = events
+      .filter((event) => event.type !== "response.function_call_arguments.delta")
+      .map((event) => {
+        if (event.type === "response.function_call_arguments.done")
+          return { ...event, arguments: "" };
+        if (event.type === "response.output_item.done")
+          return { ...event, item: { ...event.item, arguments: "" } };
+        if (event.type === "response.done")
+          return {
+            ...event,
+            response: {
+              ...event.response,
+              output: event.response.output?.map((item) => ({ ...item, arguments: "" })),
+            },
+          };
+        return event;
+      });
+    const mismatchedValidCall = events.map((event) => {
+      if (event.type === "response.output_item.done")
+        return { ...event, item: { ...event.item, arguments: "{}" } };
+      if (event.type === "response.done")
+        return {
+          ...event,
+          response: {
+            ...event.response,
+            output: event.response.output?.map((item) => ({ ...item, arguments: "{}" })),
+          },
+        };
+      return event;
+    });
+    expect(() => readRealtimeK5(mismatchedValidCall)).toThrow();
+    // Derived reader case: the renderer intentionally clamps local cuts to one byte.
+    expect(readRealtimeK5(empty)).toBe("MATCH");
+    expect(() =>
+      readRealtimeK5(
+        events.map((event) =>
+          event.type === "response.output_item.done"
+            ? { ...event, item: { ...event.item, arguments: "contradiction" } }
+            : event,
+        ),
+      ),
+    ).toThrow();
+  });
+
+  it.each(["orphan", "early delta", "response id", "item id", "call id", "output index"])(
+    "rejects derived lifecycle contradiction: %s",
+    async (mutation) => {
+      const events = await localRealtimeK5(0.5);
+      expect(readRealtimeK5(events)).toBe("MATCH");
+      let malformed: unknown[];
+      if (mutation === "early delta") {
+        const firstDelta = events.find(
+          (event) => event.type === "response.function_call_arguments.delta",
+        )!;
+        malformed = events.filter((event) => event !== firstDelta);
+        const added = events.findIndex((event) => event.type === "response.output_item.added");
+        malformed.splice(added, 0, firstDelta);
+      } else {
+        malformed = events.map((event) => {
+          if (mutation === "orphan" && event.type === "response.done")
+            return { ...event, response: { ...event.response, output: [] } };
+          if (event.type !== "response.function_call_arguments.delta") return event;
+          if (mutation === "response id") return { ...event, response_id: "wrong" };
+          if (mutation === "item id") return { ...event, item_id: "wrong" };
+          if (mutation === "call id") return { ...event, call_id: "wrong" };
+          if (mutation === "output index") return { ...event, output_index: 42 };
+          return event;
+        });
+      }
+      // These are derived malformed reader inputs from actual SDK output, not native captures.
+      expect(() => readRealtimeK5(malformed)).toThrow();
+    },
+  );
+
+  it.skipIf(!OPENAI_REALTIME_CREDENTIAL)("native K5 bounded modeled comparison", async () => {
+    const result = await openaiRealtimeWS(
+      { apiKey: OPENAI_REALTIME_CREDENTIAL! },
+      "Call write_report with at least 500 words describing Paris weather. Do not abbreviate.",
+      [k5Tool],
+      {
+        max_output_tokens: 32,
+        tool_choice: { type: "function", name: k5Tool.name },
+      },
+    );
+    const disposition = readRealtimeK5(result.rawMessages);
+    console.log(
+      "Realtime K5 native",
+      JSON.stringify({
+        model: "gpt-realtime-mini",
+        max_output_tokens: 32,
+        disposition,
+        events: result.rawMessages,
+      }),
+    );
+  });
 });

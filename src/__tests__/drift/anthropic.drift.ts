@@ -5,6 +5,11 @@
  */
 
 import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import type { Message, RawMessageStreamEvent } from "@anthropic-ai/sdk/resources/messages";
+import { LLMock } from "../../llmock.js";
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { ServerInstance } from "../../server.js";
 import { extractShape, triangulate, compareSSESequences, formatDriftReport } from "./schema.js";
@@ -33,6 +38,573 @@ import { httpPost, parseTypedSSE, startDriftServer, stopDriftServer } from "./he
 
 let instance: ServerInstance;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// Existing daily credential setup activates these paid K5 requests. Replay is
+// explicit and hash-pinned; it is never represented as a new live capture.
+// K9 has a separate explicitly modeled contract and native-trigger classification.
+const K5_CAPTURE_DIR = process.env.ANTHROPIC_K5_CAPTURE_DIR;
+const K5_REQUEST = {
+  model: "claude-sonnet-4-5-20250929",
+  max_tokens: 32,
+  messages: [
+    {
+      role: "user",
+      content:
+        "Call record_payload with the names of 200 world cities in one long comma-separated payload string. Do not abbreviate.",
+    },
+  ],
+  tools: [
+    {
+      name: "record_payload",
+      description: "Record a long payload",
+      input_schema: {
+        type: "object",
+        properties: { payload: { type: "string" } },
+        required: ["payload"],
+      },
+    },
+  ],
+  tool_choice: { type: "tool", name: "record_payload" },
+};
+const K5_VARIANTS = [
+  {
+    mode: "object",
+    stream: false,
+    sha256: "23cb078a41eaaa6985893978b87ed5a48974dd99e2477222494b88256d04cdeb",
+  },
+  {
+    mode: "stream",
+    stream: true,
+    sha256: "62b55f7195af814bb297d1967f1cf83410e8df9ad16c230d9ef1c1a922739827",
+  },
+];
+
+function inspectK5(raw: string, stream: boolean) {
+  if (!stream) {
+    const message: Message = JSON.parse(raw);
+    expect(message.type).toBe("message");
+    expect(message.role).toBe("assistant");
+    expect(message.stop_reason).toBe("max_tokens");
+    expect(message.content).toHaveLength(1);
+    expect(message.content[0]).toMatchObject({
+      type: "tool_use",
+      name: "record_payload",
+      input: {},
+    });
+    if (message.content[0].type !== "tool_use") throw new Error("K5 cut tool block missing");
+    expect(message.content[0].input).toEqual({});
+    return;
+  }
+  const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
+  expect(blocks.pop(), "Unterminated Anthropic SSE event").toBe("");
+  const events = blocks.filter(Boolean).flatMap((block) => {
+    const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+    if (lines.every((line) => !line)) return [];
+    const types = lines.filter((line) => line.startsWith("event: "));
+    const data = lines.filter((line) => line.startsWith("data: "));
+    expect(types).toHaveLength(1);
+    expect(data).toHaveLength(1);
+    const event: RawMessageStreamEvent | { type: "ping" } = JSON.parse(data[0].slice(6));
+    expect(event.type).toBe(types[0].slice(7));
+    return event.type === "ping" ? [] : [event];
+  });
+  expect(
+    events.map((event) => event.type).filter((type, index, types) => type !== types[index - 1]),
+  ).toEqual([
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "message_delta",
+    "message_stop",
+  ]);
+  const starts = events.filter((event) => event.type === "content_block_start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]).toMatchObject({
+    index: 0,
+    content_block: { type: "tool_use", name: "record_payload", input: {} },
+  });
+  if (starts[0].content_block.type !== "tool_use") throw new Error("K5 cut tool block missing");
+  expect(starts[0].content_block.input).toEqual({});
+  for (const event of events) {
+    if (event.type === "content_block_delta") {
+      expect(event.index).toBe(0);
+      expect(event.delta.type).toBe("input_json_delta");
+      if (event.delta.type !== "input_json_delta") throw new Error("Unexpected cut-tool delta");
+      // Both native captures emit an empty partial_json. Nonempty mock cuts
+      // are modeled output, not a condition for a live capture to qualify.
+      expect(typeof event.delta.partial_json).toBe("string");
+    }
+  }
+  expect(events.some((event) => event.type === "content_block_stop")).toBe(false);
+  const terminals = events.filter((event) => event.type === "message_delta");
+  expect(terminals).toHaveLength(1);
+  expect(terminals[0].delta.stop_reason).toBe("max_tokens");
+  expect(events.filter((event) => event.type === "message_stop")).toHaveLength(1);
+  expect(events.at(-2)?.type).toBe("message_delta");
+  expect(events.at(-1)?.type).toBe("message_stop");
+}
+
+function gradeK5(raw: string, stream: boolean, side: "provider" | "localhost") {
+  try {
+    inspectK5(raw, stream);
+  } catch (error) {
+    throw new Error(
+      formatDriftReport(
+        `Anthropic K5 ${stream ? "stream" : "object"} ${side}`,
+        [
+          {
+            path: `K5:${stream ? "stream" : "object"}:${side}:cut-terminal`,
+            severity: "critical",
+            issue: error instanceof Error ? error.message : String(error),
+            expected: "max_tokens; cut input{} or unclosed cut block followed by message_stop",
+            real: side === "provider" ? "contract mismatch" : "validated native capture",
+            mock: side === "localhost" ? "contract mismatch" : "not yet compared",
+          },
+        ],
+        "anthropic",
+      ),
+    );
+  }
+}
+
+async function k5Provider(variant: (typeof K5_VARIANTS)[number]) {
+  const request = { ...K5_REQUEST, stream: variant.stream };
+  if (K5_CAPTURE_DIR) {
+    const prefix = join(K5_CAPTURE_DIR, `k5-${variant.mode}`);
+    const raw = await readFile(`${prefix}-raw.txt`, "utf8");
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(variant.sha256);
+    expect(JSON.parse(await readFile(`${prefix}-request.json`, "utf8"))).toEqual(request);
+    const receipt: { status: number; body: string } = JSON.parse(
+      await readFile(`${prefix}-response.json`, "utf8"),
+    );
+    expect(receipt.status).toBe(200);
+    expect(receipt.body).toBe(raw);
+    console.log(
+      JSON.stringify({
+        k5: variant.mode,
+        mode: "retained native capture",
+        sha256: variant.sha256,
+        request,
+      }),
+    );
+    return raw;
+  }
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 45_000);
+  let raw = "";
+  let completed = false;
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain(
+      variant.stream ? "text/event-stream" : "application/json",
+    );
+    if (!response.body) throw new Error("Anthropic returned no body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > 262_144) throw new Error("Anthropic K5 exceeded256KiB");
+      raw += decoder.decode(result.value, { stream: true });
+    }
+    raw += decoder.decode();
+    completed = true;
+    return raw;
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    console.log(
+      JSON.stringify({
+        k5: variant.mode,
+        mode: "live paid provider; no retries",
+        request,
+        completed,
+        raw: ANTHROPIC_API_KEY ? raw.replaceAll(ANTHROPIC_API_KEY, "[REDACTED]") : raw,
+      }),
+    );
+  }
+}
+
+describe.skipIf(!ANTHROPIC_API_KEY && !K5_CAPTURE_DIR)("Anthropic K5 exhaustion drift", () => {
+  it.each(K5_VARIANTS)(
+    "$mode retained/native semantics match actual localhost",
+    async (variant) => {
+      const provider = await k5Provider(variant);
+      gradeK5(provider, variant.stream, "provider");
+      expect(() =>
+        inspectK5(provider.replaceAll("max_tokens", "end_turn"), variant.stream),
+      ).toThrow();
+      if (variant.stream) {
+        const blocks = provider.split("\n\n").filter(Boolean);
+        const stop = blocks.pop();
+        const delta = blocks.pop();
+        expect(() => inspectK5([...blocks, stop, delta, ""].join("\n\n"), true)).toThrow();
+      }
+      // Sensitivity mutates only in-memory copies; retained native bytes remain
+      // immutable. Restore by validating the exact original again.
+      gradeK5(provider, variant.stream, "provider");
+      console.log(
+        JSON.stringify({
+          k5: variant.mode,
+          sensitivity: variant.stream
+            ? "wrong terminal and closing order rejected; original bytes restored"
+            : "wrong terminal rejected; original bytes restored",
+        }),
+      );
+      const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 9 });
+      mock.addFixture({
+        match: {},
+        response: {
+          toolCalls: [
+            {
+              name: "record_payload",
+              arguments: '{"payload":"London, Paris, Rome, Madrid, Lisbon"}',
+            },
+          ],
+        },
+        misbehavior: "stop-length-mid-tool",
+      });
+      const url = await mock.start();
+      try {
+        const request = { ...K5_REQUEST, stream: variant.stream };
+        const local = await httpPost(`${url}/v1/messages`, request);
+        expect(local.status, local.body).toBe(200);
+        console.log(
+          JSON.stringify({ k5: variant.mode, mode: "actual localhost", request, raw: local.body }),
+        );
+        gradeK5(local.body, variant.stream, "localhost");
+      } finally {
+        await mock.stop();
+      }
+    },
+  );
+});
+
+// K9 is modeled/native-unverified (§11.4.1). These two bounded recurring
+// requests can report NOT_TRIGGERED only after validating complete native wire.
+const K9_CAPTURE_DIR = process.env.ANTHROPIC_K9_CAPTURE_DIR;
+const K9_REQUEST = {
+  model: "claude-sonnet-4-5-20250929",
+  max_tokens: 1025,
+  thinking: { type: "enabled", budget_tokens: 1024 },
+  messages: [
+    {
+      role: "user",
+      content:
+        "Determine and rigorously justify the exact number of ways to color the vertices of a regular icosahedron with six named colors, each appearing exactly twice, up to rotational symmetry. Work through every Burnside conjugacy class and the fixed-coloring constraints carefully before giving a final answer.",
+    },
+  ],
+};
+const K9_VARIANTS = [
+  {
+    mode: "object",
+    stream: false,
+    sha256: "f341036fcaa62b69681bcc3599c2e246be07d2a804791e6e20ef37ee6ae2065b",
+  },
+  {
+    mode: "stream",
+    stream: true,
+    sha256: "4f7510322775fcc702e6c38403b0f420c333374441656a450154a02d88cf0e7d",
+  },
+];
+
+function inspectK9(raw: string, stream: boolean, modeled: boolean) {
+  let content: Message["content"] = [];
+  let terminal: Message["stop_reason"] = null;
+  const tokens = (value: number) => {
+    expect(Number.isInteger(value)).toBe(true);
+    expect(value).toBeGreaterThanOrEqual(0);
+  };
+  const envelope = (message: Message) => {
+    expect(message.type).toBe("message");
+    expect(message.role).toBe("assistant");
+    expect(typeof message.id).toBe("string");
+    expect(typeof message.model).toBe("string");
+    expect(Array.isArray(message.content)).toBe(true);
+    tokens(message.usage.input_tokens);
+    tokens(message.usage.output_tokens);
+  };
+  if (!stream) {
+    const message: Message = JSON.parse(raw);
+    envelope(message);
+    content = message.content;
+    terminal = message.stop_reason;
+    expect(message.stop_sequence).toBeNull();
+  } else {
+    const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
+    expect(blocks.pop(), "Unterminated K9 SSE event").toBe("");
+    const events: RawMessageStreamEvent[] = blocks.filter(Boolean).flatMap((block) => {
+      const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+      if (lines.every((line) => !line)) return [];
+      const names = lines.filter((line) => line.startsWith("event: "));
+      const data = lines.filter((line) => line.startsWith("data: "));
+      expect(names).toHaveLength(1);
+      expect(data).toHaveLength(1);
+      const event: RawMessageStreamEvent | { type: "ping" } = JSON.parse(data[0].slice(6));
+      expect(event.type).toBe(names[0].slice(7));
+      return event.type === "ping" ? [] : [event];
+    });
+    expect(events[0]?.type).toBe("message_start");
+    expect(events.at(-2)?.type).toBe("message_delta");
+    expect(events.at(-1)?.type).toBe("message_stop");
+    let open: number | undefined;
+    let signatureSeen = false;
+    for (const [position, event] of events.entries()) {
+      switch (event.type) {
+        case "message_start":
+          expect(position).toBe(0);
+          envelope(event.message);
+          expect(event.message.content).toEqual([]);
+          expect(event.message.stop_reason).toBeNull();
+          break;
+        case "content_block_start":
+          expect(open).toBeUndefined();
+          expect(terminal).toBeNull();
+          expect(event.index).toBe(content.length);
+          if (event.content_block.type === "thinking") {
+            expect(typeof event.content_block.thinking).toBe("string");
+            expect(typeof event.content_block.signature).toBe("string");
+          } else if (event.content_block.type === "text") {
+            expect(typeof event.content_block.text).toBe("string");
+          } else throw new Error("Unexpected K9 content block");
+          open = event.index;
+          signatureSeen = false;
+          content.push(event.content_block);
+          break;
+        case "content_block_delta": {
+          expect(open).toBeDefined();
+          tokens(event.index);
+          expect(event.index).toBe(open);
+          const block = content[event.index];
+          if (event.delta.type === "thinking_delta") {
+            expect(signatureSeen).toBe(false);
+            expect(block.type).toBe("thinking");
+            expect(typeof event.delta.thinking).toBe("string");
+            if (block.type === "thinking") block.thinking += event.delta.thinking;
+          } else if (event.delta.type === "signature_delta") {
+            expect(block.type).toBe("thinking");
+            expect(typeof event.delta.signature).toBe("string");
+            signatureSeen = true;
+            if (block.type === "thinking") block.signature += event.delta.signature;
+          } else if (event.delta.type === "text_delta") {
+            expect(block.type).toBe("text");
+            expect(typeof event.delta.text).toBe("string");
+            if (block.type === "text") block.text += event.delta.text;
+          } else throw new Error("Unexpected K9 delta");
+          break;
+        }
+        case "content_block_stop":
+          expect(open).toBeDefined();
+          tokens(event.index);
+          expect(event.index).toBe(open);
+          open = undefined;
+          break;
+        case "message_delta":
+          expect(position).toBe(events.length - 2);
+          expect(open).toBeUndefined();
+          terminal = event.delta.stop_reason;
+          expect(event.delta.stop_sequence).toBeNull();
+          tokens(event.usage.output_tokens);
+          break;
+        case "message_stop":
+          expect(position).toBe(events.length - 1);
+          expect(open).toBeUndefined();
+          break;
+        default:
+          throw new Error("Unexpected K9 event");
+      }
+    }
+  }
+  expect(["max_tokens", "end_turn"]).toContain(terminal);
+  expect(content.length).toBeGreaterThan(0);
+  for (const block of content) {
+    if (block.type === "thinking") {
+      expect(typeof block.thinking).toBe("string");
+      expect(typeof block.signature).toBe("string");
+      expect(block.signature.length).toBeGreaterThan(0);
+    } else if (block.type === "text") expect(typeof block.text).toBe("string");
+    else throw new Error("Unexpected K9 content block");
+  }
+  const thoughtOnly = content.every((block) => block.type === "thinking");
+  if (modeled || thoughtOnly) {
+    expect(thoughtOnly, "K9 must not emit answer/tool blocks").toBe(true);
+    expect(content).toHaveLength(1);
+    expect(terminal).toBe("max_tokens");
+    return "TARGET_COMPARED";
+  }
+  return "NOT_TRIGGERED";
+}
+
+async function k9Provider(variant: (typeof K9_VARIANTS)[number]) {
+  const request = { ...K9_REQUEST, stream: variant.stream };
+  if (K9_CAPTURE_DIR) {
+    const prefix = join(K9_CAPTURE_DIR, `k9-${variant.mode}`);
+    const raw = await readFile(`${prefix}-raw.txt`, "utf8");
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(variant.sha256);
+    expect(JSON.parse(await readFile(`${prefix}-request.json`, "utf8"))).toEqual(request);
+    const receipt = JSON.parse(await readFile(`${prefix}-response.json`, "utf8"));
+    expect(receipt.status).toBe(200);
+    expect(receipt.body).toBe(raw);
+    console.log(
+      JSON.stringify({
+        k9: variant.mode,
+        mode: "retained native capture",
+        request,
+        sha256: variant.sha256,
+      }),
+    );
+    return raw;
+  }
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 45_000);
+  let raw = "";
+  let completed = false;
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain(
+      variant.stream ? "text/event-stream" : "application/json",
+    );
+    if (!response.body) throw new Error("Anthropic K9 returned no body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > 262_144) throw new Error("Anthropic K9 exceeded 256KiB");
+      raw += decoder.decode(result.value, { stream: true });
+    }
+    raw += decoder.decode();
+    completed = true;
+    return raw;
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    console.log(
+      JSON.stringify({
+        k9: variant.mode,
+        mode: "live paid provider; no retries",
+        request,
+        limits: { milliseconds: 45000, bytes: 262144 },
+        completed,
+        raw: ANTHROPIC_API_KEY ? raw.replaceAll(ANTHROPIC_API_KEY, "[REDACTED]") : raw,
+      }),
+    );
+  }
+}
+
+describe("Anthropic K9 modeled exhaustion drift", () => {
+  it.each(K9_VARIANTS)("$mode modeled localhost and bounded native trigger", async (variant) => {
+    // Local modeled regressions run even when native credentials are absent.
+    const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 9 });
+    mock.addFixture({
+      match: {},
+      response: { content: "ANSWER MUST BE CLEARED", reasoning: "Consider the constraints." },
+      misbehavior: "reasoning-only",
+    });
+    const url = await mock.start();
+    try {
+      const local = await httpPost(`${url}/v1/messages`, { ...K9_REQUEST, stream: variant.stream });
+      expect(local.status, local.body).toBe(200);
+      console.log(
+        JSON.stringify({
+          k9: variant.mode,
+          mode: "actual localhost modeled/native-unverified",
+          raw: local.body,
+        }),
+      );
+      expect(inspectK9(local.body, variant.stream, true)).toBe("TARGET_COMPARED");
+      expect(() =>
+        inspectK9(local.body.replaceAll("max_tokens", "end_turn"), variant.stream, true),
+      ).toThrow();
+      if (variant.stream) {
+        // Malformed reader inputs derived from actual renderer bytes, not native captures.
+        for (const field of ["thinking", "signature"]) {
+          const malformed = local.body.replace(`"${field}":""`, `"${field}":123`);
+          expect(malformed).not.toBe(local.body);
+          expect(() => inspectK9(malformed, true, false)).toThrow();
+        }
+        const extraStop = local.body.replace(
+          "event: message_delta\n",
+          'event: content_block_stop\ndata: {"type":"content_block_stop"}\n\n' +
+            "event: message_delta\n",
+        );
+        expect(extraStop).not.toBe(local.body);
+        expect(() => inspectK9(extraStop, true, false)).toThrow();
+      }
+      const answer = variant.stream
+        ? local.body.replace(
+            "event: message_delta\n",
+            [
+              { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+              {
+                type: "content_block_delta",
+                index: 1,
+                delta: { type: "text_delta", text: "UNWANTED ANSWER" },
+              },
+              { type: "content_block_stop", index: 1 },
+            ]
+              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+              .join("") + "event: message_delta\n",
+          )
+        : JSON.stringify({
+            ...JSON.parse(local.body),
+            content: [...JSON.parse(local.body).content, { type: "text", text: "UNWANTED ANSWER" }],
+          });
+      expect(() => inspectK9(answer, variant.stream, true)).toThrow();
+      expect(inspectK9(answer, variant.stream, false)).toBe("NOT_TRIGGERED");
+      expect(inspectK9(local.body, variant.stream, true)).toBe("TARGET_COMPARED");
+      console.log(
+        JSON.stringify({
+          k9: variant.mode,
+          sensitivity:
+            "actual renderer bytes: terminal and answer mutations rejected; original restored",
+        }),
+      );
+    } finally {
+      await mock.stop();
+    }
+    if (ANTHROPIC_API_KEY || K9_CAPTURE_DIR) {
+      const raw = await k9Provider(variant);
+      console.log(
+        JSON.stringify({
+          k9: variant.mode,
+          native: inspectK9(raw, variant.stream, false),
+          modeled: "native-unverified unless TARGET_COMPARED",
+        }),
+      );
+    } else
+      console.log(
+        JSON.stringify({
+          k9: variant.mode,
+          native: "PENDING_CREDENTIALS; no native comparison performed",
+        }),
+      );
+  });
+});
 
 beforeAll(async () => {
   instance = await startDriftServer();

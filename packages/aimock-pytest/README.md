@@ -120,22 +120,46 @@ Pass `pytest --aimock-api-key test-key` to protect the aimock child. The helper 
 
 ### Running tests locally
 
-Build the npm package first, then point `AIMOCK_CLI_PATH` at the local build:
+Run these commands from the repository root with Python 3.10 or later and
+Node.js 20.15.0 or later. The example uses Python 3.12.
+
+Build the local CLI and install the Python test dependencies in a virtual environment:
 
 ```bash
-pnpm install && pnpm run build
-AIMOCK_CLI_PATH=../../dist/cli.js pytest tests/ -v
+pnpm install --frozen-lockfile
+pnpm run build
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r .github/requirements/hatchling.txt
+python -m pip install --no-build-isolation -e "./packages/aimock-pytest[test]"
+export AIMOCK_CLI_PATH="$PWD/dist/cli.js"
+python -m pytest packages/aimock-pytest/tests/ -v
 ```
 
-If you install the test dependencies and run from the `packages/aimock-pytest/`
-directory, `conftest.py` will auto-detect the local build so you can omit the
-env var:
+The `test` extra installs pytest and the OpenAI and Anthropic Python SDKs.
+`AIMOCK_CLI_PATH` selects the local build and bypasses the npm package download.
+Keep the complete `dist/` directory from that build, because the CLI imports other
+build files. Rebuild after changes to the TypeScript source.
+
+The test `conftest.py` also detects the repository's `dist/cli.js` when
+`AIMOCK_CLI_PATH` is unset. An explicit absolute path selects the intended candidate
+even when another build exists. To use a different checkout, set this variable to
+that checkout's built `dist/cli.js` before running pytest.
+
+To run only the model-misbehavior SDK and control tests:
 
 ```bash
-pip install ./packages/aimock-pytest[test]
-cd packages/aimock-pytest
-pytest tests/ -v
+python -m pytest \
+  packages/aimock-pytest/tests/test_misbehavior_openai.py \
+  packages/aimock-pytest/tests/test_misbehavior_anthropic.py \
+  packages/aimock-pytest/tests/test_misbehavior_controls.py -v
 ```
+
+These tests send real SDK requests to the local aimock server. They use local test
+API keys and disable SDK retries. No live provider credentials are required.
+The tests check SDK parsing, streamed events, and control behavior against the
+selected CLI build. A test failure can expose a provider implementation gap in
+that candidate.
 
 ### How CI works
 

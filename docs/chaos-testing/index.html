@@ -111,6 +111,33 @@
           whether or not a fault then fires.
         </p>
 
+        <h2 id="model-misbehavior">Combining Chaos with Model Misbehavior</h2>
+        <p>
+          <a href="/model-misbehavior">Model misbehavior</a> changes a matched response, such as its
+          tool arguments or refusal. The current implementation supports the
+          <code>openai-chat</code> wire, including Azure and OpenRouter Chat Completions.
+        </p>
+        <p>
+          Chaos latency runs first. If a terminal chaos action sends an error, malformed response,
+          or disconnect, semantic faults do not run. With misbehavior configured, the journal's
+          <code>response.misbehavior</code> reports <code>applied: false</code>,
+          <code>reason: "chaos-fired"</code>, and an empty <code>evaluations</code> array. This
+          bypass consumes no misbehavior roll or <code>times</code> budget.
+        </p>
+        <p>
+          A latency delay alone allows semantic faults to run afterward. Fixture
+          <code>truncateAfterChunks</code> and <code>disconnectAfterMs</code> can still interrupt
+          the resulting stream. A malformed <code>X-AIMock-Misbehavior</code> header returns HTTP
+          400 before chaos runs.
+        </p>
+        <p>
+          For a model that stops partway through tool arguments, use
+          <code>stop-length-mid-tool</code>. It sends a clean
+          <code>finish_reason: "length"</code> terminal and <code>[DONE]</code> on OpenAI chat
+          streams. See <a href="/error-injection#model-length-stop">model length stops</a> for the
+          difference from an interrupted connection.
+        </p>
+
         <h2>Precedence</h2>
         <p>
           Chaos configuration is resolved with a three-level precedence hierarchy. Higher levels

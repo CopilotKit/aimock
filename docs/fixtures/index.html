@@ -970,8 +970,134 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
                 <a href="/chaos-testing">Chaos Testing</a>
               </td>
             </tr>
+            <tr>
+              <td>misbehavior</td>
+              <td>object | string</td>
+              <td>
+                Semantic fault config or fault ID shorthand. An empty fault list disables inherited
+                faults. See <a href="#misbehavior">Model Misbehavior</a>.
+              </td>
+            </tr>
           </tbody>
         </table>
+
+        <h2 id="misbehavior">Model Misbehavior</h2>
+        <p>
+          The optional <code>misbehavior</code> field injects a semantic fault after aimock selects
+          the fixture. Keep the authored response valid and describe the intentional fault
+          separately.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            fixtures/misbehavior.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  "fixtures": [
+    {
+      "match": { "userMessage": "weather" },
+      "response": {
+        "toolCalls": [{ "name": "weather", "arguments": { "city": "Paris" } }]
+      },
+      "misbehavior": {
+        "seed": 42,
+        "faults": [{ "fault": "tool-args-invalid-json", "times": 1 }]
+      }
+    }
+  ]
+}</code></pre>
+        </div>
+        <p>
+          A fault ID also works as shorthand: <code>"misbehavior": "tool-args-invalid-json"</code>.
+          It means one fault with the default parameters and rate 1.
+        </p>
+        <p>
+          <code>"misbehavior": { "faults": [] }</code> disables faults for this fixture and prevents
+          fallback to runtime or server config. Omitting the field inherits the lower-priority
+          config. A request header can override either form.
+        </p>
+        <p>
+          Fixture configs replace the whole lower-priority config; fault lists do not merge. Only
+          OpenAI Chat Completions currently supports fault rendering, including Azure and
+          OpenRouter's chat wire.
+        </p>
+        <p>
+          See <a href="/model-misbehavior#catalog">the fault catalog</a> for parameters and
+          <a href="/model-misbehavior#precedence">scope precedence</a> for runtime behavior.
+        </p>
+
+        <h3 id="misbehavior-validation">Loading and validation errors</h3>
+        <p>
+          The loader rejects invalid misbehavior even without <code>--validate-on-load</code>, with
+          strict mode off, or with silent logging. The error is a <code>FixtureLoadError</code>.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Cause</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>misbehavior/unknown-key</code></td>
+              <td>An unknown config key or a parameter that belongs to another fault.</td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/bad-value</code></td>
+              <td>
+                An unknown fault, style, violation, or wire ID; an invalid seed, rate, count, or cut
+                fraction.
+              </td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/not-applicable</code></td>
+              <td>
+                The fault cannot apply to the fixture's static response, such as a tool fault on
+                text-only output.
+              </td>
+            </tr>
+            <tr>
+              <td><code>misbehavior/unsupported-on-wire</code></td>
+              <td>
+                The endpoint and provider filter prove that no supported wire or output mode can
+                honor the fault.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          The error names the logical source and original entry index, such as
+          <code>fixtures[1].misbehavior.faults[0].rate</code>, plus the offending value. Directory
+          sources use paths relative to the loaded root; downloaded sources retain their URL.
+        </p>
+        <p>
+          Request-dependent checks wait until the response is prepared. An ambiguous endpoint does
+          not imply that every wire supports the fault.
+        </p>
+        <p>
+          Run <code>aimock validate fixtures/misbehavior.json</code> for offline diagnostics. Errors
+          remain errors; <code>--strict</code> also rejects warnings.
+        </p>
+        <p>
+          A fault with <code>rate &lt; 1</code>, no seed, and no <code>times</code> produces this
+          warning:
+          <code
+            >probabilistic fault without a seed is reproducible only per test id order; set seed to
+            pin it</code
+          >.
+        </p>
+        <p>
+          Invalid authored tool argument JSON remains an error. The diagnostic adds:
+          <code>to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`</code>.
+        </p>
+        <div class="info-box">
+          <p>
+            <strong>Older versions:</strong> Older aimock versions can silently ignore the unknown
+            <code>misbehavior</code> fixture field. A successful load alone does not prove that the
+            fault is active. Check the
+            <a href="/model-misbehavior#journal">misbehavior journal result</a> on a supported wire.
+          </p>
+        </div>
 
         <h2>Loading Fixtures</h2>
 

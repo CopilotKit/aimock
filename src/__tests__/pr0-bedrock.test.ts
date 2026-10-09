@@ -89,9 +89,8 @@ async function invoke(mode: (typeof modes)[number], args: string | undefined) {
           }
         }
       }
-      // The existing InvokeModel wire sends raw JSON chunk payloads rather than
-      // the SDK's expected {bytes: base64} envelope. Preserve that observation
-      // above; use a real HTTP companion to exercise the PR0 parser surface.
+      // Retain a real HTTP companion to inspect the framed Invoke payloads
+      // alongside the official SDK bytes observed above.
       const wireResponse = await fetch(
         `${mock.url}/model/${encodeURIComponent(input.modelId)}/invoke-with-response-stream`,
         {
@@ -114,7 +113,12 @@ async function invoke(mode: (typeof modes)[number], args: string | undefined) {
           .subarray(offset + 12 + headersLength, offset + length - 4)
           .toString("utf8");
         body += wire + "\n";
-        events.push(JSON.parse(wire));
+        const payload = JSON.parse(wire);
+        events.push(
+          typeof payload.bytes === "string"
+            ? JSON.parse(Buffer.from(payload.bytes, "base64").toString("utf8"))
+            : payload,
+        );
         offset += length;
       }
     } else {

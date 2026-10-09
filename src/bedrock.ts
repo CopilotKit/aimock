@@ -59,6 +59,8 @@ import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import { applyChaosAsync } from "./chaos.js";
+import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
+import { prepareClaudeMisbehavior } from "./messages.js";
 import { proxyAndRecord } from "./recorder.js";
 
 // ─── Bedrock Claude request types ────────────────────────────────────────────
@@ -630,11 +632,69 @@ export async function handleBedrock(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "bedrock-invoke",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: completionReq.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`[misbehavior] ${misbehavior.message}`);
+    }
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
+    res.setHeader("x-amzn-errortype", type);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
+    );
+    return;
+  }
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: false,
+      chunkSize: Math.max(1, fixture.chunkSize ?? defaults.chunkSize),
+      logger,
+      strict: resolveStrictMode(defaults.strict, req.headers),
+    });
+    if (prepared.stream) throw new TypeError("InvokeModel requires non-stream Claude output");
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(prepared.body));
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -668,7 +728,7 @@ export async function handleBedrock(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -730,7 +790,7 @@ export async function handleBedrock(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -760,7 +820,7 @@ export async function handleBedrock(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -780,7 +840,7 @@ export async function handleBedrock(
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),
@@ -802,6 +862,21 @@ export async function handleBedrock(
 // ─── Streaming event builders ───────────────────────────────────────────────
 
 const BEDROCK_INVOKE_STREAM_EVENT_TYPE = "chunk";
+/** Serialize Claude events as InvokeModel PayloadPart, leaving generic AWS framing unchanged. */
+function writeBedrockInvokeStream(
+  res: http.ServerResponse,
+  events: Parameters<typeof writeEventStream>[1],
+  options: Parameters<typeof writeEventStream>[2],
+): Promise<boolean> {
+  return writeEventStream(
+    res,
+    events.map((event) => ({
+      eventType: event.eventType,
+      payload: { bytes: Buffer.from(JSON.stringify(event.payload), "utf8").toString("base64") },
+    })),
+    options,
+  );
+}
 
 function buildBedrockInvokeMessageStart(
   model: string,
@@ -1474,13 +1549,91 @@ export async function handleBedrockStream(
   }
 
   const response = await resolveResponse(fixture, completionReq);
+  const misbehavior = planMisbehavior({
+    wire: "bedrock-invoke",
+    emitsToolCallIds: true,
+    fixture,
+    response,
+    request: completionReq,
+    stream: completionReq.stream === true,
+    defaults,
+    rawHeaders: req.headers,
+    url: req.url,
+  });
+  const addResponseEntry = (input: Parameters<Journal["add"]>[0]) => {
+    const entry = journal.add(input);
+    recordMisbehaviorOutcome({ entry, summary: misbehavior.summary, defaults, testId });
+    return entry;
+  };
+  if (misbehavior.kind === "error") {
+    if (!misbehavior.summary?.evaluations.length) {
+      logger.error(`[misbehavior] ${misbehavior.message}`);
+    }
+    addResponseEntry({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: misbehavior.status, fixture },
+    });
+    const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
+    res.setHeader("x-amzn-errortype", type);
+    writeErrorResponse(
+      res,
+      misbehavior.status,
+      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
+    );
+    return;
+  }
   const latency = fixture.latency ?? defaults.latency;
   const chunkSize = Math.max(1, fixture.chunkSize ?? defaults.chunkSize);
+
+  if (misbehavior.kind === "applied") {
+    const prepared = prepareClaudeMisbehavior(misbehavior, {
+      request: completionReq,
+      stream: true,
+      chunkSize,
+      logger,
+      strict: resolveStrictMode(defaults.strict, req.headers),
+    });
+    if (!prepared.stream) throw new TypeError("InvokeModel stream requires Claude events");
+    const entry = journal.add({
+      method: req.method ?? "POST",
+      path: urlPath,
+      headers: flattenHeaders(req.headers),
+      body: completionReq,
+      response: { status: 200, fixture },
+    });
+    recordMisbehaviorOutcome({ entry, summary: prepared.plan.summary, defaults, testId });
+    const events = prepared.events.map((event) => ({
+      eventType: BEDROCK_INVOKE_STREAM_EVENT_TYPE,
+      payload: event,
+    }));
+    const interruption = createInterruptionSignal(fixture);
+    try {
+      const completed = await writeBedrockInvokeStream(res, events, {
+        latency,
+        streamingProfile: fixture.streamingProfile,
+        recordedTimings: fixture.recordedTimings,
+        replaySpeed: fixture.replaySpeed ?? defaults.replaySpeed,
+        signal: interruption?.signal,
+        onChunkSent: interruption?.tick,
+      });
+      if (!completed) {
+        if (!res.writableEnded) res.destroy();
+        entry.response.interrupted = true;
+        entry.response.interruptReason = interruption?.reason();
+      }
+    } finally {
+      interruption?.cleanup();
+    }
+    return;
+  }
 
   // Error response
   if (isErrorResponse(response)) {
     const status = response.status ?? 500;
-    journal.add({
+    addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1514,7 +1667,7 @@ export async function handleBedrockStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1532,7 +1685,7 @@ export async function handleBedrockStream(
       response.blocks,
     );
     const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
+    const completed = await writeBedrockInvokeStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
       recordedTimings: fixture.recordedTimings,
@@ -1561,7 +1714,7 @@ export async function handleBedrockStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1576,7 +1729,7 @@ export async function handleBedrockStream(
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
+    const completed = await writeBedrockInvokeStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
       recordedTimings: fixture.recordedTimings,
@@ -1605,7 +1758,7 @@ export async function handleBedrockStream(
       resolveStrictMode(defaults.strict, req.headers),
       logger,
     );
-    const journalEntry = journal.add({
+    const journalEntry = addResponseEntry({
       method: req.method ?? "POST",
       path: urlPath,
       headers: flattenHeaders(req.headers),
@@ -1621,7 +1774,7 @@ export async function handleBedrockStream(
       overrides,
     );
     const interruption = createInterruptionSignal(fixture);
-    const completed = await writeEventStream(res, events, {
+    const completed = await writeBedrockInvokeStream(res, events, {
       latency,
       streamingProfile: fixture.streamingProfile,
       recordedTimings: fixture.recordedTimings,
@@ -1639,7 +1792,7 @@ export async function handleBedrockStream(
   }
 
   // Unknown response type
-  journal.add({
+  addResponseEntry({
     method: req.method ?? "POST",
     path: urlPath,
     headers: flattenHeaders(req.headers),

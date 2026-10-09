@@ -723,10 +723,18 @@ function validateOneFile(
       report.warnings.push(finding);
     }
     try {
-      fixtures.push(entryToFixture(entries[index], entryLogger));
+      const fixture = entryToFixture(entries[index], entryLogger, undefined, {
+        file: source,
+        index,
+      });
+      fixtures.push(fixture);
       sourceIndex.push(index);
     } catch (err) {
-      report.errors.push(unexpectedEntryFailure(index, err));
+      report.errors.push(
+        err instanceof FixtureLoadError && err.rule.startsWith("misbehavior/")
+          ? { index, message: err.message }
+          : unexpectedEntryFailure(index, err),
+      );
     }
   }
 

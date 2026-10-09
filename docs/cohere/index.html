@@ -224,6 +224,32 @@ event: message-end
 data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":0,"output_tokens":0,"search_units":0,"classifications":0},"tokens":{"input_tokens":0,"output_tokens":0}}}}</code></pre>
         </div>
 
+        <h2 id="length-stop">Length-stop fault fidelity</h2>
+        <p>
+          In this Unreleased build, streaming <code>stop-length-mid-tool</code> follows the captured
+          <code>command-a-03-2025</code> lifecycle: an empty argument opener, incomplete argument
+          deltas, <code>tool-call-end</code>, then <code>message-end</code> with
+          <code>TOOL_CALL</code> and one final <code>data: [DONE]</code> sentinel. The argument
+          string remains incomplete JSON despite the <code>TOOL_CALL</code> finish reason. Ordinary
+          streams retain their existing framing.
+        </p>
+        <p>
+          Non-streaming length stops remain modeled/native-unverified: aimock preserves the cut
+          arguments and returns <code>MAX_TOKENS</code>. The captured native object response did not
+          contain a cut tool. A complete, valid object nontrigger is recorded as
+          <code>NOT_TRIGGERED</code>; it does not establish native fidelity or suppress the
+          streaming comparison. Authentication, transport and malformed-response failures remain
+          errors.
+        </p>
+        <p>
+          The recurring K5 comparison uses the pinned model with a required tool, at most two
+          requests and 128 output tokens per mode (256 total), a 45-second deadline and a 256 KiB
+          response limit per request, and no SDK retries. The existing collector can run up to three
+          attempts, so these per-invocation limits are not a daily ceiling. Local SDK and
+          retained-capture checks run without a provider key; skipped native tests are not live
+          acceptance. See <a href="../model-misbehavior/#fidelity">capture fidelity</a>.
+        </p>
+
         <h2>Request Translation</h2>
         <p>
           aimock internally translates Cohere requests to a unified
