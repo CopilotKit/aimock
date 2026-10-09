@@ -178,8 +178,10 @@ export interface CollapseResult {
    * keeps the legacy `{ content, toolCalls }` shape byte-identical.
    *
    * Each text block coalesces all contiguous content deltas between tool
-   * atoms; each toolCall block carries the fully-assembled name/arguments/id
-   * for one tool call in the position its FIRST delta arrived.
+   * atoms. Each tool block sits in the position where its FIRST delta arrived:
+   * a function call becomes a `toolCall` block with the fully-assembled
+   * name/arguments/id, and an OpenAI Responses custom call becomes a
+   * `customToolCall` block with name/input/id, where `input` is kept verbatim.
    */
   blocks?: FixtureBlock[];
 }
@@ -191,9 +193,10 @@ export interface CollapseResult {
 /**
  * Atom recorded during a collapse pass, in stream arrival order. A `text` atom
  * carries one content delta's text (contiguous text atoms are coalesced when
- * building blocks); a `toolCall` atom is a stable reference to a tool-call
- * accumulator whose name/arguments/id are filled in across later deltas. The
- * `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
+ * building blocks). A `toolCall` atom is a stable reference to a function-call
+ * accumulator whose name/arguments/id are filled in across later deltas. A
+ * `customToolCall` atom is a stable reference to a custom-call accumulator
+ * whose name/input/id are filled in the same way. The `ref` is the SAME object stored in the collapser's `toolCallMap` (or pushed
  * to a flat `toolCalls` array), so block identity is reconciled with the flat
  * representation at finalize time — see {@link buildOrderedBlocks}.
  */
@@ -299,17 +302,21 @@ function toCustomToolCall(ref: CustomCallAcc): CustomToolCall {
  * `CollapseResult.blocks` unset and the recorder keeps the legacy shape.
  *
  * Interleaved ⇔ (a tool atom appears strictly before the first text atom) OR
- * (a text atom appears after any tool atom). A stream with no tool atoms, or
+ * (a text atom appears after any tool atom). Tool atoms are `toolCall` and
+ * `customToolCall` atoms. A stream with no tool atoms, or
  * with no text atoms, is never interleaved. Text-first-then-tools is the common
  * legacy case and is explicitly NOT interleaved.
  *
- * CONSISTENCY (#274): each toolCall block is derived from the SAME accumulator
- * object referenced by its atom and normalized identically to the flat
- * `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}).
- * Because the atom `ref` is the very object the flat list is built from, the
- * block and its flat counterpart describe the same call by identity — even when
- * upstream tool-call indices do not match stream-arrival order. Empty/missing
- * arguments normalize to `"{}"` in BOTH representations, never `""`.
+ * CONSISTENCY (#274): each tool block is derived from the SAME accumulator
+ * object referenced by its atom. Because the atom `ref` is the very object the
+ * flat list is built from, the block and its flat counterpart describe the same
+ * call by identity — even when upstream tool-call indices do not match
+ * stream-arrival order. A `toolCall` block is normalized identically to the
+ * flat `toolCalls` path ({@link toToolCallBlock} / {@link normalizeToolArguments}):
+ * empty/missing arguments become `"{}"` in BOTH representations, never `""`. A
+ * `customToolCall` block ({@link toCustomToolCallBlock}) keeps `input` verbatim,
+ * the same as the flat custom tool call ({@link toCustomToolCall}); it is never
+ * normalized to `"{}"`.
  */
 function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
   let firstTextIndex = -1;
@@ -333,8 +340,9 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
   const toolBeforeText = firstToolIndex < firstTextIndex;
   if (!toolBeforeText && !textAfterTool) return undefined;
 
-  // Coalesce contiguous text atoms into one text block; emit each tool atom as
-  // a toolCall block reflecting its fully-assembled, normalized accumulator.
+  // Coalesce contiguous text atoms into one text block; emit each function-call
+  // atom as a normalized toolCall block and each custom-call atom as a
+  // customToolCall block with its input kept verbatim.
   const blocks: FixtureBlock[] = [];
   let pendingText = "";
   let hasPendingText = false;
