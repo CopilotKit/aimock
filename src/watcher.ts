@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { join } from "node:path";
 import type { Fixture } from "./types.js";
 import type { Logger } from "./logger.js";
 import { clearFixtureQueue, type ValidationResult } from "./fixture-loader.js";
@@ -13,9 +14,11 @@ export function watchFixtures(
     logger: Logger;
     validate?: boolean;
     validateFn?: (fixtures: Fixture[]) => ValidationResult[];
+    /** MR13: an event for a path this returns true for does not reload. */
+    ignore?: (absPath: string) => boolean;
   },
 ): { close: () => void } {
-  const { logger, validate, validateFn } = opts;
+  const { logger, validate, validateFn, ignore } = opts;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   function reload() {
@@ -62,7 +65,14 @@ export function watchFixtures(
     logger.info(`Reloaded ${newFixtures.length} fixture(s)`);
   }
 
-  const watcher: FSWatcher = watch(fixturePath, { recursive: true }, () => {
+  const watcher: FSWatcher = watch(fixturePath, { recursive: true }, (_event, filename) => {
+    if (ignore && filename) {
+      try {
+        if (ignore(join(fixturePath, filename))) return;
+      } catch {
+        /* a failing ignore never kills the watcher: reload */
+      }
+    }
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(reload, DEBOUNCE_MS);
   });

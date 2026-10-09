@@ -19,6 +19,7 @@ import type {
   McpFakeSource,
   McpFakeUndeclaredPolicy,
   McpRecordConfig,
+  Mountable,
 } from "./types.js";
 import { MCP_FAKE_ERROR_CODES } from "./types.js";
 import { Logger } from "./logger.js";
@@ -1311,7 +1312,33 @@ function mergeBlock(
   return content;
 }
 
-// ---- Recorder settings from the environment (AM6) ----
+// ---- Wiring: the `llmock` flags and `llm.record.mcp` (MR1, AM6) ----
+
+/** One `--mcp-record` / `--mcp-proxy-only` value: `<mount>=<url>`. */
+export interface McpRecordFlag {
+  mount: string;
+  upstream: string;
+}
+
+/**
+ * Parse a `--mcp-record` / `--mcp-proxy-only` value at its first `=`. The
+ * mount must start with `/` and the upstream must be a URL. A bad value
+ * throws an error that names `flag`, never the URL (it can carry credentials).
+ */
+export function parseMcpRecordFlag(value: string, flag = "--mcp-record"): McpRecordFlag {
+  const eq = value.indexOf("=");
+  const mount = eq === -1 ? "" : value.slice(0, eq);
+  const upstream = eq === -1 ? "" : value.slice(eq + 1);
+  if (!mount.startsWith("/")) {
+    throw new Error(`${flag} must be <mount>=<url>, with a mount that starts with "/"`);
+  }
+  try {
+    new URL(upstream);
+  } catch {
+    throw new Error(`${flag} ${mount}: the upstream is not a valid URL`);
+  }
+  return { mount, upstream };
+}
 
 /**
  * AM6 / S2 (d): the recorder settings that come from the environment.
@@ -1329,4 +1356,67 @@ export function mcpRecordEnv(env: NodeJS.ProcessEnv): {
     secretValues: (env.AIMOCK_RECORD_SECRET_VALUES ?? "").split(/\r?\n/).filter(Boolean),
     upstreamAuth: upstreamAuth === "" ? undefined : upstreamAuth,
   };
+}
+
+/** A mount that records MCP: an `MCPMock`. */
+export interface RecordableMcpMount extends Mountable {
+  enableRecording(config: McpRecordConfig): unknown;
+}
+
+export interface WireMcpRecordingOptions {
+  /** What the caller already mounted, by path. */
+  mounted: ReadonlyMap<string, Mountable>;
+  /**
+   * The `MCPMock` class. It is passed in, because mcp-mock.ts imports this
+   * module: a mounted instance of it records, and a free path gets a new one.
+   */
+  mcpMock: new () => RecordableMcpMount;
+  /** `llm.fixtures`: the recording destination is `<fixtures>/recorded`. */
+  fixtures?: string;
+  /** `llm.record.fixturePath`: overrides the destination. */
+  fixturePath?: string;
+  strict?: boolean;
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * MR1: `llm.record.mcp` — record each mount path. A path the caller mounted
+ * with an `MCPMock` records through it; a path held by another kind of mount
+ * is a start error; a free path gets a new `MCPMock`, mounted on `llmock`.
+ * A string value is `{ upstream }`. `secretValues` and `upstreamAuth` come
+ * from the value, else from the environment, as on the `llmock` CLI.
+ */
+export function wireMcpRecording(
+  llmock: { mount(path: string, handler: Mountable): unknown },
+  record: Record<string, string | McpRecordConfig>,
+  opts: WireMcpRecordingOptions,
+): void {
+  const fromEnv = mcpRecordEnv(opts.env);
+  for (const [mountPath, value] of Object.entries(record)) {
+    const config: McpRecordConfig = typeof value === "string" ? { upstream: value } : value;
+    const held = opts.mounted.get(mountPath);
+    if (held !== undefined && !(held instanceof opts.mcpMock)) {
+      throw new Error(
+        `llm.record.mcp mount ${mountPath} is held by a mount that is not an MCP mock`,
+      );
+    }
+    const fixturePath =
+      config.fixturePath ??
+      opts.fixturePath ??
+      (opts.fixtures ? path.resolve(opts.fixtures, "recorded") : undefined);
+    if (!config.proxyOnly && fixturePath === undefined) {
+      throw new Error(
+        "llm.record.mcp requires llm.fixtures or llm.record.fixturePath for the recording destination",
+      );
+    }
+    const mcp = held ?? new opts.mcpMock();
+    mcp.enableRecording({
+      ...config,
+      fixturePath,
+      secretValues: config.secretValues ?? fromEnv.secretValues,
+      upstreamAuth: config.upstreamAuth ?? fromEnv.upstreamAuth,
+      strict: config.strict ?? opts.strict,
+    });
+    if (held === undefined) llmock.mount(mountPath, mcp);
+  }
 }

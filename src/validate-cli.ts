@@ -674,6 +674,13 @@ function validateOneFile(
     const validation = validateMcpFakes(fakes, source);
     report.errors.push(...validation.errors.map(loadErrorFinding));
     report.mcpFakeBlocks = 0;
+    // A recording's `_warnings` (S7): what the recorder redacted or skipped.
+    const recorded = fakesDoc._warnings;
+    if (Array.isArray(recorded)) {
+      for (const w of recorded) {
+        if (typeof w === "string") report.warnings.push({ message: w });
+      }
+    }
     if (validation.errors.length > 0) {
       report.warnings.push(...validation.warnings.map(issueFinding));
     } else if (Array.isArray(fakes)) {
