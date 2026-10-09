@@ -68,6 +68,9 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       # Short, scannable Slack mrkdwn summary of which providers drifted and
       # what changed. Consumed by the `notify` job (which runs in a separate
@@ -266,6 +269,7 @@ jobs:
             sleep 1
           done
           ollama pull qwen2:0.5b
+          ollama pull qwen3:0.6b
 
       # Run the collector behind a "retry before alert" wrapper. A single
       # critical run can be a transient real-API hiccup (a streaming call
@@ -275,6 +279,49 @@ jobs:
       # The common green path stays fast (no extra runs when the first is
       # clean). Exit codes mirror the collector contract so the steps below
       # are unchanged.
+      - name: Prepare temporary P1 AWS profile paths
+        id: p1-aws-profile
+        if: github.ref == 'refs/heads/main'
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = path.join(process.env.RUNNER_TEMP, `aimock-aws-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          fs.mkdirSync(dir, { mode: 0o700 });
+          fs.appendFileSync(process.env.GITHUB_ENV, `AWS_SHARED_CREDENTIALS_FILE=${path.join(dir, 'credentials')}\nAWS_CONFIG_FILE=${path.join(dir, 'config')}\n`);
+          NODE
+      - name: Assume limited P1 Bedrock role
+        if: github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::058264219587:role/aimock-daily-bedrock-drift
+          role-session-name: aimock-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: us-west-2
+          audience: sts.amazonaws.com
+          allowed-account-ids: "058264219587"
+          role-duration-seconds: 3600
+          aws-profile: copilotkit-admin
+          overwrite-aws-profile: false
+          output-env-credentials: false
+          output-credentials: false
+          translate-env-variables: false
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Authenticate Vertex drift
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        id: vertex_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: llmock-drift-testing
+          workload_identity_provider: projects/291511826003/locations/global/workloadIdentityPools/aimock-drift/providers/github-main
+          service_account: aimock-vertex-drift@llmock-drift-testing.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 3600s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+          export_environment_variables: false
+
       - name: Run drift tests
         id: drift
         env:
@@ -285,10 +332,23 @@ jobs:
           # Un-gates the Ollama live drift leg against the daemon provisioned above.
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
+          AIMOCK_OLLAMA_K9_MODEL: qwen3:0.6b
+          P1_BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-5-20250929-v1:0
           FAL_KEY: ${{ secrets.FAL_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          AIMOCK_VERTEX_LIVE: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+          AIMOCK_VERTEX_PROJECT: llmock-drift-testing
+          AIMOCK_VERTEX_LOCATION: us-central1
+          AIMOCK_VERTEX_MODEL: gemini-2.5-flash
+          AIMOCK_VERTEX_ACCESS_TOKEN: ${{ steps.vertex_auth.outputs.access_token }}
         run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            export AIMOCK_AWS_MISBEHAVIOR_LIVE=1
+            export AWS_PROFILE=copilotkit-admin
+            export AWS_REGION=us-west-2
+            export AIMOCK_AWS_MODEL_ID="$P1_BEDROCK_MODEL_ID"
+          fi
           set +e
           npx tsx scripts/drift-retry.ts
           EXIT_CODE=$?
@@ -314,6 +374,17 @@ jobs:
             echo "::error::Collector script crashed with exit code $EXIT_CODE"
             exit "$EXIT_CODE"
           fi
+
+      - name: Remove temporary P1 AWS profile
+        if: always() && steps.p1-aws-profile.outcome == 'success'
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = path.join(process.env.RUNNER_TEMP, `aimock-aws-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          for (const name of ['credentials', 'config']) fs.rmSync(path.join(dir, name), { force: true });
+          fs.rmdirSync(dir);
+          NODE
 
       - name: Upload drift report
         if: always()

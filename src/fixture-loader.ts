@@ -28,6 +28,12 @@ import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
+import {
+  parseMisbehavior,
+  setFixtureMisbehaviorPosition,
+  validateFixtureMisbehavior,
+  type MisbehaviorRule,
+} from "./misbehavior.js";
 
 /**
  * Auto-stringify object-valued `content` and `toolCalls[].arguments` fields.
@@ -87,6 +93,7 @@ export function entryToFixture(
   entry: FixtureFileEntry,
   logger?: Logger,
   liveOptions?: LiveOptions,
+  source?: { file: string; index: number },
 ): Fixture {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
     throw new TypeError("Fixture entry must be an object");
@@ -136,6 +143,22 @@ export function entryToFixture(
     }),
     ...(entry.metadata !== undefined && { metadata: entry.metadata }),
   };
+
+  if (source) setFixtureMisbehaviorPosition(fixture, `${source.file}#${source.index}`);
+
+  if (entry.misbehavior !== undefined) {
+    const path = source ? `fixtures[${source.index}].misbehavior` : "misbehavior";
+    const parsed = parseMisbehavior(entry.misbehavior, path);
+    if (parsed.ok) fixture.misbehavior = parsed.config;
+    const issue = parsed.ok ? validateFixtureMisbehavior(fixture, path) : parsed.issue;
+    if (issue) {
+      throw new FixtureLoadError({
+        rule: issue.rule,
+        file: source?.file ?? null,
+        detail: issue.message,
+      });
+    }
+  }
 
   // Sanitize recordedTimings to guard against NaN or negative values that
   // would silently degrade replay timing calculations.
@@ -233,6 +256,7 @@ export function fixturesOf(
   logger: Logger | undefined,
   liveOptions: LiveOptions | undefined,
   fixturesOptional: boolean,
+  source = filePath,
 ): Fixture[] {
   if (
     fixturesOptional &&
@@ -254,7 +278,7 @@ export function fixturesOf(
   const fixtures: Fixture[] = [];
   for (const [index, entry] of (parsed as FixtureFile).fixtures.entries()) {
     try {
-      fixtures.push(entryToFixture(entry, logger, liveOptions));
+      fixtures.push(entryToFixture(entry, logger, liveOptions, { file: source, index }));
     } catch (error) {
       if (!(error instanceof InvalidFixtureMatchError)) throw error;
       warn(logger, `Skipping fixture at index ${index} in ${filePath}: ${error.message}`);
@@ -287,10 +311,19 @@ export function loadFixtureFile(
   logger?: Logger,
   liveOptions?: LiveOptions,
 ): Fixture[] {
+  return loadLlmFixtureFile(filePath, filePath, logger, liveOptions);
+}
+
+function loadLlmFixtureFile(
+  filePath: string,
+  source: string,
+  logger: Logger | undefined,
+  liveOptions: LiveOptions | undefined,
+): Fixture[] {
   const read = readFixtureJson(filePath, logger);
   if (read === null) return [];
   if (hasMcpFakesKey(read.value)) throw cannotCarryFakes(filePath);
-  return fixturesOf(read.value, filePath, logger, liveOptions, false);
+  return fixturesOf(read.value, filePath, logger, liveOptions, false, source);
 }
 
 /**
@@ -348,19 +381,30 @@ export function loadFixturesFromDir(
   logger?: Logger,
   liveOptions?: LiveOptions,
 ): Fixture[] {
+  return loadLlmFixtureDir(dirPath, "", logger, liveOptions);
+}
+
+function loadLlmFixtureDir(
+  dirPath: string,
+  relDir: string,
+  logger: Logger | undefined,
+  liveOptions: LiveOptions | undefined,
+): Fixture[] {
   const listing = listFixtureDir(dirPath, logger);
   if (listing === null) return [];
 
   const fixtures: Fixture[] = [];
   for (const name of listing.jsonFiles) {
     const filePath = join(dirPath, name);
-    fixtures.push(...loadFixtureFile(filePath, logger, liveOptions));
+    fixtures.push(...loadLlmFixtureFile(filePath, relDir + name, logger, liveOptions));
   }
 
   // Recurse into all subdirectories (full depth) to support nested layouts
   // like showcase/aimock/d6/<integration>/<feature>.json.
   for (const sub of listing.subdirs) {
-    fixtures.push(...loadFixturesFromDir(join(dirPath, sub), logger, liveOptions));
+    fixtures.push(
+      ...loadLlmFixtureDir(join(dirPath, sub), `${relDir}${sub}/`, logger, liveOptions),
+    );
   }
 
   return fixtures;
@@ -386,6 +430,9 @@ export function loadFixturesFromDir(
 export type ValidationRef =
   | { rule: "duplicate-user-message"; userMessage: string; shadows: number }
   | { rule: "catch-all-not-last"; shadowsFrom: number; shadowsThrough: number };
+
+const INVALID_ARGUMENTS_HINT =
+  "to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`";
 
 export interface ValidationResult {
   severity: "error" | "warning";
@@ -546,7 +593,7 @@ function validateBlocks(
           results.push({
             severity: "error",
             fixtureIndex,
-            message: `blocks[${j}].arguments is not valid JSON: ${block.arguments}`,
+            message: `blocks[${j}].arguments is not valid JSON: ${block.arguments}; ${INVALID_ARGUMENTS_HINT}`,
           });
         }
       } else if (typeof block.arguments !== "object" || block.arguments === null) {
@@ -815,6 +862,25 @@ export function validateFixtures(
     const f = fixtures[i];
     const response = f.response;
 
+    const misbehaviorIssue = validateFixtureMisbehavior(f, `fixtures[${i}].misbehavior`);
+    if (misbehaviorIssue) {
+      results.push({ severity: "error", fixtureIndex: i, message: misbehaviorIssue.message });
+    } else if (f.misbehavior !== undefined) {
+      const parsed = parseMisbehavior(f.misbehavior);
+      if (parsed.ok && parsed.config.seed === undefined) {
+        for (const fault of parsed.config.faults) {
+          if (fault.rate !== undefined && fault.rate < 1 && fault.times === undefined) {
+            results.push({
+              severity: "warning",
+              fixtureIndex: i,
+              message:
+                "probabilistic fault without a seed is reproducible only per test id order; set seed to pin it",
+            });
+          }
+        }
+      }
+    }
+
     if (
       typeof response !== "function" &&
       (isLiveResponse(response) || f.match.endpoint === "openai-live")
@@ -924,7 +990,7 @@ export function validateFixtures(
               results.push({
                 severity: "error",
                 fixtureIndex: i,
-                message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+                message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
               });
             }
           }
@@ -966,7 +1032,7 @@ export function validateFixtures(
             results.push({
               severity: "error",
               fixtureIndex: i,
-              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}`,
+              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
             });
           }
         }
@@ -1477,6 +1543,7 @@ export type McpFakesLoadRule = (typeof MCP_FAKES_LOAD_RULES)[number];
  */
 export interface FixtureLoadRuleRegistry {
   "mcp-fakes": McpFakesLoadRule;
+  misbehavior: MisbehaviorRule;
 }
 
 /**
@@ -1555,7 +1622,7 @@ function namePart(text: string): Message {
 
 /**
  * Thrown for a fixture-load case aimock cannot honor (fail-loud rule). Only
- * the MCP fakes code throws it; other fixture-loader paths log warnings.
+ * MCP fakes and misbehavior use it; other fixture-loader paths log warnings.
  * `blockId` and `entryId` are own properties only when supplied, so
  * `toJSON()` (the control API's HTTP 400 `details`) omits them otherwise.
  * The message names `file` and every non-null `blockId` and `entryId`, an

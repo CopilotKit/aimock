@@ -137,7 +137,10 @@ function decodeEventStreamFrames(buf: Buffer): StreamFrame[] {
     const payloadStart = headersEnd;
     const payloadEnd = offset + totalLength - 4; // minus message CRC
     const payloadBuf = buf.subarray(payloadStart, payloadEnd);
-    const payload = payloadBuf.length > 0 ? JSON.parse(payloadBuf.toString("utf8")) : {};
+    let payload = payloadBuf.length > 0 ? JSON.parse(payloadBuf.toString("utf8")) : {};
+    if (headers[":event-type"] === "chunk" && typeof payload.bytes === "string") {
+      payload = JSON.parse(Buffer.from(payload.bytes, "base64").toString("utf8"));
+    }
 
     frames.push({
       eventType: headers[":event-type"] ?? "",

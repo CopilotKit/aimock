@@ -143,6 +143,26 @@
               <td><code>/__aimock/chaos</code></td>
               <td>Drop the chaos override</td>
             </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Read semantic fault configuration for your test</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Replace semantic fault configuration for your test</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td><code>/__aimock/misbehavior</code></td>
+              <td>Remove your semantic fault override</td>
+            </tr>
+            <tr>
+              <td><code>GET</code></td>
+              <td><code>/__aimock/misbehavior/catalog</code></td>
+              <td>Read the fault catalog and wire support</td>
+            </tr>
           </tbody>
         </table>
 
@@ -702,6 +722,96 @@
           <div class="code-block-header">Response <span class="lang-tag">json</span></div>
           <pre><code>{ <span class="prop">"chaos"</span>: {} }</code></pre>
         </div>
+        <h2 id="misbehavior">Model misbehavior</h2>
+        <p>
+          Misbehavior changes model output, such as tool arguments or stop reasons. Transport chaos
+          runs first. If chaos fires, no semantic fault fires for that request. Semantic fault
+          rendering currently supports the <code>openai-chat</code> wire, including Azure and
+          OpenRouter chat endpoints. Other wires remain unsupported.
+        </p>
+        <p>
+          Scope identity uses <code>X-Test-Id</code>, then <code>?testId=</code>. A present but
+          blank header returns <code>400</code>. A named scope uses its override, or the current
+          server baseline if no override exists. An untagged POST replaces the runtime baseline for
+          scopes without their own override. Selection order is request header, fixture, runtime
+          scope, then server baseline. Configurations replace one another; they do not merge.
+        </p>
+        <h3>GET /__aimock/misbehavior</h3>
+        <p>
+          Returns <code>200</code> with
+          <code>{ "misbehavior": &lt;effective configuration&gt; }</code>. With no configuration,
+          the value is <code>{ "faults": [] }</code>. A configured
+          <code>seed: "random"</code> appears as its chosen numeric seed for replay.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Read a scope <span class="lang-tag">shell</span></div>
+          <pre><code>curl 'http://localhost:4010/__aimock/misbehavior?testId=retry-tool'</code></pre>
+        </div>
+        <h3>POST /__aimock/misbehavior</h3>
+        <p>
+          Replaces the selected scope's entire configuration and returns the effective configuration
+          with <code>200</code>. The body accepts a fault ID string or
+          <code>{ "seed": 42, "faults": [...] }</code>. Only this route accepts <code>{}</code> as
+          shorthand for <code>{ "faults": [] }</code>. That empty list opts out at this scope; a
+          fixture or request header still takes precedence.
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">
+            Fail the first tool response <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>curl -X POST http://localhost:4010/__aimock/misbehavior \
+  -H 'Content-Type: application/json' -H 'X-Test-Id: retry-tool' \
+  -d '{"seed":42,"faults":[{"fault":"tool-args-invalid-json","tool":"weather","times":1}]}'</code></pre>
+        </div>
+        <p>
+          Send the same test ID on model requests. <code>times: 1</code> spends its budget only when
+          the fault fires. Once exhausted, the fault is skipped and the normal fixture response can
+          pass through. A skipped fault does not automatically retry the application request.
+        </p>
+        <p>
+          Invalid configuration returns <code>400</code> and leaves the previous scope unchanged.
+          Unknown keys and invalid values fail validation before installation. For example,
+          <code>{ "faults": [], "typo": true }</code> returns:
+        </p>
+        <div class="code-block">
+          <div class="code-block-header">Validation error <span class="lang-tag">json</span></div>
+          <pre><code>{
+  "error": "Validation failed",
+  "rule": "misbehavior/unknown-key",
+  "message": "misbehavior/unknown-key at misbehavior.typo: invalid value true"
+}</code></pre>
+        </div>
+        <h3>DELETE /__aimock/misbehavior</h3>
+        <p>
+          Removes only the selected override and returns <code>200</code> with the effective
+          configuration. A named DELETE reveals the current baseline. An untagged DELETE reveals the
+          construction or setter baseline. Other named scopes remain unchanged. Unlike POST with an
+          empty list, DELETE restores the fallback.
+        </p>
+        <h3>GET /__aimock/misbehavior/catalog</h3>
+        <p>
+          Returns <code>200</code> with <code>{ "catalog": {...}, "WIRE_SUPPORT": {...} }</code>.
+          Read support by wire, fault and mode before selecting a fault. JSON serialization omits
+          the catalog's parameter validator functions; this response is not a JSON Schema.
+        </p>
+        <h3>Request headers and WebSocket scope</h3>
+        <p>
+          For one HTTP request, use
+          <code
+            >X-AIMock-Misbehavior: tool-args-invalid-json; style=trailing-comma; tool=weather</code
+          >. The grammar is one fault ID followed by semicolon-separated scalar
+          <code>key=value</code> pairs. Values are literal text; quotes are not removed. Duplicate
+          keys are invalid. Headers do not accept <code>times</code>, <code>providers</code> or a
+          configuration-level <code>seed</code>. Send one header value. Repeated values are parsed
+          together, not as independent faults. Invalid header input returns <code>400</code> with
+          code <code>aimock_misbehavior_invalid</code>.
+        </p>
+        <p>
+          Do not send this header on a WebSocket upgrade. Use the runtime POST route with the same
+          <code>X-Test-Id</code> or <code>?testId=</code> as the socket instead. Runtime scope does
+          not enable unsupported wires: Responses, Realtime and Gemini Live semantic fault rendering
+          remains unsupported.
+        </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>
     </div>

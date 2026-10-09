@@ -1870,7 +1870,9 @@ describe("cohereToCompletionRequest (native Cohere v2 tools)", () => {
         name: "get_weather",
         description: "Get the weather",
         parameters: {
-          city: { type: "str", description: "City name", required: true },
+          type: "object",
+          properties: { city: { type: "str", description: "City name", required: true } },
+          required: ["city"],
         },
       },
     });
@@ -1921,7 +1923,11 @@ describe("cohereToCompletionRequest (native Cohere v2 tools)", () => {
     expect(result.tools).toHaveLength(2);
     expect(result.tools![0].function.name).toBe("openai_tool");
     expect(result.tools![1].function.name).toBe("native_tool");
-    expect(result.tools![1].function.parameters).toEqual({ x: { type: "int" } });
+    expect(result.tools![1].function.parameters).toEqual({
+      type: "object",
+      properties: { x: { type: "int" } },
+      required: [],
+    });
   });
 });
 

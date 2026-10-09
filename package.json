@@ -193,6 +193,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@arethetypeswrong/cli": "^0.18.3",
     "@aws-sdk/client-bedrock-runtime": "^3.1147.0",
+    "@aws-sdk/credential-provider-ini": "3.973.17",
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.30.0",
@@ -210,6 +211,7 @@
     "lint-staged": "^16.3.2",
     "ollama": "^0.6.4",
     "openai": "^4.0.0",
+    "openai-current-sdk": "npm:openai@6.49.0",
     "pkg-pr-new": "0.0.86",
     "prettier": "^3.6.2",
     "publint": "^0.3.12",
@@ -217,6 +219,7 @@
     "tsx": "^4.19.0",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.35.1",
-    "vitest": "^3.2.1"
+    "vitest": "^3.2.1",
+    "ws": "8.22.0"
   }
 }

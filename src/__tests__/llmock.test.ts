@@ -1855,3 +1855,171 @@ describe("LLMock — a claimed one-shot error is RELEASED when it is never serve
     expect(listing.fixtures[0].responseKind).toBe("error");
   });
 });
+
+describe("LLMock caller fixture count identity", () => {
+  it.each(["addFixture", "addFixtures", "prependFixture"] as const)(
+    "%s retains one public caller entry through clear and reset",
+    async (method) => {
+      const fixture = { match: { userMessage: "identity" }, response: { content: "IDENTITY" } };
+      const mock = new LLMock({ port: 0, logLevel: "silent" });
+      const add = () => {
+        if (method === "addFixtures") mock.addFixtures([fixture]);
+        else mock[method](fixture);
+      };
+      add();
+      await mock.start();
+      try {
+        const journal = mock.journal;
+        const response = await post(mock.url, chatBody("identity"));
+        const counts = journal.fixtureMatchCounts;
+        const stored = mock.getFixtures()[0];
+        console.log(
+          JSON.stringify({
+            cell: method,
+            response,
+            original: counts.get(fixture) ?? 0,
+            stored: counts.get(stored),
+            hasOriginal: counts.has(fixture),
+            size: counts.size,
+            callerKeys: [...counts.keys()].map((key) => key === fixture),
+            values: [...counts.values()],
+          }),
+        );
+        expect(response.data).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+        expect(counts.get(fixture)).toBe(1);
+        expect(counts.has(fixture)).toBe(true);
+        expect(counts.get(stored)).toBe(1);
+        expect(counts.has(stored)).toBe(true);
+        expect(counts.size).toBe(1);
+        expect([...counts.keys()][0]).toBe(fixture);
+        expect([...counts.values()]).toEqual([1]);
+        expect([...counts.entries()]).toEqual([[fixture, 1]]);
+        expect([...counts]).toEqual([[fixture, 1]]);
+        counts.forEach((value, key, map) => {
+          expect(value).toBe(1);
+          expect(key).toBe(fixture);
+          expect(map).toBe(counts);
+        });
+        expect(mock.journal).toBe(journal);
+        expect(journal.fixtureMatchCounts).toBe(counts);
+        counts.set(stored, 3);
+        expect(counts.get(fixture)).toBe(3);
+        expect(counts.size).toBe(1);
+        expect(counts.delete(stored)).toBe(true);
+        expect(counts.has(fixture)).toBe(false);
+        counts.set(fixture, 1);
+        const tenant = await fetch(`${mock.url}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-test-id": "identity-tenant" },
+          body: JSON.stringify(chatBody("identity", false)),
+        });
+        expect(await tenant.text()).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture, "identity-tenant")).toBe(1);
+        const tenantCounts = journal.getFixtureMatchCountsForTest("identity-tenant");
+        expect(tenantCounts.get(fixture)).toBe(1);
+        expect([...tenantCounts.keys()][0]).toBe(fixture);
+        expect(tenantCounts.size).toBe(1);
+        expect(journal.getFixtureMatchCountsForTest("untouched").size).toBe(0);
+        expect(journal.getFixtureMatchCountsForTest("untouched")).not.toBe(
+          journal.getFixtureMatchCountsForTest("untouched"),
+        );
+        mock.clearRequests();
+        expect(journal.size).toBe(0);
+        expect(journal.fixtureMatchCounts).toBe(counts);
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+        mock.reset();
+        add();
+        expect(journal.getFixtureMatchCount(fixture)).toBe(0);
+        expect(journal.getFixtureMatchCount(fixture, "identity-tenant")).toBe(0);
+        expect((await post(mock.url, chatBody("identity"))).data).toContain("IDENTITY");
+        expect(journal.getFixtureMatchCount(fixture)).toBe(1);
+      } finally {
+        await mock.stop();
+      }
+    },
+  );
+
+  it("counts repeated matched identity once without adding a sequence turn", async () => {
+    const fixture = {
+      match: { userMessage: "repeat", sequenceIndex: 0 },
+      response: { content: "ONCE" },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.addFixtures([fixture, fixture]);
+    await mock.start();
+    try {
+      expect((await post(mock.url, chatBody("repeat"))).data).toContain("ONCE");
+      const counts = mock.journal.fixtureMatchCounts;
+      console.log(
+        JSON.stringify({
+          cell: "repeated matched",
+          original: counts.get(fixture) ?? 0,
+          size: counts.size,
+          values: [...counts.values()],
+        }),
+      );
+      expect(counts.get(fixture)).toBe(1);
+      expect(counts.size).toBe(1);
+      expect([...counts.keys()][0]).toBe(fixture);
+      for (const stored of mock.getFixtures()) expect(counts.get(stored)).toBe(1);
+      expect((await post(mock.url, chatBody("repeat"))).status).toBe(404);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("preserves duplicate other-sibling increments from the original sequence loop", async () => {
+    const first = {
+      match: { userMessage: "siblings", sequenceIndex: 0 },
+      response: { content: "FIRST" },
+    };
+    const second = {
+      match: { userMessage: "siblings", sequenceIndex: 1 },
+      response: { content: "SECOND" },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock.addFixtures([first, second, second]);
+    await mock.start();
+    try {
+      expect((await post(mock.url, chatBody("siblings"))).data).toContain("FIRST");
+      const counts = mock.journal.fixtureMatchCounts;
+      console.log(
+        JSON.stringify({
+          cell: "duplicate sibling",
+          first: counts.get(first) ?? 0,
+          second: counts.get(second) ?? 0,
+          size: counts.size,
+          values: [...counts.values()],
+        }),
+      );
+      expect(counts.get(first)).toBe(1);
+      expect(counts.get(second)).toBe(2);
+      expect(counts.size).toBe(2);
+      expect([...counts.keys()][0]).toBe(first);
+      expect([...counts.keys()][1]).toBe(second);
+      expect((await post(mock.url, chatBody("siblings"))).status).toBe(404);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("keeps a shared caller's counts separate across instances", async () => {
+    const fixture = { match: { userMessage: "shared" }, response: { content: "SHARED" } };
+    const left = new LLMock({ port: 0, logLevel: "silent" }).addFixture(fixture);
+    const right = new LLMock({ port: 0, logLevel: "silent" }).addFixture(fixture);
+    await left.start();
+    await right.start();
+    try {
+      expect((await post(left.url, chatBody("shared"))).data).toContain("SHARED");
+      expect(left.journal.getFixtureMatchCount(fixture)).toBe(1);
+      expect(right.journal.getFixtureMatchCount(fixture)).toBe(0);
+      expect((await post(right.url, chatBody("shared"))).data).toContain("SHARED");
+      expect(left.journal.getFixtureMatchCount(fixture)).toBe(1);
+      expect(right.journal.getFixtureMatchCount(fixture)).toBe(1);
+    } finally {
+      await left.stop();
+      await right.stop();
+    }
+  });
+});

@@ -5,9 +5,14 @@
  */
 
 import http from "node:http";
+import type {
+  ChatCompletionChunk,
+  ChatCompletionCreateParamsStreaming,
+} from "openai/resources/chat/completions";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { ServerInstance } from "../../server.js";
 import { createServer } from "../../server.js";
+import { LLMock } from "../../llmock.js";
 import type { Fixture } from "../../types.js";
 import { extractShape, triangulate, formatDriftReport } from "./schema.js";
 import {
@@ -123,6 +128,127 @@ async function fetchOpenAIChat(
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
+  it("K5 forced tool budget ends with length, requested usage, and clean DONE", async (ctx) => {
+    const resolved = await getOpenAIChatModel();
+    if ("infra" in resolved) {
+      ctx.skip();
+      return;
+    }
+    if ("unavailable" in resolved) {
+      throw new Error("OpenAI /v1/models exposed no usable chat model");
+    }
+    // Real capture: openai-k5-20261008T060506Z.sse. The role and tool-name
+    // deltas may share a chunk; the length -> usage -> DONE order is invariant.
+    const request: ChatCompletionCreateParamsStreaming = {
+      model: resolved.model,
+      messages: [
+        {
+          role: "user",
+          content:
+            "Call record_text with text containing the numbers from 1 to 100 separated by spaces.",
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "record_text",
+            description: "Record text",
+            parameters: {
+              type: "object",
+              properties: { text: { type: "string" } },
+              required: ["text"],
+            },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "record_text" } },
+      max_tokens: 12,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    const real = await fetch(OPENAI_CHAT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify(request),
+    });
+    const realRaw = await real.text();
+    if (isInfraSkip(real.status) || isModelNotFound(real.status, realRaw)) {
+      ctx.skip();
+      return;
+    }
+    expect(real.status, `Real API error: ${realRaw.slice(0, 300)}`).toBe(200);
+    const k5Mock = new LLMock({ port: 0, chunkSize: 4 });
+    k5Mock.addFixture({
+      match: {},
+      response: {
+        toolCalls: [
+          {
+            name: "record_text",
+            arguments: JSON.stringify({
+              text: Array.from({ length: 100 }, (_, index) => index + 1).join(" "),
+            }),
+          },
+        ],
+      },
+      misbehavior: { faults: [{ fault: "stop-length-mid-tool" }] },
+    });
+    const k5Url = await k5Mock.start();
+    try {
+      const mock = await httpPost(`${k5Url}/v1/chat/completions`, request);
+      console.log(
+        JSON.stringify({ capture: "OpenAI K5 terminal", request, realRaw, mockRaw: mock.body }),
+      );
+      expect(mock.status, mock.body).toBe(200);
+      for (const [provider, raw] of [
+        ["real", realRaw],
+        ["aimock", mock.body],
+      ]) {
+        const blocks = raw.replace(/\r\n/g, "\n").trim().split("\n\n");
+        expect(blocks.pop(), provider).toBe("data: [DONE]");
+        const chunks = blocks.map((block) => {
+          expect(block.startsWith("data: "), provider).toBe(true);
+          const chunk: ChatCompletionChunk = JSON.parse(block.slice(6));
+          return chunk;
+        });
+        expect(chunks[0]?.choices[0]?.delta.role, provider).toBe("assistant");
+        const terminal = chunks.at(-2);
+        expect(terminal?.choices, provider).toHaveLength(1);
+        expect(terminal?.choices[0], provider).toMatchObject({
+          delta: {},
+          finish_reason: "length",
+        });
+        expect(terminal?.choices[0].delta, provider).toEqual({});
+        expect(chunks.at(-1), provider).toMatchObject({
+          choices: [],
+          usage: { completion_tokens: expect.any(Number) },
+        });
+        const beforeTerminal = chunks.slice(0, -2);
+        expect(beforeTerminal.length, provider).toBeGreaterThan(0);
+        for (const chunk of beforeTerminal) {
+          expect(chunk.choices, provider).toHaveLength(1);
+          expect(chunk.choices[0].finish_reason, provider).toBeNull();
+        }
+        const calls = beforeTerminal.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? []);
+        const nameIndex = calls.findIndex((call) => call.function?.name === "record_text");
+        const firstArgumentsIndex = calls.findIndex(
+          (call) => (call.function?.arguments ?? "").length > 0,
+        );
+        expect(nameIndex, provider).toBeGreaterThanOrEqual(0);
+        expect(nameIndex, provider).toBeLessThan(firstArgumentsIndex);
+        expect(
+          calls.every((call) => call.index === 0),
+          provider,
+        ).toBe(true);
+        const argumentsText = calls.map((call) => call.function?.arguments ?? "").join("");
+        expect(argumentsText.length, provider).toBeGreaterThan(0);
+        expect(() => JSON.parse(argumentsText), provider).toThrow(SyntaxError);
+      }
+    } finally {
+      await k5Mock.stop();
+    }
+  });
+
   it("non-streaming text shape matches", async (ctx) => {
     const resolved = await getOpenAIChatModel();
     if ("infra" in resolved) {

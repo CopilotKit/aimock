@@ -2,8 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add Vertex modeled-contract comparisons for object and streaming length-stop and reasoning-only faults, with explicit non-trigger reporting and short-lived authentication wiring for the existing daily drift checks. Native target shapes and successful hosted recurrence remain unverified.
+- Model misbehavior for OpenAI Chat Completions (including Azure and OpenRouter), Responses HTTP/WebSocket, Realtime GA, Anthropic Messages, Bedrock InvokeModel and Converse, Gemini generateContent (including the Vertex wrapper), Gemini Live, Gemini Interactions, Cohere, and Ollama chat. Faults include invalid tool arguments, schema violations, unknown tools, duplicate tool IDs, length stops, empty responses, refusals, content filtering, and reasoning-only responses. Fault and mode support varies by wire; see the [support matrix](https://aimock.copilotkit.dev/model-misbehavior#support).
+- Explicit fidelity documentation for eight modeled contracts and their native capture limits. A subsequent Gemini Developer API capture confirms non-streaming reasoning-only output; streaming remains unverified. Local SDK behavior and native capture evidence remain separate. These contracts do not enable an unavailable wire; see [capture provenance](https://aimock.copilotkit.dev/model-misbehavior#fidelity).
+- OpenAI and Anthropic Python SDK integration tests through the existing aimock-pytest APIs, plus local CLI build instructions. No new Python control API is required.
+- Fixture and server `misbehavior` configuration, `LLMock.setMisbehavior()` / `clearMisbehavior()`, seeded rates, and per-test firing limits. Runtime overrides use `GET` / `POST` / `DELETE /__aimock/misbehavior`; `GET /__aimock/misbehavior/catalog` lists faults and wire support.
+- Optional journal `response.misbehavior` evidence, including served tool calls for applied faults, and the `aimock_misbehavior_total` metric. Journal consumers must allow the new optional field.
+- Add opt-in AWS Bedrock K5/K9 contract comparisons for Invoke and Converse; retain explicit modeled K9 non-trigger reporting.
+
+### Changed
+
+- Use a build containing this Unreleased feature for misbehavior fixtures. Older versions silently discard the `misbehavior` key and serve the original response.
+- Invalid authored tool arguments remain validation errors. The diagnostic now adds: "to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`".
+- The new `X-AIMock-Misbehavior` request header selects a fault; malformed values return HTTP 400. Responses, Realtime, and Gemini Live WebSocket upgrades reject this header with HTTP 400. Use fixture, server, or runtime configuration on supported WebSocket wires.
+- Invalid `misbehavior` configurations now throw during fixture loading and `LLMock.addFixture()` or related programmatic additions. CLI startup and test plugins propagate these errors without requiring `--validate-on-load`.
+
 ### Fixed
 
+- Align Cohere streaming length-stop faults with captured tool closure, `TOOL_CALL`, and terminal `[DONE]` framing while preserving incomplete argument bytes. Object length stops retain modeled `MAX_TOKENS`; recurring comparisons distinguish valid object nontriggers from failures.
 - Preserve malformed tool-call argument strings on string-based response wires instead of silently replacing them with `{}`. Object-based wires now return an explicit error (HTTP 500, or a Gemini Live WebSocket error) before response content. Valid JSON, empty or omitted legacy arguments, and fixture validation retain their existing behavior.
 
 ## [1.44.0] - 2026-10-07

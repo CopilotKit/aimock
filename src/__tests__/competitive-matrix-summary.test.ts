@@ -5,6 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FEATURE_RULES,
+  COMPETITOR_MIGRATION_PAGES,
+  parseCurrentMatrix,
+  computeChanges,
+  applyChanges,
+  runMatrixUpdate,
   MATRIX_ROWLESS_RULES,
   isRowlessRule,
   formatSummary,
@@ -285,6 +290,45 @@ describe("formatSummary headline", () => {
     const md = formatSummary(APPLIED, [], [], WARNINGS);
     expect(md.split("\n")[0]).toBe(INCOMPLETE);
     expect(headings(md)).toEqual([APPLIED_HEADING, "## Fetch Warnings"]);
+  });
+});
+
+// The Stage 7 row is an explicit dependency; it is never synthesized here.
+describe("model misbehavior direct consumer preservation", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const label = "Model misbehavior faults (tool-call JSON, schema, unknown tool, stop reasons)";
+
+  it("does not promote documentation-unknown or partial cells", () => {
+    const html = readFileSync(join(root, "docs/index.html"), "utf8");
+    const matrix = parseCurrentMatrix(html);
+    expect(matrix.rows.has(label)).toBe(true);
+    const features = new Map([
+      ["VidaiMock", { [label]: true }],
+      ["MockServer", { [label]: true }],
+      ["WireMock", { [label]: true }],
+    ]);
+    const changes = computeChanges(html, matrix, features);
+    expect(changes).toEqual([]);
+    const result = applyChanges(html, changes);
+    expect(result.html).toBe(html);
+    expect(result.applied).toEqual([]);
+    expect(result.unapplied).toEqual([]);
+  });
+
+  it("runs the actual dry-run pipeline without writing homepage or migrations", () => {
+    const paths = ["docs/index.html", ...Object.values(COMPETITOR_MIGRATION_PAGES)];
+    const before = paths.map((path) => readFileSync(join(root, path), "utf8"));
+    const statePath = join(root, "scripts/competitive-watch-state.json");
+    const beforeState = existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined;
+    runMatrixUpdate({
+      repoRoot: root,
+      competitorFeatures: new Map([["VidaiMock", { [label]: true }]]),
+      competitorProviderCounts: new Map(),
+      dryRun: true,
+      summaryPath: null,
+    });
+    expect(paths.map((path) => readFileSync(join(root, path), "utf8"))).toEqual(before);
+    expect(existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined).toBe(beforeState);
   });
 });
 

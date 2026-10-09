@@ -14,6 +14,8 @@ import type {
   ImageResponse,
   McpFakeSource,
   MockServerOptions,
+  MisbehaviorConfig,
+  MisbehaviorFaultId,
   Mountable,
   RecordConfig,
   ResponseFactory,
@@ -36,6 +38,7 @@ import {
   entryToFixture,
   normalizeResponse,
   validateFixtures,
+  FixtureLoadError,
 } from "./fixture-loader.js";
 import {
   loadFixtureFileWithServices,
@@ -44,6 +47,7 @@ import {
 } from "./fixture-loader-services.js";
 import { ensureFakeMount, isAutoMount, planFileFakes } from "./mcp-fakes-mount.js";
 import { build, msg, quote } from "./message-text.js";
+import { DEFAULT_TEST_ID } from "./constants.js";
 import { Journal } from "./journal.js";
 import type { SearchFixture, SearchResult } from "./search.js";
 import type { RerankFixture, RerankResult } from "./rerank.js";
@@ -51,8 +55,41 @@ import type { ModerationFixture, ModerationResult } from "./moderation.js";
 import { imageResponseToFalJson, videoResponseToFalJson } from "./fal.js";
 import { voiceDesignToJson } from "./elevenlabs-voice.js";
 
+import {
+  getFixtureMisbehaviorPosition,
+  parseMisbehavior,
+  resolveMisbehaviorSeed,
+  setFixtureMisbehaviorPosition,
+  validateFixtureMisbehavior,
+} from "./misbehavior.js";
+
+/** Count-map keys retain caller identity while fault registrations remain distinct. */
+class FixtureCountMap extends Map<Fixture, number> {
+  constructor(private readonly identity: (fixture: Fixture) => Fixture) {
+    super();
+  }
+
+  override get(key: Fixture): number | undefined {
+    return super.get(this.identity(key));
+  }
+
+  override has(key: Fixture): boolean {
+    return super.has(this.identity(key));
+  }
+
+  override set(key: Fixture, value: number): this {
+    return super.set(this.identity(key), value);
+  }
+
+  override delete(key: Fixture): boolean {
+    return super.delete(this.identity(key));
+  }
+}
+
 export class LLMock {
   private fixtures: Fixture[] = [];
+  private fixtureAddition = 0;
+  private readonly fixtureCountOrigins = new WeakMap<Fixture, Fixture>();
   private searchFixtures: SearchFixture[] = [];
   private rerankFixtures: RerankFixture[] = [];
   private moderationFixtures: ModerationFixture[] = [];
@@ -67,22 +104,41 @@ export class LLMock {
   constructor(options?: MockServerOptions, resolvedInboundAuth?: ResolvedInboundAuth) {
     this.options = options ?? {};
     if (this.options.live !== undefined) normalizeLiveOptions(this.options.live);
+    if (this.options.misbehavior !== undefined) this.setMisbehavior(this.options.misbehavior);
     this.resolvedInboundAuth = resolvedInboundAuth;
   }
 
   // ---- Fixture management ----
 
   private normalizeFixture(fixture: Fixture): Fixture {
+    const countIdentity = this.fixtureCountOrigins.get(fixture) ?? fixture;
+    const previousPosition = getFixtureMisbehaviorPosition(fixture);
+    const isNewAddition = previousPosition === undefined || /^code#\d+$/.test(previousPosition);
+    const position = isNewAddition ? `code#${this.fixtureAddition++}` : previousPosition;
+    // Re-adding a code fixture creates a new source without changing the old entry.
+    if (isNewAddition) fixture = { ...fixture };
+    if (fixture.misbehavior !== undefined) {
+      const parsed = parseMisbehavior(fixture.misbehavior);
+      if (parsed.ok) fixture = { ...fixture, misbehavior: parsed.config };
+      const issue = parsed.ok ? validateFixtureMisbehavior(fixture) : parsed.issue;
+      if (issue) {
+        throw new FixtureLoadError({ rule: issue.rule, file: position, detail: issue.message });
+      }
+    }
+
     if (
       isLiveResponse(fixture.response) ||
       (fixture.match.endpoint === "openai-live" && typeof fixture.response !== "function")
     ) {
-      return {
+      fixture = {
         ...fixture,
         match: { ...fixture.match },
         response: normalizeLiveFixture(fixture.response, this.options.live),
       };
+    } else if (fixture !== countIdentity) {
+      this.fixtureCountOrigins.set(fixture, countIdentity);
     }
+    setFixtureMisbehaviorPosition(fixture, position);
     return fixture;
   }
 
@@ -211,7 +267,16 @@ export class LLMock {
         "addFixturesFromJSON: expected an array of fixture entries; use loadFixtureFile for a {fixtures:[...]} file",
       );
     }
-    const converted = entries.map((e) => entryToFixture(e, undefined, this.options.live));
+    const converted = entries.map((entry) => {
+      const position = `code#${this.fixtureAddition++}`;
+      const fixture = entryToFixture(entry, undefined, this.options.live, {
+        file: position,
+        index: 0,
+      });
+      setFixtureMisbehaviorPosition(fixture, position);
+      return fixture;
+    });
+
     const issues = validateFixtures(converted, this.options.live);
     const errors = issues.filter((i) => i.severity === "error");
     if (errors.length > 0) {
@@ -226,6 +291,7 @@ export class LLMock {
   // one-shot claim parked in flight so it cannot re-arm into the cleared queue.
   clearFixtures(): this {
     clearFixtureQueue(this.fixtures);
+    this.serverInstance?.journal.clearMisbehaviorCounters();
     this.unloadMcpFakes();
     return this;
   }
@@ -543,6 +609,37 @@ export class LLMock {
     return this;
   }
 
+  // ---- Semantic misbehavior ----
+
+  /** Replace construction/runtime baselines without changing named test overrides. */
+  setMisbehavior(config: MisbehaviorConfig | MisbehaviorFaultId): this {
+    const parsed = parseMisbehavior(config);
+    if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
+    this.options.misbehavior = parsed.config;
+    const defaults = this.serverInstance?.defaults;
+    if (defaults?.misbehavior) {
+      defaults.misbehavior.baseline =
+        parsed.config.seed === "random"
+          ? { ...parsed.config, seed: resolveMisbehaviorSeed(parsed.config.seed, defaults.logger) }
+          : parsed.config;
+      if (defaults.misbehavior.byTestId.has(DEFAULT_TEST_ID)) {
+        defaults.misbehavior.byTestId.set(DEFAULT_TEST_ID, defaults.misbehavior.baseline);
+      }
+    }
+    return this;
+  }
+
+  /** Clear the baseline and all runtime overrides, before or after start. */
+  clearMisbehavior(): this {
+    delete this.options.misbehavior;
+    const scope = this.serverInstance?.defaults.misbehavior;
+    if (scope) {
+      scope.baseline = undefined;
+      scope.byTestId.clear();
+    }
+    return this;
+  }
+
   // ---- Recording ----
 
   enableRecording(config: RecordConfig): this {
@@ -612,6 +709,11 @@ export class LLMock {
           serviceFixtures,
         )
       : createServer(this.fixtures, this.options, this.mounts, serviceFixtures));
+    const countIdentity = (fixture: Fixture) => this.fixtureCountOrigins.get(fixture) ?? fixture;
+    this.serverInstance.journal.configureFixtureCountIdentity(
+      countIdentity,
+      () => new FixtureCountMap(countIdentity),
+    );
     // The server holds the buffered fakes now (W2). A start that rejects took
     // its hand-off back, so the buffer is kept for a retry.
     this.mcpFakeBuffer.length = 0;

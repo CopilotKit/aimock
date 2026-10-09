@@ -5,6 +5,8 @@ import type {
   FixtureMatch,
   JournalBody,
   JournalEntry,
+  MisbehaviorCounterKey,
+  MisbehaviorCounters,
 } from "./types.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 export { DEFAULT_TEST_ID } from "./constants.js";
@@ -135,8 +137,8 @@ export interface JournalOptions {
    */
   maxEntries?: number;
   /**
-   * Maximum number of unique testIds retained in the fixture match-count
-   * map (`fixtureMatchCountsByTestId`). When exceeded, the oldest testId
+   * Maximum number of unique testIds retained across fixture match-count
+   * and misbehavior counters. When exceeded, the oldest testId
    * (by first-insertion order) is evicted FIFO. Set to 0 (or omit) for
    * unbounded retention. Negative values are rejected at the CLI parse
    * layer; programmatically they are treated as 0 (unbounded) for
@@ -159,10 +161,18 @@ export interface JournalOptions {
   onAdd?: (entry: JournalEntry) => void;
 }
 
-export class Journal {
+export class Journal implements MisbehaviorCounters {
   private entries: JournalEntry[] = [];
   private readonly matchedFixtures = new WeakMap<JournalEntry, Fixture>();
   private readonly fixtureMatchCountsByTestId: Map<string, Map<Fixture, number>> = new Map();
+  private fixtureCountIdentity = (fixture: Fixture): Fixture => fixture;
+  private createFixtureCountMap = (): Map<Fixture, number> => new Map();
+  private fixtureCountIdentityConfigured = false;
+  private readonly counterTestIds = new Set<string>();
+  private readonly misbehaviorCountersByTestId = new Map<
+    string,
+    Map<string, Map<number, { ordinal: number; firings: number }>>
+  >();
   private readonly maxEntries: number;
   private readonly fixtureCountsMaxTestIds: number;
   private readonly onAdd?: (entry: JournalEntry) => void;
@@ -261,7 +271,7 @@ export class Journal {
    * `getOrCreateFixtureMatchCountsForTest`.
    */
   getFixtureMatchCountsForTest(testId: string): Map<Fixture, number> {
-    return this.fixtureMatchCountsByTestId.get(testId) ?? new Map();
+    return this.fixtureMatchCountsByTestId.get(testId) ?? this.createFixtureCountMap();
   }
 
   /**
@@ -273,23 +283,87 @@ export class Journal {
   private getOrCreateFixtureMatchCountsForTest(testId: string): Map<Fixture, number> {
     let counts = this.fixtureMatchCountsByTestId.get(testId);
     if (!counts) {
-      counts = new Map();
+      counts = this.createFixtureCountMap();
       this.fixtureMatchCountsByTestId.set(testId, counts);
-      // FIFO eviction when over capacity. JS Map preserves insertion order,
-      // so the first key returned by keys() is the oldest. Same O(n) shift
-      // caveat as `entries`: acceptable at small caps (createServer
-      // default 500; a bare Journal is unbounded).
-      if (
-        this.fixtureCountsMaxTestIds > 0 &&
-        this.fixtureMatchCountsByTestId.size > this.fixtureCountsMaxTestIds
-      ) {
-        const oldest = this.fixtureMatchCountsByTestId.keys().next().value;
-        if (oldest !== undefined) {
-          this.fixtureMatchCountsByTestId.delete(oldest);
-        }
-      }
+      this.admitCounterTestId(testId);
     }
     return counts;
+  }
+
+  /** Match and fault mutations share one admission order and capacity. */
+  private admitCounterTestId(testId: string): void {
+    this.counterTestIds.add(testId);
+    if (
+      this.fixtureCountsMaxTestIds > 0 &&
+      this.counterTestIds.size > this.fixtureCountsMaxTestIds
+    ) {
+      const oldest = this.counterTestIds.values().next().value;
+      if (oldest !== undefined) {
+        this.counterTestIds.delete(oldest);
+        this.fixtureMatchCountsByTestId.delete(oldest);
+        this.misbehaviorCountersByTestId.delete(oldest);
+      }
+    }
+  }
+
+  private getOrCreateMisbehaviorCounter(key: MisbehaviorCounterKey) {
+    let sources = this.misbehaviorCountersByTestId.get(key.testId);
+    if (!sources) {
+      sources = new Map();
+      this.misbehaviorCountersByTestId.set(key.testId, sources);
+      this.admitCounterTestId(key.testId);
+    }
+    let entries = sources.get(key.sourceKey);
+    if (!entries) {
+      entries = new Map();
+      sources.set(key.sourceKey, entries);
+    }
+    let counter = entries.get(key.entryIndex);
+    if (!counter) {
+      counter = { ordinal: 0, firings: 0 };
+      entries.set(key.entryIndex, counter);
+    }
+    return counter;
+  }
+
+  getFiringCount(key: MisbehaviorCounterKey): number {
+    return (
+      this.misbehaviorCountersByTestId.get(key.testId)?.get(key.sourceKey)?.get(key.entryIndex)
+        ?.firings ?? 0
+    );
+  }
+
+  nextOrdinal(key: MisbehaviorCounterKey): number {
+    return this.getOrCreateMisbehaviorCounter(key).ordinal++;
+  }
+
+  recordFiring(key: MisbehaviorCounterKey): void {
+    this.getOrCreateMisbehaviorCounter(key).firings++;
+  }
+
+  clearMisbehaviorCounters(testId?: string): void {
+    if (testId !== undefined) {
+      this.misbehaviorCountersByTestId.delete(testId);
+      if (!this.fixtureMatchCountsByTestId.has(testId)) this.counterTestIds.delete(testId);
+    } else {
+      this.misbehaviorCountersByTestId.clear();
+      for (const id of this.counterTestIds) {
+        if (!this.fixtureMatchCountsByTestId.has(id)) this.counterTestIds.delete(id);
+      }
+    }
+  }
+
+  /** @internal LLMock configures caller count identity before serving requests. */
+  configureFixtureCountIdentity(
+    identity: (fixture: Fixture) => Fixture,
+    createMap: () => Map<Fixture, number>,
+  ): void {
+    if (this.fixtureCountIdentityConfigured || this.fixtureMatchCountsByTestId.size > 0) {
+      throw new Error("Fixture count identity must be configured once before counting");
+    }
+    this.fixtureCountIdentity = identity;
+    this.createFixtureCountMap = createMap;
+    this.fixtureCountIdentityConfigured = true;
   }
 
   getFixtureMatchCount(fixture: Fixture, testId = DEFAULT_TEST_ID): number {
@@ -306,7 +380,7 @@ export class Journal {
     // When a sequenced fixture matches, also increment all siblings with matching criteria
     if (fixture.match.sequenceIndex !== undefined && allFixtures) {
       for (const sibling of allFixtures) {
-        if (sibling === fixture) continue;
+        if (this.fixtureCountIdentity(sibling) === this.fixtureCountIdentity(fixture)) continue;
         if (sibling.match.sequenceIndex === undefined) continue;
         if (matchCriteriaEqual(fixture.match, sibling.match)) {
           counts.set(sibling, (counts.get(sibling) ?? 0) + 1);
@@ -318,8 +392,10 @@ export class Journal {
   clearMatchCounts(testId?: string): void {
     if (testId !== undefined) {
       this.fixtureMatchCountsByTestId.delete(testId);
+      this.clearMisbehaviorCounters(testId);
     } else {
       this.fixtureMatchCountsByTestId.clear();
+      this.clearMisbehaviorCounters();
     }
   }
 
@@ -336,7 +412,7 @@ export class Journal {
 
   clear(): void {
     this.entries = [];
-    this.fixtureMatchCountsByTestId.clear();
+    this.clearMatchCounts();
   }
 
   get size(): number {

@@ -99,7 +99,8 @@
             JSON, Ollama sends parsed objects in <code>arguments</code>.
           </li>
           <li>
-            <strong>No tool call IDs.</strong> Ollama tool calls have no <code>id</code> field.
+            <strong>Tool call IDs.</strong> This aimock adapter does not preserve native tool-call
+            IDs; native Ollama can emit them.
           </li>
           <li>
             <strong>Duration metadata.</strong> Responses include <code>done_reason</code>,
