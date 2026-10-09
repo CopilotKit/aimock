@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,7 +11,15 @@ import {
   applyChanges,
   extractFeatures,
   FEATURE_RULES,
+  COMPETITOR_MIGRATION_PAGES,
 } from "../../scripts/update-competitive-matrix.js";
+import {
+  FEATURE_WATCH,
+  WATCH_STATE_REL_PATH,
+  runFeatureWatch,
+  serializeWatchState,
+} from "../../scripts/competitive-watch.js";
+import { cannedWatchHtml } from "./competitive-watch-fixture.js";
 
 // These tests run the REAL script (main()) in a child process, with global
 // fetch replaced by a preload module. A scan that cannot reach GitHub must
@@ -37,6 +45,10 @@ const SCRIPT = resolve(REPO_ROOT, "scripts/update-competitive-matrix.ts");
 //   404        HTTP 404 (file not in repo)
 //   500        HTTP 500
 // The target's README text is STUB_README_TEXT when set.
+//
+// Feature-watch requests (any URL outside api.github.com) get STUB_WATCH_HTML,
+// or {"version":"1.0.0"} from the npm registry. STUB_WATCH=fail makes every
+// one of them throw (network down for the watch only).
 const STUB = `
 const mode = process.env.STUB_FETCH_MODE ?? "";
 const target = process.env.STUB_TARGET ?? "";
@@ -67,6 +79,13 @@ const respond = (outcome, text, raw) => {
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   const raw = (init?.headers?.Accept ?? "") === "application/vnd.github.raw";
+  if (!url.startsWith("https://api.github.com/")) {
+    if (process.env.STUB_WATCH === "fail") throw new TypeError("fetch failed");
+    if (url.startsWith("https://registry.npmjs.org/")) {
+      return new Response(JSON.stringify({ version: "1.0.0" }), { status: 200 });
+    }
+    return new Response(process.env.STUB_WATCH_HTML ?? "", { status: 200, headers: { "content-type": "text/html" } });
+  }
   const isReadme = url.endsWith("/readme");
   if (mode === "reject") throw new TypeError("fetch failed");
   if (mode.startsWith("status:")) return json(Number(mode.slice(7)), { message: "stubbed" });
@@ -85,12 +104,30 @@ globalThis.fetch = async (input, init) => {
 
 let dir: string;
 let stubUrl: string;
+/** A watch state that matches the canned watch page: every source is "no change". */
+let watchStatePath: string;
+const STUB_WATCH_HTML = cannedWatchHtml();
 
-beforeAll(() => {
+beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "cm-fetch-stub-"));
   const stubPath = join(dir, "stub-fetch.mjs");
   writeFileSync(stubPath, STUB, "utf-8");
   stubUrl = pathToFileURL(stubPath).href;
+
+  // Spawned runs never read the committed state file: the scan bot changes it
+  // over time. They use this baseline, built from the same canned page.
+  const baseline = await runFeatureWatch({
+    sources: FEATURE_WATCH,
+    previous: {},
+    today: "2026-01-01",
+    fetchText: async (url) =>
+      url.startsWith("https://registry.npmjs.org/")
+        ? { ok: true, text: JSON.stringify({ version: "1.0.0" }) }
+        : { ok: true, text: STUB_WATCH_HTML },
+    log: () => {},
+  });
+  watchStatePath = join(dir, "watch-state.json");
+  writeFileSync(watchStatePath, serializeWatchState(baseline.state), "utf-8");
 });
 
 afterAll(() => {
@@ -101,9 +138,10 @@ function runScan(
   env: Record<string, string>,
   extraArgs: string[] = [],
 ): { status: number | null; out: string } {
+  const stateArgs = extraArgs.includes("--watch-state") ? [] : ["--watch-state", watchStatePath];
   const res = spawnSync(
     process.execPath,
-    ["--import", "tsx", "--import", stubUrl, SCRIPT, "--dry-run", ...extraArgs],
+    ["--import", "tsx", "--import", stubUrl, SCRIPT, "--dry-run", ...extraArgs, ...stateArgs],
     {
       cwd: REPO_ROOT,
       env: {
@@ -111,6 +149,8 @@ function runScan(
         STUB_FETCH_MODE: "",
         GITHUB_TOKEN: "",
         STUB_PKG_TEXT,
+        STUB_WATCH_HTML,
+        STUB_WATCH: "",
         ...env,
       },
       encoding: "utf-8",
@@ -377,6 +417,97 @@ describe("competitive-matrix summary when a package.json fetch fails", () => {
     ]);
     expect(status).toBe(0);
     const md = readFileSync(summaryPath, "utf-8");
-    expect(md).toBe("No competitive matrix changes detected this week.\n");
+    // The summary now always ends with the feature-watch section (spec D9). With
+    // every watch source unchanged, the headline is still the no-changes one.
+    const lines = md.split("\n");
+    expect(lines[0]).toBe("No competitive matrix changes detected this week.");
+    expect(lines.filter((l) => l.startsWith("## "))).toEqual(["## Feature watch"]);
+    expect(md).not.toContain("## Fetch Warnings");
+    for (const s of FEATURE_WATCH) expect(md).toContain(`| [${s.id}](`);
+    expect(md).not.toMatch(/\| (baseline|changed|removed) \|/);
+  });
+});
+
+describe("feature watch fetches (D8)", () => {
+  const WATCHED_FILES = [
+    WATCH_STATE_REL_PATH,
+    "docs/index.html",
+    ...Object.values(COMPETITOR_MIGRATION_PAGES),
+  ];
+  const snapshot = (paths: string[]): Map<string, string> =>
+    new Map(paths.map((p) => [p, readFileSync(resolve(REPO_ROOT, p), "utf-8")] as const));
+
+  it("dry run reports every source as baseline and writes only the summary", () => {
+    const summaryPath = join(dir, "summary-watch-baseline.md");
+    const emptyState = join(dir, "watch-state-empty.json");
+    writeFileSync(emptyState, "{}\n", "utf-8");
+    const before = snapshot(WATCHED_FILES);
+
+    const { status, out } = runScan({}, ["--summary", summaryPath, "--watch-state", emptyState]);
+
+    expect(out).not.toContain("Feature watch incomplete");
+    expect(status).toBe(0);
+    const md = readFileSync(summaryPath, "utf-8");
+    const heads = md.split("\n").filter((l) => l.startsWith("## "));
+    expect(heads.at(-1)).toBe("## Feature watch");
+    for (const s of FEATURE_WATCH) {
+      expect(md).toMatch(new RegExp(`^\\| \\[${s.id}\\]\\([^)]*\\) \\|.*\\| baseline \\|`, "m"));
+    }
+    expect(readFileSync(emptyState, "utf-8")).toBe("{}\n");
+    expect(snapshot(WATCHED_FILES)).toEqual(before);
+  });
+
+  it("fails the run, names every source and writes no summary when the watch cannot fetch", () => {
+    const summaryPath = join(dir, "summary-watch-fail.md");
+    const { status, out } = runScan({ STUB_WATCH: "fail" }, ["--summary", summaryPath]);
+
+    expect(status).toBe(1);
+    expect(out).toContain(
+      `Feature watch incomplete: ${FEATURE_WATCH.length} of ${FEATURE_WATCH.length} source(s)`,
+    );
+    for (const s of FEATURE_WATCH) {
+      expect(out.split("\n").filter((l) => l.startsWith(`  - ${s.id} (`))).toHaveLength(1);
+    }
+    expect(existsSync(summaryPath)).toBe(false);
+  });
+
+  it("reports a competitor README failure first, before the watch runs", () => {
+    const summaryPath = join(dir, "summary-watch-readme-fail.md");
+    const { status, out } = runScan(
+      { STUB_WATCH: "fail", STUB_TARGET: REPO, STUB_README: "500", STUB_PKG: "404" },
+      ["--summary", summaryPath],
+    );
+
+    expect(status).toBe(1);
+    expect(out).toContain("Competitor scan incomplete");
+    expect(out).not.toContain("Feature watch incomplete");
+    expect(existsSync(summaryPath)).toBe(false);
+  });
+});
+
+describe("command-line flags", () => {
+  it("a repeated --summary resolves to its last value: B is written, A is not", () => {
+    const a = join(dir, "summary-flag-a.md");
+    const b = join(dir, "summary-flag-b.md");
+    const { status } = runScan({}, ["--summary", a, "--summary", b]);
+    expect(status).toBe(0);
+    expect(existsSync(b)).toBe(true);
+    expect(existsSync(a)).toBe(false);
+  });
+
+  it.each([
+    [["--watch-state=x"], "--watch-state=x is not supported; use --watch-state x"],
+    [["--summary=x"], "--summary=x is not supported; use --summary x"],
+    [["--only", "a", "b"], "unknown option --only"],
+    [["bogus"], "unexpected argument bogus"],
+    [["--summary"], "--summary needs a value"],
+  ])("rejects %j before any fetch", (args, message) => {
+    // Every fetch would fail: a run that reached the network reports a scan
+    // failure instead of the flag error.
+    const { status, out } = runScan({ STUB_FETCH_MODE: "reject", STUB_WATCH: "fail" }, args);
+    expect(status).toBe(1);
+    expect(out).toContain(message);
+    expect(out).not.toContain("Competitor scan incomplete");
+    expect(out).not.toContain("=== Competitive Matrix Updater");
   });
 });
