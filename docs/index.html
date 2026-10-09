@@ -79,9 +79,11 @@
         --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
         /* Rendered height of the fixed nav. Anything that sticks below the nav
            offsets from this instead of re-guessing the number. The value here is
-           the desktop/mobile fallback for a no-JS render; the nav measures itself
-           on load and on resize and overwrites it, so a change to nav padding,
-           brand font-size or link wrapping can no longer silently desync. */
+           the no-JS fallback and matches only the desktop nav; on narrower
+           screens the links wrap and the nav runs ~84-105px tall. The nav
+           measures itself on load and on resize and overwrites it, so a change
+           to nav padding, brand font-size or link wrapping can no longer
+           silently desync. */
         --nav-h: 70px;
       }
 
@@ -152,12 +154,11 @@
         align-items: center;
         gap: 2rem;
       }
-      /* Pushes both link groups to the right, so splitting them into two lists
-         leaves the desktop bar looking exactly as it did with one. */
+      /* margin-right: auto pushes both link groups to the right, so splitting
+         them into two lists leaves the desktop bar looking exactly as it did
+         with one. */
       .nav-brand {
         margin-right: auto;
-      }
-      .nav-brand {
         display: flex;
         flex-direction: column;
         gap: 0;
@@ -814,6 +815,10 @@
         text-align: center;
         margin-bottom: 1rem;
       }
+      .section-suite h2 .highlight {
+        color: var(--accent);
+        position: relative;
+      }
       .section-suite .suite-sub {
         text-align: center;
         color: var(--text-secondary);
@@ -1001,7 +1006,8 @@
          TILE COUNT, so a tile always takes the same time to cross. Keep it
          inline rather than hardcoding a duration in this stylesheet: the wall
          grows, and a fixed duration would speed up every time it did. The
-         generator that will maintain the tile list also recomputes it. */
+         generator that maintains the tile list (scripts/update-adoption-wall.ts)
+         also recomputes it. */
       .section-adopters {
         padding: 2.5rem 0 1.5rem;
       }
@@ -2829,7 +2835,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 4: The Full Suite ────────────────────────────── -->
+    <!-- ─── Section 3: The Full Suite ────────────────────────────── -->
     <section class="section-suite" id="suite">
       <div class="container">
         <h2 class="fade-in">
@@ -2934,7 +2940,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 5: Feature Grid ──────────────────────────────── -->
+    <!-- ─── Section 4: Feature Grid ──────────────────────────────── -->
     <section class="section-features" id="features">
       <div class="container">
         <h2 class="fade-in">Everything you need</h2>
@@ -3022,7 +3028,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 6: Drift Detection / Reliability ──────────────── -->
+    <!-- ─── Section 5: Drift Detection / Reliability ──────────────── -->
     <section class="section-reliability" id="reliability">
       <div class="container">
         <h2 class="fade-in">Your mocks never go stale</h2>
@@ -3064,7 +3070,7 @@
       </div>
     </section>
 
-    <!-- ─── Section 7: Comparison ────────────────────────────────── -->
+    <!-- ─── Section 6: Comparison ────────────────────────────────── -->
     <section class="section-comparison" id="comparison">
       <div class="container">
         <h2 class="fade-in">How aimock compares</h2>
@@ -3841,7 +3847,7 @@
       </div>
     </div>
 
-    <!-- ─── Section 8: Footer ────────────────────────────────────── -->
+    <!-- ─── Section 7: Footer ────────────────────────────────────── -->
     <footer>
       <div class="container">
         <div class="footer-brand"><span class="prompt">$</span> aimock &middot; MIT License</div>
@@ -3871,18 +3877,39 @@
         var codeEl = row && row.querySelector("code");
         var cmd = codeEl ? codeEl.textContent : "";
         if (!cmd) return;
-        navigator.clipboard.writeText(cmd).then(function () {
-          btn.textContent = "Copied!";
+        var flash = function (label) {
+          btn.textContent = label;
           setTimeout(function () {
             btn.textContent = "Copy";
           }, 2000);
-        });
+        };
+        // No clipboard API (insecure context, old browser) or a rejected write:
+        // select the command so it can be copied by hand, and say so.
+        var fail = function () {
+          try {
+            var range = document.createRange();
+            range.selectNodeContents(codeEl);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch (e) {
+            /* the label below still reports the failure */
+          }
+          flash("Copy failed");
+        };
+        try {
+          navigator.clipboard.writeText(cmd).then(function () {
+            flash("Copied!");
+          }, fail);
+        } catch (e) {
+          fail();
+        }
       }
 
-      // Publish the nav's rendered height as --nav-h so anything sticking below
-      // it (the comparison tables' sticky headers, 1140px and up) offsets from
-      // the real number rather than a hard-coded guess that silently rots when
-      // the nav changes.
+      // Publish the nav's rendered height as --nav-h so anything that sits
+      // below it (the comparison tables' sticky headers, 1140px and up, and
+      // #mcp-fakes-preview's scroll-margin-top) offsets from the real number
+      // rather than a hard-coded guess that silently rots when the nav changes.
       (function () {
         try {
           var nav = document.querySelector("nav");
@@ -3971,7 +3998,7 @@
           delay: 400,
         },
         { type: "line", html: "", delay: 200 },
-        // Step 4: Stream the response — chunkSize: 20, latency: 50ms
+        // Step 4: Stream the response — chunkSize: 10, chunkDelay: 1000ms
         {
           type: "line",
           html: '<span class="info">  streaming \u2192</span> <span class="streamed" id="stream-target"></span>',
