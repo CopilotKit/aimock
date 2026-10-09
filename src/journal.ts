@@ -111,6 +111,7 @@ function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
     fieldEqual(a.inputText, b.inputText) &&
     fieldEqual(a.toolCallId, b.toolCallId) &&
     fieldEqual(a.toolName, b.toolName) &&
+    fieldEqual(a.toolNamespace, b.toolNamespace) &&
     fieldEqual(a.model, b.model) &&
     fieldEqual(a.responseFormat, b.responseFormat) &&
     fieldEqual(a.predicate, b.predicate) &&

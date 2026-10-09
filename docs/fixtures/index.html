@@ -150,8 +150,30 @@
               <td>toolName</td>
               <td>string</td>
               <td>
-                Match on tool function name &mdash; compared against the names of tool definitions
-                in the request&rsquo;s <code>tools:</code> array
+                Match on tool name &mdash; compared against the names of tool definitions in the
+                request&rsquo;s <code>tools:</code> array (the function name on most APIs). On the
+                OpenAI Responses API this includes tools inside a <code>namespace</code> tool,
+                <code>custom</code> tools (by their <code>name</code>), and tools in an
+                <code>additional_tools</code> or <code>tool_search_output</code> input item
+              </td>
+            </tr>
+            <tr>
+              <td>toolNamespace</td>
+              <td>string</td>
+              <td>
+                Exact match on the <code>namespace</code> of an offered tool. It matches any request
+                tool that carries a <code>namespace</code> field. The OpenAI Responses API sets it
+                on each tool inside a <code>namespace</code> tool. Chat Completions passes request
+                tools through unchanged, so a top-level <code>namespace</code> field that a client
+                sends there also matches. Anthropic Messages does not carry it. Fixture validation
+                (<code>aimock validate</code>, <code>--validate-on-load</code>) warns about a file
+                fixture that sets <code>toolNamespace</code> with an <code>endpoint</code> other
+                than <code>"chat"</code>. Alone, it matches when any offered tool sits in that
+                namespace; with <code>toolName</code>, one offered tool must carry both. No default
+                namespace is assumed. See
+                <a href="/responses-api#namespaced-and-custom-tool-calls"
+                  >Namespaced and custom tool calls</a
+                >
               </td>
             </tr>
             <tr>
@@ -296,9 +318,9 @@
             check factors in <em>every</em> match discriminator the router gates on when deciding
             whether two fixtures truly collide &mdash; <code>userMessage</code>,
             <code>systemMessage</code>, <code>inputText</code>, <code>toolCallId</code>,
-            <code>toolResultContains</code>, <code>toolName</code>, <code>model</code>,
-            <code>responseFormat</code>, <code>endpoint</code>, <code>context</code>,
-            <code>sequenceIndex</code>, <code>turnIndex</code>, and
+            <code>toolResultContains</code>, <code>toolName</code>, <code>toolNamespace</code>,
+            <code>model</code>, <code>responseFormat</code>, <code>endpoint</code>,
+            <code>context</code>, <code>sequenceIndex</code>, <code>turnIndex</code>, and
             <code>hasToolResult</code> &mdash; so two fixtures that differ on any one of them do not
             trigger the warning. A <code>predicate</code> is a function that cannot be compared for
             equivalence, so any fixture carrying one is keyed by its own identity: it is treated as
@@ -353,7 +375,27 @@
             <tr>
               <td>Tool Call</td>
               <td>toolCalls[], finishReason?</td>
-              <td>Function call(s) with name + arguments</td>
+              <td>
+                Function call(s) <code>{ "name", "arguments", "id"?, "namespace"? }</code>, or
+                custom tool call(s)
+                <code>{ "type": "custom", "name", "input", "id"?, "namespace"? }</code>.
+                <code>namespace</code> is emitted on the OpenAI Responses API only. A custom tool
+                call loads on any fixture, but only the OpenAI Responses API serves it. On any other
+                endpoint, a request that would emit it fails before any content with
+                <code>aimock_unsupported_tool_call</code> (Ollama <code>/api/generate</code> instead
+                rejects every tool-call fixture with HTTP 400 and no aimock code).
+                <code>"type": "customToolCall"</code> is not a <code>toolCalls</code> type: such an
+                entry fails fixture validation (<code>aimock validate</code>,
+                <code>--validate-on-load</code>, <code>addFixturesFromJSON()</code>,
+                <code>POST /__aimock/fixtures</code>), and otherwise fails each request with
+                <code>aimock_invalid_fixture_tool_call</code>; releases up to 1.44.0 served it as a
+                function call. When the fixture also has non-empty <code>blocks</code>, a request
+                never emits or rejects its <code>toolCalls</code>, so a custom entry there is
+                ignored; load validation still checks them (see
+                <a href="/responses-api#namespaced-and-custom-tool-calls"
+                  >Namespaced and custom tool calls</a
+                >)
+              </td>
             </tr>
             <tr>
               <td>Content + Tool Calls</td>
@@ -587,9 +629,17 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
         <p>
           Valid JSON retains its existing behavior, including arrays, primitives, and
           <code>null</code>. Empty or omitted legacy tool-call arguments still default to
-          <code>{}</code>; whitespace-only strings are malformed JSON. Fixture validation is
-          unchanged: <code>validateFixtures()</code> can still reject malformed arguments before
-          replay, and ordered tool-call blocks still require an <code>arguments</code> field.
+          <code>{}</code>; whitespace-only strings are malformed JSON. The OpenAI Responses API is
+          an exception: it sends a string unchanged, but a function call (no <code>type</code>,
+          <code>"function"</code> or <code>"toolCall"</code>) whose <code>arguments</code> is
+          omitted or not a string (an object or array too, in a fixture passed to
+          <code>addFixture</code>, <code>addFixtures</code>, <code>prependFixture</code> or
+          <code>createServer</code>; <code>on</code>, a response factory's result and file loading
+          convert it to a string) fails with HTTP 500 and no error <code>code</code>. Fixture
+          validation is unchanged: <code>validateFixtures()</code> can still reject malformed
+          arguments before replay, and a <code>toolCall</code> block still requires an
+          <code>arguments</code> field (a <code>customToolCall</code> block takes
+          <code>input</code> instead).
         </p>
 
         <h2 id="ordered-blocks">Ordered blocks (tool-first &amp; interleaved streaming)</h2>
@@ -604,7 +654,16 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           <li>
             <code>{ "type": "toolCall", "name": "...", "arguments": ..., "id": "..." }</code>
             &mdash; a tool call (<code>id</code> optional; <code>arguments</code> accepts an object
-            or string, same auto-stringify rules as elsewhere)
+            or string, same auto-stringify rules as elsewhere; optional <code>namespace</code>,
+            emitted on the OpenAI Responses API only)
+          </li>
+          <li>
+            <code>{ "type": "customToolCall", "name": "...", "input": "...", "id": "..." }</code>
+            &mdash; a custom tool call with free-text <code>input</code> (<code>id</code> and
+            <code>namespace</code> optional). The fixture loads normally, but only the OpenAI
+            Responses API serves it; every other endpoint rejects the request before any content
+            with <code>aimock_unsupported_tool_call</code> (Ollama <code>/api/generate</code>: HTTP
+            400 and no aimock code)
           </li>
         </ul>
         <p>
@@ -651,13 +710,19 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             <code>blocks</code>
             array at load time so a malformed array is rejected before it reaches a builder &mdash;
             <code>blocks</code> must be an array; each entry must be an object with
-            <code>type</code> <code>"text"</code> or <code>"toolCall"</code>; a
-            <code>text</code> block needs a non-empty string <code>text</code>; a
-            <code>toolCall</code> block needs a non-empty <code>name</code>,
-            <code>arguments</code> that are a valid-JSON string or an object, and an optional string
-            <code>id</code>. If a fixture carries both <code>blocks</code> and legacy
-            <code>content</code>/<code>toolCalls</code> that disagree, loading warns (the redundant
-            legacy fields are ignored in favor of <code>blocks</code>).
+            <code>type</code> <code>"text"</code>, <code>"toolCall"</code> or
+            <code>"customToolCall"</code>; a <code>text</code> block needs a non-empty string
+            <code>text</code>; a <code>toolCall</code> block needs a non-empty <code>name</code>,
+            <code>arguments</code> that are a valid-JSON string or an object, an optional string
+            <code>id</code>, and no <code>input</code>; a <code>customToolCall</code> block needs a
+            non-empty string <code>name</code>, a string <code>input</code> (an empty one only
+            warns), no <code>arguments</code>, and an optional string <code>id</code>. On both
+            tool-call block types, <code>namespace</code> is optional but must be a non-empty string
+            when present. When <code>blocks</code> is non-empty, the builders stream only the blocks
+            and ignore the legacy <code>content</code>/<code>toolCalls</code>: a request never emits
+            or rejects those legacy <code>toolCalls</code>. Load validation still checks them like
+            any <code>toolCalls</code> entry, and only warns if they disagree with
+            <code>blocks</code>.
           </p>
         </div>
 
@@ -698,9 +763,9 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>OpenAI Responses API</td>
               <td>Full</td>
               <td>
-                Ordered <code>output</code> items (message vs <code>function_call</code>) carry
-                <code>output_index</code> &mdash; SDKs honor the order, so a tool call can precede
-                the message.
+                Ordered <code>output</code> items (message, <code>function_call</code> or
+                <code>custom_tool_call</code>) carry <code>output_index</code> &mdash; SDKs honor
+                the order, so a tool call can precede the message.
               </td>
             </tr>
             <tr>
@@ -1356,6 +1421,20 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
               <td>&mdash;</td>
               <td>Yes</td>
             </tr>
+            <tr>
+              <td>Custom Tool Calls<sup>&Dagger;</sup></td>
+              <td>Error</td>
+              <td>Yes</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+              <td>Error</td>
+            </tr>
           </tbody>
         </table>
         <p class="footnote">
@@ -1366,6 +1445,21 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           <sup>&dagger;</sup> Gemini Interactions captures reasoning on record (its collapser
           assembles <code>thought_summary</code> deltas into <code>reasoning</code>), but its replay
           builders do not re-emit reasoning, so a replayed turn carries none.
+        </p>
+        <p class="footnote">
+          <sup>&Dagger;</sup> In this row, &ldquo;Error&rdquo; means a request that would emit a
+          custom tool call fails before any content with
+          <code>aimock_unsupported_tool_call</code> (see
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >Namespaced and custom tool calls</a
+          >). The Azure column is the deployment route
+          (<code>/openai/deployments/{id}/chat/completions</code>) and the OpenRouter column is
+          <code>/api/v1/chat/completions</code>. The Ollama column is <code>/api/chat</code>;
+          <code>/api/generate</code> rejects every tool-call fixture, custom calls included, with
+          HTTP 400 (<code>invalid_request_error</code>) and no aimock code. aimock serves
+          <code>/openai/v1/responses</code> and OpenRouter&rsquo;s
+          <code>/api/v1/responses</code> with its OpenAI Responses handler, so custom tool calls
+          work there. The Realtime and Gemini Live WebSockets reject them too.
         </p>
       </main>
       <aside class="page-toc" id="page-toc"></aside>

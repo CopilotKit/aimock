@@ -1,0 +1,212 @@
+{
+  "model": "gpt-6-sol",
+  "stream": true,
+  "input": [
+    {
+      "type": "additional_tools",
+      "id": "at_1ee2b1ac-0b56-5a25-84f7-c0d4a083f385",
+      "role": "developer",
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "functions",
+          "description": "",
+          "tools": [
+            {
+              "type": "custom",
+              "name": "exec",
+              "description": "Run JavaScript code to orchestrate/compose tool calls\n- Eval…",
+              "format": {
+                "type": "grammar",
+                "syntax": "lark",
+                "definition": "\nstart: pragma_source | plain_source\npra…"
+              }
+            },
+            {
+              "type": "function",
+              "name": "wait",
+              "description": "Waits on a yielded `exec` cell and returns new output or com…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "request_user_input",
+              "description": "Request user input for one to three short questions and wait…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "request_user_input_async",
+              "description": "Ask the user one or more questions during ongoing work. Use …",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        },
+        {
+          "type": "namespace",
+          "name": "clock",
+          "description": "Tools for reading and waiting on time.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "sleep",
+              "description": "Pause execution for a specified duration. The sleep ends ear…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        },
+        {
+          "type": "namespace",
+          "name": "collaboration",
+          "description": "Tools for spawning and managing sub-agents.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "followup_task",
+              "description": "Send a follow-up task to an existing non-root target agent a…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "interrupt_agent",
+              "description": "Interrupt an agent's current turn, if any, and return its pr…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "list_agents",
+              "description": "List live agents in the current root thread tree. Optionally…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "send_message",
+              "description": "Send a message to an existing agent. The message will be del…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "spawn_agent",
+              "description": "\n        Available model overrides (optional; inherited pare…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "function",
+              "name": "wait_agent",
+              "description": "Wait for a mailbox update from any live agent, including que…",
+              "strict": false,
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_e0d5be75-8a10-52da-bfdb-81640efad388",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "You are Codex, an agent based on GPT-6. You and the user share one workspace, and your job is to col…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a11ef5-2820-71e1-b9be-37b922c77ea3",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a…"
+        },
+        {
+          "type": "input_text",
+          "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbo…"
+        },
+        {
+          "type": "input_text",
+          "text": "<collaboration_mode># Collaboration Mode: Default\n\nYou are now in Default mode. Any previous instruc…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a11ef5-2820-71e1-b9be-37c623f40e9d",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<multi_agent_role>You are `/root`, the primary agent in a team of agents collaborating to fulfill th…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a11ef5-2820-71e1-b9be-37d971d0ad8a",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<multi_agent_mode>Any earlier instruction enabling proactive multi-agent delegation no longer applie…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a11ef5-2820-71e1-b9be-37ebf67ebc63",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<environment_context>\n  <cwd>/tmp/aimock-505-codex-work-Kmyf6Q</cwd>\n  <shell>zsh</shell>\n  <current…"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a11ef5-2837-7681-9a9c-848a03e76c39",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Create hello.txt saying hello from aimock."
+        }
+      ]
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": false,
+  "store": false,
+  "include": ["reasoning.encrypted_content"]
+}

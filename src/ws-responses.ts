@@ -18,9 +18,14 @@ import {
   buildContentWithToolCallsStreamEvents,
   prepareResponsesMisbehavior,
   buildResponsesMisbehavior,
+  validateResponsesTools,
   type ResponsesSSEEvent,
+  type ResponsesInputItem,
+  type ResponsesToolDef,
 } from "./responses.js";
 import {
+  fixtureToolCallErrorCode,
+  isFixtureToolCallError,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -97,7 +102,8 @@ export function handleWebSocketResponses(
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket responses error: ${msg}`);
         try {
-          ws.send(JSON.stringify(buildErrorEvent(msg, "server_error")));
+          const code = isFixtureToolCallError(err) ? fixtureToolCallErrorCode(err) : undefined;
+          ws.send(JSON.stringify(buildErrorEvent(msg, "server_error", code)));
         } catch (sendErr) {
           defaults.logger.debug(
             `Failed to send error to client: ${sendErr instanceof Error ? sendErr.message : "unknown"}`,
@@ -143,26 +149,11 @@ async function processMessage(
 
   const responsesReq = {
     model: parsed.model ?? defaults.model,
-    input: (parsed.input ?? []) as {
-      role?: string;
-      type?: string;
-      content?: string | { type: string; text?: string }[];
-      call_id?: string;
-      name?: string;
-      arguments?: string;
-      output?: string;
-      id?: string;
-    }[],
+    // Same shapes as HTTP: namespace / custom tools, additional_tools items
+    // and custom tool call items reach responsesToCompletionRequest unchanged.
+    input: (parsed.input ?? []) as ResponsesInputItem[],
     instructions: parsed.instructions,
-    tools: parsed.tools as
-      | {
-          type: "function";
-          name: string;
-          description?: string;
-          parameters?: object;
-          strict?: boolean;
-        }[]
-      | undefined,
+    tools: parsed.tools as ResponsesToolDef[] | undefined,
     tool_choice: parsed.tool_choice,
     stream: parsed.stream,
     temperature: parsed.temperature,
@@ -170,6 +161,21 @@ async function processMessage(
     include: (parsed as { include?: string[] }).include,
     store: (parsed as { store?: boolean }).store,
   };
+
+  // Reject malformed tool collections exactly as the HTTP transport does,
+  // instead of silently dropping them during conversion.
+  const toolsError = validateResponsesTools(parsed.tools, parsed.input);
+  if (toolsError) {
+    journal.add({
+      method: "WS",
+      path: "/v1/responses",
+      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
+      body: responsesReq,
+      response: { status: 400, fixture: null },
+    });
+    ws.send(JSON.stringify(buildErrorEvent(toolsError, "invalid_request_error")));
+    return;
+  }
 
   // Gate encrypted-reasoning emission identically to the HTTP transport so the
   // agent-framework#7233 stateless-replay path works over WebSocket too.
@@ -395,6 +401,7 @@ async function processMessage(
       );
     } catch (error) {
       journalEntry.response.status = 500;
+      journalEntry.response.error = error instanceof Error ? error.message : String(error);
       throw error;
     }
 
@@ -494,6 +501,7 @@ async function processMessage(
       );
     } catch (error) {
       journalEntry.response.status = 500;
+      journalEntry.response.error = error instanceof Error ? error.message : String(error);
       throw error;
     }
     const interruption = createInterruptionSignal(fixture);

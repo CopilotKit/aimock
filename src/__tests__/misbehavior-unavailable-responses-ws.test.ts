@@ -124,11 +124,11 @@ function expectComplete(events: ResponsesSSEEvent[], response?: FixtureResponse)
       response: {
         output: expect.arrayContaining(
           response.toolCalls.map((call) =>
-            expect.objectContaining({
-              type: "function_call",
-              name: call.name,
-              arguments: call.arguments,
-            }),
+            expect.objectContaining(
+              call.type === "custom"
+                ? { type: "custom_tool_call", name: call.name, input: call.input }
+                : { type: "function_call", name: call.name, arguments: call.arguments },
+            ),
           ),
         ),
       },

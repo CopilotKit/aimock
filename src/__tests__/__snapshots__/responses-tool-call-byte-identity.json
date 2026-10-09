@@ -1,0 +1,1731 @@
+{
+  "bi tool-only": {
+    "nonStreaming": {
+      "status": 200,
+      "body": {
+        "id": "<resp#0>",
+        "object": "response",
+        "created_at": "<created_at>",
+        "model": "o3-mini",
+        "status": "completed",
+        "output": [
+          {
+            "type": "function_call",
+            "id": "<fc#1>",
+            "call_id": "call_fixed_1",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          },
+          {
+            "type": "function_call",
+            "id": "<fc#2>",
+            "call_id": "<call#3>",
+            "name": "get_time",
+            "arguments": "{}",
+            "status": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "total_tokens": 0
+        }
+      }
+    },
+    "streaming": {
+      "status": 200,
+      "events": [
+        {
+          "type": "response.created",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.in_progress",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#5>",
+            "call_id": "call_fixed_1",
+            "name": "get_weather",
+            "arguments": "",
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#5>",
+          "output_index": 0,
+          "delta": "{\"city\""
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#5>",
+          "output_index": 0,
+          "delta": ":\"NYC\"}"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "<fc#5>",
+          "output_index": 0,
+          "arguments": "{\"city\":\"NYC\"}"
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#5>",
+            "call_id": "call_fixed_1",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#6>",
+            "call_id": "<call#7>",
+            "name": "get_time",
+            "arguments": "",
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#6>",
+          "output_index": 1,
+          "delta": "{}"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "<fc#6>",
+          "output_index": 1,
+          "arguments": "{}"
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#6>",
+            "call_id": "<call#7>",
+            "name": "get_time",
+            "arguments": "{}",
+            "status": "completed"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "completed",
+            "output": [
+              {
+                "type": "function_call",
+                "id": "<fc#5>",
+                "call_id": "call_fixed_1",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"NYC\"}",
+                "status": "completed"
+              },
+              {
+                "type": "function_call",
+                "id": "<fc#6>",
+                "call_id": "<call#7>",
+                "name": "get_time",
+                "arguments": "{}",
+                "status": "completed"
+              }
+            ],
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "total_tokens": 0
+            }
+          }
+        }
+      ]
+    },
+    "websocket": [
+      {
+        "type": "response.created",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.in_progress",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#9>",
+          "call_id": "call_fixed_1",
+          "name": "get_weather",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#9>",
+        "output_index": 0,
+        "delta": "{\"city\""
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#9>",
+        "output_index": 0,
+        "delta": ":\"NYC\"}"
+      },
+      {
+        "type": "response.function_call_arguments.done",
+        "item_id": "<fc#9>",
+        "output_index": 0,
+        "arguments": "{\"city\":\"NYC\"}"
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#9>",
+          "call_id": "call_fixed_1",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"NYC\"}",
+          "status": "completed"
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#10>",
+          "call_id": "<call#11>",
+          "name": "get_time",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#10>",
+        "output_index": 1,
+        "delta": "{}"
+      },
+      {
+        "type": "response.function_call_arguments.done",
+        "item_id": "<fc#10>",
+        "output_index": 1,
+        "arguments": "{}"
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#10>",
+          "call_id": "<call#11>",
+          "name": "get_time",
+          "arguments": "{}",
+          "status": "completed"
+        }
+      },
+      {
+        "type": "response.completed",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "completed",
+          "output": [
+            {
+              "type": "function_call",
+              "id": "<fc#9>",
+              "call_id": "call_fixed_1",
+              "name": "get_weather",
+              "arguments": "{\"city\":\"NYC\"}",
+              "status": "completed"
+            },
+            {
+              "type": "function_call",
+              "id": "<fc#10>",
+              "call_id": "<call#11>",
+              "name": "get_time",
+              "arguments": "{}",
+              "status": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+          }
+        }
+      }
+    ]
+  },
+  "bi tool-prefix": {
+    "nonStreaming": {
+      "status": 200,
+      "body": {
+        "id": "<resp#0>",
+        "object": "response",
+        "created_at": "<created_at>",
+        "model": "o3-mini",
+        "status": "completed",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "<rs#1>",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Thinking about weather."
+              }
+            ]
+          },
+          {
+            "type": "web_search_call",
+            "id": "<ws#2>",
+            "status": "completed",
+            "action": {
+              "type": "search",
+              "query": "weather nyc"
+            }
+          },
+          {
+            "type": "function_call",
+            "id": "<fc#3>",
+            "call_id": "<call#4>",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "total_tokens": 0
+        }
+      }
+    },
+    "streaming": {
+      "status": 200,
+      "events": [
+        {
+          "type": "response.created",
+          "response": {
+            "id": "<resp#5>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.in_progress",
+          "response": {
+            "id": "<resp#5>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "reasoning",
+            "id": "<rs#6>",
+            "summary": []
+          }
+        },
+        {
+          "type": "response.reasoning_summary_part.added",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "part": {
+            "type": "summary_text",
+            "text": ""
+          }
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": "Thinkin"
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": "g about"
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": " weathe"
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": "r."
+        },
+        {
+          "type": "response.reasoning_summary_text.done",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "text": "Thinking about weather."
+        },
+        {
+          "type": "response.reasoning_summary_part.done",
+          "item_id": "<rs#6>",
+          "output_index": 0,
+          "summary_index": 0,
+          "part": {
+            "type": "summary_text",
+            "text": "Thinking about weather."
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "reasoning",
+            "id": "<rs#6>",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Thinking about weather."
+              }
+            ]
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 1,
+          "item": {
+            "type": "web_search_call",
+            "id": "<ws#7>",
+            "status": "in_progress",
+            "action": {
+              "type": "search",
+              "query": "weather nyc"
+            }
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 1,
+          "item": {
+            "type": "web_search_call",
+            "id": "<ws#7>",
+            "status": "completed",
+            "action": {
+              "type": "search",
+              "query": "weather nyc"
+            }
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 2,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#8>",
+            "call_id": "<call#9>",
+            "name": "get_weather",
+            "arguments": "",
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#8>",
+          "output_index": 2,
+          "delta": "{\"city\""
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#8>",
+          "output_index": 2,
+          "delta": ":\"NYC\"}"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "<fc#8>",
+          "output_index": 2,
+          "arguments": "{\"city\":\"NYC\"}"
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 2,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#8>",
+            "call_id": "<call#9>",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "id": "<resp#5>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "completed",
+            "output": [
+              {
+                "type": "reasoning",
+                "id": "<rs#6>",
+                "summary": [
+                  {
+                    "type": "summary_text",
+                    "text": "Thinking about weather."
+                  }
+                ]
+              },
+              {
+                "type": "web_search_call",
+                "id": "<ws#7>",
+                "status": "completed",
+                "action": {
+                  "type": "search",
+                  "query": "weather nyc"
+                }
+              },
+              {
+                "type": "function_call",
+                "id": "<fc#8>",
+                "call_id": "<call#9>",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"NYC\"}",
+                "status": "completed"
+              }
+            ],
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "total_tokens": 0
+            }
+          }
+        }
+      ]
+    },
+    "websocket": [
+      {
+        "type": "response.created",
+        "response": {
+          "id": "<resp#10>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.in_progress",
+        "response": {
+          "id": "<resp#10>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "reasoning",
+          "id": "<rs#11>",
+          "summary": []
+        }
+      },
+      {
+        "type": "response.reasoning_summary_part.added",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "part": {
+          "type": "summary_text",
+          "text": ""
+        }
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": "Thinkin"
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": "g about"
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": " weathe"
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": "r."
+      },
+      {
+        "type": "response.reasoning_summary_text.done",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "text": "Thinking about weather."
+      },
+      {
+        "type": "response.reasoning_summary_part.done",
+        "item_id": "<rs#11>",
+        "output_index": 0,
+        "summary_index": 0,
+        "part": {
+          "type": "summary_text",
+          "text": "Thinking about weather."
+        }
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+          "type": "reasoning",
+          "id": "<rs#11>",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "Thinking about weather."
+            }
+          ]
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 1,
+        "item": {
+          "type": "web_search_call",
+          "id": "<ws#12>",
+          "status": "in_progress",
+          "action": {
+            "type": "search",
+            "query": "weather nyc"
+          }
+        }
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 1,
+        "item": {
+          "type": "web_search_call",
+          "id": "<ws#12>",
+          "status": "completed",
+          "action": {
+            "type": "search",
+            "query": "weather nyc"
+          }
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 2,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#13>",
+          "call_id": "<call#14>",
+          "name": "get_weather",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#13>",
+        "output_index": 2,
+        "delta": "{\"city\""
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#13>",
+        "output_index": 2,
+        "delta": ":\"NYC\"}"
+      },
+      {
+        "type": "response.function_call_arguments.done",
+        "item_id": "<fc#13>",
+        "output_index": 2,
+        "arguments": "{\"city\":\"NYC\"}"
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 2,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#13>",
+          "call_id": "<call#14>",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"NYC\"}",
+          "status": "completed"
+        }
+      },
+      {
+        "type": "response.completed",
+        "response": {
+          "id": "<resp#10>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "completed",
+          "output": [
+            {
+              "type": "reasoning",
+              "id": "<rs#11>",
+              "summary": [
+                {
+                  "type": "summary_text",
+                  "text": "Thinking about weather."
+                }
+              ]
+            },
+            {
+              "type": "web_search_call",
+              "id": "<ws#12>",
+              "status": "completed",
+              "action": {
+                "type": "search",
+                "query": "weather nyc"
+              }
+            },
+            {
+              "type": "function_call",
+              "id": "<fc#13>",
+              "call_id": "<call#14>",
+              "name": "get_weather",
+              "arguments": "{\"city\":\"NYC\"}",
+              "status": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+          }
+        }
+      }
+    ]
+  },
+  "bi content-tools": {
+    "nonStreaming": {
+      "status": 200,
+      "body": {
+        "id": "<resp#0>",
+        "object": "response",
+        "created_at": "<created_at>",
+        "model": "o3-mini",
+        "status": "completed",
+        "output": [
+          {
+            "type": "message",
+            "id": "<msg#1>",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Checking now.",
+                "annotations": []
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "id": "<fc#2>",
+            "call_id": "call_fixed_2",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "total_tokens": 0
+        }
+      }
+    },
+    "streaming": {
+      "status": 200,
+      "events": [
+        {
+          "type": "response.created",
+          "response": {
+            "id": "<resp#3>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.in_progress",
+          "response": {
+            "id": "<resp#3>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "message",
+            "id": "<msg#4>",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": []
+          }
+        },
+        {
+          "type": "response.content_part.added",
+          "item_id": "<msg#4>",
+          "output_index": 0,
+          "content_index": 0,
+          "part": {
+            "type": "output_text",
+            "text": "",
+            "annotations": []
+          }
+        },
+        {
+          "type": "response.output_text.delta",
+          "item_id": "<msg#4>",
+          "output_index": 0,
+          "content_index": 0,
+          "delta": "Checkin"
+        },
+        {
+          "type": "response.output_text.delta",
+          "item_id": "<msg#4>",
+          "output_index": 0,
+          "content_index": 0,
+          "delta": "g now."
+        },
+        {
+          "type": "response.output_text.done",
+          "item_id": "<msg#4>",
+          "output_index": 0,
+          "content_index": 0,
+          "text": "Checking now."
+        },
+        {
+          "type": "response.content_part.done",
+          "item_id": "<msg#4>",
+          "output_index": 0,
+          "content_index": 0,
+          "part": {
+            "type": "output_text",
+            "text": "Checking now.",
+            "annotations": []
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "message",
+            "id": "<msg#4>",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Checking now.",
+                "annotations": []
+              }
+            ]
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#5>",
+            "call_id": "call_fixed_2",
+            "name": "get_weather",
+            "arguments": "",
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#5>",
+          "output_index": 1,
+          "delta": "{\"city\""
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#5>",
+          "output_index": 1,
+          "delta": ":\"NYC\"}"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "<fc#5>",
+          "output_index": 1,
+          "arguments": "{\"city\":\"NYC\"}"
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#5>",
+            "call_id": "call_fixed_2",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "id": "<resp#3>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "completed",
+            "output": [
+              {
+                "type": "message",
+                "id": "<msg#4>",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Checking now.",
+                    "annotations": []
+                  }
+                ]
+              },
+              {
+                "type": "function_call",
+                "id": "<fc#5>",
+                "call_id": "call_fixed_2",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"NYC\"}",
+                "status": "completed"
+              }
+            ],
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "total_tokens": 0
+            }
+          }
+        }
+      ]
+    },
+    "websocket": [
+      {
+        "type": "response.created",
+        "response": {
+          "id": "<resp#6>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.in_progress",
+        "response": {
+          "id": "<resp#6>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "message",
+          "id": "<msg#7>",
+          "status": "in_progress",
+          "role": "assistant",
+          "content": []
+        }
+      },
+      {
+        "type": "response.content_part.added",
+        "item_id": "<msg#7>",
+        "output_index": 0,
+        "content_index": 0,
+        "part": {
+          "type": "output_text",
+          "text": "",
+          "annotations": []
+        }
+      },
+      {
+        "type": "response.output_text.delta",
+        "item_id": "<msg#7>",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "Checkin"
+      },
+      {
+        "type": "response.output_text.delta",
+        "item_id": "<msg#7>",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "g now."
+      },
+      {
+        "type": "response.output_text.done",
+        "item_id": "<msg#7>",
+        "output_index": 0,
+        "content_index": 0,
+        "text": "Checking now."
+      },
+      {
+        "type": "response.content_part.done",
+        "item_id": "<msg#7>",
+        "output_index": 0,
+        "content_index": 0,
+        "part": {
+          "type": "output_text",
+          "text": "Checking now.",
+          "annotations": []
+        }
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+          "type": "message",
+          "id": "<msg#7>",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Checking now.",
+              "annotations": []
+            }
+          ]
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#8>",
+          "call_id": "call_fixed_2",
+          "name": "get_weather",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#8>",
+        "output_index": 1,
+        "delta": "{\"city\""
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#8>",
+        "output_index": 1,
+        "delta": ":\"NYC\"}"
+      },
+      {
+        "type": "response.function_call_arguments.done",
+        "item_id": "<fc#8>",
+        "output_index": 1,
+        "arguments": "{\"city\":\"NYC\"}"
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#8>",
+          "call_id": "call_fixed_2",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"NYC\"}",
+          "status": "completed"
+        }
+      },
+      {
+        "type": "response.completed",
+        "response": {
+          "id": "<resp#6>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "id": "<msg#7>",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Checking now.",
+                  "annotations": []
+                }
+              ]
+            },
+            {
+              "type": "function_call",
+              "id": "<fc#8>",
+              "call_id": "call_fixed_2",
+              "name": "get_weather",
+              "arguments": "{\"city\":\"NYC\"}",
+              "status": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+          }
+        }
+      }
+    ]
+  },
+  "bi blocks": {
+    "nonStreaming": {
+      "status": 200,
+      "body": {
+        "id": "<resp#0>",
+        "object": "response",
+        "created_at": "<created_at>",
+        "model": "o3-mini",
+        "status": "completed",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "<rs#1>",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Plan first."
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "id": "<fc#2>",
+            "call_id": "call_fixed_3",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          },
+          {
+            "type": "message",
+            "id": "<msg#3>",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Here you go.",
+                "annotations": []
+              }
+            ]
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "total_tokens": 0
+        }
+      }
+    },
+    "streaming": {
+      "status": 200,
+      "events": [
+        {
+          "type": "response.created",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.in_progress",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "in_progress",
+            "output": []
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "reasoning",
+            "id": "<rs#5>",
+            "summary": []
+          }
+        },
+        {
+          "type": "response.reasoning_summary_part.added",
+          "item_id": "<rs#5>",
+          "output_index": 0,
+          "summary_index": 0,
+          "part": {
+            "type": "summary_text",
+            "text": ""
+          }
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#5>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": "Plan fi"
+        },
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "item_id": "<rs#5>",
+          "output_index": 0,
+          "summary_index": 0,
+          "delta": "rst."
+        },
+        {
+          "type": "response.reasoning_summary_text.done",
+          "item_id": "<rs#5>",
+          "output_index": 0,
+          "summary_index": 0,
+          "text": "Plan first."
+        },
+        {
+          "type": "response.reasoning_summary_part.done",
+          "item_id": "<rs#5>",
+          "output_index": 0,
+          "summary_index": 0,
+          "part": {
+            "type": "summary_text",
+            "text": "Plan first."
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "reasoning",
+            "id": "<rs#5>",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "Plan first."
+              }
+            ]
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#6>",
+            "call_id": "call_fixed_3",
+            "name": "get_weather",
+            "arguments": "",
+            "status": "in_progress"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#6>",
+          "output_index": 1,
+          "delta": "{\"city\""
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "item_id": "<fc#6>",
+          "output_index": 1,
+          "delta": ":\"NYC\"}"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "<fc#6>",
+          "output_index": 1,
+          "arguments": "{\"city\":\"NYC\"}"
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "<fc#6>",
+            "call_id": "call_fixed_3",
+            "name": "get_weather",
+            "arguments": "{\"city\":\"NYC\"}",
+            "status": "completed"
+          }
+        },
+        {
+          "type": "response.output_item.added",
+          "output_index": 2,
+          "item": {
+            "type": "message",
+            "id": "<msg#7>",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": []
+          }
+        },
+        {
+          "type": "response.content_part.added",
+          "item_id": "<msg#7>",
+          "output_index": 2,
+          "content_index": 0,
+          "part": {
+            "type": "output_text",
+            "text": "",
+            "annotations": []
+          }
+        },
+        {
+          "type": "response.output_text.delta",
+          "item_id": "<msg#7>",
+          "output_index": 2,
+          "content_index": 0,
+          "delta": "Here yo"
+        },
+        {
+          "type": "response.output_text.delta",
+          "item_id": "<msg#7>",
+          "output_index": 2,
+          "content_index": 0,
+          "delta": "u go."
+        },
+        {
+          "type": "response.output_text.done",
+          "item_id": "<msg#7>",
+          "output_index": 2,
+          "content_index": 0,
+          "text": "Here you go."
+        },
+        {
+          "type": "response.content_part.done",
+          "item_id": "<msg#7>",
+          "output_index": 2,
+          "content_index": 0,
+          "part": {
+            "type": "output_text",
+            "text": "Here you go.",
+            "annotations": []
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "output_index": 2,
+          "item": {
+            "type": "message",
+            "id": "<msg#7>",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Here you go.",
+                "annotations": []
+              }
+            ]
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "id": "<resp#4>",
+            "object": "response",
+            "created_at": "<created_at>",
+            "model": "o3-mini",
+            "status": "completed",
+            "output": [
+              {
+                "type": "reasoning",
+                "id": "<rs#5>",
+                "summary": [
+                  {
+                    "type": "summary_text",
+                    "text": "Plan first."
+                  }
+                ]
+              },
+              {
+                "type": "function_call",
+                "id": "<fc#6>",
+                "call_id": "call_fixed_3",
+                "name": "get_weather",
+                "arguments": "{\"city\":\"NYC\"}",
+                "status": "completed"
+              },
+              {
+                "type": "message",
+                "id": "<msg#7>",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "Here you go.",
+                    "annotations": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "total_tokens": 0
+            }
+          }
+        }
+      ]
+    },
+    "websocket": [
+      {
+        "type": "response.created",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.in_progress",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "in_progress",
+          "output": []
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "reasoning",
+          "id": "<rs#9>",
+          "summary": []
+        }
+      },
+      {
+        "type": "response.reasoning_summary_part.added",
+        "item_id": "<rs#9>",
+        "output_index": 0,
+        "summary_index": 0,
+        "part": {
+          "type": "summary_text",
+          "text": ""
+        }
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#9>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": "Plan fi"
+      },
+      {
+        "type": "response.reasoning_summary_text.delta",
+        "item_id": "<rs#9>",
+        "output_index": 0,
+        "summary_index": 0,
+        "delta": "rst."
+      },
+      {
+        "type": "response.reasoning_summary_text.done",
+        "item_id": "<rs#9>",
+        "output_index": 0,
+        "summary_index": 0,
+        "text": "Plan first."
+      },
+      {
+        "type": "response.reasoning_summary_part.done",
+        "item_id": "<rs#9>",
+        "output_index": 0,
+        "summary_index": 0,
+        "part": {
+          "type": "summary_text",
+          "text": "Plan first."
+        }
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": {
+          "type": "reasoning",
+          "id": "<rs#9>",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "Plan first."
+            }
+          ]
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#10>",
+          "call_id": "call_fixed_3",
+          "name": "get_weather",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#10>",
+        "output_index": 1,
+        "delta": "{\"city\""
+      },
+      {
+        "type": "response.function_call_arguments.delta",
+        "item_id": "<fc#10>",
+        "output_index": 1,
+        "delta": ":\"NYC\"}"
+      },
+      {
+        "type": "response.function_call_arguments.done",
+        "item_id": "<fc#10>",
+        "output_index": 1,
+        "arguments": "{\"city\":\"NYC\"}"
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 1,
+        "item": {
+          "type": "function_call",
+          "id": "<fc#10>",
+          "call_id": "call_fixed_3",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"NYC\"}",
+          "status": "completed"
+        }
+      },
+      {
+        "type": "response.output_item.added",
+        "output_index": 2,
+        "item": {
+          "type": "message",
+          "id": "<msg#11>",
+          "status": "in_progress",
+          "role": "assistant",
+          "content": []
+        }
+      },
+      {
+        "type": "response.content_part.added",
+        "item_id": "<msg#11>",
+        "output_index": 2,
+        "content_index": 0,
+        "part": {
+          "type": "output_text",
+          "text": "",
+          "annotations": []
+        }
+      },
+      {
+        "type": "response.output_text.delta",
+        "item_id": "<msg#11>",
+        "output_index": 2,
+        "content_index": 0,
+        "delta": "Here yo"
+      },
+      {
+        "type": "response.output_text.delta",
+        "item_id": "<msg#11>",
+        "output_index": 2,
+        "content_index": 0,
+        "delta": "u go."
+      },
+      {
+        "type": "response.output_text.done",
+        "item_id": "<msg#11>",
+        "output_index": 2,
+        "content_index": 0,
+        "text": "Here you go."
+      },
+      {
+        "type": "response.content_part.done",
+        "item_id": "<msg#11>",
+        "output_index": 2,
+        "content_index": 0,
+        "part": {
+          "type": "output_text",
+          "text": "Here you go.",
+          "annotations": []
+        }
+      },
+      {
+        "type": "response.output_item.done",
+        "output_index": 2,
+        "item": {
+          "type": "message",
+          "id": "<msg#11>",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Here you go.",
+              "annotations": []
+            }
+          ]
+        }
+      },
+      {
+        "type": "response.completed",
+        "response": {
+          "id": "<resp#8>",
+          "object": "response",
+          "created_at": "<created_at>",
+          "model": "o3-mini",
+          "status": "completed",
+          "output": [
+            {
+              "type": "reasoning",
+              "id": "<rs#9>",
+              "summary": [
+                {
+                  "type": "summary_text",
+                  "text": "Plan first."
+                }
+              ]
+            },
+            {
+              "type": "function_call",
+              "id": "<fc#10>",
+              "call_id": "call_fixed_3",
+              "name": "get_weather",
+              "arguments": "{\"city\":\"NYC\"}",
+              "status": "completed"
+            },
+            {
+              "type": "message",
+              "id": "<msg#11>",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "output_text",
+                  "text": "Here you go.",
+                  "annotations": []
+                }
+              ]
+            }
+          ],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+          }
+        }
+      }
+    ]
+  }
+}

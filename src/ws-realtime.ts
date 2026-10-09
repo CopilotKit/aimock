@@ -11,13 +11,17 @@ import type {
   ChatCompletionRequest,
   ChatMessage,
   Fixture,
-  FixtureBlock,
   JournalEntry,
   HandlerDefaults,
   ToolDefinition,
 } from "./types.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
+  fixtureToolCallErrorCode,
+  isFixtureToolCallError,
+  journalFixtureToolCallError,
+  requireFunctionToolCalls,
+  type FunctionFixtureBlock,
   generateToolCallId,
   flattenHeaders,
   isTextResponse,
@@ -40,6 +44,12 @@ import { delay, calculateDelay } from "./sse-writer.js";
 import { DEFAULT_TEST_ID, type Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
 import type { WebSocketConnection } from "./ws-framing.js";
+
+/**
+ * Wire label for custom-tool-call rejections on this transport, on both the
+ * `toolCalls` and the ordered `blocks` path.
+ */
+const REALTIME_WIRE = "OpenAI Realtime";
 
 /** Generate a Realtime-API-style ID with underscore separator (e.g. event_xxx, item_xxx). */
 function realtimeId(prefix: string): string {
@@ -1153,6 +1163,69 @@ function sendLiveTranscriptionFailure(
   );
 }
 
+/**
+ * Run a fixture tool-call `check` before any output item is sent. A rejected
+ * fixture (a custom tool call, which Realtime cannot carry, or a malformed
+ * `toolCalls` entry or tool-call block) marks the journal entry as a 500 and
+ * answers with a failed response — `response.created` then
+ * `response.done` with `status: "failed"` and the error, including its aimock
+ * `code`, in `status_details` — the same pair the error-fixture branch sends.
+ * Returns undefined when the response was rejected.
+ */
+function checkRealtimeFixtureToolCalls<T>(
+  ws: WebSocketConnection,
+  journalEntry: JournalEntry,
+  responseId: string,
+  isBeta: boolean,
+  logger: Logger,
+  check: () => T,
+): T | undefined {
+  try {
+    return journalFixtureToolCallError(journalEntry, check);
+  } catch (err) {
+    if (!isFixtureToolCallError(err)) throw err;
+    logger.error(`WebSocket realtime error: ${err.message}`);
+    sendEvent(
+      ws,
+      {
+        type: "response.created",
+        response: {
+          id: responseId,
+          object: "realtime.response",
+          status: "failed",
+          status_details: null,
+          output: [],
+          usage: null,
+        },
+      },
+      isBeta,
+    );
+    sendEvent(
+      ws,
+      {
+        type: "response.done",
+        response: {
+          id: responseId,
+          object: "realtime.response",
+          status: "failed",
+          output: [],
+          status_details: {
+            type: "error",
+            error: {
+              message: err.message,
+              type: "server_error",
+              code: fixtureToolCallErrorCode(err),
+            },
+          },
+          usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0 },
+        },
+      },
+      isBeta,
+    );
+    return undefined;
+  }
+}
+
 async function handleResponseCreate(
   ws: WebSocketConnection,
   fixtures: Fixture[],
@@ -1341,17 +1414,32 @@ async function handleResponseCreate(
   if (misbehavior.kind === "applied") {
     const prepared = misbehavior.response;
     const combined = isContentWithToolCallsResponse(prepared);
-    const blocks: FixtureBlock[] =
-      combined && prepared.blocks?.length
-        ? resolveFixtureBlocks(prepared.blocks)
-        : [
-            ...((isTextResponse(prepared) || combined) && prepared.content
-              ? [{ type: "text" as const, text: prepared.content }]
-              : []),
-            ...(isToolCallResponse(prepared) || combined
-              ? (prepared.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
-              : []),
-          ];
+    // Journal first so a fixture tool-call error gets the same coded failed
+    // response as the non-misbehavior paths below. (The planner never applies
+    // a fault to a custom-call fixture on this wire.)
+    const journalEntry = addResponseEntry(200);
+    const blocks: FunctionFixtureBlock[] | undefined = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () =>
+        combined && prepared.blocks?.length
+          ? resolveFixtureBlocks(prepared.blocks, { wire: REALTIME_WIRE })
+          : [
+              ...((isTextResponse(prepared) || combined) && prepared.content
+                ? [{ type: "text" as const, text: prepared.content }]
+                : []),
+              ...(isToolCallResponse(prepared) || combined
+                ? requireFunctionToolCalls(prepared.toolCalls ?? [], REALTIME_WIRE).map((call) => ({
+                    ...call,
+                    type: "toolCall" as const,
+                  }))
+                : []),
+            ],
+    );
+    if (!blocks) return;
     const usage = resolveOpenAIChatMisbehaviorUsage(misbehavior, completionReq, false);
     await streamRealtimeBlocks(
       ws,
@@ -1363,7 +1451,7 @@ async function handleResponseCreate(
       chunkSize,
       isBeta,
       conversationItems,
-      addResponseEntry(200),
+      journalEntry,
       {
         stop: misbehavior.stop,
         usage: {
@@ -1434,9 +1522,19 @@ async function handleResponseCreate(
     // `output_index`, so block order — including tool-before-text — IS
     // observable to a client and is honored here.
     if (response.blocks && response.blocks.length > 0) {
+      const blocks = response.blocks;
+      const resolvedBlocks = checkRealtimeFixtureToolCalls(
+        ws,
+        journalEntry,
+        responseId,
+        isBeta,
+        defaults.logger,
+        () => resolveFixtureBlocks(blocks, { wire: REALTIME_WIRE }),
+      );
+      if (!resolvedBlocks) return;
       await streamRealtimeBlocks(
         ws,
-        resolveFixtureBlocks(response.blocks),
+        resolvedBlocks,
         responseId,
         fixture,
         defaults,
@@ -1448,6 +1546,16 @@ async function handleResponseCreate(
       );
       return;
     }
+
+    const functionToolCalls = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () => requireFunctionToolCalls(response.toolCalls ?? [], REALTIME_WIRE),
+    );
+    if (!functionToolCalls) return;
 
     // response.created
     sendEvent(
@@ -1654,7 +1762,7 @@ async function handleResponseCreate(
     allOutputItems.push(textOutputItem);
 
     // ── Tool call parts ────────────────────────────────────────────
-    const toolCalls = response.toolCalls ?? [];
+    const toolCalls = functionToolCalls;
     for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
       const tc = toolCalls[tcIdx];
       const callId = tc.id ?? generateToolCallId();
@@ -2046,6 +2154,15 @@ async function handleResponseCreate(
   // ── Tool call response ──────────────────────────────────────────────
   if (isToolCallResponse(response)) {
     const journalEntry = addResponseEntry(200);
+    const toolCalls = checkRealtimeFixtureToolCalls(
+      ws,
+      journalEntry,
+      responseId,
+      isBeta,
+      defaults.logger,
+      () => requireFunctionToolCalls(response.toolCalls, REALTIME_WIRE),
+    );
+    if (!toolCalls) return;
 
     // response.created
     sendEvent(
@@ -2071,8 +2188,8 @@ async function handleResponseCreate(
     let interrupted = false;
     let eventIndex = 0;
 
-    for (let tcIdx = 0; tcIdx < response.toolCalls.length; tcIdx++) {
-      const tc = response.toolCalls[tcIdx];
+    for (let tcIdx = 0; tcIdx < toolCalls.length; tcIdx++) {
+      const tc = toolCalls[tcIdx];
       const callId = tc.id ?? generateToolCallId();
       const itemId = realtimeId("item");
 
@@ -2260,7 +2377,7 @@ async function handleResponseCreate(
  */
 async function streamRealtimeBlocks(
   ws: WebSocketConnection,
-  blocks: FixtureBlock[],
+  blocks: FunctionFixtureBlock[],
   responseId: string,
   fixture: Fixture,
   defaults: { latency: number; chunkSize: number; replaySpeed?: number; logger: Logger },

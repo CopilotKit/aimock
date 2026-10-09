@@ -57,7 +57,13 @@ export interface ChatMessage {
 
 export interface ToolCallMessage {
   id: string;
-  type: "function";
+  /**
+   * `"custom"` marks an OpenAI Responses `custom_tool_call` history item; its
+   * free-text `input` is carried in `function.arguments`.
+   */
+  type: "function" | "custom";
+  /** OpenAI Responses namespace of the called tool, when the history item had one. */
+  namespace?: string;
   function: { name: string; arguments: string };
 }
 
@@ -118,9 +124,23 @@ export interface ChatCompletionRequest {
   [key: string]: unknown;
 }
 
+/**
+ * aimock's normalized request tool. OpenAI Responses `function` and `custom`
+ * tools, including those inside a `namespace` tool, are flattened into this
+ * form (the name always lives under `function.name`); other Responses tool
+ * types are dropped. `format` is set only on a Responses `custom` tool. The
+ * Responses adapter sets `namespace` only on a tool from inside a `namespace`
+ * tool. Chat Completions passes its request tools through unchanged, so a
+ * non-standard top-level `namespace` there is kept, but no other API's tool
+ * format defines one.
+ */
 export interface ToolDefinition {
-  type: "function";
+  type: "function" | "custom";
   function: { name: string; description?: string; parameters?: object };
+  /** OpenAI Responses namespace the tool was offered in. */
+  namespace?: string;
+  /** OpenAI Responses custom-tool input format (grammar or text), carried verbatim. */
+  format?: unknown;
 }
 
 // Fixture matching
@@ -153,6 +173,12 @@ export interface FixtureMatch {
    */
   toolResultContains?: string;
   toolName?: string;
+  /**
+   * Exact OpenAI Responses tool namespace. Alone, it matches when any offered
+   * tool sits in this namespace; with `toolName`, a single offered tool must
+   * carry both the name and the namespace.
+   */
+  toolNamespace?: string;
   model?: string | RegExp;
   responseFormat?: string;
   predicate?: (req: ChatCompletionRequest) => boolean;
@@ -317,10 +343,35 @@ export interface TextResponse extends ResponseOverrides {
 }
 
 export interface ToolCall {
+  /**
+   * Optional; absent means a function call. `"toolCall"` (the block
+   * discriminator) is a legacy alias, also read as a function call.
+   */
+  type?: "function" | "toolCall";
   name: string;
   arguments: string;
   id?: string;
+  /** OpenAI Responses API only: emitted as `function_call.namespace`. Ignored by other wires. */
+  namespace?: string;
 }
+
+/**
+ * An OpenAI Responses custom (freeform) tool call, emitted as a
+ * `custom_tool_call` item. Only the Responses API (HTTP and WebSocket) can
+ * serve it; every other wire rejects it with `UnsupportedToolCallError`.
+ */
+export interface CustomToolCall {
+  type: "custom";
+  name: string;
+  /** Free-text input. Never parsed, never stringified. */
+  input: string;
+  id?: string;
+  /** OpenAI Responses API only: emitted as `custom_tool_call.namespace`. */
+  namespace?: string;
+}
+
+/** One entry of a fixture's `toolCalls`: a function call or a custom tool call. */
+export type FixtureToolCall = ToolCall | CustomToolCall;
 
 /**
  * A single ordered streaming block for a {@link ContentWithToolCallsResponse}.
@@ -330,14 +381,19 @@ export interface ToolCall {
  * and interleaved orderings that the legacy `{ content, toolCalls }` shape
  * (always text-first) cannot express. A `text` block carries a text segment; a
  * `toolCall` block mirrors {@link ToolCall} (`name` + JSON-string `arguments`,
- * optional `id`).
+ * optional `id`); a `customToolCall` block mirrors {@link CustomToolCall}
+ * (`name` + free-text `input`, optional `id`). Both tool blocks take an
+ * optional `namespace`. Only the OpenAI Responses API accepts a
+ * `customToolCall` block; every other wire rejects it with
+ * `UnsupportedToolCallError`.
  */
 export type FixtureBlock =
   | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; arguments: string; id?: string };
+  | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string }
+  | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface ToolCallResponse extends ResponseOverrides {
-  toolCalls: ToolCall[];
+  toolCalls: FixtureToolCall[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -359,7 +415,7 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
    */
   content?: string;
   /** See {@link ContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
-  toolCalls?: ToolCall[];
+  toolCalls?: FixtureToolCall[];
   /**
    * Optional ordered streaming blocks. When present, builders stream these in
    * array order (tool-first / interleaved); when absent, the legacy
@@ -460,7 +516,10 @@ export interface AudioResponse {
    * Companion modalities that can accompany streamed audio. A single Gemini turn
    * may interleave inlineData audio with a functionCall and/or text/thought
    * parts; the recorder preserves them here so the tool call / content / reasoning
-   * are not silently discarded when audio is also present.
+   * are not silently discarded when audio is also present. Function calls
+   * only: a custom entry in an untyped (JSON or factory) fixture is, like
+   * everywhere outside the OpenAI Responses API, rejected with
+   * `UnsupportedToolCallError` when served.
    */
   toolCalls?: ToolCall[];
   content?: string;
@@ -790,17 +849,30 @@ export type FalQueueOpts = FixtureOpts & { billableUnits?: number };
 // stringifies these before building the runtime Fixture.
 
 export interface FixtureFileToolCall {
+  /**
+   * `"custom"` makes this an OpenAI Responses custom tool call (uses `input`,
+   * not `arguments`). `"toolCall"` is a legacy alias for a function call.
+   */
+  type?: "function" | "custom" | "toolCall";
   name: string;
-  /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
-  arguments: string | Record<string, unknown> | unknown[];
+  /**
+   * Function calls only. Accepts a JSON object or array for convenience — the
+   * loader will JSON.stringify it.
+   */
+  arguments?: string | Record<string, unknown> | unknown[];
+  /** Custom tool calls only: free-text input, never parsed or stringified. */
+  input?: string;
   id?: string;
+  /** OpenAI Responses namespace; ignored by other wires. */
+  namespace?: string;
 }
 
 /**
  * On-disk counterpart of {@link FixtureBlock}. A `toolCall` block's
  * `arguments` is relaxed exactly like {@link FixtureFileToolCall} so authors
  * may write a JSON object/array; the loader JSON.stringifies it into the
- * runtime string form. Normalizes to a {@link FixtureBlock}.
+ * runtime string form. A `customToolCall` block's `input` is always a string
+ * and is never stringified or parsed. Normalizes to a {@link FixtureBlock}.
  */
 export type FixtureFileBlock =
   | { type: "text"; text: string }
@@ -810,7 +882,9 @@ export type FixtureFileBlock =
       /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
       arguments: string | Record<string, unknown> | unknown[];
       id?: string;
-    };
+      namespace?: string;
+    }
+  | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
@@ -895,6 +969,8 @@ export interface FixtureFileEntry {
      */
     toolResultContains?: string;
     toolName?: string;
+    /** Mirrors the runtime FixtureMatch.toolNamespace. */
+    toolNamespace?: string;
     model?: string;
     responseFormat?: string;
     sequenceIndex?: number;
@@ -1012,9 +1088,12 @@ export interface JournalEntry {
     interrupted?: boolean;
     interruptReason?: string;
     /**
-     * The handler crashed AFTER the response completed. The client received
-     * `status` in full, so this is not an interruption; the message is what
-     * the crash said.
+     * The error message of a failed request, set in two cases:
+     * - The request failed before any content was sent, and `status` is 500:
+     *   a fixture tool-call error (HTTP or WebSocket), or any builder error on
+     *   the WebSocket Responses transport.
+     * - The handler crashed AFTER the response completed. The client received
+     *   `status` in full, so this is not an interruption.
      */
     error?: string;
     chaosAction?: ChaosAction;

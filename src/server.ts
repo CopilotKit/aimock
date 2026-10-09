@@ -81,7 +81,11 @@ import {
   readBody,
   readBodyBufferBounded,
   RequestBodyTooLargeError,
-  InvalidToolArgumentsError,
+  fixtureToolCallErrorCode,
+  googleFixtureToolCallErrorDetails,
+  isFixtureToolCallError,
+  requireFunctionToolCalls,
+  requireEmittedFunctionToolCalls,
   resolveRequestId,
   markMintedRequestId,
   resolveResponse,
@@ -1524,8 +1528,21 @@ async function handleCompletions(
   providerKey?: RecordProviderKey,
   openRouter = false,
   beforeFixtureSelection?: () => void,
+  bytePlusPath = false,
 ): Promise<void> {
   setCorsHeaders(res);
+  // Named in fixture tool-call rejections, so the message says which door the
+  // request came through. The BytePlus door is the `/api/v3/` path itself
+  // (`bytePlusPath`), not the record-gated `providerKey`, so a replay-only
+  // request is named the same as a recording one.
+  const wire =
+    providerKey === "azure"
+      ? "Azure OpenAI Chat Completions"
+      : providerKey === "openrouter"
+        ? "OpenRouter Chat Completions"
+        : providerKey === "byteplus" || bytePlusPath
+          ? "BytePlus ModelArk Chat Completions"
+          : "OpenAI Chat Completions";
 
   // Read request body
   let raw: string;
@@ -2533,13 +2550,12 @@ async function handleCompletions(
           effectiveStrict,
           defaults.logger,
         );
-    // Validate authoritative blocks before recording success in either mode.
-    // Reuse their normalized payload for nonstream responses and usage estimates.
+    // Validate the emitted carrier (authoritative blocks, else toolCalls) before
+    // any byte is written. It runs after journaling so a rejected fixture's 500
+    // entry keeps the request body and the matched fixture (routeError amends
+    // it). Reuse the normalized blocks for both response shapes and the usage
+    // estimate.
     const streaming = body.stream === true;
-    const blockOutcome =
-      response.blocks && response.blocks.length > 0
-        ? resolveFixtureBlockOutcome(response.blocks)
-        : undefined;
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -2548,10 +2564,15 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    const toolCalls = requireEmittedFunctionToolCalls(response, wire);
+    const blockOutcome =
+      response.blocks && response.blocks.length > 0
+        ? resolveFixtureBlockOutcome(response.blocks)
+        : undefined;
     if (!streaming) {
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
-        blockOutcome?.toolCalls ?? response.toolCalls ?? [],
+        blockOutcome?.toolCalls ?? toolCalls,
         responseModel,
         effReasoning,
         blockOutcome
@@ -2568,7 +2589,7 @@ async function handleCompletions(
     } else {
       const chunks = buildContentWithToolCallsChunks(
         blockOutcome?.content ?? response.content ?? "",
-        blockOutcome?.toolCalls ?? response.toolCalls ?? [],
+        blockOutcome?.toolCalls ?? toolCalls,
         responseModel,
         chunkSize,
         effReasoning,
@@ -2578,8 +2599,7 @@ async function handleCompletions(
       // Estimate usage from the same authoritative payload sent to the client.
       const completionText = blockOutcome
         ? blockOutcome.content + blockOutcome.toolCalls.map((tc) => tc.name + tc.arguments).join("")
-        : (response.content ?? "") +
-          (response.toolCalls ?? []).map((tc) => tc.name + tc.arguments).join("");
+        : (response.content ?? "") + toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = emitStreamingUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",
@@ -2710,9 +2730,10 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    const toolCalls = requireFunctionToolCalls(response.toolCalls, wire);
     if (body.stream !== true) {
       const completion = buildToolCallCompletion(
-        response.toolCalls,
+        toolCalls,
         responseModel,
         effReasoning,
         overrides,
@@ -2722,13 +2743,13 @@ async function handleCompletions(
       res.end(JSON.stringify(shapeORCompletion(completion, overrides)));
     } else {
       const chunks = buildToolCallChunks(
-        response.toolCalls,
+        toolCalls,
         responseModel,
         chunkSize,
         effReasoning,
         overrides,
       );
-      const completionText = response.toolCalls.map((tc) => tc.name + tc.arguments).join("");
+      const completionText = toolCalls.map((tc) => tc.name + tc.arguments).join("");
       const usageChunk = emitStreamingUsage
         ? buildUsageChunk(
             chunks[0]?.id ?? "chatcmpl-unknown",
@@ -3096,15 +3117,33 @@ async function startServer(
     return status >= 400 && status < 500 ? "invalid_request_error" : "server_error";
   }
 
-  /** Invalid fixture arguments retain each object's provider error envelope. */
-  function invalidToolArgumentsEnvelope(pathname: string, message: string): string {
-    const code = "aimock_invalid_tool_arguments";
-    if (pathname === OLLAMA_CHAT_PATH) return JSON.stringify({ error: message });
+  /**
+   * Envelope for a fixture tool-call error (see isFixtureToolCallError: invalid
+   * JSON arguments on an object wire, a custom tool call on a non-Responses
+   * wire, or a malformed fixture tool call). It is the provider envelope aimock
+   * emits for that route, with the aimock `code` in it: Google's
+   * `google.rpc.ErrorInfo` detail on Gemini and Vertex AI, a string
+   * `error.code` on Gemini Interactions and Anthropic Messages, a `reason`
+   * member on Bedrock (a `code` member would replace `__type` as the AWS SDK's
+   * error name), and a sibling `code` on Ollama's bare string error. Every
+   * other route, Cohere included, gets the OpenAI-style
+   * `{error: {message, type, code}}`. OpenRouter routes pass their own
+   * `toolCallEnvelope` instead of using this one.
+   */
+  function invalidToolArgumentsEnvelope(pathname: string, message: string, code: string): string {
+    if (pathname === OLLAMA_CHAT_PATH) return JSON.stringify({ error: message, code });
     if (pathname === GEMINI_INTERACTIONS_PATH) {
       return JSON.stringify({ error: { code, message } });
     }
     if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
-      return JSON.stringify({ error: { code: 500, message, status: "INTERNAL" } });
+      return JSON.stringify({
+        error: {
+          code: 500,
+          message,
+          status: "INTERNAL",
+          details: googleFixtureToolCallErrorDetails(code),
+        },
+      });
     }
     if (pathname === MESSAGES_PATH) {
       return JSON.stringify({ type: "error", error: { type: "api_error", code, message } });
@@ -3115,7 +3154,7 @@ async function startServer(
       BEDROCK_CONVERSE_RE.test(pathname) ||
       BEDROCK_CONVERSE_STREAM_RE.test(pathname)
     ) {
-      return JSON.stringify({ __type: "InternalServerException", message });
+      return JSON.stringify({ __type: "InternalServerException", message, reason: code });
     }
     return JSON.stringify({ error: { message, type: "server_error", code } });
   }
@@ -3212,12 +3251,18 @@ async function startServer(
        * 500 would contradict the status line it is sent with.
        */
       envelope?: (msg: string, status: number) => string;
+      /**
+       * Provider-shaped body for a fixture tool-call error (always a 500),
+       * carrying the aimock `code`. Defaults to the envelope the pathname
+       * implies ({@link invalidToolArgumentsEnvelope}).
+       */
+      toolCallEnvelope?: (msg: string, code: string) => string;
       streamEvent?: (msg: string, status: number) => string;
     },
   ): void {
     const route = `${req.method ?? "?"} ${pathname}`;
     const msg = err instanceof Error ? err.message : "Internal error";
-    const invalidToolArguments = err instanceof InvalidToolArgumentsError;
+    const invalidToolArguments = isFixtureToolCallError(err);
     const clientFault = err instanceof RequestBodyTooLargeError;
     const clientAbort = clientAbortedMidBody(req, res, err);
     const status = clientFault ? 400 : 500;
@@ -3298,7 +3343,10 @@ async function startServer(
         res,
         status,
         invalidToolArguments
-          ? invalidToolArgumentsEnvelope(pathname, msg)
+          ? (opts?.toolCallEnvelope ?? ((m, c) => invalidToolArgumentsEnvelope(pathname, m, c)))(
+              msg,
+              fixtureToolCallErrorCode(err),
+            )
           : opts?.envelope
             ? opts.envelope(msg, status)
             : JSON.stringify({
@@ -5300,6 +5348,7 @@ async function startServer(
         completionsProvider,
         isOpenRouter,
         ensureRawFixturePositions,
+        originalPathname.startsWith("/api/v3/"),
       );
     } catch (err: unknown) {
       routeError(req, res, err, pathname, {
@@ -5309,6 +5358,11 @@ async function startServer(
             : JSON.stringify({
                 error: { message: m, type: errorTypeForStatus(status) },
               }),
+        // OpenRouter's numeric `error.code` is the HTTP status, so the aimock
+        // code rides in its free-form `metadata`.
+        ...(isOpenRouter
+          ? { toolCallEnvelope: (m, code) => serializeOpenRouterError(500, m, { reason: code }) }
+          : {}),
         streamEvent: (m, status) =>
           `data: ${
             isOpenRouter

@@ -69,11 +69,30 @@ test.each(routes)(
     expect(text).not.toContain("must not be emitted");
     const message = new InvalidToolArgumentsError(tool).message;
     const error = JSON.parse(text);
-    if (shape === "ollama") expect(error).toEqual({ error: message });
+    if (shape === "ollama")
+      expect(error).toEqual({ error: message, code: "aimock_invalid_tool_arguments" });
     else if (shape === "gemini")
-      expect(error).toEqual({ error: { code: 500, message, status: "INTERNAL" } });
+      expect(error).toEqual({
+        error: {
+          code: 500,
+          message,
+          status: "INTERNAL",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              reason: "AIMOCK_INVALID_TOOL_ARGUMENTS",
+              domain: "aimock",
+              metadata: { code: "aimock_invalid_tool_arguments" },
+            },
+          ],
+        },
+      });
     else if (shape === "bedrock")
-      expect(error).toEqual({ __type: "InternalServerException", message });
+      expect(error).toEqual({
+        __type: "InternalServerException",
+        message,
+        reason: "aimock_invalid_tool_arguments",
+      });
     else if (shape === "interactions")
       expect(error).toEqual({ error: { code: "aimock_invalid_tool_arguments", message } });
     else

@@ -21,6 +21,7 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -1142,7 +1143,13 @@ export async function handleGeminiInteractions(
     return;
   }
 
-  const interactionId = nextInteractionId();
+  // The content+tool and tool-call branches draw their interaction id after
+  // requireEmittedFunctionToolCalls, so a fixture it rejects (a custom tool
+  // call or a malformed toolCalls entry) consumes no id. A rejection raised
+  // later, inside a builder, comes after the draw and does consume an id:
+  // invalid JSON arguments on the non-streaming path, or a malformed block
+  // from resolveFixtureBlockOutcome (the streaming path has also consumed
+  // event ids by then).
 
   if (misbehavior.kind === "applied" && misbehavior.summary.fault === "reasoning-only") {
     const journalEntry = journal.add({
@@ -1158,6 +1165,9 @@ export async function handleGeminiInteractions(
       defaults,
       testId,
     });
+    // Reasoning-only output carries no tool call, so it has no tool-call check
+    // to pass before drawing its id.
+    const interactionId = nextInteractionId();
     const usage = {
       ...interactionsUsage({ usage: appliedUsage }),
       total_output_tokens: 0,
@@ -1257,10 +1267,12 @@ export async function handleGeminiInteractions(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
+    const interactionId = nextInteractionId();
     if (!streaming) {
       const body = buildInteractionsContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         model,
         interactionId,
         logger,
@@ -1278,7 +1290,7 @@ export async function handleGeminiInteractions(
     } else {
       const events = buildInteractionsContentWithToolCallsSSEEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         interactionId,
         chunkSize,
         logger,
@@ -1332,6 +1344,7 @@ export async function handleGeminiInteractions(
       defaults,
       testId,
     });
+    const interactionId = nextInteractionId();
     if (!streaming) {
       const body = buildInteractionsTextResponse(response.content, model, interactionId, overrides);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1396,9 +1409,11 @@ export async function handleGeminiInteractions(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Gemini Interactions");
+    const interactionId = nextInteractionId();
     if (!streaming) {
       const body = buildInteractionsToolCallResponse(
-        response.toolCalls,
+        functionToolCalls,
         model,
         interactionId,
         logger,
@@ -1414,7 +1429,7 @@ export async function handleGeminiInteractions(
       );
     } else {
       const events = buildInteractionsToolCallSSEEvents(
-        response.toolCalls,
+        functionToolCalls,
         interactionId,
         logger,
         overrides,

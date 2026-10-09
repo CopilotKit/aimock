@@ -1,4 +1,4 @@
-import type { MisbehaviorPlan } from "./misbehavior.js";
+import type { MisbehaviorPlan, ServedMisbehaviorToolCall } from "./misbehavior.js";
 import type { LiveFixtureResponse } from "./live-types.js";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
@@ -27,6 +27,8 @@ import type {
   RawJSONResponse,
   SSEChunk,
   ToolCall,
+  FixtureToolCall,
+  JournalEntry,
   FixtureBlock,
   FixtureFileBlock,
   ChatCompletion,
@@ -39,7 +41,7 @@ import type {
 import type { MCPSession } from "./mcp-types.js";
 
 /** Preserve authored text for string wires without silently repairing invalid JSON. */
-export function toolArgsForWire(tc: ToolCall) {
+export function toolArgsForWire(tc: Pick<ToolCall, "name" | "arguments">) {
   const raw = tc.arguments || "{}";
   try {
     const value: unknown = JSON.parse(raw);
@@ -54,7 +56,7 @@ export class InvalidToolArgumentsError extends Error {
   readonly toolName: string;
   readonly parseDiagnostic: string;
 
-  constructor(tc: ToolCall) {
+  constructor(tc: Pick<ToolCall, "name" | "arguments">) {
     let parseDiagnostic = "";
     try {
       JSON.parse(tc.arguments || "{}");
@@ -68,6 +70,231 @@ export class InvalidToolArgumentsError extends Error {
     this.name = "InvalidToolArgumentsError";
     this.toolName = tc.name;
     this.parseDiagnostic = parseDiagnostic;
+  }
+}
+
+/**
+ * A custom (freeform) tool call reached a wire that has no faithful projection
+ * for it. Only the OpenAI Responses API (HTTP and WebSocket) emits custom tool
+ * calls. The handlers of the other wires raise this through
+ * {@link requireEmittedFunctionToolCalls}, {@link requireFunctionToolCalls} or
+ * {@link resolveFixtureBlocks}, before they write any content. Ollama
+ * `/api/generate` is the exception: it rejects every tool-call fixture with a
+ * 400 before this check.
+ */
+export class UnsupportedToolCallError extends Error {
+  readonly toolName: string;
+  readonly wire: string;
+
+  constructor(toolName: string, wire: string) {
+    super(
+      `aimock: fixture tool call "${toolName}" is a custom tool call, which only the OpenAI Responses API supports; ` +
+        `this request arrived on ${wire}`,
+    );
+    this.name = "UnsupportedToolCallError";
+    this.toolName = toolName;
+    this.wire = wire;
+  }
+}
+
+/**
+ * A fixture tool call is malformed, in a `toolCalls` entry or in a `toolCall` /
+ * `customToolCall` block. Programmatic and factory fixtures skip load
+ * validation, so this request-time guard is their validation for the rules
+ * {@link assertFixtureToolCall} and {@link resolveFixtureBlocks} check. An HTTP
+ * request then fails with a 500 that carries this message and `code`, in either
+ * carrier; a WebSocket turn gets the transport's error message with the code.
+ */
+export class InvalidFixtureToolCallError extends Error {
+  readonly code = "aimock_invalid_fixture_tool_call";
+
+  constructor(index: number, problem: string, carrier: "toolCalls" | "blocks" = "toolCalls") {
+    super(
+      carrier === "blocks"
+        ? `Invalid fixture block at index ${index}: ${problem}`
+        : `Invalid fixture tool call: ${problem} (toolCalls[${index}])`,
+    );
+    this.name = "InvalidFixtureToolCallError";
+  }
+}
+
+/**
+ * Request-time guard for one fixture `toolCalls` entry. Checks run in this
+ * order:
+ * 1. A non-object entry, or `type: "customToolCall"` (the block discriminator,
+ *    which the Responses builders would read as a custom call), throws
+ *    {@link InvalidFixtureToolCallError}.
+ * 2. With `wire` set (a wire that cannot carry custom calls), a
+ *    `type: "custom"` entry throws {@link UnsupportedToolCallError} before its
+ *    namespace or other fields are checked, as a `customToolCall` block does.
+ * 3. `namespace`, when present, must be a non-empty string on either kind.
+ * 4. A custom call needs a non-empty string `name`, a string `input`, no
+ *    `arguments` and a string `id` when present. These are the field rules
+ *    {@link resolveFixtureBlocks} applies to a `customToolCall` block.
+ *
+ * Every other entry is a function call, and this guard checks nothing else on
+ * it: any other `type` (including the legacy `"toolCall"`), a stray `input`,
+ * and the function `name`/`id`/`arguments` keep their per-wire handling. A
+ * `toolCall` block is stricter: {@link resolveFixtureBlocks} rejects its
+ * `input` and checks its `name`/`id`/`arguments` types. File validation warns
+ * on a function call's non-string `name`/`id`, stray `input` or other `type`,
+ * and rejects `arguments` that `JSON.parse` does not accept.
+ */
+function assertFixtureToolCall(call: unknown, index: number, wire?: string): void {
+  const fail = (problem: string): never => {
+    throw new InvalidFixtureToolCallError(index, problem);
+  };
+  // An array is not an entry object; normalizeFactoryResponse uses the same
+  // isPlainObject test, so static and factory fixtures fail alike.
+  if (!isPlainObject(call)) fail("expected an object");
+  const tc = call as Record<string, unknown>;
+  if (tc.type === "customToolCall") {
+    fail('unknown type "customToolCall" (expected "function" or "custom")');
+  }
+  if (tc.type === "custom" && wire !== undefined) {
+    throw new UnsupportedToolCallError(typeof tc.name === "string" ? tc.name : "", wire);
+  }
+  if (tc.namespace !== undefined && (typeof tc.namespace !== "string" || tc.namespace === "")) {
+    fail('"namespace" must be a non-empty string when present');
+  }
+  if (tc.type !== "custom") return;
+  if (typeof tc.name !== "string" || tc.name === "") {
+    fail('custom tool call requires a non-empty string "name" field');
+  }
+  if (typeof tc.input !== "string") fail('"input" must be a string for a custom tool call');
+  if (tc.arguments !== undefined) fail('custom tool call takes "input", not "arguments"');
+  if (tc.id !== undefined && typeof tc.id !== "string") {
+    fail('custom tool call "id" must be a string when present');
+  }
+}
+
+/**
+ * Validate a fixture's `toolCalls` for the OpenAI Responses API, the one wire
+ * that emits both function and custom calls. Throws
+ * {@link InvalidFixtureToolCallError} on the first malformed entry.
+ *
+ * Responses also rejects an entry with an unknown `type` (a typo of `"custom"`
+ * such as `"custom_tool_call"`) whose `arguments` is not a string: it is a
+ * function call, which this wire cannot emit without string arguments. With a
+ * string `arguments` such an entry is served as a function call, as before. A
+ * function call without a `type`, or with `"function"` / `"toolCall"`, keeps
+ * the uncoded non-string `arguments` error of earlier releases.
+ */
+export function assertResponsesToolCalls(calls: FixtureToolCall[]): void {
+  calls.forEach((tc, i) => {
+    assertFixtureToolCall(tc, i);
+    const { type, arguments: args } = tc as unknown as Record<string, unknown>;
+    if (
+      type !== undefined &&
+      type !== "function" &&
+      type !== "toolCall" &&
+      type !== "custom" &&
+      typeof args !== "string"
+    ) {
+      throw new InvalidFixtureToolCallError(
+        i,
+        `unknown type ${JSON.stringify(type)} (expected "function" or "custom"); as a function call it needs a string "arguments"`,
+      );
+    }
+  });
+}
+
+/**
+ * Narrow a fixture's `toolCalls` to function calls for a wire that cannot
+ * carry custom tool calls. Throws {@link InvalidFixtureToolCallError} on a
+ * malformed entry and {@link UnsupportedToolCallError} on the first custom
+ * entry. Function calls pass through unchanged: their Responses-only
+ * `namespace` stays on the object, and these wires' builders do not emit it.
+ */
+export function requireFunctionToolCalls(calls: FixtureToolCall[], wire: string): ToolCall[] {
+  return calls.map((tc, i) => {
+    assertFixtureToolCall(tc, i, wire);
+    return tc as ToolCall;
+  });
+}
+
+/**
+ * Reject a custom tool call in whichever carrier this wire will actually emit.
+ * Non-empty ordered `blocks` are authoritative: the builders stream them and
+ * never emit the legacy `toolCalls`. In that case only the blocks are scanned,
+ * and only for a `customToolCall` block (the other block fields are checked
+ * later, when a builder calls {@link resolveFixtureBlocks}). The legacy list is
+ * not read, whatever its shape, and the result is empty. Without blocks,
+ * `toolCalls` is what gets emitted, and {@link requireFunctionToolCalls}
+ * validates and narrows it. Throws {@link UnsupportedToolCallError} naming
+ * `wire`, or {@link InvalidFixtureToolCallError} for a malformed `toolCalls`
+ * entry.
+ */
+export function requireEmittedFunctionToolCalls(
+  response: { toolCalls?: FixtureToolCall[]; blocks?: FixtureFileBlock[] },
+  wire: string,
+): ToolCall[] {
+  if (Array.isArray(response.blocks) && response.blocks.length > 0) {
+    rejectCustomToolCallBlocks(response.blocks, wire);
+    return [];
+  }
+  return requireFunctionToolCalls(response.toolCalls ?? [], wire);
+}
+
+/** A fixture tool-call error that a handler surfaces as a coded 500. */
+export type FixtureToolCallError =
+  | InvalidToolArgumentsError
+  | UnsupportedToolCallError
+  | InvalidFixtureToolCallError;
+
+/** True for the fixture tool-call errors a handler surfaces as a coded 500. */
+export function isFixtureToolCallError(error: unknown): error is FixtureToolCallError {
+  return (
+    error instanceof InvalidToolArgumentsError ||
+    error instanceof UnsupportedToolCallError ||
+    error instanceof InvalidFixtureToolCallError
+  );
+}
+
+/** The aimock error code carried in every provider envelope for a fixture tool-call error. */
+export function fixtureToolCallErrorCode(
+  error: FixtureToolCallError,
+):
+  | "aimock_unsupported_tool_call"
+  | "aimock_invalid_tool_arguments"
+  | "aimock_invalid_fixture_tool_call" {
+  if (error instanceof UnsupportedToolCallError) return "aimock_unsupported_tool_call";
+  if (error instanceof InvalidFixtureToolCallError) return error.code;
+  return "aimock_invalid_tool_arguments";
+}
+
+/**
+ * Google RPC error `details` carrying an aimock fixture tool-call code, for the
+ * Gemini, Vertex AI and Gemini Live envelopes (`google.rpc.ErrorInfo`: an
+ * UPPER_SNAKE `reason`, a `domain`, and string `metadata`).
+ */
+export function googleFixtureToolCallErrorDetails(code: string) {
+  return [
+    {
+      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+      reason: code.toUpperCase(),
+      domain: "aimock",
+      metadata: { code },
+    },
+  ];
+}
+
+/**
+ * Run a WebSocket preflight `check` that may raise a fixture tool-call error
+ * ({@link InvalidToolArgumentsError}, {@link UnsupportedToolCallError} or
+ * {@link InvalidFixtureToolCallError}).
+ * Such an error marks the already-journaled entry as a 500 carrying the
+ * message, then propagates to the transport's error handler.
+ */
+export function journalFixtureToolCallError<T>(journalEntry: JournalEntry, check: () => T): T {
+  try {
+    return check();
+  } catch (error) {
+    if (isFixtureToolCallError(error)) {
+      journalEntry.response.status = 500;
+      journalEntry.response.error = error.message;
+    }
+    throw error;
   }
 }
 
@@ -315,14 +542,25 @@ export async function resolveResponse(
   return fixture.response;
 }
 
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeFactoryResponse(raw: FixtureResponse): FixtureResponse {
   const r = { ...raw } as Record<string, unknown>;
   if (typeof r.content === "object" && r.content !== null) {
     r.content = JSON.stringify(r.content);
   }
   if (Array.isArray(r.toolCalls)) {
-    r.toolCalls = (r.toolCalls as Array<Record<string, unknown>>).map((tc) => {
-      if (typeof tc.arguments === "object" && tc.arguments !== null) {
+    r.toolCalls = (r.toolCalls as unknown[]).map((entry) => {
+      // Leave a non-object entry as it is, so the request-time guard rejects
+      // it as a static fixture's entry is rejected. Spreading it would turn a
+      // string or number into an object, and a null would throw here.
+      if (!isPlainObject(entry)) return entry;
+      const tc = entry;
+      // A custom call's free-text `input` is never stringified, and it has no
+      // `arguments` to stringify.
+      if (typeof tc.arguments === "object" && tc.arguments !== null && tc.type !== "custom") {
         return { ...tc, arguments: JSON.stringify(tc.arguments) };
       }
       return { ...tc };
@@ -334,9 +572,12 @@ function normalizeFactoryResponse(raw: FixtureResponse): FixtureResponse {
   // requires string `arguments`). Text blocks and string arguments pass
   // through unchanged. Matches the loader's block handling.
   if (Array.isArray(r.blocks)) {
-    r.blocks = (r.blocks as Array<Record<string, unknown>>).map((block) => {
+    r.blocks = (r.blocks as unknown[]).map((entry) => {
+      // As for toolCalls: a non-object block stays as it is for
+      // resolveFixtureBlocks to reject.
+      if (!isPlainObject(entry)) return entry;
+      const block = entry;
       if (
-        block != null &&
         block.type === "toolCall" &&
         typeof block.arguments === "object" &&
         block.arguments !== null
@@ -456,6 +697,33 @@ export function isContentWithToolCallsResponse(
 }
 
 /**
+ * Wire label used when a caller of the exported {@link resolveFixtureBlocks}
+ * rejects a custom tool call block without naming its wire. The HTTP handlers
+ * reject custom blocks with their own wire name (through
+ * {@link requireEmittedFunctionToolCalls}) before any builder calls
+ * {@link resolveFixtureBlocks}, so they never reach this label.
+ */
+const NON_RESPONSES_WIRE = "a wire other than the OpenAI Responses API";
+
+/**
+ * Throw {@link UnsupportedToolCallError} for the first `customToolCall` block,
+ * before any other block validation, so a custom call on a non-Responses wire
+ * is always reported as unsupported (never as, say, a bad namespace).
+ */
+function rejectCustomToolCallBlocks(blocks: FixtureFileBlock[], wire: string): void {
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (block !== null && typeof block === "object" && block.type === "customToolCall") {
+      const name = (block as { name?: unknown }).name;
+      throw new UnsupportedToolCallError(typeof name === "string" ? name : "", wire);
+    }
+  }
+}
+
+/** A normalized block on a wire that cannot carry custom tool calls. */
+export type FunctionFixtureBlock = Exclude<FixtureBlock, { type: "customToolCall" }>;
+
+/**
  * Validate and pass through the ordered `blocks` field of a combined
  * content+toolCalls fixture. Used ONLY on the new block-iteration path (when a
  * fixture explicitly sets `blocks`); it is NOT a legacy-order reconstructor —
@@ -477,27 +745,65 @@ export function isContentWithToolCallsResponse(
  * existing callers that pass `FixtureBlock[]` continue to type-check.
  *
  * Returns the blocks in array order, NORMALIZED to {@link FixtureBlock}: a
- * `text` block with a string `text`, or a `toolCall` block with string `name` +
+ * `text` block with a string `text`; a `toolCall` block with string `name` +
  * string `arguments` (object/array `arguments` is JSON.stringified) and an
- * optional string `id`. The return type guarantees `arguments: string` — every
- * caller relies on that. Throws on a malformed array or entry — same fail-fast
+ * optional string `id`; or, with `allowCustom`, a `customToolCall` block with a
+ * non-empty string `name`, a string `input` (never parsed or stringified), no
+ * `arguments` and an optional string `id`. Every `toolCall` block in the result
+ * has `arguments: string`, and callers rely on that. On either tool block,
+ * `namespace` must be a non-empty string when present, and a `toolCall` block
+ * carries no `input`. Throws on a malformed array or entry, the same fail-fast
  * idiom as the other fixture validators in this module (see e.g. the factory
- * guard at {@link resolveResponse}).
+ * guard at {@link resolveResponse}): a malformed tool-call block throws
+ * {@link InvalidFixtureToolCallError}, the error a malformed `toolCalls` entry
+ * gets; any other malformed entry throws a plain Error.
+ *
+ * `options.allowCustom` defaults to false; only the Responses builders set it.
+ * Without it, the first `customToolCall` block throws
+ * {@link UnsupportedToolCallError} naming `options.wire` (or a generic
+ * non-Responses label), ahead of every other block check, and the result is
+ * typed {@link FunctionFixtureBlock}[].
  */
-export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[] {
+export function resolveFixtureBlocks(
+  blocks: FixtureFileBlock[],
+  options?: { allowCustom?: false; wire?: string },
+): FunctionFixtureBlock[];
+export function resolveFixtureBlocks(
+  blocks: FixtureFileBlock[],
+  options: { allowCustom: true },
+): FixtureBlock[];
+export function resolveFixtureBlocks(
+  blocks: FixtureFileBlock[],
+  options: { allowCustom?: boolean; wire?: string } = {},
+): FixtureBlock[] {
+  const allowCustom = options.allowCustom ?? false;
   if (!Array.isArray(blocks)) {
     throw new Error(`Invalid fixture blocks: expected an array, got ${typeof blocks}`);
   }
+  // Fail closed: only the Responses builders opt in to custom tool calls.
+  if (!allowCustom) rejectCustomToolCallBlocks(blocks, options.wire ?? NON_RESPONSES_WIRE);
   // Validate each block and return a normalized COPY. Builders iterate the
   // result and must not observe later mutations of — nor be able to mutate —
   // the caller's stored fixture array, and block objects are consumed read-only
   // downstream, so we never mutate the input in place: any normalization (e.g.
   // stringifying object `arguments`) is applied to a fresh per-block copy.
   return blocks.map((block, i) => {
-    if (block === null || typeof block !== "object") {
+    if (!isPlainObject(block)) {
       throw new Error(`Invalid fixture block at index ${i}: expected an object`);
     }
     const b = block as Record<string, unknown>;
+    // A malformed tool-call block carries the same coded error as a malformed
+    // `toolCalls` entry; text and unknown-type blocks keep the plain Error.
+    const failToolCall = (problem: string): never => {
+      throw new InvalidFixtureToolCallError(i, problem, "blocks");
+    };
+    if (
+      (b.type === "toolCall" || b.type === "customToolCall") &&
+      b.namespace !== undefined &&
+      (typeof b.namespace !== "string" || b.namespace === "")
+    ) {
+      failToolCall('"namespace" must be a non-empty string when present');
+    }
     if (b.type === "text") {
       if (typeof b.text !== "string") {
         throw new Error(
@@ -506,15 +812,13 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
       }
       return { type: "text", text: b.text };
     } else if (b.type === "toolCall") {
+      // The file loader's block rule: `input` belongs on a customToolCall block.
+      if (b.input !== undefined) failToolCall('"input" is only valid on a "customToolCall" block');
       if (typeof b.name !== "string") {
-        throw new Error(
-          `Invalid fixture block at index ${i}: "toolCall" block requires a string "name" field`,
-        );
+        failToolCall('"toolCall" block requires a string "name" field');
       }
       if (b.id !== undefined && typeof b.id !== "string") {
-        throw new Error(
-          `Invalid fixture block at index ${i}: "toolCall" block "id" must be a string when present`,
-        );
+        failToolCall('"toolCall" block "id" must be a string when present');
       }
       // `arguments` is a JSON string in normalized (file-load) form. The
       // programmatic path (addFixture/addFixtures/prependFixture) stores RAW
@@ -528,14 +832,27 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
         return { ...b, arguments: JSON.stringify(b.arguments) } as unknown as FixtureBlock;
       }
       if (typeof b.arguments !== "string") {
-        throw new Error(
-          `Invalid fixture block at index ${i}: "toolCall" block requires a string or object "arguments" field`,
-        );
+        failToolCall('"toolCall" block requires a string or object "arguments" field');
       }
       return { ...b, type: "toolCall", name: b.name, arguments: b.arguments } as FixtureBlock;
+    } else if (b.type === "customToolCall") {
+      // Reached only with allowCustom (rejected up front otherwise).
+      if (typeof b.name !== "string" || b.name === "") {
+        failToolCall('"customToolCall" block requires a non-empty string "name" field');
+      }
+      if (typeof b.input !== "string") {
+        failToolCall('"customToolCall" block requires a string "input" field');
+      }
+      if (b.arguments !== undefined) {
+        failToolCall('"customToolCall" block takes "input", not "arguments"');
+      }
+      if (b.id !== undefined && typeof b.id !== "string") {
+        failToolCall('"customToolCall" block "id" must be a string when present');
+      }
+      return { ...b, type: "customToolCall", name: b.name, input: b.input } as FixtureBlock;
     } else {
       throw new Error(
-        `Invalid fixture block at index ${i}: unknown type ${JSON.stringify(b.type)} (expected "text" or "toolCall")`,
+        `Invalid fixture block at index ${i}: unknown type ${JSON.stringify(b.type)} (expected "text", "toolCall" or "customToolCall")`,
       );
     }
   });
@@ -545,8 +862,12 @@ export function resolveFixtureBlocks(blocks: FixtureFileBlock[]): FixtureBlock[]
 export function prepareOpenAIChatMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
   const response = plan.response;
   const combined = isContentWithToolCallsResponse(response);
+  // Custom tool calls reach here only on the OpenAI Responses API; the planner
+  // skips every other wire's custom-call fixture so its guard rejects it.
   const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+    combined && response.blocks?.length
+      ? resolveFixtureBlockCallOutcome(response.blocks)
+      : undefined;
   const calls =
     outcome?.toolCalls ??
     (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
@@ -562,10 +883,7 @@ export function prepareOpenAIChatMisbehavior(plan: MisbehaviorPlan): Misbehavior
   if ("usage" in preparedResponse) delete preparedResponse.usage;
   if (plan.stop === "length") preparedResponse = { ...preparedResponse, finishReason: "length" };
   if (outcome) {
-    let index = 0;
-    const blocks = outcome.ordered.map((block) =>
-      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
-    );
+    const blocks = rebuildOrderedBlocks(outcome.ordered, toolCalls);
     preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
   } else if (combined || isToolCallResponse(response)) {
     preparedResponse = { ...preparedResponse, toolCalls };
@@ -575,13 +893,26 @@ export function prepareOpenAIChatMisbehavior(plan: MisbehaviorPlan): Misbehavior
     response: preparedResponse,
     summary: {
       ...plan.summary,
-      servedToolCalls: toolCalls.map(({ name, arguments: args, id }) => ({
-        name,
-        arguments: args,
-        id,
-      })),
+      servedToolCalls: toolCalls.map(servedMisbehaviorToolCall),
     },
   };
+}
+
+/**
+ * The journaled form of a served misbehavior tool call: `{ name, arguments,
+ * id }`. A Responses custom tool call adds `type: "custom"` and carries its
+ * free-text `input` in `arguments`; `namespace` is recorded only when set.
+ */
+export function servedMisbehaviorToolCall(call: FixtureToolCall): ServedMisbehaviorToolCall {
+  const namespace = call.namespace !== undefined ? { namespace: call.namespace } : {};
+  return call.type === "custom"
+    ? { type: "custom", name: call.name, arguments: call.input, id: call.id, ...namespace }
+    : { name: call.name, arguments: call.arguments, id: call.id, ...namespace };
+}
+
+/** The text a tool call contributes to an estimated completion: name plus arguments or input. */
+export function toolCallUsageText(call: FixtureToolCall): string {
+  return call.name + (call.type === "custom" ? call.input : call.arguments);
 }
 
 /** Estimate once from the full applied output, before any delivery interruption. */
@@ -593,7 +924,9 @@ export function resolveOpenAIChatMisbehaviorUsage(
   const response = plan.response;
   const combined = isContentWithToolCallsResponse(response);
   const outcome =
-    combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+    combined && response.blocks?.length
+      ? resolveFixtureBlockCallOutcome(response.blocks)
+      : undefined;
   const calls =
     outcome?.toolCalls ??
     (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
@@ -614,7 +947,7 @@ export function resolveOpenAIChatMisbehaviorUsage(
     .join("");
   const completionText =
     content +
-    calls.map((call) => call.name + call.arguments).join("") +
+    calls.map(toolCallUsageText).join("") +
     (plan.refusal ?? "") +
     (exposeReasoning ? reasoning : "");
   return resolveUsage(undefined, promptText, completionText);
@@ -635,6 +968,59 @@ export function resolveFixtureBlockOutcome(blocks: FixtureFileBlock[]) {
       });
   }
   return { ordered, content, toolCalls, hasToolCalls: toolCalls.length > 0 };
+}
+
+/**
+ * Like {@link resolveFixtureBlockOutcome}, but keeps `customToolCall` blocks
+ * and every call's `namespace`, projecting each tool block to its
+ * {@link FixtureToolCall}. Only OpenAI Responses paths may serve the result
+ * unchanged; other wires reject a custom call before serving it.
+ */
+export function resolveFixtureBlockCallOutcome(blocks: FixtureFileBlock[]) {
+  const ordered = resolveFixtureBlocks(blocks, { allowCustom: true });
+  let content = "";
+  const toolCalls: FixtureToolCall[] = [];
+  for (const block of ordered) {
+    if (block.type === "text") content += block.text;
+    else toolCalls.push(fixtureBlockToolCall(block));
+  }
+  return { ordered, content, toolCalls, hasToolCalls: toolCalls.length > 0 };
+}
+
+/** Project one normalized tool block to the matching `toolCalls` entry. */
+export function fixtureBlockToolCall(
+  block: Exclude<FixtureBlock, { type: "text" }>,
+): FixtureToolCall {
+  const id = block.id !== undefined ? { id: block.id } : {};
+  const namespace = block.namespace !== undefined ? { namespace: block.namespace } : {};
+  return block.type === "customToolCall"
+    ? { type: "custom", name: block.name, input: block.input, ...id, ...namespace }
+    : { name: block.name, arguments: block.arguments, ...id, ...namespace };
+}
+
+/** Project one `toolCalls` entry back to its ordered tool block. */
+export function toolCallFixtureBlock(
+  call: FixtureToolCall,
+): Exclude<FixtureBlock, { type: "text" }> {
+  const id = call.id !== undefined ? { id: call.id } : {};
+  const namespace = call.namespace !== undefined ? { namespace: call.namespace } : {};
+  return call.type === "custom"
+    ? { type: "customToolCall", name: call.name, input: call.input, ...id, ...namespace }
+    : { type: "toolCall", name: call.name, arguments: call.arguments, ...id, ...namespace };
+}
+
+/**
+ * Rebuild ordered blocks after their tool calls were rewritten one-for-one:
+ * text blocks are copied and the Nth tool block becomes `toolCalls[N]`.
+ */
+export function rebuildOrderedBlocks(
+  ordered: FixtureBlock[],
+  toolCalls: FixtureToolCall[],
+): FixtureBlock[] {
+  let callIndex = 0;
+  return ordered.map((block) =>
+    block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[callIndex++]),
+  );
 }
 
 export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {

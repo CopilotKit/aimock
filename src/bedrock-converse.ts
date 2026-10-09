@@ -19,6 +19,9 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
+  requireFunctionToolCalls,
+  type FunctionFixtureBlock,
   generateToolUseId,
   estimatePromptTokens,
   estimateTokens,
@@ -723,7 +726,7 @@ function buildConverseContentWithToolCallsResponse(
 
 interface PreparedConverseMisbehavior {
   plan: MisbehaviorPlan;
-  blocks: FixtureBlock[];
+  blocks: FunctionFixtureBlock[];
   reasoning: string;
   stopReason: string;
   usage: ReturnType<typeof converseUsage>;
@@ -741,14 +744,16 @@ function prepareConverseMisbehavior(
   const combined = isContentWithToolCallsResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
-  let blocks: FixtureBlock[] = outcome?.ordered.map((block) => ({ ...block })) ?? [
+  // The planner skips a custom-call fixture on this wire, so the narrowing
+  // below never throws; the normal path's guard rejects it instead.
+  let blocks: FunctionFixtureBlock[] = outcome?.ordered.map((block) => ({ ...block })) ?? [
     ...("content" in response && response.content
       ? [{ type: "text" as const, text: response.content }]
       : []),
-    ...(combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []).map((call) => ({
-      type: "toolCall" as const,
-      ...call,
-    })),
+    ...requireFunctionToolCalls(
+      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
+      "Bedrock Converse",
+    ).map((call) => ({ ...call, type: "toolCall" as const })),
   ];
   const calls = blocks.filter((block) => block.type === "toolCall");
   const preparedCalls = calls.map((call, index) => {
@@ -1212,9 +1217,10 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
     const body = buildConverseContentWithToolCallsResponse(
       response.content ?? "",
-      response.toolCalls ?? [],
+      functionToolCalls,
       logger,
       effReasoning,
       overrides,
@@ -1273,7 +1279,8 @@ export async function handleConverse(
       body: completionReq,
       response: { status: 200, fixture },
     });
-    const body = buildConverseToolCallResponse(response.toolCalls, logger, effReasoning, overrides);
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
+    const body = buildConverseToolCallResponse(functionToolCalls, logger, effReasoning, overrides);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
     return;
@@ -1634,9 +1641,10 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
     const events = buildBedrockStreamContentWithToolCallsEvents(
       response.content ?? "",
-      response.toolCalls ?? [],
+      functionToolCalls,
       chunkSize,
       logger,
       effReasoning,
@@ -1727,8 +1735,9 @@ export async function handleConverseStream(
       body: completionReq,
       response: { status: 200, fixture },
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Bedrock Converse");
     const events = buildBedrockStreamToolCallEvents(
-      response.toolCalls,
+      functionToolCalls,
       chunkSize,
       logger,
       effReasoning,

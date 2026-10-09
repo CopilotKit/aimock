@@ -24,6 +24,8 @@ import type {
   ToolDefinition,
 } from "./types.js";
 import {
+  requireEmittedFunctionToolCalls,
+  requireFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -310,7 +312,9 @@ function buildOllamaChatToolCallResponse(
 // ─── Response builders: /api/chat — content + tool calls ────────────────────
 
 // Map a fixture tool call into Ollama's wire shape (object arguments, no id).
-function toOllamaToolCall(tc: ToolCall): { function: { name: string; arguments: unknown } } {
+function toOllamaToolCall(tc: Pick<ToolCall, "name" | "arguments">): {
+  function: { name: string; arguments: unknown };
+} {
   const args = toolArgsForWire(tc);
   if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
   return { function: { name: tc.name, arguments: args.value } };
@@ -506,9 +510,14 @@ function prepareOllamaMisbehavior(
   const combined = isContentWithToolCallsResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
+  // The planner skips a custom-call fixture on this wire, so this narrowing
+  // never throws; the normal path's guard rejects it instead.
   const calls =
     outcome?.toolCalls ??
-    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
+    requireFunctionToolCalls(
+      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
+      "Ollama",
+    );
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
   const model = request.model;
 
@@ -1022,6 +1031,7 @@ export async function handleOllama(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     const effReasoning = resolveReasoningForModel(
@@ -1033,7 +1043,7 @@ export async function handleOllama(
     if (!streaming) {
       const body = buildOllamaChatContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         effReasoning,
         response.blocks,
@@ -1043,7 +1053,7 @@ export async function handleOllama(
     } else {
       const chunks = buildOllamaChatContentWithToolCallsChunks(
         response.content ?? "",
-        response.toolCalls ?? [],
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         effReasoning,
@@ -1142,6 +1152,7 @@ export async function handleOllama(
       defaults,
       testId,
     });
+    const functionToolCalls = requireEmittedFunctionToolCalls(response, "Ollama");
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
     const effReasoning = resolveReasoningForModel(
@@ -1152,7 +1163,7 @@ export async function handleOllama(
     );
     if (!streaming) {
       const body = buildOllamaChatToolCallResponse(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         effReasoning,
       );
@@ -1160,7 +1171,7 @@ export async function handleOllama(
       res.end(JSON.stringify(body));
     } else {
       const chunks = buildOllamaChatToolCallChunks(
-        response.toolCalls,
+        functionToolCalls,
         completionReq.model,
         chunkSize,
         effReasoning,
@@ -1467,8 +1478,49 @@ export async function handleOllamaGenerate(
     return;
   }
 
-  // Text response (only type supported for /api/generate)
-  if (isTextResponse(response)) {
+  // Text response (only type supported for /api/generate). A text fixture
+  // whose ordered `blocks` carry a tool call is a tool-call fixture here, and
+  // is rejected below rather than served with the call silently dropped.
+  // Only `toolCall` and `customToolCall` blocks count as tool calls. The
+  // blocks are first validated in the order /api/chat uses: a
+  // `customToolCall` block is rejected ahead of every other block check, so
+  // such a list goes straight to the tool-call rejection; any other list is
+  // validated block by block, so an unknown, misspelled or malformed block
+  // throws the same error here as on /api/chat, even when the list also
+  // carries a valid `toolCall` block. (routeError shapes a fixture tool-call
+  // error's body by path, so only its envelope differs between the two.)
+  const blocks = (response as { blocks?: unknown }).blocks;
+  const blockList: unknown[] = Array.isArray(blocks) ? blocks : [];
+  const isBlockOfType = (b: unknown, type: string): boolean =>
+    b !== null && typeof b === "object" && "type" in b && b.type === type;
+  const blocksCarryCustomToolCall = blockList.some((b) => isBlockOfType(b, "customToolCall"));
+  const blocksCarryToolCall =
+    blocksCarryCustomToolCall || blockList.some((b) => isBlockOfType(b, "toolCall"));
+  if (!blocksCarryCustomToolCall && blockList.length > 0) {
+    try {
+      resolveFixtureBlocks(blockList as FixtureBlock[]);
+    } catch (err) {
+      // Journal the matched request before the error escapes, as /api/chat
+      // does (it journals, then its builder throws). routeError then keeps
+      // this entry's body, fixture and misbehavior outcome instead of
+      // writing a bodiless "internal" entry.
+      const journalEntry = journal.add({
+        method: req.method ?? "POST",
+        path: urlPath,
+        headers: flattenHeaders(req.headers),
+        body: completionReq,
+        response: { status: 500, fixture },
+      });
+      recordMisbehaviorOutcome({
+        entry: journalEntry,
+        summary: misbehavior.summary,
+        defaults,
+        testId,
+      });
+      throw err;
+    }
+  }
+  if (isTextResponse(response) && !blocksCarryToolCall) {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,

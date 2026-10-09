@@ -27,6 +27,10 @@ import {
   openaiResponsesNonStreamingShape,
   openaiResponsesTextEventShapes,
   openaiResponsesToolCallEventShapes,
+  openaiResponsesNamespacedToolCallEventShapes,
+  openaiResponsesCustomToolCallEventShapes,
+  openaiResponsesNamespacedToolCallNonStreamingShape,
+  openaiResponsesCustomToolCallNonStreamingShape,
   openaiResponsesReasoningEventShapes,
   openaiResponsesEncryptedReasoningEventShapes,
 } from "./sdk-shapes.js";
@@ -404,22 +408,24 @@ describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
 export async function fetchOpenAIModelsListing(): Promise<{
   status: number;
   models: LiveModelEntry[];
+  /** The start of the body, set only when the listing failed or was not JSON. */
+  bodyPreview?: string;
 }> {
   const res = await fetch(OPENAI_MODELS_URL, {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
   });
   const raw = await res.text();
-  if (res.status >= 400) return { status: res.status, models: [] };
+  if (res.status >= 400) return { status: res.status, models: [], bodyPreview: raw.slice(0, 300) };
   let json: { data?: { id: string }[] };
   try {
     json = JSON.parse(raw) as { data?: { id: string }[] };
   } catch {
-    return { status: res.status, models: [] };
+    return { status: res.status, models: [], bodyPreview: `non-JSON body: ${raw.slice(0, 300)}` };
   }
   return { status: res.status, models: (json.data ?? []).map((m) => ({ id: m.id })) };
 }
 
-/** Memoized (per providers.ts `resolveLiveModel`) so this file makes one listing call. */
+/** Memoized (per providers.ts `resolveLiveModel`) so each resolver key makes one listing call. */
 export function getOpenAIResponsesModel(): Promise<ResolvedModel> {
   return resolveLiveModel("openai-responses", fetchOpenAIModelsListing, ["gpt-4o-mini", "gpt-4o"]);
 }
@@ -695,6 +701,390 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift", () => {
       report,
     ).toEqual([]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced and custom tool calls (#505)
+// ---------------------------------------------------------------------------
+//
+// `namespace` tools and `custom` (freeform) tools are GPT-5-family features, so
+// these legs resolve their own model, choosing ONLY from GPT5_TOOL_MODELS (never
+// the listing's first id). They report SKIPPED via `ctx.skip(reason)` only for
+// a genuinely unavailable probe: an infra status on the listing or the real
+// call, the real call reporting the model not found (`isModelNotFound`), or an
+// inconclusive real run (`response.incomplete`). A bare `return` would report
+// PASS with nothing compared. Everything else FAILS, like the other legs in
+// this file: a non-infra listing error, a listing with no usable models, a
+// listing that names none of GPT5_TOOL_MODELS (retired or renamed ids must turn
+// the run red, not skip forever), a mock error status, and a real run that
+// ends `response.failed` or with an `error` event. `tool_choice: "required"`
+// with a single offered tool forces the call without depending on a
+// namespace-aware `tool_choice` shape.
+
+const NAMESPACE_TOOLS = [
+  {
+    type: "namespace",
+    name: "weather_tools",
+    description: "Weather lookups",
+    tools: [
+      {
+        type: "function",
+        name: "get_weather",
+        description: "Get weather",
+        parameters: {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
+          additionalProperties: false,
+        },
+      },
+    ],
+  },
+];
+
+const CUSTOM_TOOLS = [
+  {
+    type: "custom",
+    name: "apply_patch",
+    description: "Apply a patch in the *** Begin Patch / *** End Patch format.",
+  },
+];
+
+/** The only models the namespaced/custom tool legs may drive, in preference order. */
+const GPT5_TOOL_MODELS = ["gpt-5-mini", "gpt-5"];
+
+/** What the (single, memoized) listing call for the tool legs returned. */
+let toolsListing: { status: number; listed: number; bodyPreview?: string } | undefined;
+
+/**
+ * Memoized model for the namespaced/custom tool legs. The listing is narrowed
+ * to {@link GPT5_TOOL_MODELS} before selection, so `selectLiveModel`'s
+ * first-listed-id fallback can never pick an unrelated (or tool-less gpt-5
+ * variant) model; with none of them listed the result is `{ unavailable }`.
+ * The unfiltered status and count are kept in {@link toolsListing} so the
+ * failure message names the actual cause.
+ */
+function getOpenAIResponsesToolsModel(): Promise<ResolvedModel> {
+  return resolveLiveModel(
+    "openai-responses-gpt5-tools",
+    async () => {
+      const listing = await fetchOpenAIModelsListing();
+      toolsListing = {
+        status: listing.status,
+        listed: listing.models.length,
+        bodyPreview: listing.bodyPreview,
+      };
+      return {
+        status: listing.status,
+        models: listing.models.filter((m) => GPT5_TOOL_MODELS.includes(m.id)),
+      };
+    },
+    GPT5_TOOL_MODELS,
+  );
+}
+
+/**
+ * The model for a tool leg, or the reason to skip. `{ unavailable }` THROWS,
+ * as in every other leg here (see `ResolvedModel` in providers.ts: "a
+ * genuinely broken state to fail loud on"). A skip would hide a broken listing
+ * and, once both GPT5_TOOL_MODELS ids are retired, would drop the #505 drift
+ * coverage with no red signal anywhere.
+ */
+async function resolveToolsModel(): Promise<{ model: string } | { skip: string }> {
+  const resolved = await getOpenAIResponsesToolsModel();
+  if ("infra" in resolved) return { skip: `OpenAI /v1/models infra status ${resolved.infra}` };
+  if ("model" in resolved) return { model: resolved.model };
+  const l = toolsListing;
+  if (!l) throw new Error("OpenAI /v1/models: no listing recorded for the namespaced/custom legs");
+  if (l.status >= 400) {
+    throw new Error(`OpenAI /v1/models listing failed: status ${l.status}: ${l.bodyPreview ?? ""}`);
+  }
+  if (l.listed === 0) {
+    throw new Error(
+      `OpenAI /v1/models (status ${l.status}) returned no usable models: ${l.bodyPreview ?? "empty data[]"}`,
+    );
+  }
+  throw new Error(
+    `OpenAI /v1/models lists ${l.listed} models but none of ${GPT5_TOOL_MODELS.join(", ")}: ` +
+      `the ids were retired or renamed (update GPT5_TOOL_MODELS) or the key lost gpt-5 access. ` +
+      `Namespaced and custom tool drift is NOT being checked until this is fixed.`,
+  );
+}
+
+type TypedSSEEvent = ReturnType<typeof parseTypedSSE>[number];
+
+function isReasoningItem(item: unknown): boolean {
+  return (
+    typeof item === "object" && item !== null && (item as { type?: unknown }).type === "reasoning"
+  );
+}
+
+/**
+ * Drops everything a real stream carries for its `reasoning` output items:
+ * their `output_item.added`/`.done` events, every `response.reasoning_*` event
+ * (summary parts, summary text, reasoning text), any other event whose
+ * `item_id` is a reasoning item's id, and their entries in
+ * `response.completed.output`. Every other event, and every other output item,
+ * is kept as-is.
+ */
+function withoutReasoningItems(events: TypedSSEEvent[]): TypedSSEEvent[] {
+  const isItemEvent = (e: TypedSSEEvent) =>
+    e.type === "response.output_item.added" || e.type === "response.output_item.done";
+  const reasoningIds = new Set<unknown>(
+    events.filter((e) => isItemEvent(e) && isReasoningItem(e.data.item)).map((e) => e.data.item.id),
+  );
+  return events
+    .filter(
+      (e) =>
+        !(isItemEvent(e) && isReasoningItem(e.data.item)) &&
+        !e.type.startsWith("response.reasoning_") &&
+        !(e.data.item_id !== undefined && reasoningIds.has(e.data.item_id)),
+    )
+    .map((e) => {
+      const output: unknown = e.data.response?.output;
+      if (e.type !== "response.completed" || !Array.isArray(output)) return e;
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          response: { ...e.data.response, output: output.filter((i) => !isReasoningItem(i)) },
+        },
+      };
+    });
+}
+
+/**
+ * The provider's own error text when a real stream ended `response.failed` or
+ * with a top-level `error` event (both arrive on an HTTP 200), else undefined.
+ */
+function realStreamFailure(events: TypedSSEEvent[]): string | undefined {
+  const failure = events.find((e) => e.type === "response.failed" || e.type === "error");
+  if (!failure) return undefined;
+  const error: unknown =
+    failure.type === "error" ? failure.data : (failure.data.response?.error ?? failure.data);
+  return `real stream ended ${failure.type}: ${JSON.stringify(error)}`;
+}
+
+async function fetchOpenAIResponsesForcedTool(
+  model: string,
+  input: object[],
+  tools: object[],
+  stream: boolean,
+): Promise<{ status: number; raw: string }> {
+  const res = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      input,
+      tools,
+      tool_choice: "required",
+      stream,
+      // gpt-5-family models spend output tokens on hidden reasoning first. Low
+      // effort plus a roomy cap keeps a forced single call from ending
+      // `incomplete` (max_output_tokens); the leg still skips if it does.
+      reasoning: { effort: "low" },
+      max_output_tokens: 4096,
+    }),
+  });
+  return { status: res.status, raw: await res.text() };
+}
+
+describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and custom tools", () => {
+  let toolsInstance: ServerInstance;
+
+  beforeAll(async () => {
+    toolsInstance = await createServer(
+      [
+        {
+          match: { toolName: "get_weather", toolNamespace: "weather_tools" },
+          response: {
+            toolCalls: [
+              { name: "get_weather", namespace: "weather_tools", arguments: '{"city":"Paris"}' },
+            ],
+          },
+        },
+        {
+          match: { toolName: "apply_patch" },
+          response: {
+            toolCalls: [
+              {
+                type: "custom",
+                name: "apply_patch",
+                input: "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n",
+              },
+            ],
+          },
+        },
+      ] satisfies Fixture[],
+      { port: 0, chunkSize: 100 },
+    );
+  });
+
+  afterAll(async () => {
+    await stopDriftServer(toolsInstance);
+  });
+
+  const legs = [
+    {
+      name: "namespaced function_call",
+      tools: NAMESPACE_TOOLS,
+      input: [{ role: "user", content: "Weather in Paris" }],
+      itemType: "function_call",
+      sdk: openaiResponsesNamespacedToolCallEventShapes,
+      sdkNonStreaming: openaiResponsesNamespacedToolCallNonStreamingShape,
+    },
+    {
+      name: "custom_tool_call",
+      tools: CUSTOM_TOOLS,
+      input: [{ role: "user", content: "Create hello.txt containing hello, using apply_patch." }],
+      itemType: "custom_tool_call",
+      sdk: openaiResponsesCustomToolCallEventShapes,
+      sdkNonStreaming: openaiResponsesCustomToolCallNonStreamingShape,
+    },
+  ];
+
+  it.for(legs)(
+    "streaming $name event sequence matches",
+    async ({ name, tools, input, itemType, sdk }, ctx) => {
+      const resolved = await resolveToolsModel();
+      if ("skip" in resolved) {
+        ctx.skip(resolved.skip);
+        return;
+      }
+      const model = resolved.model;
+
+      // The leg's own shapes carry `response.completed` with the tool item; the
+      // text leg contributes only `response.created`.
+      const sdkEvents = [
+        ...openaiResponsesTextEventShapes().filter((e) => e.type === "response.created"),
+        ...sdk(),
+      ];
+
+      const [realRes, mockStreamRes] = await Promise.all([
+        fetchOpenAIResponsesForcedTool(model, input, tools, true),
+        httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: true, tools }),
+      ]);
+
+      if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
+        ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
+        return;
+      }
+      expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
+      expect(
+        mockStreamRes.status,
+        `Mock error ${mockStreamRes.status}: ${mockStreamRes.body.slice(0, 300)}`,
+      ).toBe(200);
+
+      const parsedReal = parseTypedSSE(realRes.raw);
+      expect(parsedReal.length, "Real API returned no SSE events").toBeGreaterThan(0);
+      const incomplete = parsedReal.find((e) => e.type === "response.incomplete");
+      if (incomplete) {
+        // The model ran out of budget before finishing: an inconclusive probe,
+        // not drift. Skip with the reason rather than grade a partial stream.
+        ctx.skip(
+          `real run ended response.incomplete (${JSON.stringify(incomplete.data.response?.incomplete_details ?? null)})`,
+        );
+        return;
+      }
+      const failure = realStreamFailure(parsedReal);
+      if (failure) throw new Error(failure);
+      // The real gpt-5 stream leads with a `reasoning` item; the mock fixture
+      // defines none, so it is dropped here to keep this leg about the tool
+      // item. The reasoning legs below are mock-only, so real reasoning-item
+      // shapes are not graded anywhere in this suite.
+      const realEvents = withoutReasoningItems(parsedReal);
+      expect(
+        realEvents.some(
+          (e) => e.type === "response.output_item.done" && e.data.item?.type === itemType,
+        ),
+        `Real API stream has no ${itemType} item despite tool_choice "required"; ` +
+          `events: ${parsedReal.map((e) => e.type).join(", ")}`,
+      ).toBe(true);
+      const mockEvents = parseTypedSSE(mockStreamRes.body);
+      expect(mockEvents.length, "Mock returned no SSE events").toBeGreaterThan(0);
+
+      const toShapes = (events: typeof realEvents) =>
+        events.map((e) => ({ type: e.type, dataShape: extractShape(e.data) }));
+      const diffs = compareSSESequences(sdkEvents, toShapes(realEvents), toShapes(mockEvents));
+      const report = formatDriftReport(
+        `OpenAI Responses (streaming ${name} events)`,
+        diffs,
+        "openai-responses",
+      );
+
+      expect(
+        diffs.filter((d) => d.severity === "critical"),
+        report,
+      ).toEqual([]);
+    },
+  );
+
+  it.for(legs)(
+    "non-streaming $name output item shape matches",
+    async ({ name, tools, input, itemType, sdkNonStreaming }, ctx) => {
+      const resolved = await resolveToolsModel();
+      if ("skip" in resolved) {
+        ctx.skip(resolved.skip);
+        return;
+      }
+      const model = resolved.model;
+
+      const [realRes, mockRes] = await Promise.all([
+        fetchOpenAIResponsesForcedTool(model, input, tools, false),
+        httpPost(`${toolsInstance.url}/v1/responses`, { model, input, stream: false, tools }),
+      ]);
+
+      if (isInfraSkip(realRes.status) || isModelNotFound(realRes.status, realRes.raw)) {
+        ctx.skip(`real Responses API status ${realRes.status} for ${model}`);
+        return;
+      }
+      expect(realRes.status, `Real API error: ${realRes.raw.slice(0, 300)}`).toBe(200);
+      expect(mockRes.status, `Mock error ${mockRes.status}: ${mockRes.body.slice(0, 300)}`).toBe(
+        200,
+      );
+
+      const real = JSON.parse(realRes.raw) as Record<string, unknown>;
+      if (real.status === "incomplete") {
+        // Same inconclusive-probe rule as the streaming leg.
+        ctx.skip(`real run ended incomplete (${JSON.stringify(real.incomplete_details ?? null)})`);
+        return;
+      }
+      if (real.status === "failed" || (real.error !== undefined && real.error !== null)) {
+        throw new Error(`real response ${String(real.status)}: ${JSON.stringify(real.error)}`);
+      }
+      // As in the streaming leg: drop the real `reasoning` item, which the mock
+      // fixture does not define, so the report is about the tool item.
+      const output = Array.isArray(real.output) ? real.output : [];
+      const realToolOnly = { ...real, output: output.filter((i) => !isReasoningItem(i)) };
+      expect(
+        realToolOnly.output.some(
+          (i) => typeof i === "object" && i !== null && (i as { type?: unknown }).type === itemType,
+        ),
+        `Real API output has no ${itemType} item despite tool_choice "required"; ` +
+          `output types: ${JSON.stringify(output.map((i) => (i as { type?: unknown }).type))}`,
+      ).toBe(true);
+
+      const diffs = triangulate(
+        sdkNonStreaming(),
+        extractShape(realToolOnly),
+        extractShape(JSON.parse(mockRes.body)),
+      );
+      const report = formatDriftReport(
+        `OpenAI Responses (non-streaming ${name})`,
+        diffs,
+        "openai-responses",
+      );
+
+      expect(
+        diffs.filter((d) => d.severity === "critical"),
+        report,
+      ).toEqual([]);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

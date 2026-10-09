@@ -131,6 +131,14 @@ test.each(branches)(
         code: 13,
         status: "INTERNAL",
         message: expect.stringContaining("invalid JSON arguments"),
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "AIMOCK_INVALID_TOOL_ARGUMENTS",
+            domain: "aimock",
+            metadata: { code: "aimock_invalid_tool_arguments" },
+          },
+        ],
       },
     });
     expect.soft(JSON.stringify(rejected)).toContain(advice);

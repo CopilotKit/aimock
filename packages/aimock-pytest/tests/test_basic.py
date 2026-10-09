@@ -167,6 +167,34 @@ def test_add_fixture_and_match(aimock):
     assert body["choices"][0]["message"]["content"] == "Hi there!"
 
 
+def test_add_fixture_routes_tool_namespace_into_match(aimock):
+    """toolNamespace=... is a match key: it lands under `match`, so it gates."""
+    aimock.add_fixture(
+        {"toolName": "list_issues"}, {"content": "WRONG"}, toolNamespace="mcp__gitlab"
+    )
+    aimock.add_fixture(
+        {"toolName": "list_issues"}, {"content": "RIGHT"}, toolNamespace="mcp__github"
+    )
+
+    r = requests.post(
+        f"{aimock.base_url}/v1/responses",
+        json={
+            "model": "gpt-5",
+            "input": "list my issues",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__github",
+                    "description": "GitHub MCP",
+                    "tools": [{"type": "function", "name": "list_issues", "parameters": {}}],
+                }
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["output"][0]["content"][0]["text"] == "RIGHT"
+
+
 def test_reset_clears_fixtures(aimock):
     """Reset clears fixtures and journal."""
     aimock.on_message("test", {"content": "response"})
