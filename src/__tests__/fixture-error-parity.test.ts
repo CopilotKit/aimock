@@ -389,6 +389,36 @@ describe("Ollama /api/generate", () => {
   });
 
   it.each([
+    ["no misbehavior", {}],
+    ["a misbehavior header", { "x-aimock-misbehavior": "empty-response" }],
+  ])("journals a bad block on /api/generate as /api/chat does, with %s", async (_l, headers) => {
+    const m = await start([
+      { match: {}, response: { content: "", blocks: [{ type: "image", url: "x" }] } } as Fixture,
+    ]);
+    const chat = await post(
+      m,
+      "/api/chat",
+      { model: "llama3", messages: [{ role: "user", content: "go" }], stream: false },
+      headers,
+    );
+    expect(chat.status, chat.text).toBe(500);
+    const chatEntry = m.getLastRequest()!;
+    expect(chatEntry.body).not.toBeNull();
+    expect(chatEntry.response.fixture).not.toBeNull();
+    for (const stream of [false, true]) {
+      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream }, headers);
+      expect(r.text).toBe(chat.text);
+      const entry = m.getLastRequest()!;
+      expect(entry.path).toBe("/api/generate");
+      expect(entry.body).toMatchObject({
+        model: "llama3",
+        messages: [{ role: "user", content: "go" }],
+      });
+      expect(entry.response).toEqual(chatEntry.response);
+    }
+  });
+
+  it.each([
     ["toolCall", { type: "toolCall", name: "f", arguments: "{}" }],
     ["customToolCall", { type: "customToolCall", name: "p", input: "x" }],
   ])("still rejects a %s block as a tool-call fixture", async (_label, block) => {

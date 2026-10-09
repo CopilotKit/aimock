@@ -1,10 +1,13 @@
 import {
+  assertResponsesToolCalls,
   isContentWithToolCallsResponse,
   isErrorResponse,
   isTextResponse,
   isToolCallResponse,
   rebuildOrderedBlocks,
+  requireFunctionToolCalls,
   resolveFixtureBlockCallOutcome,
+  resolveFixtureBlocks,
   toolCallFixtureBlock,
   resolveTestId,
   toolArgsForWire,
@@ -87,14 +90,21 @@ interface MisbehaviorSchemaInput {
   readonly tools?: readonly unknown[];
 }
 
-/** Private tools-only input also permits native Cohere definitions before adaptation. */
+/**
+ * Private tools-only input also permits native Cohere definitions before adaptation.
+ * With `scope`, a function tool matches only when its `namespace` equals
+ * `scope.namespace` (an absent namespace matches only un-namespaced tools), so
+ * an OpenAI Responses call never takes another namespace's same-named schema.
+ */
 export function normalizeDirectToolSchema(
   request: MisbehaviorSchemaInput,
   toolName: string,
+  scope?: { namespace: string | undefined },
 ): DirectToolSchema | undefined {
   for (const tool of request.tools ?? []) {
     if (!isObject(tool)) continue;
     if (tool.type === "function" && isObject(tool.function) && tool.function.name === toolName) {
+      if (scope && tool.namespace !== scope.namespace) continue;
       return normalizeDirectConstraints(tool.function.parameters);
     }
     if (tool.name !== toolName || !Object.hasOwn(tool, "parameter_definitions")) continue;
@@ -110,6 +120,19 @@ export function normalizeDirectToolSchema(
     return { properties: definitions, required };
   }
   return undefined;
+}
+
+/**
+ * The schema of a fault's target call. Only OpenAI Responses serves a call's
+ * `namespace`, so only there does the lookup resolve (namespace, name).
+ */
+function targetToolSchema(
+  context: MisbehaviorCandidateContext,
+  target: ToolCall,
+): DirectToolSchema | undefined {
+  return context.wire === "openai-responses"
+    ? normalizeDirectToolSchema(context.request, target.name, { namespace: target.namespace })
+    : normalizeDirectToolSchema(context.request, target.name);
 }
 
 export type DirectJSONType =
@@ -286,7 +309,7 @@ export function prepareMissingRequiredCandidate(
   if (args.kind !== "parsed" || !isObject(args.value))
     return { kind: "not-applicable", detail: "Arguments must parse to an object" };
   const value = args.value;
-  const schema = normalizeDirectToolSchema(context.request, target.name);
+  const schema = targetToolSchema(context, target);
   if (!schema) return { kind: "not-applicable", detail: "Target tool has no direct schema" };
   const property = fault.property ?? schema.required.find((name) => Object.hasOwn(value, name));
   if (
@@ -349,7 +372,7 @@ export function prepareWrongTypeCandidate(
   if (args.kind !== "parsed" || !isObject(args.value))
     return { kind: "not-applicable", detail: "Arguments must parse to an object" };
   const value = args.value;
-  const schema = normalizeDirectToolSchema(context.request, target.name);
+  const schema = targetToolSchema(context, target);
   if (!schema) return { kind: "not-applicable", detail: "Target tool has no direct schema" };
   const names = fault.property === undefined ? Object.keys(schema.properties) : [fault.property];
   let mutation: { property: string; replacement: unknown } | undefined;
@@ -415,7 +438,7 @@ export function prepareExtraPropertyCandidate(
   if (args.kind !== "parsed" || !isObject(args.value))
     return { kind: "not-applicable", detail: "Arguments must parse to an object" };
   const value = args.value;
-  const schema = normalizeDirectToolSchema(context.request, target.name);
+  const schema = targetToolSchema(context, target);
   if (!schema || schema.additionalProperties !== false)
     return {
       kind: "not-applicable",
@@ -468,7 +491,7 @@ export function prepareEnumMismatchCandidate(
   if (args.kind !== "parsed" || !isObject(args.value))
     return { kind: "not-applicable", detail: "Arguments must parse to an object" };
   const value = args.value;
-  const schema = normalizeDirectToolSchema(context.request, target.name);
+  const schema = targetToolSchema(context, target);
   if (!schema) return { kind: "not-applicable", detail: "Target tool has no direct schema" };
   const names = fault.property === undefined ? Object.keys(schema.properties) : [fault.property];
   let mutation: { property: string; replacement: unknown } | undefined;
@@ -1031,12 +1054,15 @@ export function validateFixtureMisbehavior(
               ? (response.toolCalls ?? [])
               : [];
         const toolFault = fault.fault.startsWith("tool-") || fault.fault === "stop-length-mid-tool";
-        // Tool faults target function calls only; other faults may scope to any call.
+        // Tool faults target function calls only; other faults may scope to any non-custom call.
         const target = toolFault
           ? functionCallAt(calls, faultTargetIndex(calls, fault.tool))
           : undefined;
         if (toolFault && !target) reason = "misbehavior/not-applicable";
-        else if (fault.tool !== undefined && !calls.some((call) => call.name === fault.tool))
+        else if (
+          fault.tool !== undefined &&
+          !calls.some((call) => call.name === fault.tool && call.type !== "custom")
+        )
           reason = "misbehavior/not-applicable";
         else if (target) {
           const args = toolArgsForWire(target);
@@ -1173,9 +1199,20 @@ export function prepareDuplicateIdCandidate(
         detail: "Current output mode does not emit target tool call ID",
       };
   }
-  const destinationIndex = calls.length === 1 ? 1 : (sourceIndex + 1) % calls.length;
+  // The destination is the next function call after the source, wrapping. A
+  // custom tool call is never a destination: it passes through unchanged. With
+  // no other function call, a copy of the source is inserted right after it.
+  let destinationIndex = -1;
+  for (let step = 1; step < calls.length && destinationIndex === -1; step++) {
+    if (functionCallAt(calls, (sourceIndex + step) % calls.length))
+      destinationIndex = (sourceIndex + step) % calls.length;
+  }
+  const inserted = destinationIndex === -1;
   const toolCalls = calls.map((call) => ({ ...call }));
-  if (calls.length === 1) toolCalls.push({ ...source });
+  if (inserted) {
+    destinationIndex = sourceIndex + 1;
+    toolCalls.splice(destinationIndex, 0, { ...source });
+  }
   if (source.id === undefined) delete toolCalls[destinationIndex].id;
   else toolCalls[destinationIndex].id = source.id;
   let rewritten: FixtureResponse = { ...response, toolCalls };
@@ -1183,8 +1220,10 @@ export function prepareDuplicateIdCandidate(
     let callIndex = 0;
     const blocks = outcome.ordered.flatMap<FixtureBlock>((block) => {
       if (block.type === "text") return [{ ...block }];
+      const isSource = callIndex === sourceIndex;
       const rewrittenBlock = toolCallFixtureBlock(toolCalls[callIndex++]);
-      return calls.length === 1 ? [rewrittenBlock, { ...rewrittenBlock }] : [rewrittenBlock];
+      if (!(inserted && isSource)) return [rewrittenBlock];
+      return [rewrittenBlock, toolCallFixtureBlock(toolCalls[callIndex++])];
     });
     rewritten = { ...response, content: outcome.content, toolCalls, blocks };
   }
@@ -1283,8 +1322,14 @@ export function prepareEmptyCandidate(
         : "toolCalls" in response
           ? (response.toolCalls ?? [])
           : [];
-    if (!calls.some((call) => call.name === fault.tool))
-      return { kind: "not-applicable", detail: "Target tool call is absent" };
+    // A custom tool call is never a fault target: naming one selects nothing.
+    if (!calls.some((call) => call.name === fault.tool && call.type !== "custom"))
+      return {
+        kind: "not-applicable",
+        detail: calls.some((call) => call.name === fault.tool)
+          ? "Target tool call is a custom tool call"
+          : "Target tool call is absent",
+      };
   }
   return { kind: "ready", candidate: { response: clearChatOutput(response), stop: "stop" } };
 }
@@ -1474,17 +1519,63 @@ function misbehaviorRoll(seed: number): number {
 }
 
 /**
- * Whether a response would emit a custom tool call. Non-empty ordered `blocks`
- * are authoritative (the legacy `toolCalls` are then never emitted), as in
- * `requireEmittedFunctionToolCalls`.
+ * Whether the wire's normal path would serve this response's blocks and tool
+ * calls, or reject the fixture. Mirrors that path: non-empty ordered `blocks`
+ * are authoritative (the legacy `toolCalls` is then never read), only the
+ * OpenAI Responses API may carry a custom tool call, and every entry must be
+ * well formed. A wire that carries arguments as an object also rejects a
+ * function call whose `arguments` are not valid JSON (see
+ * {@link rejectsInvalidToolArguments}). A rejection is either a coded fixture
+ * tool-call error or the plain Error for a malformed text block or an unknown
+ * block type; all of them mean the wire cannot serve the fixture.
  */
-function hasCustomToolCall(response: FixtureResponse): boolean {
-  if (typeof response !== "object" || response === null) return false;
+function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse): boolean {
+  if (typeof response !== "object" || response === null) return true;
   const blocks = "blocks" in response ? response.blocks : undefined;
-  if (Array.isArray(blocks) && blocks.length > 0)
-    return blocks.some((block) => isObject(block) && block.type === "customToolCall");
   const calls = "toolCalls" in response ? response.toolCalls : undefined;
-  return Array.isArray(calls) && calls.some((call) => isObject(call) && call.type === "custom");
+  let functionCalls: Pick<ToolCall, "name" | "arguments">[] = [];
+  try {
+    if (Array.isArray(blocks) && blocks.length > 0) {
+      if (wire === "openai-responses") resolveFixtureBlocks(blocks, { allowCustom: true });
+      else
+        functionCalls = resolveFixtureBlocks(blocks, { wire }).filter(
+          (block) => block.type === "toolCall",
+        );
+    } else if (Array.isArray(calls)) {
+      if (wire === "openai-responses") assertResponsesToolCalls(calls);
+      else functionCalls = requireFunctionToolCalls(calls, wire);
+    }
+  } catch {
+    return false;
+  }
+  return (
+    !rejectsInvalidToolArguments(wire, stream) ||
+    functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
+  );
+}
+
+/**
+ * Whether this wire and output mode carry tool arguments as an object, so the
+ * normal path must parse a fixture's string `arguments` and answers
+ * aimock_invalid_tool_arguments when they are not valid JSON. The other modes
+ * pass the authored string through unchanged (the OpenAI wires, Cohere, and
+ * the streaming Anthropic, Bedrock and Gemini Interactions paths, which send
+ * arguments as a JSON-string fragment).
+ */
+function rejectsInvalidToolArguments(wire: WireId, stream: boolean): boolean {
+  switch (wire) {
+    case "gemini":
+    case "gemini-live":
+    case "ollama":
+      return true;
+    case "anthropic":
+    case "bedrock-invoke":
+    case "bedrock-converse":
+    case "gemini-interactions":
+      return !stream;
+    default:
+      return false;
+  }
 }
 
 /** Complete preparation precedes selection; every candidate sees the original response. */
@@ -1526,10 +1617,15 @@ export function planMisbehavior(input: {
       message: `${wire}: ${parsed.issue.message}`,
       summary: { applied: false, source, wire, evaluations: [] },
     };
-  // Only the OpenAI Responses API can serve a custom tool call. Elsewhere the
-  // fixture is unservable, so no fault is evaluated and the wire's own guard
-  // rejects it with the coded aimock_unsupported_tool_call error.
-  if (wire !== "openai-responses" && hasCustomToolCall(input.response)) return { kind: "skipped" };
+  // A fixture this wire cannot serve (a custom tool call off the OpenAI
+  // Responses API, a malformed tool call, invalid JSON arguments on a wire
+  // that carries arguments as an object, a malformed text block or an
+  // unknown block type) is never faulted and never throws here: the request
+  // takes the normal path exactly as with no misbehavior config, which
+  // journals it and answers the coded fixture tool-call error
+  // (aimock_unsupported_tool_call, aimock_invalid_fixture_tool_call or
+  // aimock_invalid_tool_arguments) or the plain block error.
+  if (!servesFixture(wire, input.stream, input.response)) return { kind: "skipped" };
   const config = parsed.config;
   const explicit = source === "header" || source === "fixture";
   const evaluations: MisbehaviorEvaluation[] = [];
