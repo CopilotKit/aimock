@@ -64,6 +64,14 @@ export interface AimockHandle {
   readonly llm: LLMock;
   /** The server URL (e.g., http://127.0.0.1:4010). */
   readonly url: string;
+}
+
+/**
+ * The handle `useAimock` returns: an `AimockHandle` plus the MCP fakes
+ * helpers (RP7). A separate type, so that `AimockHandle` stays as it was and
+ * code that builds its own `AimockHandle` keeps compiling.
+ */
+export interface AimockFakesHandle extends AimockHandle {
   /**
    * The MCP URL and headers for the fakes scoped to `testId` (RP7), and
    * registers that identity for this test's report. With no `testId`, the
@@ -106,8 +114,8 @@ function defaultJestId(root: string): string {
  * NOTE: Jest globals (beforeAll, afterAll, beforeEach, afterEach) must be available
  * in the test environment. This works with the default jest configuration.
  */
-export function useAimock(options: UseAimockOptions = {}): () => AimockHandle {
-  let handle: AimockHandle | null = null;
+export function useAimock(options: UseAimockOptions = {}): () => AimockFakesHandle {
+  let handle: AimockFakesHandle | null = null;
   let origOpenaiUrl: string | undefined;
   let origAnthropicUrl: string | undefined;
   const root = resolve(options.testIdRoot ?? process.cwd());

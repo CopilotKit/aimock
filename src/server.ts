@@ -3422,7 +3422,9 @@ async function startServer(
     if (handler.setJournal) handler.setJournal(journal);
     if (registry && handler.setRegistry) handler.setRegistry(registry);
     if (handler.setLogger) handler.setLogger(logger);
-    if (handler.setReplaySpeed) handler.setReplaySpeed(defaults.replaySpeed);
+    // B11/R12: only aimock's own MCPMock takes the replay speed; a custom
+    // Mountable is never called (1.44.0 had no such hook).
+    if (handler instanceof MCPMock) handler.setReplaySpeed(defaults.replaySpeed);
   }
 
   // Set initial fixtures-loaded gauge

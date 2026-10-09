@@ -35,8 +35,6 @@ export interface Mountable {
   clearMcpFakes?(): void;
   /** Reset fake consumption state for one test id, or for all when omitted. */
   resetScenarioState?(testId?: string): void;
-  /** T1: recorded timing (`durationMs`, `atMs`) plays at value / speed. */
-  setReplaySpeed?(speed: number): void;
   /** Hands an MCP mount a `Logger`. Nothing in the server calls it. */
   setLogger?(logger: Logger): void;
 }

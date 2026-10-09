@@ -41,7 +41,7 @@ import {
 import {
   MCP_FAKES_DEFAULT_TEST_ID,
   validateMcpFakes,
-  type McpFakeAddOrigin,
+  type McpFakeAddOriginInternal,
   type McpFakeAddResult,
   type McpFakeClaim,
   type McpFakeStore,
@@ -98,7 +98,7 @@ const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 export interface RecorderHost {
   /** MR4 claims, MR12 registration. */
   readonly fakes: McpFakeStore;
-  addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult;
+  addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOriginInternal): McpFakeAddResult;
   journalEntry(entry: Omit<JournalEntry, "id" | "timestamp">): void;
   logger(): Logger | null;
   replaySpeed(): number;

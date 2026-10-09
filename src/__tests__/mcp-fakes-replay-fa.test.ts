@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { LLMock } from "../llmock.js";
@@ -323,4 +323,50 @@ describe("AM7: tools/list with a recorded list, registered tools and other fakes
       await llm.stop();
     }
   });
+});
+
+// B11/R12: the server speed reaches aimock's own MCPMock on both mount paths
+// (before start and after it). A custom Mountable is never called, as in
+// 1.44.0, even when it has its own `setReplaySpeed` member.
+describe("B11/R12: replay speed goes to an MCPMock only", () => {
+  for (const when of ["before start", "after start"] as const) {
+    it(`a mounted MCPMock gets the server speed (${when})`, async () => {
+      const llm = new LLMock({ port: 0, replaySpeed: 7 });
+      const mcp = new MCPMock();
+      const spy = vi.spyOn(mcp, "setReplaySpeed");
+      try {
+        if (when === "before start") {
+          llm.mount("/mcp", mcp);
+          await llm.start();
+        } else {
+          await llm.start();
+          llm.mount("/mcp", mcp);
+        }
+        expect(spy).toHaveBeenCalledWith(7);
+      } finally {
+        await llm.stop();
+      }
+    });
+
+    it(`a custom Mountable's own setReplaySpeed is never called (${when})`, async () => {
+      const llm = new LLMock({ port: 0, replaySpeed: 7 });
+      const own = vi.fn();
+      const withMethod = { handleRequest: async () => false, setReplaySpeed: own };
+      const withString = { handleRequest: async () => false, setReplaySpeed: "fast" };
+      try {
+        if (when === "before start") {
+          llm.mount("/a", withMethod);
+          llm.mount("/b", withString);
+          await llm.start();
+        } else {
+          await llm.start();
+          llm.mount("/a", withMethod);
+          llm.mount("/b", withString);
+        }
+        expect(own).not.toHaveBeenCalled();
+      } finally {
+        await llm.stop();
+      }
+    });
+  }
 });

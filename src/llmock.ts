@@ -46,6 +46,7 @@ import {
   type FixturesWithServices,
 } from "./fixture-loader-services.js";
 import { ensureFakeMount, isAutoMount, planFileFakes } from "./mcp-fakes-mount.js";
+import { MCPMock } from "./mcp-mock.js";
 import { build, msg, quote } from "./message-text.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
 import { Journal } from "./journal.js";
@@ -542,7 +543,11 @@ export class LLMock {
       if (registry && handler.setRegistry) handler.setRegistry(registry);
       const logger = this.serverInstance.defaults.logger;
       if (handler.setLogger) handler.setLogger(logger);
-      handler.setReplaySpeed?.(this.serverInstance.defaults.replaySpeed);
+      // B11/R12: only aimock's own MCPMock takes the replay speed; a custom
+      // Mountable is never called (1.44.0 had no such hook).
+      if (handler instanceof MCPMock) {
+        handler.setReplaySpeed(this.serverInstance.defaults.replaySpeed);
+      }
       if (shadowedBy) {
         logger.warn(
           build(
