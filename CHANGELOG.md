@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Record live MCP servers into `mcpFakes` files and replay them offline: `--mcp-record <mount>=<url>` and `--mcp-proxy-only <mount>=<url>` on the `llmock` bin and Docker image, `llm.record.mcp` for `aimock --config`, and `MCPMock.enableRecording()` / `disableRecording()`.
+- Recording settings `AIMOCK_RECORD_SECRET_VALUES` and `AIMOCK_MCP_UPSTREAM_AUTH`. Recordings never contain headers, redact known secrets, and are not written while a secret remains.
+- `mcpFakes` accepts the recorded keys `list`, `recorded` and `timing` (block) and `notifications` and `durationMs` (call entry). Older aimock versions reject files with these keys.
+- In MCP record mode, a mount forwards every path and method, forwards fake misses to the upstream, and does not answer from its registered tools.
+- A replayed MCP tool call with recorded notifications can be answered as SSE, with progress notifications at the recorded timing (scaled by `--replay-speed`).
+- An MCP mount holding recorded log notifications advertises `logging` and answers `logging/setLevel`.
+- Per-test MCP fake report: `GET /__aimock/mcp/fakes/report`.
+- Vitest and Jest plugins: `useAimock({ fakesReport: "warn" | "fail" })` checks each test's fake report in `afterEach`; handle methods `fakesFor()` and `fakesReport()`, with a per-test default test id; Jest option `testIdRoot`.
+- New exports `assertFakesReport`, `AimockFakesReportError` and `AimockTestIdCollisionError`.
+- aimock-pytest: `fakes_for`, `fakes_report` and `assert_fakes_report`.
+
 ### Fixed
 
 - Preserve malformed tool-call argument strings on string-based response wires instead of silently replacing them with `{}`. Object-based wires now return an explicit error (HTTP 500, or a Gemini Live WebSocket error) before response content. Valid JSON, empty or omitted legacy arguments, and fixture validation retain their existing behavior.

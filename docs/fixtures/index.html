@@ -84,6 +84,15 @@
           <code>fixtures</code>, <code>mcpFakes</code>, or both. See
           <a href="/mcp-mock#scenario-fakes">MCPMock: Scenario fakes</a>.
         </p>
+        <p>
+          <a href="/record-replay#mcp-recording">MCP recording</a> writes
+          <code>mcpFakes</code> files with five more optional keys: <code>list</code>,
+          <code>recorded</code> and <code>timing</code> on a block, and
+          <code>notifications</code> and <code>durationMs</code> on a call entry. A recorded file
+          also has a top-level <code>_warnings</code> array, which the loader ignores. These keys
+          need aimock 1.45.0 or later; see
+          <a href="/mcp-mock#recorded-fakes">MCPMock: Recorded fakes</a>.
+        </p>
 
         <h2>Match Fields</h2>
 

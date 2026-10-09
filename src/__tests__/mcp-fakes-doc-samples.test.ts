@@ -8,20 +8,36 @@
  * fixtures/mcp-fakes/control-api/*.response.json) are compared with the raw
  * HTTP bodies the server sent.
  *
+ * Samples marked `data-sample="inline:<name>"` (MCP recording, recorded fakes,
+ * the fakes report, `fakesFor`) have no file copy: their text is extracted
+ * from the docs page itself and run against the real code (the built CLIs in
+ * `dist/`, a real upstream MCP server, a child Vitest run). A guard checks
+ * that every `data-sample` on the docs pages has a file or an inline case.
+ *
  * Fixture files are loaded by a path relative to the fixtures directory (the
  * suite `chdir`s there, which the `forks` pool allows), so entry ids read
  * `weather/seattle.json:get_weather#0` as in the docs, not an absolute path.
  */
-import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { LLMock } from "../llmock.js";
-import { expectMcpError } from "./mcp-fakes-harness.js";
+import { REPO_ROOT, expectMcpError, startCli } from "./mcp-fakes-harness.js";
+import { startUpstream, type UpstreamHandle } from "./mcp-upstream-harness.js";
 
 const FIXTURE_DIR = resolve(__dirname, "fixtures/mcp-fakes");
 const SRC_INDEX = resolve(__dirname, "../index.ts");
@@ -304,4 +320,336 @@ describe("docs sample: control-api/*.sh with curl", () => {
       "control-api/get-fakes.response.json",
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Inline samples: the text lives only on the docs page.
+// ---------------------------------------------------------------------------
+
+const DOCS_DIR = resolve(REPO_ROOT, "docs");
+
+/** Every inline sample name, with the docs page that holds it. */
+const INLINE_SAMPLES = {
+  "recorded-fakes": "mcp-mock",
+  "fakes-report-curl": "control-api",
+  "fakes-report-response": "control-api",
+  "mcp-record-cli": "record-replay",
+  "mcp-record-docker": "record-replay",
+  "mcp-record-layout": "record-replay",
+  "mcp-record-config": "aimock-cli",
+  "fakes-for-test": "test-plugins",
+  "fakes-for-fixture": "test-plugins",
+} as const;
+type InlineSample = keyof typeof INLINE_SAMPLES;
+
+const ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
+
+/** Strip the highlighting spans and decode the entities of one `<code>` body. */
+function codeText(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, name: string) => {
+      if (name.startsWith("#x") || name.startsWith("#X")) {
+        return String.fromCodePoint(parseInt(name.slice(2), 16));
+      }
+      if (name.startsWith("#")) return String.fromCodePoint(parseInt(name.slice(1), 10));
+      const ch = ENTITIES[name];
+      if (ch === undefined) throw new Error(`unknown entity ${whole} in a docs sample`);
+      return ch;
+    });
+}
+
+/** The text of the code block marked `data-sample="inline:<name>"` on its docs page. */
+function docSample(name: InlineSample): string {
+  const html = readFileSync(join(DOCS_DIR, INLINE_SAMPLES[name], "index.html"), "utf8");
+  const marker = `data-sample="inline:${name}"`;
+  const at = html.indexOf(marker);
+  expect(at, `${marker} on docs/${INLINE_SAMPLES[name]}`).toBeGreaterThan(-1);
+  expect(html.indexOf(marker, at + 1), `${marker} appears once`).toBe(-1);
+  const m = /<pre><code>([\s\S]*?)<\/code><\/pre>/.exec(html.slice(at));
+  if (!m) throw new Error(`no <pre><code> after ${marker}`);
+  return codeText(m[1]);
+}
+
+/** A shell sample as argv: `$ ` prompts and `\` line continuations removed. */
+function shellArgs(text: string): string[] {
+  return text.replace(/^\$ /gm, "").replace(/\\\n/g, " ").trim().split(/\s+/);
+}
+
+/** The `.html` docs pages, recursively. */
+function docsPages(dir = DOCS_DIR): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) out.push(...docsPages(path));
+    else if (name.endsWith(".html")) out.push(path);
+  }
+  return out;
+}
+
+describe("docs samples: every data-sample has a proof", () => {
+  it("names a file under fixtures/mcp-fakes or an inline case of this suite", () => {
+    const names = new Set<string>();
+    for (const page of docsPages()) {
+      for (const m of readFileSync(page, "utf8").matchAll(/data-sample="([^"]+)"/g)) {
+        names.add(m[1]);
+      }
+    }
+    expect(names.size).toBeGreaterThan(Object.keys(INLINE_SAMPLES).length);
+    for (const name of names) {
+      if (name.startsWith("inline:")) {
+        expect(Object.keys(INLINE_SAMPLES), name).toContain(name.slice("inline:".length));
+      } else {
+        expect(existsSync(resolve(FIXTURE_DIR, name)), name).toBe(true);
+      }
+    }
+  });
+});
+
+describe("docs sample: recorded fakes (docs/mcp-mock#recorded-fakes)", () => {
+  const ID = "research › long task";
+
+  it("replays the recorded list, result, progress notifications and timing", async () => {
+    const text = docSample("recorded-fakes");
+    const file = join(tmpDir, "research--long-task", "mcp.json");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+    const sample = JSON.parse(text) as {
+      mcpFakes: { list: Array<{ name: string; description: string }> };
+    };
+
+    const url = await startWith(file);
+    const { client } = await connect(`${url}/mcp`, testIdHeader(ID));
+
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => [t.name, t.description])).toEqual(
+      sample.mcpFakes.list.map((t) => [t.name, t.description]),
+    );
+
+    const echo = await client.callTool({ name: "echo", arguments: { message: "hi" } });
+    expect(echo.content).toEqual([{ type: "text", text: "Echo: hi" }]);
+
+    const progress: number[] = [];
+    const started = Date.now();
+    const long = await client.callTool(
+      { name: "trigger-long-running-operation", arguments: { duration: 2, steps: 2 } },
+      undefined,
+      { onprogress: (p) => progress.push(p.progress) },
+    );
+    const elapsed = Date.now() - started;
+    expect(long.content).toEqual([{ type: "text", text: "Long running operation completed." }]);
+    expect(progress).toEqual([1, 2]);
+    expect(elapsed).toBeGreaterThanOrEqual(0.8 * 2009);
+
+    await expectMcpError(client.callTool({ name: "echo", arguments: { message: "bye" } }), {
+      code: -32602,
+      aimockCode: "MCP_FAKE_MISMATCH",
+    });
+  }, 30_000);
+});
+
+describe("docs sample: the fakes report route (docs/control-api#mcp-fakes-report)", () => {
+  it("the curl sample answers the documented report after one call", async () => {
+    const url = await startWith("tickets/retry.json");
+    const { client } = await connect(`${url}/mcp`, testIdHeader("tickets › retry on timeout"));
+    await client.callTool({ name: "create_ticket", arguments: { title: "Refund" } });
+
+    const script = docSample("fakes-report-curl").replaceAll("http://localhost:4010", url);
+    expect(script).toContain(url);
+    const { stdout } = await run("sh", ["-c", script]);
+    expect(JSON.parse(stdout)).toEqual(JSON.parse(docSample("fakes-report-response")));
+  });
+});
+
+describe("docs samples: MCP recording (docs/record-replay, docs/aimock-cli)", () => {
+  let upstream: UpstreamHandle;
+  const ID = "search › refund policy";
+
+  beforeAll(async () => {
+    upstream = await startUpstream();
+  }, 60_000);
+
+  afterAll(async () => {
+    await upstream?.stop();
+  });
+
+  /** Swap the documented upstream (`http://<host>:<port>/mcp`) for the real one. */
+  function withUpstream(arg: string): string {
+    return arg.replace(/https?:\/\/[^/\s"]+\/mcp/, upstream.url);
+  }
+
+  /** One echo call through a real SDK client, with the test id header. */
+  async function echo(url: string, id: string, message: string): Promise<unknown> {
+    const { client } = await connect(url, testIdHeader(id));
+    try {
+      return await client.callTool({ name: "echo", arguments: { message } });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  /** The recording path the layout sample shows, under `fixtures`. */
+  function layoutFile(fixtures: string): string {
+    const lines = docSample("mcp-record-layout").split("\n");
+    expect(lines.map((l) => l.trim())).toEqual([
+      "fixtures/recorded/",
+      "search--refund-policy/",
+      "mcp.json",
+    ]);
+    return join(fixtures, "recorded", "search--refund-policy", "mcp.json");
+  }
+
+  for (const [name, after] of [
+    ["mcp-record-cli", "llmock"],
+    ["mcp-record-docker", "ghcr.io/copilotkit/aimock"],
+  ] as const) {
+    it(`${name}: records the upstream at the documented path, which replays offline`, async () => {
+      const argv = shellArgs(docSample(name));
+      expect(argv).toContain(after);
+      if (name === "mcp-record-docker") {
+        // The image's entry point is the llmock bin, so the arguments after
+        // the image name are llmock arguments.
+        expect(readFileSync(resolve(REPO_ROOT, "Dockerfile"), "utf8")).toContain(
+          'ENTRYPOINT ["node", "dist/cli.js"]',
+        );
+      }
+      const fixtures = join(tmpDir, "fixtures");
+      mkdirSync(fixtures);
+      const args = argv
+        .slice(argv.indexOf(after) + 1)
+        .map((a) => (a === "./fixtures" || a === "/fixtures" ? fixtures : a))
+        .map((a) => (a === "0.0.0.0" ? "127.0.0.1" : a))
+        .map(withUpstream);
+      expect(args).toContain(`/mcp=${upstream.url}`);
+
+      const rec = await startCli(args);
+      let live: unknown;
+      try {
+        live = await echo(`${rec.url}/mcp`, ID, "refund policy");
+      } finally {
+        await rec.stop();
+      }
+      expect(live).toEqual({ content: [{ type: "text", text: "Echo: refund policy" }] });
+
+      const file = layoutFile(fixtures);
+      const recorded = JSON.parse(readFileSync(file, "utf8")) as {
+        mcpFakes: { scope: unknown; mount: string; tools: Array<{ name: string }> };
+      };
+      expect(recorded.mcpFakes.scope).toEqual({ testId: ID });
+      expect(recorded.mcpFakes.mount).toBe("/mcp");
+      expect(recorded.mcpFakes.tools.map((t) => t.name)).toEqual(["echo"]);
+
+      // Replay: the same --fixtures, no --mcp-record, so nothing is forwarded.
+      const replay = await startCli(["-f", fixtures]);
+      try {
+        expect(await echo(`${replay.url}/mcp`, ID, "refund policy")).toEqual(live);
+        const { client } = await connect(`${replay.url}/mcp`, testIdHeader(ID));
+        await expectMcpError(client.callTool({ name: "echo", arguments: { message: "other" } }), {
+          code: -32602,
+          aimockCode: "MCP_FAKE_MISMATCH",
+        });
+      } finally {
+        await replay.stop();
+      }
+    }, 60_000);
+  }
+
+  it("mcp-record-config: aimock --config records /mcp and only forwards /search", async () => {
+    const fixtures = join(tmpDir, "fixtures");
+    mkdirSync(fixtures);
+    const config = docSample("mcp-record-config");
+    const configText = config
+      .replace('"./fixtures"', JSON.stringify(fixtures))
+      .replace(/"https?:\/\/[^"]+\/mcp"/g, JSON.stringify(upstream.url));
+    const parsed = JSON.parse(configText) as {
+      llm: { record: { mcp: Record<string, unknown> } };
+    };
+    expect(Object.keys(parsed.llm.record.mcp)).toEqual(["/mcp", "/search"]);
+    const configFile = join(tmpDir, "aimock.json");
+    writeFileSync(configFile, configText);
+
+    const cli = await startCli(["--config", configFile], "dist/aimock-cli.js");
+    try {
+      expect(await echo(`${cli.url}/mcp`, ID, "refund policy")).toEqual({
+        content: [{ type: "text", text: "Echo: refund policy" }],
+      });
+      expect(await echo(`${cli.url}/search`, "search › proxy only", "hello")).toEqual({
+        content: [{ type: "text", text: "Echo: hello" }],
+      });
+    } finally {
+      await cli.stop();
+    }
+    expect(existsSync(join(fixtures, "recorded", "search--refund-policy", "mcp.json"))).toBe(true);
+    expect(readdirSync(join(fixtures, "recorded"))).toEqual(["search--refund-policy"]);
+  }, 60_000);
+});
+
+describe("docs sample: fakesFor and fakesReport in Vitest (docs/test-plugins#fakes-for)", () => {
+  /**
+   * Run the sample as its own Vitest project: test/weather.spec.ts and
+   * fixtures/weather.json under a directory inside the repo (so the sample's
+   * imports resolve from the repo's node_modules). Only the plugin import is
+   * pointed at the source, as `pnpm test` does not build dist/.
+   */
+  async function runSample(fixture: string): Promise<{ code: number | null; output: string }> {
+    const dir = mkdtempSync(join(REPO_ROOT, "src/__tests__/fixtures/docs-sample-"));
+    try {
+      const spec = docSample("fakes-for-test");
+      const specifier = '"@copilotkit/aimock/vitest"';
+      expect(spec).toContain(`from ${specifier};`);
+      mkdirSync(join(dir, "test"));
+      mkdirSync(join(dir, "fixtures"));
+      writeFileSync(
+        join(dir, "test/weather.spec.ts"),
+        spec.replace(specifier, JSON.stringify(resolve(REPO_ROOT, "src/vitest.ts"))),
+      );
+      writeFileSync(join(dir, "fixtures/weather.json"), fixture);
+      writeFileSync(
+        join(dir, "vitest.config.mjs"),
+        `export default { test: { root: ${JSON.stringify(dir)}, include: ["test/**/*.spec.ts"], pool: "forks" } };\n`,
+      );
+      const vitestBin = resolve(REPO_ROOT, "node_modules/vitest/vitest.mjs");
+      return await new Promise((res, rej) => {
+        const cp = spawn(
+          process.execPath,
+          [vitestBin, "run", "--config", join(dir, "vitest.config.mjs")],
+          {
+            cwd: dir,
+            env: { ...process.env, CI: "1", NO_COLOR: "1" },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        let output = "";
+        cp.stdout.setEncoding("utf8").on("data", (d: string) => (output += d));
+        cp.stderr.setEncoding("utf8").on("data", (d: string) => (output += d));
+        cp.on("error", rej);
+        cp.on("close", (code) => res({ code, output }));
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("passes with the documented default test id", async () => {
+    const { code, output } = await runSample(docSample("fakes-for-fixture"));
+    expect(code, output).toBe(0);
+    expect(output).toMatch(/Tests\s+1 passed \(1\)/);
+  }, 60_000);
+
+  it('fakesReport: "fail" fails the same test when a declared entry is never called', async () => {
+    const fixture = JSON.parse(docSample("fakes-for-fixture")) as {
+      mcpFakes: { tools: Array<{ calls: unknown[] }> };
+    };
+    fixture.mcpFakes.tools[0].calls.push({
+      id: "never-called",
+      args: { city: "Paris" },
+      result: "sun",
+    });
+    const { code, output } = await runSample(JSON.stringify(fixture));
+    expect(code, output).toBe(1);
+    expect(output).toContain(
+      'aimock MCP fakes report failed (testId "test/weather.spec.ts › weather › seattle")',
+    );
+    expect(output).toContain("unconsumed: weather.json:never-called (/mcp get_weather)");
+  }, 60_000);
 });
