@@ -333,6 +333,7 @@ jobs:
           OLLAMA_HOST: 127.0.0.1:11434
           OLLAMA_MODEL: qwen2:0.5b
           AIMOCK_OLLAMA_K9_MODEL: qwen3:0.6b
+          P1_BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-5-20250929-v1:0
           FAL_KEY: ${{ secrets.FAL_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -346,7 +347,7 @@ jobs:
             export AIMOCK_AWS_MISBEHAVIOR_LIVE=1
             export AWS_PROFILE=copilotkit-admin
             export AWS_REGION=us-west-2
-            export AIMOCK_AWS_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+            export AIMOCK_AWS_MODEL_ID="$P1_BEDROCK_MODEL_ID"
           fi
           set +e
           npx tsx scripts/drift-retry.ts
