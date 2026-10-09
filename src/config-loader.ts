@@ -141,6 +141,14 @@ export function loadConfig(configPath: string): AimockConfig {
   return JSON.parse(raw) as AimockConfig;
 }
 
+/** C3: `llm.record.mcp` is an object with at least one mount. */
+function hasMcpRecordMount(config: AimockConfig): boolean {
+  const mcp: unknown = config.llm?.record?.mcp;
+  return (
+    typeof mcp === "object" && mcp !== null && !Array.isArray(mcp) && Object.keys(mcp).length > 0
+  );
+}
+
 export async function startFromConfig(
   config: AimockConfig,
   overrides?: { port?: number; host?: string },
@@ -172,7 +180,10 @@ export async function startFromConfig(
       latency: config.llm?.latency,
       chunkSize: config.llm?.chunkSize,
       replaySpeed,
-      logLevel: config.llm?.logLevel,
+      // llm.record.mcp reports skipped or failed recordings only as MCP-RECORD: warnings,
+      // so a config with at least one mount defaults to "warn" rather than the silent
+      // default. An empty llm.record.mcp records nothing. An explicit logLevel wins.
+      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(config) ? "warn" : undefined),
       chaos: config.llm?.chaos,
       misbehavior,
       record: llmRecordOf(config.llm?.record),
