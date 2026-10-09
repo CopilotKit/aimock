@@ -5,8 +5,9 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The script imports writeFileSync from node:fs. Wrap it so a test can make
-// one target path fail while every other write goes through to disk.
-const failOn = vi.hoisted(() => ({ suffix: null as string | null }));
+// one target path fail while every other write goes through to disk. Every
+// write that goes through is recorded in order, so a test can check the order.
+const failOn = vi.hoisted(() => ({ suffix: null as string | null, writes: [] as string[] }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const writeFileSync: typeof actual.writeFileSync = (file, data, options) => {
@@ -15,6 +16,7 @@ vi.mock("node:fs", async (importOriginal) => {
       err.code = "EACCES";
       throw err;
     }
+    if (typeof file === "string") failOn.writes.push(file);
     return actual.writeFileSync(file, data, options);
   };
   return { ...actual, writeFileSync };
@@ -23,7 +25,13 @@ vi.mock("node:fs", async (importOriginal) => {
 import {
   COMPETITOR_MIGRATION_PAGES,
   runMatrixUpdate,
+  type WatchWrite,
 } from "../../scripts/update-competitive-matrix.js";
+import {
+  WATCH_STATE_REL_PATH,
+  serializeWatchState,
+  type FeatureWatchResult,
+} from "../../scripts/competitive-watch.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const HOMEPAGE_REL = "docs/index.html";
@@ -85,22 +93,28 @@ describe("competitive-matrix run when a docs write fails partway", () => {
     fs.writeFileSync(join(root, MOCK_LLM_PAGE), withAnthropicClaudeCross(read(MOCK_LLM_PAGE)));
     summaryPath = join(root, "summary.md");
     vi.spyOn(console, "log").mockImplementation(() => {});
+    failOn.writes = [];
   });
 
   afterEach(() => {
     failOn.suffix = null;
+    failOn.writes = [];
     vi.restoreAllMocks();
     fs.rmSync(root, { recursive: true, force: true });
   });
 
   const read = (rel: string) => fs.readFileSync(join(root, rel), "utf-8");
-  const run = () =>
+  const run = (
+    watch?: WatchWrite,
+    opts: { features?: Map<string, Record<string, boolean>>; dryRun?: boolean } = {},
+  ) =>
     runMatrixUpdate({
       repoRoot: root,
-      competitorFeatures: FEATURES,
+      competitorFeatures: opts.features ?? FEATURES,
       competitorProviderCounts: new Map(),
-      dryRun: false,
+      dryRun: opts.dryRun ?? false,
       summaryPath,
+      watch,
     });
 
   it("the fixture changes the homepage and the mock-llm migration page", () => {
@@ -153,5 +167,108 @@ describe("competitive-matrix run when a docs write fails partway", () => {
     expect(read(HOMEPAGE_REL)).toBe(homepageBefore);
     expect(read(MOCK_LLM_PAGE)).toBe(pageBefore);
     expect(fs.existsSync(summaryPath)).toBe(false);
+  });
+
+  // ── Feature watch state (spec D10) ────────────────────────────────────
+
+  const WATCH_RESULT: FeatureWatchResult = {
+    reports: [
+      {
+        id: "mockserver-lr-sessions",
+        competitor: "MockServer",
+        claims: ["C-S4", "C-S13"],
+        url: "https://www.mock-server.com/mock_server/llm_response_mocking.html",
+        status: "baseline",
+        details: [],
+        evidence: {},
+      },
+    ],
+    state: {
+      "mockserver-lr-sessions": {
+        url: "https://www.mock-server.com/mock_server/llm_response_mocking.html",
+        hash: "sha256:" + "0".repeat(64),
+        checks: { "per-session-sequence": false },
+        lastChanged: "2026-01-01",
+      },
+    },
+    stateChanged: true,
+  };
+  const statePath = () => join(root, WATCH_STATE_REL_PATH);
+  const watchWrite = (result: FeatureWatchResult = WATCH_RESULT): WatchWrite => {
+    fs.mkdirSync(dirname(statePath()), { recursive: true });
+    return { result, statePath: statePath(), stateRelPath: WATCH_STATE_REL_PATH };
+  };
+
+  it("writes the watch state after the migration pages and before the summary", () => {
+    run(watchWrite());
+    expect(read(WATCH_STATE_REL_PATH)).toBe(serializeWatchState(WATCH_RESULT.state));
+    expect(failOn.writes).toEqual([
+      join(root, HOMEPAGE_REL),
+      join(root, MOCK_LLM_PAGE),
+      statePath(),
+      summaryPath,
+    ]);
+    expect(read("summary.md")).toContain("## Feature watch");
+  });
+
+  it("names the watch state in the files already written when the summary write fails", () => {
+    failOn.suffix = "summary.md";
+    expect(() => run(watchWrite())).toThrow(
+      new RegExp(
+        `Failed to write ${summaryPath}[\\s\\S]*` +
+          `Files already written: ${HOMEPAGE_REL}, ${MOCK_LLM_PAGE}, ${WATCH_STATE_REL_PATH}\\.`,
+      ),
+    );
+    expect(fs.existsSync(summaryPath)).toBe(false);
+  });
+
+  it("names the docs already written and writes no summary when the state write fails", () => {
+    failOn.suffix = "competitive-watch-state.json";
+    expect(() => run(watchWrite())).toThrow(
+      new RegExp(
+        `Failed to write ${WATCH_STATE_REL_PATH}[\\s\\S]*` +
+          `Files already written: ${HOMEPAGE_REL}, ${MOCK_LLM_PAGE}\\.`,
+      ),
+    );
+    expect(fs.existsSync(statePath())).toBe(false);
+    expect(fs.existsSync(summaryPath)).toBe(false);
+  });
+
+  it("does not write the state file when the state did not change", () => {
+    run(watchWrite({ ...WATCH_RESULT, stateChanged: false }));
+    expect(fs.existsSync(statePath())).toBe(false);
+    expect(failOn.writes).not.toContain(statePath());
+    expect(read("summary.md")).toContain("## Feature watch");
+  });
+
+  it("never changes a docs page from a watch report alone", () => {
+    const docsBefore = new Map(
+      [HOMEPAGE_REL, ...MIGRATION_PAGES].map((rel) => [rel, read(rel)] as const),
+    );
+    const changed: FeatureWatchResult = {
+      ...WATCH_RESULT,
+      reports: [
+        {
+          id: "mockserver-lr-chaos",
+          competitor: "MockServer",
+          claims: ["C-S40"],
+          url: "https://www.mock-server.com/mock_server/llm_response_mocking.html",
+          status: "changed",
+          details: ['check "tool-argument-fault" false -> true'],
+          evidence: { "tool-argument-fault": "toolCallArgumentFault" },
+        },
+      ],
+    };
+    run(watchWrite(changed), { features: new Map() });
+    for (const [rel, before] of docsBefore) expect(read(rel)).toBe(before);
+    expect(failOn.writes).toEqual([statePath(), summaryPath]);
+    expect(read("summary.md")).toContain("| changed |");
+  });
+
+  it("writes no state on a dry run but still reports the watch", () => {
+    run(watchWrite(), { dryRun: true });
+    expect(fs.existsSync(statePath())).toBe(false);
+    expect(failOn.writes).toEqual([summaryPath]);
+    expect(read("summary.md")).toContain("## Feature watch");
   });
 });

@@ -13,12 +13,27 @@
  *   npx tsx scripts/update-competitive-matrix.ts                        # update in place
  *   npx tsx scripts/update-competitive-matrix.ts --dry-run               # show changes only
  *   npx tsx scripts/update-competitive-matrix.ts --summary out.md        # write markdown summary
+ *   npx tsx scripts/update-competitive-matrix.ts --watch-state <path>   # feature-watch state file (default scripts/competitive-watch-state.json)
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { decodeHTML } from "entities";
+import {
+  FEATURE_WATCH,
+  WATCH_STATE_REL_PATH,
+  checkArgs,
+  flagValues,
+  formatWatchSection,
+  parseUrlOverrides,
+  readWatchState,
+  runFeatureWatch,
+  serializeWatchState,
+  todayUtc,
+  watchNeedsReview,
+  type FeatureWatchResult,
+} from "./competitive-watch.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1482,10 +1497,16 @@ function escapeRegex(str: string): string {
 
 // ── Summary Writing ──────────────────────────────────────────────────────────
 
+/** The `--summary` path, or null. Repeated flags: the last one wins (see flagValues). */
 function parseSummaryArg(): string | null {
-  const idx = process.argv.indexOf("--summary");
-  if (idx === -1 || idx + 1 >= process.argv.length) return null;
-  return resolve(process.argv[idx + 1]);
+  const value = flagValues(process.argv, "--summary").at(-1);
+  return value === undefined ? null : resolve(value);
+}
+
+/** The `--watch-state` path, or null. Repeated flags: the last one wins (see flagValues). */
+function parseWatchStateArg(): string | null {
+  const value = flagValues(process.argv, "--watch-state").at(-1);
+  return value === undefined ? null : resolve(value);
 }
 
 /** A migration-page cell or provider claim the run changed. */
@@ -1552,6 +1573,8 @@ export function migrationStatusText(outcome: MigrationRowOutcome): string {
  * on (a package.json fetch that failed when the README was found). The scan
  * of those competitors is incomplete, so the headline names them and never
  * says "no changes".
+ *
+ * The feature-watch section, when given, comes last.
  */
 export function formatSummary(
   changes: DetectedChange[],
@@ -1559,6 +1582,7 @@ export function formatSummary(
   rowless: RowlessDetection[] = [],
   fetchWarnings: FetchFailure[] = [],
   manualChecks: MigrationManualCheck[] = [],
+  watch: FeatureWatchResult | null = null,
 ): string {
   let md: string;
 
@@ -1568,19 +1592,28 @@ export function formatSummary(
       ? `Competitor scan results are incomplete for ${incompleteRepos.join(", ")}. ` +
         'See "Fetch Warnings" below.\n'
       : "";
+  const watchReview = watch !== null && watchNeedsReview(watch);
+  // A watch review is named in every headline, not only the watch-only one:
+  // merging a docs PR also commits the watch state, which consumes the signal.
+  const watchReviewLine = watchReview
+    ? "Feature watch changes need a review; see the Feature watch section.\n"
+    : "";
 
   if (changes.length === 0) {
     // No homepage change was computed. The headline must still say whether
     // anything below needs attention.
     if (incompleteHeadline !== "") {
-      md = incompleteHeadline;
+      md = incompleteHeadline + watchReviewLine;
     } else if (migrationChanges.length === 0 && rowless.length === 0 && manualChecks.length === 0) {
-      md = "No competitive matrix changes detected this week.\n";
+      md = watchReview
+        ? "No homepage competitive matrix changes this week. Feature watch changes need a review.\n"
+        : "No competitive matrix changes detected this week.\n";
     } else if (rowless.length > 0 || manualChecks.length > 0) {
       md =
-        "No homepage competitive matrix changes this week. Detections below need a manual check.\n";
+        "No homepage competitive matrix changes this week. Detections below need a manual check.\n" +
+        watchReviewLine;
     } else {
-      md = "No homepage competitive matrix changes this week.\n";
+      md = "No homepage competitive matrix changes this week.\n" + watchReviewLine;
     }
   } else {
     const lines: string[] = [];
@@ -1620,7 +1653,8 @@ export function formatSummary(
     lines.push("```");
     lines.push("");
 
-    md = incompleteHeadline + (incompleteHeadline !== "" ? "\n" : "") + lines.join("\n");
+    const headline = incompleteHeadline + watchReviewLine;
+    md = headline + (headline !== "" ? "\n" : "") + lines.join("\n");
   }
 
   if (migrationChanges.length > 0) {
@@ -1677,6 +1711,10 @@ export function formatSummary(
     md += "\n" + lines.join("\n");
   }
 
+  if (watch !== null) {
+    md += "\n" + formatWatchSection(watch);
+  }
+
   return md;
 }
 
@@ -1710,11 +1748,12 @@ function writeSummary(
   fetchWarnings: FetchFailure[],
   manualChecks: MigrationManualCheck[],
   written: string[],
+  watch: FeatureWatchResult | null = null,
 ): void {
   writeOrReport(
     summaryPath,
     summaryPath,
-    formatSummary(changes, migrationChanges, rowless, fetchWarnings, manualChecks),
+    formatSummary(changes, migrationChanges, rowless, fetchWarnings, manualChecks, watch),
     written,
   );
   console.log(`\nSummary written to ${summaryPath}`);
@@ -1740,6 +1779,15 @@ export interface MigrationPageUpdate {
   changes: string[];
 }
 
+/** The feature-watch result and where its state file goes (spec D7, D10). */
+export interface WatchWrite {
+  result: FeatureWatchResult;
+  /** Absolute path of the state file. */
+  statePath: string;
+  /** Path shown in logs and in "Files already written". */
+  stateRelPath: string;
+}
+
 export interface MatrixUpdateOptions {
   /** Current homepage HTML. */
   html: string;
@@ -1758,18 +1806,21 @@ export interface MatrixUpdateOptions {
   fetchWarnings?: FetchFailure[];
   /** Migration-page detections to list in the summary for a manual check. */
   manualChecks?: MigrationManualCheck[];
+  /** Feature watch: its section goes in the summary; its state file is written before the summary. */
+  watch?: WatchWrite;
 }
 
 /**
- * Applies the changes to the homepage, writes the homepage and then each
- * migration page, and last writes the summary of what was written.
+ * Applies the changes to the homepage, writes the homepage, then each
+ * migration page, then the feature-watch state file (when it changed), and
+ * last writes the summary of what was written.
  *
  * Throws before any write, and writes no summary, when any computed change
  * could not be placed: a scan that reports changes the page does not show
  * must fail the run. Throws, and writes no summary, when a docs write fails.
  * A failed docs or summary write throws an error that names the docs files
  * already written. A dry run writes no docs
- * file; its summary lists the changes the run would write.
+ * file and no state file; its summary lists the changes the run would write.
  * Returns the homepage changes that were written (empty on a dry run).
  */
 export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
@@ -1778,6 +1829,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
   const rowless = opts.rowless ?? [];
   const fetchWarnings = opts.fetchWarnings ?? [];
   const manualChecks = opts.manualChecks ?? [];
+  const watch = opts.watch ?? null;
   const pageChanges = (mu: MigrationPageUpdate): MigrationPageChange[] =>
     mu.changes.map((change) => ({ page: mu.relPath, change }));
 
@@ -1804,6 +1856,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
     if (migrationUpdates.length > 0) {
       console.log("[DRY RUN] Would update the migration pages above.");
     }
+    if (watch?.result.stateChanged) console.log(`[DRY RUN] Would update ${watch.stateRelPath}.`);
     if (summaryPath) {
       writeSummary(
         summaryPath,
@@ -1813,6 +1866,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
         fetchWarnings,
         manualChecks,
         [],
+        watch?.result ?? null,
       );
     }
     return [];
@@ -1832,6 +1886,18 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
     writtenMigrationChanges.push(...pageChanges(mu));
   }
 
+  // The state file goes with the docs files, before the summary (D10), so a
+  // failed summary write names it in "Files already written".
+  if (watch !== null && watch.result.stateChanged) {
+    writeDocsFile(
+      watch.statePath,
+      watch.stateRelPath,
+      serializeWatchState(watch.result.state),
+      written,
+    );
+    console.log(`Updated ${watch.stateRelPath}.`);
+  }
+
   if (summaryPath) {
     writeSummary(
       summaryPath,
@@ -1841,6 +1907,7 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
       fetchWarnings,
       manualChecks,
       written,
+      watch?.result ?? null,
     );
   }
   return applied;
@@ -1849,6 +1916,13 @@ export function writeMatrixUpdate(opts: MatrixUpdateOptions): DetectedChange[] {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  // Every flag is checked before any fetch: a bad command line fails at once
+  // and never runs a scan that writes to the wrong file.
+  checkArgs(process.argv.slice(2), ["--summary", "--watch-state"], ["--dry-run"]);
+  const summaryPath = parseSummaryArg();
+  const repoRoot = resolve(import.meta.dirname ?? __dirname, "..");
+  const watchStatePath = parseWatchStateArg() ?? resolve(repoRoot, WATCH_STATE_REL_PATH);
+
   console.log("=== Competitive Matrix Updater ===\n");
 
   if (DRY_RUN) {
@@ -1942,14 +2016,39 @@ async function main(): Promise<void> {
     );
   }
 
-  const summaryPath = parseSummaryArg();
+  // Feature watch (spec D6-D8). It runs after the competitor scan and before
+  // any write: a source we could not check fails the run, so the summary never
+  // reports a page we did not see as "no change".
+  const urlOverrides = parseUrlOverrides(
+    process.env.COMPETITIVE_WATCH_URL_OVERRIDES,
+    FEATURE_WATCH,
+  );
+  if (urlOverrides.size > 0) {
+    console.warn(
+      `  ⚠ COMPETITIVE_WATCH_URL_OVERRIDES redirects: ${[...urlOverrides.keys()].join(", ")}`,
+    );
+  }
+  console.log(`\n--- Feature watch (${FEATURE_WATCH.length} sources) ---`);
+  const watchResult = await runFeatureWatch({
+    sources: FEATURE_WATCH,
+    previous: readWatchState(watchStatePath),
+    today: todayUtc(),
+    urlOverrides,
+  });
+  const relState = relative(repoRoot, watchStatePath);
+
   runMatrixUpdate({
-    repoRoot: resolve(import.meta.dirname ?? __dirname, ".."),
+    repoRoot,
     competitorFeatures,
     competitorProviderCounts,
     dryRun: DRY_RUN,
     summaryPath,
     fetchWarnings,
+    watch: {
+      result: watchResult,
+      statePath: watchStatePath,
+      stateRelPath: relState.startsWith("..") || isAbsolute(relState) ? watchStatePath : relState,
+    },
   });
 }
 
@@ -1967,6 +2066,8 @@ export interface RunMatrixUpdateOptions {
   summaryPath: string | null;
   /** Failed optional-source fetches; the summary lists them as warnings. */
   fetchWarnings?: FetchFailure[];
+  /** Feature-watch result, passed through to writeMatrixUpdate. */
+  watch?: WatchWrite;
 }
 
 /**
@@ -2145,6 +2246,7 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
     rowless,
     fetchWarnings,
     manualChecks,
+    watch: opts.watch,
   });
 }
 
