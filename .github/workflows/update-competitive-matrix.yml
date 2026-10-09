@@ -37,10 +37,18 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet docs/; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+          # Use git status, not git diff: it also sees untracked files, e.g. a
+          # new docs page. (A missing state file is not re-created: the scan
+          # fails the run instead.)
+          if [ -n "$(git status --porcelain -- docs/ scripts/competitive-watch-state.json)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$(git status --porcelain -- docs/)" ]; then
+            echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Configure git credentials
@@ -50,34 +58,52 @@ jobs:
           git config --local url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Create PR
+        id: pr
         if: steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="auto/competitive-matrix-$(date +%Y%m%d)"
+          # The run id keeps two runs on the same day on separate branches.
+          BRANCH="auto/competitive-matrix-$(date +%Y%m%d)-${RUN_ID}"
           git checkout -b "$BRANCH"
-          git add docs/
-          git commit -m "docs: update competitive matrix and migration pages from latest competitor data"
+          git add docs/ scripts/competitive-watch-state.json
+          if [ "$DOCS_CHANGED" = "true" ]; then
+            TITLE="Update competitive matrix and migration pages"
+            git commit -m "docs: update competitive matrix and migration pages from latest competitor data"
+          else
+            TITLE="Competitor feature-watch report"
+            git commit -m "chore: update competitor feature-watch state"
+          fi
           git push -u origin "$BRANCH"
-          gh pr create \
-            --title "Update competitive matrix and migration pages" \
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
             --body-file /tmp/matrix-summary.md \
-            --base main
+            --base main)
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack
         if: always()
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           CHANGED: ${{ steps.changes.outputs.changed }}
+          DOCS_CHANGED: ${{ steps.changes.outputs.docs_changed }}
+          PR_URL: ${{ steps.pr.outputs.url }}
           JOB_STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then echo "SLACK_WEBHOOK not set, skipping"; exit 0; fi
-          if [ "$CHANGED" = "true" ]; then
+          # "PR created" only when the PR step really produced a URL; a failed
+          # Create PR falls through to the failure message.
+          if [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ] && [ "$DOCS_CHANGED" = "true" ]; then
             EMOJI="📊"
             MSG="*Competitive matrix changes detected* — PR created with updated migration pages. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
+          elif [ "$CHANGED" = "true" ] && [ -n "$PR_URL" ]; then
+            EMOJI="🔎"
+            MSG="*Competitor feature-watch changes need a review* — report PR created. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           elif [ "$JOB_STATUS" = "success" ]; then
             EMOJI="✅"
             MSG="Competitive matrix check — no changes detected."
@@ -85,7 +111,51 @@ jobs:
             EMOJI="❌"
             MSG="*Competitive matrix update failed*. <https://github.com/CopilotKit/aimock/actions/runs/${RUN_ID}|View run>"
           fi
-          PAYLOAD=$(jq -n --arg text "${EMOJI} ${MSG}" '{text: $text}')
-          curl -s -X POST "$SLACK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
+          # The digest is the summary's "## Feature watch" section. It is sent
+          # only with a created PR, so a quiet week, a failed Create PR and a
+          # failed run send none (the full table is in the PR body).
+          : > /tmp/feature-watch.md
+          if [ -n "$PR_URL" ] && [ -f /tmp/matrix-summary.md ]; then
+            awk '/^## /{inwatch = ($0 == "## Feature watch")} inwatch' /tmp/matrix-summary.md > /tmp/feature-watch.md
+          fi
+          # jq turns the GFM digest into Slack mrkdwn: the heading becomes bold
+          # and each table row becomes one bullet. Each cell is decoded back to
+          # the text the script had before its GFM `cell()` escaping: the row
+          # splits only on a "|" that is not backslash-escaped (no placeholder
+          # characters, so competitor control characters cannot collide), each
+          # "\" escape is removed, the U+2060 after "@" and "#" and before "$" is
+          # dropped, and "&lt;", "&gt;" and "&amp;" are decoded in one pass.
+          # Then the digest
+          # (and only the digest: the "View run" link above stays live) is
+          # escaped for Slack once, so competitor text such as <!channel> or
+          # <url|label> is inert and shows as written.
+          PAYLOAD=$(jq -n \
+            --arg text "${EMOJI} ${MSG}" \
+            --arg pr "${PR_URL}" \
+            --rawfile watch /tmp/feature-watch.md \
+            'def slack: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+             def plain: gsub("\\\\(?<c>.)"; .c)
+               | gsub("(?<c>[@#])⁠"; .c)
+               | gsub("⁠(?<c>[$])"; .c)
+               | gsub("&(?<e>amp|lt|gt);"; {amp: "&", lt: "<", gt: ">"}[.e]);
+             def cells: [scan("\\\\.?|\\||[^\\\\|]+")]
+               | reduce .[] as $t ([""]; if $t == "|" then . + [""] else .[-1] += $t end)
+               | .[1:-1] | map(sub("^ +"; "") | sub(" +$"; ""));
+             def row: cells as $c
+               | ((($c[0] // "") | capture("^\\[(?<id>.*)\\]\\(.*\\)$") | .id) // $c[0]) as $id
+               | "• *" + ($id | plain) + "* (" + ($c[1] | plain) + "; " + ($c[2] | plain) + "): "
+                 + ($c[3] | plain)
+                 + (if $c[4] != "-" then " — Details: " + ($c[4] | plain) else "" end)
+                 + (if $c[5] != "-" then " — Evidence: " + ($c[5] | plain) else "" end);
+             def digest: split("\n")
+               | map(if startswith("## ") then "*" + ltrimstr("## ") + "*"
+                     elif test("^\\| (Source|---) \\|") then empty
+                     elif startswith("| ") then row
+                     else . end)
+               | join("\n") | slack;
+             {text: ($text
+               + (if $pr != "" then "\n" + $pr else "" end)
+               + (if $watch != "" then "\n\n" + ($watch | digest) else "" end))}')
+          # The webhook is a secret: keep its curl on one line, behind the guard above.
+          # --fail-with-body makes a rejected post (4xx/5xx) fail the step and log Slack's reason.
+          curl -sS --fail-with-body -X POST "$SLACK_WEBHOOK" -H "Content-Type: application/json" -d "$PAYLOAD"
