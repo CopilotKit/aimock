@@ -1,0 +1,3 @@
+# rr: 10.4 item 6, a legacy-era (session) client. 1.30.0 is the newest 1.x
+# on PyPI (2026-10-08); 2.x is the next SDK generation (rr: M2026).
+mcp==1.30.0

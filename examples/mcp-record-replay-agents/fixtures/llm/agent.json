@@ -1,0 +1,14 @@
+{
+  "fixtures": [
+    {
+      "match": { "userMessage": "echo tool", "hasToolResult": false },
+      "response": {
+        "toolCalls": [{ "name": "everything_echo", "arguments": { "message": "hi" } }]
+      }
+    },
+    {
+      "match": { "userMessage": "echo tool", "toolResultContains": "Echo: hi" },
+      "response": { "content": "The echo tool answered: Echo: hi" }
+    }
+  ]
+}
