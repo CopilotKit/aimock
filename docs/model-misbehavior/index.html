@@ -737,6 +737,11 @@ console.log(fault?.applied, fault?.fault, fault?.servedToolCalls);</code></pre>
           IDs. It can be empty for faults that clear tool calls.
         </p>
         <p>
+          On the OpenAI Responses API, a served custom tool call has <code>type: "custom"</code> and
+          carries its free-text input in <code>arguments</code>. A served call with a
+          <code>namespace</code> records it.
+        </p>
+        <p>
           <code>applied: true</code> means that aimock prepared the fault output. It does not prove
           delivery to the client. A disconnect can occur before the prepared call reaches the
           network.
@@ -767,6 +772,15 @@ console.log(fault?.applied, fault?.fault, fault?.servedToolCalls);</code></pre>
         <p>
           Runtime and baseline configs skip inapplicable or unsupported faults so that ordinary text
           turns can continue. A provider exclusion also skips the entry.
+        </p>
+        <p>
+          Tool faults target function tool calls only. On the OpenAI Responses API, a custom tool
+          call has no JSON arguments, so it is never a fault target: a fault that names one with
+          <code>tool</code> is not applicable, and custom tool calls and namespaces pass through the
+          faulted output unchanged. A fixture that the wire cannot serve is never faulted: a custom
+          tool call on any other API, or a malformed tool call on any API, returns the coded HTTP
+          500 (<code>aimock_unsupported_tool_call</code> or
+          <code>aimock_invalid_fixture_tool_call</code>) that the request gets without a fault.
         </p>
         <p>
           One-character tool arguments cannot produce a nonempty proper prefix. Empty arguments or
