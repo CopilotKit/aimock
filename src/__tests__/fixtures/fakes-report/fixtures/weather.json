@@ -1,0 +1,26 @@
+{
+  "mcpFakes": [
+    {
+      "scope": { "testId": "swallowed.case.ts › weather › seattle" },
+      "undeclaredTools": "deny",
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    },
+    {
+      "scope": { "testId": "unused.case.ts › weather › unused" },
+      "tools": [
+        {
+          "name": "get_weather",
+          "calls": [{ "id": "never-called", "args": { "city": "Paris" }, "result": "sun" }]
+        }
+      ]
+    },
+    {
+      "scope": { "testId": "default-id.case.ts › outer › inner › case" },
+      "tools": [
+        { "name": "get_weather", "calls": [{ "args": { "city": "Seattle" }, "result": "rain" }] }
+      ]
+    }
+  ]
+}

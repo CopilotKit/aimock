@@ -331,6 +331,100 @@ $ docker run -d -p 4010:4010 \
 }</code></pre>
         </div>
 
+        <h3 id="mcp-record-config">Recording MCP servers (<code>llm.record.mcp</code>)</h3>
+        <p>
+          <code>llm.record.mcp</code> maps an MCP mount path to an upstream MCP server URL, or to an
+          object with more options. Each mount records that server into <code>mcpFakes</code> files;
+          see <a href="/record-replay#mcp-recording">Recording MCP servers</a>. A mount path that
+          the config already serves with an MCP mock (<code>mcp.path</code>) records through that
+          mount. A free path gets a new MCP mock. A path held by another kind of mock fails at
+          start. <code>llm.record.mcp</code> alone does not turn on LLM recording: that needs
+          <code>llm.record.providers</code>.
+        </p>
+        <div class="code-block" data-sample="inline:mcp-record-config">
+          <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"llm"</span>: {
+    <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="prop">"record"</span>: {
+      <span class="prop">"mcp"</span>: {
+        <span class="prop">"/mcp"</span>: <span class="str">"http://localhost:3001/mcp"</span>,
+        <span class="prop">"/search"</span>: { <span class="prop">"upstream"</span>: <span class="str">"http://localhost:3002/mcp"</span>, <span class="prop">"proxyOnly"</span>: <span class="kw">true</span> }
+      }
+    }
+  }
+}</code></pre>
+        </div>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Option</th>
+              <th>Type</th>
+              <th>Default</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>upstream</code></td>
+              <td>string</td>
+              <td>&mdash; (required)</td>
+              <td>
+                The upstream MCP endpoint URL. A string value is the same as
+                <code>{ "upstream": url }</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>fixturePath</code></td>
+              <td>string</td>
+              <td>
+                <code>llm.record.fixturePath</code>, else <code>&lt;llm.fixtures&gt;/recorded</code>
+              </td>
+              <td>
+                Where recordings are written. One of the three is required unless
+                <code>proxyOnly</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>proxyOnly</code></td>
+              <td>boolean</td>
+              <td><code>false</code></td>
+              <td>Forward without writing anything</td>
+            </tr>
+            <tr>
+              <td><code>upstreamAuth</code></td>
+              <td>string</td>
+              <td><code>AIMOCK_MCP_UPSTREAM_AUTH</code></td>
+              <td>A <code>"Name: value"</code> header set on every forwarded request</td>
+            </tr>
+            <tr>
+              <td><code>secretValues</code></td>
+              <td>string[]</td>
+              <td><code>AIMOCK_RECORD_SECRET_VALUES</code></td>
+              <td>Values to redact from recordings, each at least 8 characters</td>
+            </tr>
+            <tr>
+              <td><code>strict</code></td>
+              <td>boolean</td>
+              <td>the config&rsquo;s <code>strict</code></td>
+              <td>A fake miss gets the replay error instead of being forwarded</td>
+            </tr>
+            <tr>
+              <td><code>maxRecordBufferBytes</code></td>
+              <td>number</td>
+              <td>64 MiB (at most 256 MiB)</td>
+              <td>The largest response that is recorded; a larger one is forwarded only</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A value on the mount wins over the shared value, and the shared value over the
+          environment. The environment variables are the same on both bins:
+          <code>AIMOCK_RECORD_SECRET_VALUES</code> (newline-separated) and
+          <code>AIMOCK_MCP_UPSTREAM_AUTH</code> (<code>Name: value</code>). A bad value of either
+          fails at start.
+        </p>
+
         <h2>CLI Flags</h2>
         <table class="endpoint-table">
           <thead>
@@ -392,6 +486,17 @@ $ docker run -d -p 4010:4010 \
           An option given an empty value is a usage error naming the option (<code
             >Error: --port requires a non-empty value.</code
           >), not a silently absent one.
+        </p>
+        <p>
+          These are all the flags of the <code>aimock</code> bin. Recording flags, including
+          <code>--record</code>, <code>--mcp-record &lt;mount&gt;=&lt;url&gt;</code> and
+          <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code>, are on the flag-driven
+          <code>llmock</code> bin (<code>npx -p @copilotkit/aimock llmock</code>), which is also the
+          Docker image&rsquo;s entry point. See
+          <a href="/record-replay#mcp-recording">Recording MCP servers</a>. With
+          <code>aimock --config</code>, record through
+          <a href="#mcp-record-config"><code>llm.record.mcp</code></a
+          >.
         </p>
 
         <h2>Single-Port Routing</h2>
@@ -651,6 +756,12 @@ dup.json[2]: 2 fixture(s), 0 error(s), 2 warning(s)</code></pre>
           checks it instead of skipping it, and a run whose files hold only fakes does not fail the
           zero-fixture rule. The <code>OK</code> line of a file with fakes counts its blocks, for
           example <code>account/read-only.json: OK (0 fixture(s), 1 mcpFakes block(s))</code>.
+        </p>
+        <p>
+          A <a href="/mcp-mock#recorded-fakes">recorded file</a> is checked with the same rules,
+          plus the <code>record-replay/fa-*</code> rules for its recorded keys. Each entry of its
+          top-level <code>_warnings</code> (a redacted secret, or a string that looks like a token)
+          is printed as a warning.
         </p>
 
         <h3>The <code>--json</code> Report</h3>

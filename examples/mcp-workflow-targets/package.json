@@ -1,0 +1,21 @@
+{
+  "name": "aimock-mcp-workflow-targets",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@copilotkit/aimock": "link:../.."
+  },
+  "devDependencies": {
+    "@langchain/core": "1.2.17",
+    "@langchain/langgraph": "1.4.21",
+    "@mastra/core": "1.75.0",
+    "@mastra/mcp": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "vitest": "3.2.4",
+    "zod": "4.6.5"
+  }
+}

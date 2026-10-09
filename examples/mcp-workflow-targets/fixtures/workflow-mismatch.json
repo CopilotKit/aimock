@@ -1,0 +1,92 @@
+{
+  "mcpFakes": [
+    {
+      "scope": {
+        "testId": "mastra-workflow.test.ts › orders › pipeline"
+      },
+      "undeclaredTools": "deny",
+      "tools": [
+        {
+          "name": "lookup_order",
+          "description": "Look up an order status",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string"
+              }
+            },
+            "required": ["orderId"]
+          },
+          "calls": [
+            {
+              "id": "a1-first",
+              "args": {
+                "orderId": "A1"
+              },
+              "result": "pending"
+            },
+            {
+              "id": "a1-second",
+              "args": {
+                "orderId": "A1"
+              },
+              "result": "shipped"
+            },
+            {
+              "id": "b2-error",
+              "args": {
+                "orderId": "B9"
+              },
+              "error": "order service down"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scope": {
+        "testId": "langgraph-control.test.ts › orders › pipeline"
+      },
+      "undeclaredTools": "deny",
+      "tools": [
+        {
+          "name": "lookup_order",
+          "description": "Look up an order status",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string"
+              }
+            },
+            "required": ["orderId"]
+          },
+          "calls": [
+            {
+              "id": "a1-first",
+              "args": {
+                "orderId": "A1"
+              },
+              "result": "pending"
+            },
+            {
+              "id": "a1-second",
+              "args": {
+                "orderId": "A1"
+              },
+              "result": "shipped"
+            },
+            {
+              "id": "b2-error",
+              "args": {
+                "orderId": "B9"
+              },
+              "error": "order service down"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

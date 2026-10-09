@@ -35,6 +35,8 @@ export interface Mountable {
   clearMcpFakes?(): void;
   /** Reset fake consumption state for one test id, or for all when omitted. */
   resetScenarioState?(testId?: string): void;
+  /** T1: recorded timing (`durationMs`, `atMs`) plays at value / speed. */
+  setReplaySpeed?(speed: number): void;
   /** Hands an MCP mount a `Logger`. Nothing in the server calls it. */
   setLogger?(logger: Logger): void;
 }
@@ -1099,6 +1101,8 @@ export interface JournalEntry {
     misbehavior?: MisbehaviorSummary;
     /** When the X-AIMock-Strict header overrode the server default. */
     strictOverride?: boolean;
+    /** MR8 / MR11 / MR14: why a forwarded MCP record-mode message was not recorded. */
+    recordSkipped?: string;
   };
 }
 
@@ -1654,7 +1658,14 @@ export type McpFakeCallAnswer =
   | { error: string; result?: never };
 
 /** One ordered answer for a tool. */
-export type McpFakeCall = McpFakeCallMatch & McpFakeCallAnswer & { id?: string };
+export type McpFakeCall = McpFakeCallMatch &
+  McpFakeCallAnswer & {
+    id?: string;
+    /** FA3: the notifications the upstream sent on the call's stream before the response. */
+    notifications?: McpFakeNotification[];
+    /** FA4: the recorded response time in ms (a number >= 0). */
+    durationMs?: number;
+  };
 
 /** One faked tool in a block. */
 export interface McpFakeTool {
@@ -1670,6 +1681,44 @@ export interface McpFakeBlock {
   mount?: string;
   undeclaredTools?: McpFakeUndeclaredPolicy;
   tools: McpFakeTool[];
+  /** FA1: the recorded `tools/list` (MCP `Tool` objects, kept verbatim). */
+  list?: Record<string, unknown>[];
+  /** FA2: provenance of a recording. Never used for matching. */
+  recorded?: McpFakeRecorded;
+  /** FA5: `"recorded"` (default) plays FA3/FA4 timing; `"immediate"` ignores it. */
+  timing?: "recorded" | "immediate";
+}
+
+/** FA2 `recorded`: where and when a block was recorded. */
+export interface McpFakeRecorded {
+  /** The upstream origin only. */
+  upstream: string;
+  protocolVersion: string;
+  serverInfo?: Record<string, unknown>;
+  aimockVersion: string;
+  /** ISO 8601 date-time with seconds and an offset. */
+  at: string;
+}
+
+/** MR1 `MCPMock.enableRecording` options. */
+export interface McpRecordConfig {
+  upstream: string;
+  fixturePath?: string;
+  proxyOnly?: boolean;
+  maxRecordBufferBytes?: number;
+  /** MR14 `"Name: value"`; env AIMOCK_MCP_UPSTREAM_AUTH (AM6). */
+  upstreamAuth?: string;
+  /** S2 (d); env AIMOCK_RECORD_SECRET_VALUES (newline-separated). */
+  secretValues?: string[];
+  /** MR5 (b): the server's strict default; X-AIMock-Strict still overrides per request. */
+  strict?: boolean;
+}
+
+/** FA3: one recorded notification of a call entry. */
+export interface McpFakeNotification {
+  atMs: number;
+  method: string;
+  params: Record<string, unknown>;
 }
 
 export type McpFakeUndeclaredPolicy = "allow" | "deny";

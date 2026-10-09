@@ -2454,3 +2454,81 @@ function buildFixtureMetadata(
 
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
+
+// ─── Service fakes persistence (MCP recorder, MR11) ─────────────────────────
+
+/**
+ * Outcome of `persistServiceFakes`. `failed.stage` says where it failed:
+ * `read` (the existing file is not JSON or not an object), `validate` (the
+ * merged file is invalid; `error` is the validator's text) or `write` (a
+ * filesystem error).
+ */
+export type PersistServiceFakesResult =
+  | { kind: "written"; filepath: string; sha256: string; content: Record<string, unknown> }
+  | { kind: "failed"; stage: "read" | "validate" | "write"; error: string };
+
+/**
+ * MR11: read-merge-validate-write one service fakes file atomically (temp +
+ * rename, 0o600). Synchronous, so writes to one path never interleave in this
+ * process. Keeps unknown top-level keys (fakes:F9). `validate` returns a
+ * problem text, or null when the whole merged file is valid. Logs RL4 on a
+ * write; a failure is returned, never logged here (the caller logs RL1 with
+ * its own context).
+ */
+export function persistServiceFakes(opts: {
+  filepath: string;
+  merge: (existing: Record<string, unknown> | null) => Record<string, unknown>;
+  validate: (content: Record<string, unknown>) => string | null;
+  logger: Logger;
+}): PersistServiceFakesResult {
+  const { filepath, merge, validate, logger } = opts;
+  let existing: Record<string, unknown> | null = null;
+  let text: string | null = null;
+  try {
+    text = fs.readFileSync(filepath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+      return { kind: "failed", stage: "write", error: msg };
+    }
+  }
+  if (text !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { kind: "failed", stage: "read", error: `${filepath} is not valid JSON` };
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { kind: "failed", stage: "read", error: `${filepath} is not a JSON object` };
+    }
+    existing = parsed as Record<string, unknown>;
+  }
+  const content = merge(existing);
+  const problem = validate(content);
+  if (problem !== null) return { kind: "failed", stage: "validate", error: problem };
+
+  let tmpPath: string | undefined;
+  try {
+    fs.mkdirSync(path.dirname(filepath), { recursive: true });
+    const bytes = Buffer.from(JSON.stringify(content, null, 2), "utf-8");
+    tmpPath = filepath + ".tmp." + crypto.randomUUID();
+    fs.writeFileSync(tmpPath, bytes, { flag: "wx", mode: 0o600 });
+    fs.renameSync(tmpPath, filepath);
+    tmpPath = undefined;
+    logger.warn(`Response recorded → ${filepath}`);
+    const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    return { kind: "written", filepath, sha256, content };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown filesystem error";
+    return { kind: "failed", stage: "write", error: msg };
+  } finally {
+    if (tmpPath) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* Preserve the original persistence error. */
+      }
+    }
+  }
+}

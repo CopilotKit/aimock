@@ -3602,7 +3602,7 @@
         >
           <h3 class="comparison-table-title">Agent tool mocking</h3>
           <p class="comparison-table-note">
-            Requires <a href="/mcp-mock#scenario-fakes">1.44.0+</a>
+            Requires <a href="/mcp-mock#scenario-fakes">1.45.0+</a>
           </p>
         </div>
         <div class="comparison-wrap fade-in" style="transition-delay: 0.1s">
@@ -3647,7 +3647,8 @@
               <tr>
                 <th scope="row">In-process (non-network) tools</th>
                 <td class="col-aimock">
-                  <span class="no" role="img" aria-label="No">&#10007;</span>
+                  <span class="no" role="img" aria-label="No">&#10007;</span> (runs out of process
+                  by design)
                 </td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td>n/a</td>
@@ -3713,23 +3714,33 @@
               </tr>
               <tr>
                 <th scope="row">Create fakes from recorded runs</th>
-                <td class="col-aimock">Planned</td>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (record live MCP,
+                  replay offline)
+                </td>
                 <td><span class="partial">partial</span></td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
               </tr>
               <tr>
                 <th scope="row">Report unused mocks</th>
                 <td class="col-aimock">
-                  <span class="partial">partial</span> (inspect consumed state)
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (per test; can fail
+                  the test)
                 </td>
                 <td><span class="yes" role="img" aria-label="Yes">&#10003;</span></td>
                 <td>Not documented</td>
               </tr>
               <tr>
-                <th scope="row">Workflows</th>
-                <td class="col-aimock">n/a</td>
+                <th scope="row">Workflow / multi-step pipeline targets</th>
+                <td class="col-aimock">
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (any caller over MCP
+                  HTTP)
+                </td>
                 <td>Planned</td>
-                <td>n/a</td>
+                <td>
+                  <span class="yes" role="img" aria-label="Yes">&#10003;</span> (any caller over MCP
+                  HTTP)
+                </td>
               </tr>
             </tbody>
           </table>

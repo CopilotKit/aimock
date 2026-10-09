@@ -29,6 +29,8 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 COPY --from=build /app/dist/ dist/
+# package.json sits above dist/ so aimockVersion() reports the real version
+COPY --from=build /app/package.json ./
 COPY fixtures/ fixtures/
 
 EXPOSE 4010

@@ -24,10 +24,15 @@
  */
 
 import { discoverAgUiSources, resolveAgUiRepo } from "./drift-agui-canonical.js";
-import { execSync, execFileSync } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { execSync, execFileSync, spawnSync } from "node:child_process";
+import { existsSync, statSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { resolve, relative, isAbsolute, sep, dirname } from "node:path";
+import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
+import { MAX_EVIDENCE_RECORD_BYTES } from "./drift-evidence-reporter.js";
+import type { EvidenceReporterRecord } from "./drift-evidence-reporter.js";
 
 import { SURFACE_REGISTRY, isKnownSurface } from "../src/__tests__/drift/surface-registry.js";
 import type { SurfaceMapping } from "../src/__tests__/drift/surface-registry.js";
@@ -51,6 +56,7 @@ interface VitestJsonResult {
 }
 
 interface VitestTestFile {
+  name?: string;
   assertionResults: VitestAssertion[];
 }
 
@@ -59,6 +65,992 @@ interface VitestAssertion {
   ancestorTitles: string[];
   title: string;
   failureMessages: string[];
+}
+
+interface AssertionEvidence {
+  file: string;
+  ancestors: string[];
+  title: string;
+  status: string;
+  failureCount: number;
+  source: "native" | "local" | "captured" | "unknown";
+  disposition:
+    | "TARGET_COMPARED"
+    | "NOT_TRIGGERED"
+    | "FAILED"
+    | "UNATTEMPTED"
+    | "SKIPPED"
+    | "UNAVAILABLE";
+  consoleContext: { availability: "available" | "unavailable"; recordCount: number };
+  observations?: (
+    | BedrockObservation
+    | VertexObservation
+    | CohereObservation
+    | AnthropicObservation
+    | GeminiObservation
+    | RealtimeObservation
+    | InteractionsObservation
+    | OllamaObservation
+    | ResponsesWSObservation
+  )[];
+}
+
+interface BedrockObservation {
+  provider: "bedrock";
+  cell: { wire: "invoke" | "converse"; fault: "K5" | "K9"; stream: boolean };
+  source: "native" | "local";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED" | "FAILED";
+  sends: number;
+  requestedOutputTokens: number;
+}
+
+interface VertexObservation {
+  provider: "vertex";
+  cell: "k5-object" | "k5-stream" | "k9-object" | "k9-stream";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED" | "FAILED" | "UNATTEMPTED" | "SKIPPED";
+}
+
+interface CohereObservation {
+  provider: "cohere";
+  stream: boolean;
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface AnthropicObservation {
+  provider: "anthropic";
+  cell: "object" | "stream";
+  source: "native" | "captured";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface GeminiObservation {
+  provider: "gemini";
+  fault: "stop-length-mid-tool" | "reasoning-only";
+  stream: boolean;
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface RealtimeObservation {
+  provider: "realtime";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface InteractionsObservation {
+  provider: "interactions";
+  cell: "K5 stream";
+  source: "native";
+  disposition: "TARGET_COMPARED" | "NOT_TRIGGERED";
+}
+
+interface OllamaObservation {
+  provider: "ollama";
+  cell: "native object" | "native stream";
+  source: "native";
+  disposition: "UNAVAILABLE";
+  attempts: number;
+}
+
+const responsesWSEventTypes = [
+  "response.created",
+  "response.in_progress",
+  "response.output_item.added",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_summary_text.done",
+  "response.reasoning_summary_part.done",
+  "response.output_item.done",
+  "response.incomplete",
+  "response.completed",
+  "response.done",
+  "error",
+] as const;
+interface ResponsesWSObservation {
+  provider: "responses-ws";
+  cell: "K5" | "K9";
+  source: "native";
+  disposition: "UNAVAILABLE";
+  eventCount: number;
+  unknownEventTypeCount: number;
+  omittedEventTypeCount: number;
+  eventTypes: (typeof responsesWSEventTypes)[number][];
+  terminalStatus?: "incomplete" | "completed" | "failed";
+  incompleteReason?: "max_output_tokens" | "content_filter";
+}
+
+interface LegEvidence {
+  availability: "available" | "unavailable";
+  exitCode: number | null;
+  assertions: AssertionEvidence[];
+  consoleScopes?: {
+    entity: "suite" | "module";
+    file: string;
+    ancestors: string[];
+    title: string;
+    recordCount: number;
+  }[];
+  unboundConsoleRecordCount?: number;
+}
+
+// Raw content exists only in memory, never as a property serialized into evidence.
+const reporterChannels = new WeakMap<LegEvidence, EvidenceReporterRecord[]>();
+
+function parseEvidenceRecord(line: string): EvidenceReporterRecord | null {
+  if (Buffer.byteLength(line) > MAX_EVIDENCE_RECORD_BYTES) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || !("kind" in value)) return null;
+  if (value.kind === "complete" || value.kind === "unavailable") return { kind: value.kind };
+  if (
+    value.kind === "console" &&
+    "taskId" in value &&
+    typeof value.taskId === "string" &&
+    "stream" in value &&
+    (value.stream === "stdout" || value.stream === "stderr") &&
+    "content" in value &&
+    typeof value.content === "string"
+  ) {
+    return { kind: "console", taskId: value.taskId, stream: value.stream, content: value.content };
+  }
+  if (
+    value.kind === "identity" &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "entity" in value &&
+    (value.entity === "test" || value.entity === "suite" || value.entity === "module") &&
+    "file" in value &&
+    typeof value.file === "string" &&
+    "title" in value &&
+    typeof value.title === "string" &&
+    "ancestors" in value &&
+    Array.isArray(value.ancestors) &&
+    value.ancestors.every((name): name is string => typeof name === "string")
+  ) {
+    return {
+      kind: "identity",
+      id: value.id,
+      entity: value.entity,
+      file: value.file,
+      title: value.title,
+      ancestors: value.ancestors,
+    };
+  }
+  return null;
+}
+
+function captureReporterChannel(leg: LegEvidence, stream: string) {
+  const lines = stream.split("\n").filter((line) => line.length > 0);
+  if (lines.length > 16_384) return;
+  const records: EvidenceReporterRecord[] = [];
+  for (const line of lines) {
+    const record = parseEvidenceRecord(line);
+    if (!record || record.kind === "unavailable") return;
+    records.push(record);
+  }
+  if (records.filter((record) => record.kind === "complete").length !== 1) return;
+  reporterChannels.set(leg, records);
+}
+
+function evidenceFileName(file: string | undefined) {
+  const path =
+    file === undefined ? null : relative(process.cwd(), resolve(sanitizeEvidenceIdentity(file)));
+  return path === null || path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)
+    ? "[outside-root]"
+    : boundedEvidenceIdentity(path.split(sep).join("/"));
+}
+
+function bindReporterContext(leg: LegEvidence, result: VitestJsonResult) {
+  const records = reporterChannels.get(leg) ?? [];
+  const identities = records.filter((record) => record.kind === "identity");
+  const logs = records.filter((record) => record.kind === "console");
+  const key = (file: string | undefined, ancestors: string[], title: string) =>
+    JSON.stringify([file === undefined ? null : resolve(file), ancestors, title]);
+  const rows = result.testResults.flatMap((file) =>
+    file.assertionResults.map((assertion) => ({
+      assertion,
+      key: key(file.name, assertion.ancestorTitles, assertion.title),
+    })),
+  );
+  const bound = new Map<VitestAssertion, Extract<EvidenceReporterRecord, { kind: "console" }>[]>();
+  const matchedIds = new Set<string>();
+  leg.consoleScopes = [];
+  for (const identity of identities) {
+    if (!identity.id || identities.filter((item) => item.id === identity.id).length !== 1) continue;
+    const messages = logs.filter((log) => log.taskId === identity.id);
+    if (identity.entity !== "test") {
+      matchedIds.add(identity.id);
+      if (messages.length)
+        leg.consoleScopes.push({
+          entity: identity.entity,
+          file: evidenceFileName(identity.file),
+          ancestors: identity.ancestors.slice(0, 16).map(boundedEvidenceIdentity),
+          title: boundedEvidenceIdentity(identity.title),
+          recordCount: messages.length,
+        });
+      continue;
+    }
+    const identityKey = key(identity.file, identity.ancestors, identity.title);
+    const matches = rows.filter((row) => row.key === identityKey);
+    if (
+      matches.length !== 1 ||
+      identities.filter(
+        (item) =>
+          item.entity === "test" && key(item.file, item.ancestors, item.title) === identityKey,
+      ).length !== 1
+    )
+      continue;
+    matchedIds.add(identity.id);
+    bound.set(matches[0].assertion, messages);
+  }
+  leg.unboundConsoleRecordCount = logs.filter((log) => !matchedIds.has(log.taskId)).length;
+  return bound;
+}
+
+function emptyLegEvidence(): LegEvidence {
+  return { availability: "unavailable", exitCode: null, assertions: [] };
+}
+
+// Redact COMPLETE fields before clipping, so a boundary cannot retain a secret prefix.
+function sanitizeEvidenceIdentity(value: string) {
+  for (const [name, secret] of Object.entries(process.env)) {
+    if (/(?:key|token|secret|password|credential)/i.test(name) && secret && secret.length >= 4) {
+      value = value.replaceAll(secret, "[redacted]");
+    }
+  }
+  return value
+    .replace(
+      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
+      "[redacted]",
+    )
+    .replace(/\bBearer\s+[^\s"'<>]+/gi, "Bearer [redacted]");
+}
+
+function boundedEvidenceIdentity(value: string) {
+  return stripVTControlCharacters(sanitizeEvidenceIdentity(value))
+    .split("")
+    .filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+    .join("")
+    .slice(0, 240);
+}
+
+function bedrockObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): BedrockObservation[] {
+  if (
+    file !== "src/__tests__/drift/bedrock-misbehavior-live.drift.ts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: BedrockObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("nativeComparison" in value)) continue;
+      const cell = value.nativeComparison;
+      if (
+        !cell ||
+        typeof cell !== "object" ||
+        !("wire" in cell) ||
+        (cell.wire !== "invoke" && cell.wire !== "converse") ||
+        !("fault" in cell) ||
+        (cell.fault !== "K5" && cell.fault !== "K9") ||
+        !("stream" in cell) ||
+        typeof cell.stream !== "boolean" ||
+        !("source" in value) ||
+        (value.source !== "native" && value.source !== "local") ||
+        !("outcome" in value) ||
+        !["TARGET_COMPARED", "NOT_TRIGGERED", "FAILED"].some(
+          (outcome) => outcome === value.outcome,
+        ) ||
+        !("sends" in value) ||
+        typeof value.sends !== "number" ||
+        !Number.isFinite(value.sends) ||
+        value.sends < 0 ||
+        !("requestedOutputTokens" in value) ||
+        typeof value.requestedOutputTokens !== "number" ||
+        !Number.isFinite(value.requestedOutputTokens) ||
+        value.requestedOutputTokens < 0
+      )
+        return [];
+      const nativeContext =
+        assertion.ancestorTitles.length === 1 &&
+        assertion.ancestorTitles[0] === "native AWS misbehavior" &&
+        assertion.title === `${cell.wire} ${cell.fault} stream=${cell.stream}`;
+      const localContext =
+        assertion.ancestorTitles.length === 0 &&
+        [
+          "coordinator accounts eight cells and blocks a ninth send",
+          "coordinator stops after actual SDK response fails classification",
+        ].includes(assertion.title);
+      if (value.source === "native" ? !nativeContext : !localContext) return [];
+      // Explicit enum checks also narrow untrusted JSON without a cast.
+      if (
+        value.outcome !== "TARGET_COMPARED" &&
+        value.outcome !== "NOT_TRIGGERED" &&
+        value.outcome !== "FAILED"
+      )
+        return [];
+      observations.push({
+        provider: "bedrock",
+        cell: { wire: cell.wire, fault: cell.fault, stream: cell.stream },
+        source: value.source,
+        disposition: value.outcome,
+        sends: value.sends,
+        requestedOutputTokens: value.requestedOutputTokens,
+      });
+    }
+  }
+  // One native assertion owns exactly one cell; duplicate/conflicting markers
+  // cannot certify it. The local coordinator legitimately reports eight cells.
+  if (observations.some((item) => item.source === "native") && observations.length !== 1) return [];
+  return observations;
+}
+
+function vertexObservations(
+  leg: LegEvidence,
+  file: string,
+  assertion: VitestAssertion,
+): VertexObservation[] {
+  const suite = "Vertex native recurring modeled-contract observations";
+  if (
+    file !== "src/__tests__/drift/vertex-misbehavior.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== suite ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const records = reporterChannels.get(leg) ?? [];
+  const identities = records.filter((record) => record.kind === "identity");
+  const owners = identities.filter(
+    (identity) =>
+      identity.entity === "suite" &&
+      evidenceFileName(identity.file) === file &&
+      identity.ancestors.length === 0 &&
+      identity.title === suite,
+  );
+  if (
+    owners.length !== 1 ||
+    !owners[0].id ||
+    identities.filter((identity) => identity.id === owners[0].id).length !== 1
+  )
+    return [];
+  const reports: VertexObservation[][] = [];
+  for (const record of records) {
+    if (record.kind !== "console" || record.taskId !== owners[0].id || record.stream !== "stdout")
+      continue;
+    for (const line of record.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("provider" in value) ||
+        value.provider !== "vertex"
+      )
+        continue;
+      if (
+        "proof" in value ||
+        !("results" in value) ||
+        !Array.isArray(value.results) ||
+        value.results.length !== 4
+      )
+        return [];
+      const observations: VertexObservation[] = [];
+      for (const row of value.results) {
+        if (
+          !row ||
+          typeof row !== "object" ||
+          !("cell" in row) ||
+          (row.cell !== "k5-object" &&
+            row.cell !== "k5-stream" &&
+            row.cell !== "k9-object" &&
+            row.cell !== "k9-stream") ||
+          !("classification" in row) ||
+          (row.classification !== "TARGET_COMPARED" &&
+            row.classification !== "NOT_TRIGGERED" &&
+            row.classification !== "FAILURE" &&
+            row.classification !== "UNATTEMPTED" &&
+            row.classification !== "SKIPPED")
+        )
+          return [];
+        if (observations.some((item) => item.cell === row.cell)) return [];
+        observations.push({
+          provider: "vertex",
+          cell: row.cell,
+          source: "native",
+          disposition: row.classification === "FAILURE" ? "FAILED" : row.classification,
+        });
+      }
+      reports.push(observations);
+    }
+  }
+  if (reports.length !== 1) return [];
+  return reports[0].filter(
+    (row) => assertion.title === `${row.cell} records a target comparison or approved non-trigger`,
+  );
+}
+
+function cohereObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): CohereObservation[] {
+  if (
+    file !== "src/__tests__/drift/cohere.drift.ts" ||
+    assertion.ancestorTitles.length !== 0 ||
+    assertion.title !== "P1 Cohere native K5 object modeled and stream observed comparison" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const reports: CohereObservation[][] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("cohereK5" in value)) continue;
+      if (!Array.isArray(value.cohereK5) || value.cohereK5.length !== 2) return [];
+      const observations: CohereObservation[] = [];
+      for (const row of value.cohereK5) {
+        if (
+          !row ||
+          typeof row !== "object" ||
+          !("stream" in row) ||
+          typeof row.stream !== "boolean" ||
+          !("classification" in row) ||
+          (row.classification !== "TARGET" && row.classification !== "NOT_TRIGGERED") ||
+          observations.some((item) => item.stream === row.stream)
+        )
+          return [];
+        observations.push({
+          provider: "cohere",
+          stream: row.stream,
+          source: "native",
+          disposition: row.classification === "TARGET" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+        });
+      }
+      reports.push(observations);
+    }
+  }
+  return reports.length === 1 ? reports[0] : [];
+}
+
+function anthropicObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): AnthropicObservation[] {
+  if (
+    file !== "src/__tests__/drift/anthropic.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Anthropic K9 modeled exhaustion drift" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const cell =
+    assertion.title === "object modeled localhost and bounded native trigger"
+      ? "object"
+      : assertion.title === "stream modeled localhost and bounded native trigger"
+        ? "stream"
+        : undefined;
+  if (!cell) return [];
+  let source: "native" | "captured" | undefined;
+  let observation: AnthropicObservation | undefined;
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("k9" in value)) continue;
+      if (value.k9 !== cell) return [];
+      if (
+        "mode" in value &&
+        (value.mode === "live paid provider; no retries" ||
+          value.mode === "retained native capture")
+      ) {
+        if (source || observation) return [];
+        if (
+          value.mode === "live paid provider; no retries" &&
+          (!("completed" in value) || value.completed !== true)
+        )
+          return [];
+        source = value.mode === "retained native capture" ? "captured" : "native";
+      }
+      if ("native" in value) {
+        if (
+          !source ||
+          observation ||
+          (value.native !== "TARGET_COMPARED" && value.native !== "NOT_TRIGGERED")
+        )
+          return [];
+        observation = { provider: "anthropic", cell, source, disposition: value.native };
+      }
+    }
+  }
+  return observation ? [observation] : [];
+}
+
+function geminiObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): GeminiObservation[] {
+  if (
+    file !== "src/__tests__/drift/gemini.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Gemini modeled K5/K9 recurring contracts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  let acquired = false;
+  let observation: GeminiObservation | undefined;
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object") continue;
+      const acquisition = "kind" in value && value.kind === "NATIVE_MODELED_COMPARISON";
+      if (!acquisition && !("outcome" in value)) continue;
+      if (
+        !("fault" in value) ||
+        (value.fault !== "stop-length-mid-tool" && value.fault !== "reasoning-only") ||
+        !("stream" in value) ||
+        typeof value.stream !== "boolean" ||
+        assertion.title !== `live Developer API bounded ${value.fault} stream=${value.stream}`
+      )
+        return [];
+      if (acquisition) {
+        if (
+          acquired ||
+          observation ||
+          !("provider" in value) ||
+          value.provider !== "Gemini Developer API" ||
+          !("status" in value) ||
+          value.status !== 200
+        )
+          return [];
+        acquired = true;
+      } else {
+        if (
+          !acquired ||
+          observation ||
+          !("outcome" in value) ||
+          (value.outcome !== "NATIVE_TARGET_COMPARED" && value.outcome !== "NOT_TRIGGERED")
+        )
+          return [];
+        observation = {
+          provider: "gemini",
+          fault: value.fault,
+          stream: value.stream,
+          source: "native",
+          disposition:
+            value.outcome === "NATIVE_TARGET_COMPARED" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+        };
+      }
+    }
+  }
+  return observation ? [observation] : [];
+}
+
+function realtimeObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): RealtimeObservation[] {
+  if (
+    file !== "src/__tests__/drift/ws-realtime.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Realtime K5 modeled contract" ||
+    assertion.title !== "native K5 bounded modeled comparison" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: RealtimeObservation[] = [];
+  const prefix = "Realtime K5 native ";
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      if (!line.startsWith(prefix)) continue;
+      let value: unknown;
+      try {
+        value = JSON.parse(line.slice(prefix.length));
+      } catch {
+        return [];
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("disposition" in value) ||
+        (value.disposition !== "MATCH" && value.disposition !== "NOT_TRIGGERED")
+      )
+        return [];
+      observations.push({
+        provider: "realtime",
+        source: "native",
+        disposition: value.disposition === "MATCH" ? "TARGET_COMPARED" : "NOT_TRIGGERED",
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function interactionsObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): InteractionsObservation[] {
+  if (
+    file !== "src/__tests__/drift/gemini-interactions.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "Gemini Interactions live modeled K5 stream" ||
+    assertion.title !==
+      "records genuine non-triggers and rejects contradictory triggered contracts" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: InteractionsObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("disposition" in value)) continue;
+      if (
+        !("case" in value) ||
+        value.case !== "K5 stream" ||
+        "capture" in value ||
+        (value.disposition !== "TRIGGERED_MODELED_CONTRACT_MATCH" &&
+          value.disposition !== "NOT_TRIGGERED")
+      )
+        return [];
+      observations.push({
+        provider: "interactions",
+        cell: "K5 stream",
+        source: "native",
+        disposition:
+          value.disposition === "TRIGGERED_MODELED_CONTRACT_MATCH"
+            ? "TARGET_COMPARED"
+            : "NOT_TRIGGERED",
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function ollamaObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): OllamaObservation[] {
+  if (
+    file !== "src/__tests__/drift/ollama.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "P1 Ollama K9 native" ||
+    (assertion.title !== "object" && assertion.title !== "stream") ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: OllamaObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!value || typeof value !== "object" || !("cell" in value)) continue;
+      if (
+        (value.cell !== "native object" && value.cell !== "native stream") ||
+        value.cell !== `native ${assertion.title}` ||
+        !("attempts" in value) ||
+        typeof value.attempts !== "number" ||
+        !Number.isSafeInteger(value.attempts) ||
+        value.attempts < 0
+      )
+        return [];
+      observations.push({
+        provider: "ollama",
+        cell: value.cell,
+        source: "native",
+        disposition: "UNAVAILABLE",
+        attempts: value.attempts,
+      });
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function responsesWSObservations(
+  file: string,
+  assertion: VitestAssertion,
+  messages: Extract<EvidenceReporterRecord, { kind: "console" }>[],
+): ResponsesWSObservation[] {
+  if (
+    file !== "src/__tests__/drift/ws-responses.drift.ts" ||
+    assertion.ancestorTitles.length !== 1 ||
+    assertion.ancestorTitles[0] !== "OpenAI Responses WS exhaustion live drift" ||
+    !["passed", "failed"].includes(assertion.status)
+  )
+    return [];
+  const observations: ResponsesWSObservation[] = [];
+  for (const message of messages) {
+    if (message.stream !== "stdout") continue;
+    for (const line of message.content.split("\n")) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("mode" in value) ||
+        value.mode !== "live WS decoded native events; not raw frames"
+      )
+        continue;
+      if (
+        !("kind" in value) ||
+        (value.kind !== "K5" && value.kind !== "K9") ||
+        assertion.title !== `WS ${value.kind} native comparison` ||
+        !("events" in value) ||
+        !Array.isArray(value.events)
+      )
+        return [];
+      const observation: ResponsesWSObservation = {
+        provider: "responses-ws",
+        cell: value.kind,
+        source: "native",
+        disposition: "UNAVAILABLE",
+        // Exact counts are bounded by the existing 256KiB reporter record limit.
+        eventCount: value.events.length,
+        unknownEventTypeCount: 0,
+        omittedEventTypeCount: 0,
+        eventTypes: [],
+      };
+      for (const event of value.events) {
+        const type =
+          event && typeof event === "object" && "type" in event
+            ? responsesWSEventTypes.find((known) => known === event.type)
+            : undefined;
+        if (!type) observation.unknownEventTypeCount++;
+        else if (observation.eventTypes.length < 128) observation.eventTypes.push(type);
+        else observation.omittedEventTypeCount++;
+      }
+      const terminal = value.events.at(-1);
+      if (
+        terminal &&
+        typeof terminal === "object" &&
+        "type" in terminal &&
+        ["response.incomplete", "response.completed", "response.done"].includes(terminal.type) &&
+        "response" in terminal &&
+        terminal.response &&
+        typeof terminal.response === "object"
+      ) {
+        const response = terminal.response;
+        if (
+          response.status === "incomplete" ||
+          response.status === "completed" ||
+          response.status === "failed"
+        )
+          observation.terminalStatus = response.status;
+        const details = response.incomplete_details;
+        if (
+          details &&
+          typeof details === "object" &&
+          (details.reason === "max_output_tokens" || details.reason === "content_filter")
+        )
+          observation.incompleteReason = details.reason;
+      }
+      observations.push(observation);
+    }
+  }
+  return observations.length === 1 ? observations : [];
+}
+
+function captureAssertionEvidence(leg: LegEvidence | undefined, result: VitestJsonResult) {
+  if (!leg) return;
+  const contexts = bindReporterContext(leg, result);
+  leg.assertions = result.testResults.flatMap((file) => {
+    const name = evidenceFileName(file.name);
+    return file.assertionResults.map((assertion): AssertionEvidence => {
+      const observations: (
+        | BedrockObservation
+        | VertexObservation
+        | CohereObservation
+        | AnthropicObservation
+        | GeminiObservation
+        | RealtimeObservation
+        | InteractionsObservation
+        | OllamaObservation
+        | ResponsesWSObservation
+      )[] = [
+        ...bedrockObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...cohereObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...anthropicObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...geminiObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...realtimeObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...interactionsObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...ollamaObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...responsesWSObservations(name, assertion, contexts.get(assertion) ?? []),
+        ...(contexts.has(assertion) ? vertexObservations(leg, name, assertion) : []),
+      ];
+      const first = observations[0];
+      const agreement =
+        first &&
+        observations.every(
+          (item) => item.source === first.source && item.disposition === first.disposition,
+        );
+      return {
+        file: name,
+        ancestors: assertion.ancestorTitles.slice(0, 16).map(boundedEvidenceIdentity),
+        title: boundedEvidenceIdentity(assertion.title),
+        status: boundedEvidenceIdentity(assertion.status),
+        failureCount: assertion.failureMessages.length,
+        consoleContext: {
+          availability: contexts.has(assertion) ? "available" : "unavailable",
+          recordCount: contexts.get(assertion)?.length ?? 0,
+        },
+        ...(observations.length ? { observations } : {}),
+        source:
+          first && observations.every((item) => item.source === first.source)
+            ? first.source
+            : "unknown",
+        disposition:
+          assertion.status === "failed"
+            ? "FAILED"
+            : ["pending", "skipped", "todo", "disabled"].includes(assertion.status)
+              ? "SKIPPED"
+              : agreement
+                ? first.disposition
+                : "UNAVAILABLE",
+      };
+    });
+  });
+  leg.availability = "available";
+}
+
+// npx closes extra descriptors. Launch the candidate's installed CLI directly,
+// preserving test arguments and buffer limits while keeping fd3 private/in memory.
+function executeEvidenceVitest(command: string, leg: LegEvidence) {
+  const reporter = fileURLToPath(new URL("./drift-evidence-reporter.ts", import.meta.url));
+  const packagePath = createRequire(resolve(process.cwd(), "package.json")).resolve(
+    "vitest/package.json",
+  );
+  const manifest: unknown = JSON.parse(readFileSync(packagePath, "utf8"));
+  if (!manifest || typeof manifest !== "object" || !("bin" in manifest)) {
+    throw new Error("Installed Vitest package has no CLI entry");
+  }
+  const bin =
+    typeof manifest.bin === "string"
+      ? manifest.bin
+      : manifest.bin &&
+          typeof manifest.bin === "object" &&
+          "vitest" in manifest.bin &&
+          typeof manifest.bin.vitest === "string"
+        ? manifest.bin.vitest
+        : null;
+  if (!bin || !command.startsWith("npx vitest "))
+    throw new Error("Installed Vitest CLI is unavailable");
+  const cli = resolve(dirname(packagePath), bin);
+  if (!existsSync(cli) || !statSync(cli).isFile())
+    throw new Error("Installed Vitest CLI is unavailable");
+  const child = spawnSync(
+    process.execPath,
+    [cli, ...command.slice("npx vitest ".length).split(" "), "--reporter", reporter],
+    {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  leg.exitCode = child.status;
+  captureReporterChannel(leg, child.output[3] ?? "");
+  if (child.error || child.status !== 0) {
+    throw Object.assign(child.error ?? new Error(`Command failed: ${command}\n${child.stderr}`), {
+      stdout: child.stdout ?? "",
+      stderr: child.stderr ?? "",
+      status: child.status,
+    });
+  }
+  return child.stdout;
+}
+
+function withInvocationEvidence(run: (legs: { drift: LegEvidence; agui: LegEvidence }) => number) {
+  const invocationId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const legs = { drift: emptyLegEvidence(), agui: emptyLegEvidence() };
+  const numericId = (value: string | undefined) =>
+    value && /^\d{1,20}$/.test(value) ? value : undefined;
+  const persist = () => {
+    try {
+      mkdirSync("drift-evidence", { recursive: true });
+      writeFileSync(
+        resolve("drift-evidence", `${timestamp.replaceAll(":", "-")}-${invocationId}.json`),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            invocationId,
+            timestamp,
+            githubRunId: numericId(process.env.GITHUB_RUN_ID),
+            githubRunAttempt: numericId(process.env.GITHUB_RUN_ATTEMPT),
+            ...legs,
+          },
+          null,
+          2,
+        ) + "\n",
+        { flag: "wx", mode: 0o600 },
+      );
+    } catch {
+      // Never include filesystem paths or raw streams in this new diagnostic.
+      throw new Error("Failed to write collector invocation evidence");
+    }
+  };
+  try {
+    return run(legs);
+  } finally {
+    persist();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -774,21 +1766,30 @@ function parseVitestOutput(stdout: string, context: string): VitestJsonResult | 
   }
 }
 
-function runDriftTests(): VitestJsonResult {
+function runDriftTests(evidence?: LegEvidence): VitestJsonResult {
   try {
-    const stdout = execSync("npx vitest run --config vitest.config.drift.ts --reporter=json", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      maxBuffer: 50 * 1024 * 1024,
-    });
+    const command = "npx vitest run --config vitest.config.drift.ts --reporter=json";
+    const stdout = evidence
+      ? executeEvidenceVitest(command, evidence)
+      : execSync(command, {
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+          maxBuffer: 50 * 1024 * 1024,
+        });
     const result = parseVitestOutput(stdout, "JSON parse of successful vitest run failed");
-    if (result) return result;
+    if (result) {
+      captureAssertionEvidence(evidence, result);
+      return result;
+    }
     throw new Error("Drift tests passed but produced unparseable output");
   } catch (err: unknown) {
     // execSync throws on non-zero exit — vitest exits 1 when tests fail
     if (hasStdout(err)) {
       const result = parseVitestOutput(err.stdout, "Primary JSON parse of vitest stdout failed");
-      if (result) return result;
+      if (result) {
+        captureAssertionEvidence(evidence, result);
+        return result;
+      }
       console.error(
         "Failed to parse JSON from drift test stdout. Original error:",
         err instanceof Error ? err.message : String(err),
@@ -1635,7 +2636,10 @@ const defaultAgUiExec: VitestExec = (command) =>
  * garbage instead of a report certified AG-UI as drift-free. The two legs face
  * the same condition and must not disagree about whether it is clean.
  */
-export function runAgUiVitest(exec: VitestExec = defaultAgUiExec): VitestJsonResult | null {
+export function runAgUiVitest(
+  exec: VitestExec = defaultAgUiExec,
+  evidence?: LegEvidence,
+): VitestJsonResult | null {
   let stdout: string;
   try {
     stdout = exec(
@@ -1644,20 +2648,26 @@ export function runAgUiVitest(exec: VitestExec = defaultAgUiExec): VitestJsonRes
   } catch (err: unknown) {
     if (hasStdout(err)) {
       const result = parseVitestOutput(err.stdout, "AG-UI drift JSON parse of failed run");
-      if (result) return result;
+      if (result) {
+        captureAssertionEvidence(evidence, result);
+        return result;
+      }
     }
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`AG-UI schema drift tests failed to run: ${msg}`);
     return null;
   }
   const result = parseVitestOutput(stdout, "AG-UI drift JSON parse of successful run failed");
-  if (result) return result;
+  if (result) {
+    captureAssertionEvidence(evidence, result);
+    return result;
+  }
   throw new Error("AG-UI drift tests passed but produced unparseable output");
 }
 
-function runAgUiDriftTests(): VitestJsonResult | null {
+function runAgUiDriftTests(evidence: LegEvidence): VitestJsonResult | null {
   if (!ensureAgUiRepo()) return null;
-  return runAgUiVitest();
+  return runAgUiVitest((command) => executeEvidenceVitest(command, evidence), evidence);
 }
 
 /**
@@ -1950,7 +2960,7 @@ export function collectUnverifiedSurfaces(results?: VitestJsonResult): Unverifie
   return surfaces.sort((a, b) => a.surface.localeCompare(b.surface));
 }
 
-function main(): void {
+function collectMain(evidence: { drift: LegEvidence; agui: LegEvidence }): number {
   const args = process.argv.slice(2);
   const outIndex = args.indexOf("--out");
   const outPath = resolve(
@@ -1959,14 +2969,14 @@ function main(): void {
 
   // Collect HTTP API drift entries
   console.log("Running HTTP API drift tests...");
-  const httpResults = runDriftTests();
+  const httpResults = runDriftTests(evidence.drift);
   console.log("Collecting HTTP API drift entries...");
   const httpResult = collectDriftEntries(httpResults);
   const httpEntries = httpResult.entries;
 
   // Collect AG-UI schema drift entries
   console.log("Running AG-UI schema drift tests...");
-  const agUiResults = runAgUiDriftTests();
+  const agUiResults = runAgUiDriftTests(evidence.agui);
   const agUiSkipped = agUiResults === null;
   let agUiEntries: DriftEntry[] = [];
   let agUiQuarantine: QuarantineEntry[] = [];
@@ -2016,7 +3026,7 @@ function main(): void {
   } catch (err) {
     console.error(`Failed to write drift report to ${outPath}:`, err);
     console.log(JSON.stringify(report, null, 2));
-    process.exit(1);
+    return 1;
   }
   console.log(`Drift report written to ${outPath}`);
   console.log(`  HTTP API entries: ${httpEntries.length}`);
@@ -2043,23 +3053,19 @@ function main(): void {
   switch (exitCode) {
     case 2:
       console.log("Exiting with code 2 (critical diffs found).");
-      process.exit(2);
-    // eslint-disable-next-line no-fallthrough
+      return 2;
     case 5:
       console.warn(`Exiting with code 5 (${quarantineCount} failure(s) quarantined for review).`);
-      process.exit(5);
-    // eslint-disable-next-line no-fallthrough
+      return 5;
     case 6:
       console.warn(
         `Exiting with code 6 (${timeoutCount} live leg(s) timed out with zero observations — ` +
           `no drift graded on those surfaces; NOT a collector fault).`,
       );
-      process.exit(6);
-    // eslint-disable-next-line no-fallthrough
+      return 6;
     case 1:
       console.warn("Exiting with code 1 (AG-UI drift detection was skipped — infra failure).");
-      process.exit(1);
-    // eslint-disable-next-line no-fallthrough
+      return 1;
     default:
       console.log(
         unverifiedSurfaces.length > 0
@@ -2067,6 +3073,7 @@ function main(): void {
               `${unverifiedSurfaces.length} surface(s) have no live coverage at all).`
           : "No critical diffs found.",
       );
+      return 0;
   }
 }
 
@@ -2089,7 +3096,7 @@ function isDirectRun(): boolean {
 
 if (isDirectRun()) {
   try {
-    main();
+    process.exitCode = withInvocationEvidence(collectMain);
   } catch (err: unknown) {
     console.error("Fatal error:", err);
     process.exit(1);

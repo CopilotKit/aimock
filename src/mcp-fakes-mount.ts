@@ -25,6 +25,8 @@ export interface FakeMountWiring {
   journal?: Journal;
   registry?: MetricsRegistry;
   logger?: Logger;
+  /** T1: the server's replay speed for recorded fake timing (default 1). */
+  replaySpeed?: number;
 }
 
 /**
@@ -114,6 +116,7 @@ function pushAutoMount(
   if (wiring.journal) handler.setJournal(wiring.journal);
   if (wiring.registry) handler.setRegistry(wiring.registry);
   if (wiring.logger) handler.setLogger(wiring.logger);
+  handler.setReplaySpeed(wiring.replaySpeed ?? 1);
   const others = mounts.filter((m) => m.path !== path && isFakeMount(m.handler));
   mounts.push({ path, handler });
   autoMounts.add(handler);

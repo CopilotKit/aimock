@@ -105,6 +105,13 @@
               </td>
             </tr>
             <tr>
+              <td><code>GET</code></td>
+              <td>
+                <code>/__aimock/mcp/fakes/<wbr />report</code>
+              </td>
+              <td>The per-test MCP fake report: served, unused and failed fakes for a test id</td>
+            </tr>
+            <tr>
               <td><code>POST</code></td>
               <td><code>/__aimock/reset</code></td>
               <td>
@@ -502,8 +509,8 @@
         <h3 id="mcp-fakes">GET /__aimock/mcp/fakes</h3>
         <p>
           Read-only: for each MCP mount, the <code>mcpFakes</code> blocks that apply to a test id
-          and context, with every entry&rsquo;s id and whether it is used for that test id. Use it
-          at the end of a test to check that every declared fake was used. Query parameters:
+          and context, with every entry&rsquo;s id and whether it is used for that test id. To check
+          a test at its end, use the <a href="#mcp-fakes-report">report</a> below. Query parameters:
           <code>testId</code>, <code>context</code> and <code>mount</code> (a mount path; default:
           all MCP mounts), all optional. An empty value counts as not sent. Any other query
           parameter is rejected with <code>400</code>, and a <code>mount</code> with no MCP mock
@@ -564,11 +571,68 @@
 }</code></pre>
         </div>
 
+        <h3 id="mcp-fakes-report">GET /__aimock/mcp/fakes/report</h3>
+        <p>
+          Read-only: the <a href="/mcp-mock#fakes-report">report</a> for one test id and context,
+          across every MCP mount. Query parameters: <code>testId</code> and <code>context</code>,
+          both optional; an empty value counts as not sent. Any other query parameter is rejected
+          with <code>400</code>. Otherwise the answer is <code>200</code> with
+          <code
+            >{ "testId", "context", "ok", "evicted", "served", "unconsumed", "unfaked", "failures",
+            "sharedUnconsumed" }</code
+          >. Reading it changes no state.
+        </p>
+        <p>
+          After one <code>create_ticket</code> call in the test
+          <code>tickets › retry on timeout</code> (the
+          <a href="/mcp-mock#scenario-fakes"><code>tickets/retry.json</code></a> sample), the first
+          entry is served and the second is unused, so <code>ok</code> is <code>false</code>:
+        </p>
+        <div class="code-block" data-sample="inline:fakes-report-curl">
+          <div class="code-block-header">
+            Read the fakes report <span class="lang-tag">shell</span>
+          </div>
+          <pre><code>curl <span class="str">"http://localhost:4010/__aimock/mcp/fakes/report?testId=tickets%20%E2%80%BA%20retry%20on%20timeout"</span></code></pre>
+        </div>
+        <div class="code-block" data-sample="inline:fakes-report-response">
+          <div class="code-block-header">Response <span class="lang-tag">json</span></div>
+          <pre><code>{
+  <span class="prop">"testId"</span>: <span class="str">"tickets › retry on timeout"</span>,
+  <span class="prop">"context"</span>: <span class="kw">null</span>,
+  <span class="prop">"ok"</span>: <span class="kw">false</span>,
+  <span class="prop">"evicted"</span>: <span class="kw">false</span>,
+  <span class="prop">"served"</span>: [
+    {
+      <span class="prop">"entryId"</span>: <span class="str">"tickets/retry.json:first-try"</span>,
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"tool"</span>: <span class="str">"create_ticket"</span>,
+      <span class="prop">"args"</span>: {
+        <span class="prop">"title"</span>: <span class="str">"Refund"</span>
+      }
+    }
+  ],
+  <span class="prop">"unconsumed"</span>: [
+    {
+      <span class="prop">"entryId"</span>: <span class="str">"tickets/retry.json:retry"</span>,
+      <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+      <span class="prop">"tool"</span>: <span class="str">"create_ticket"</span>,
+      <span class="prop">"args"</span>: {
+        <span class="prop">"title"</span>: <span class="str">"Refund"</span>
+      }
+    }
+  ],
+  <span class="prop">"unfaked"</span>: [],
+  <span class="prop">"failures"</span>: [],
+  <span class="prop">"sharedUnconsumed"</span>: []
+}</code></pre>
+        </div>
+
         <h3 id="reset-effects-on-mcp-fakes">Reset effects on MCP fakes</h3>
         <p>
           <code>POST /__aimock/reset</code>, its deprecated alias
           <code>POST /__aimock/reset/fixtures</code>, and
-          <code>DELETE /__aimock/fixtures</code> unload every MCP fake along with the LLM fixtures.
+          <code>DELETE /__aimock/fixtures</code> unload every MCP fake along with the LLM fixtures,
+          and clear the fakes report&rsquo;s event log.
           <code>POST /__aimock/reset/journal</code>
           leaves fakes and their state as they are. None of them closes MCP sessions.
         </p>
