@@ -243,6 +243,48 @@ export const FEATURE_RULES = [
     keywords: ["ag-ui", "agui", "agent-ui", "copilotkit.*frontend", "event stream mock"],
   },
   {
+    rowLabel: "MCP tool mocking",
+    // Mocking MCP servers or tools. Two orders match:
+    // - "mock", "mocks", "mocked" or "mocking" directly before "MCP", as in
+    //   "mock MCP tools". No word may come between them, so "mock server MCP
+    //   endpoint" (a mock HTTP server that also has an MCP endpoint) and
+    //   "mockserver MCP" do not match.
+    // - "MCP", then optionally a parenthetical of at most 40 characters and
+    //   "tool(s)" or "server(s)", then a mock word, as in "MCP tool mocking" or
+    //   "MCP (Model Context Protocol) Mocking".
+    // A bare "MCP server" is not mocking: many READMEs only say the product
+    // ships an MCP server, sometimes next to an unrelated mock server.
+    keywords: [
+      "mock(?:s|ed|ing)?[\\s-]+mcp",
+      "mcp[\\s-]+(?:\\([^)]{1,40}\\)[\\s-]+)?(?:(?:tools?|servers?)[\\s-]+)?mock(?:s|ed|ing)?",
+    ],
+  },
+  {
+    rowLabel: "Scenario-scoped MCP tool fakes",
+    // An MCP or tools/call fixture, fake or mock, then at most four more words
+    // in the same clause, then a scoping word: "sequence(s)", "scenario(s)",
+    // "per test" or "argument(s)". Words are letters, digits and "/", so
+    // punctuation such as ".", ";" or ":" ends the match. Plain "mock MCP
+    // tools" is the row above, not scenario scoping.
+    keywords: [
+      "mcp[\\s-]+(?:(?:tools?|servers?)[\\s-]+)?(?:fixtures?|fakes?|mock(?:s|ed|ing)?)(?:[\\s-]+[a-z0-9/]+){0,4}?[\\s-]+(?:sequences?|scenarios?|per[- ]test|arguments?)",
+      "tools/call[\\s-]+fixtures?(?:[\\s-]+[a-z0-9/]+){0,4}?[\\s-]+(?:sequences?|scenarios?)",
+    ],
+  },
+  {
+    rowLabel: "Fail on undeclared MCP tool",
+    // A bare "undeclared tool" matches on its own: it names the closed-world
+    // behavior. "unmocked" must name a tool ("unmocked tool", "unmocked MCP
+    // tools") and have a whole deny/fail word within three more words, or come
+    // directly after "deny", "denies" or "denied". Unmocked requests or HTTP
+    // calls are plain HTTP mocking, not MCP tools, so they do not match.
+    keywords: [
+      "undeclared[\\s-]+(?:mcp[\\s-]+)?tools?",
+      "unmocked[\\s-]+(?:mcp[\\s-]+)?tools?(?:[\\s-]+[a-z0-9]+){0,3}?[\\s-]+(?:deny|denies|denied|fail|fails|failed)",
+      "(?:deny|denies|denied)[\\s-]+unmocked[\\s-]+(?:mcp[\\s-]+)?tools?",
+    ],
+  },
+  {
     rowLabel: "GitHub Action",
     keywords: ["github.*action", "action.yml", "uses:.*mock", "ci.*action"],
   },
@@ -500,8 +542,8 @@ export const MIGRATION_COMBINED_ROWS: Readonly<Record<string, readonly RuleLabel
   "Azure OpenAI / Vertex AI / Ollama / Cohere": ["Azure OpenAI"],
   "AWS Bedrock / Azure / Vertex AI / Ollama / Cohere": ["AWS Bedrock", "Azure OpenAI"],
   "Docker / Helm": ["Docker image", "Helm chart"],
-  "MCP / A2A / AG-UI / Vector": ["AG-UI event mocking"],
-  "MCP / A2A / AG-UI / Vector mocking": ["AG-UI event mocking"],
+  "MCP / A2A / AG-UI / Vector": ["AG-UI event mocking", "MCP tool mocking"],
+  "MCP / A2A / AG-UI / Vector mocking": ["AG-UI event mocking", "MCP tool mocking"],
 };
 
 /** What updateMigrationPage did with one detected rule on one row. */
@@ -751,6 +793,7 @@ export function buildMigrationRowPatterns(rowLabel: string): string[] {
     "Request journal": ["Request journal"],
     "Drift detection": ["Drift detection"],
     "AG-UI event mocking": ["AG-UI event mocking", "AG-UI mocking", "AG-UI"],
+    "MCP tool mocking": ["MCP protocol mocking", "MCP mock"],
     "Realtime GA protocol": ["Realtime GA protocol", "GA Realtime"],
     "Realtime Beta compatibility": ["Realtime Beta compatibility", "Beta Realtime"],
     "Realtime transcription/translation": [
@@ -1474,9 +1517,13 @@ export interface MigrationManualCheck {
   page: string;
   competitor: string;
   capability: string;
-  /** The plain-text row label on the migration page. */
+  /** The plain-text row label on the migration page, or "none" when it has no row. */
   row: string;
-  reason: "combined-row" | "unsupported-no-cell";
+  /**
+   * "no-row": the homepage cell flips to "yes" but the migration page has no
+   * row for the capability, so the two pages would disagree without a report.
+   */
+  reason: "combined-row" | "unsupported-no-cell" | "no-row";
 }
 
 /** One outcome as summary text, e.g. `"AWS Bedrock" ✗ -> ✓` or `no row`. */
@@ -1588,7 +1635,9 @@ export function formatSummary(
       "## Migration Page Rows To Check By Hand",
       "",
       "The competitor's cell in these rows shows no, but the scan does not flip it: " +
-        "a combined row covers several capabilities, and an unsupported cell is not in the page's usual cross shape.",
+        "a combined row covers several capabilities, and an unsupported cell is not in the page's usual cross shape. " +
+        "A no-row entry is a homepage change whose migration page has no row for the capability: " +
+        "add the row or map it in buildMigrationRowPatterns.",
       "",
       "| Page | Competitor | Capability | Row | Reason |",
       "| --- | --- | --- | --- | --- |",
@@ -2014,6 +2063,23 @@ export function runMatrixUpdate(opts: RunMatrixUpdateOptions): void {
       for (const change of result.changes) {
         migrationChanges.push({ page: migrationPageRelPath, change });
       }
+    }
+  }
+
+  // A homepage change whose migration page has no row for the capability
+  // would leave the two pages disagreeing. List it for a manual check.
+  for (const ch of changes) {
+    const outcomes = (outcomesByCompetitor.get(ch.competitor) ?? []).filter(
+      (o) => o.rule === ch.capability,
+    );
+    if (outcomes.length > 0 && outcomes.every((o) => o.status === "no-row")) {
+      manualChecks.push({
+        page: COMPETITOR_MIGRATION_PAGES[ch.competitor],
+        competitor: ch.competitor,
+        capability: ch.capability,
+        row: "none",
+        reason: "no-row",
+      });
     }
   }
 
