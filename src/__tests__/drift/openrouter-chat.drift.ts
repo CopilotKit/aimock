@@ -6,9 +6,7 @@
  * OpenRouter's distinguishing fields (a `gen-` id, a top-level `provider`,
  * per-choice `native_finish_reason`, cost-bearing `usage` with `cost_details`,
  * and an always-present `system_fingerprint`/`service_tier`) — is SHIPPED on
- * master but had ZERO drift coverage. This leg closes that gap COST-SAFELY —
- * a real chat completion costs money per token, so NOTHING here submits a paid
- * completion:
+ * master but had ZERO drift coverage. This file covers:
  *
  *   1. LIVE canary (FREE) — authenticate with `OPENROUTER_API_KEY` and hit the
  *      public model CATALOG (`GET /api/v1/models`), asserting the author
@@ -25,15 +23,25 @@
  *      static `triangulate(sdkShape, sdkShape, mockShape)` form. This exercises
  *      the REAL handler + shaping + collector routing path, not a unit fake.
  *
+ *   3. K9 reasoning exhaustion — OPENROUTER_API_KEY enables ONE PAID streaming
+ *      completion: pinned DeepSeek R1/Novita, 16 output tokens requested,
+ *      retries disabled, 45 seconds and 256 KiB maximum. Provider parameter
+ *      support does not guarantee budget enforcement. An explicit
+ *      OPENROUTER_K9_CAPTURE plus OPENROUTER_K9_CAPTURE_SHA256 instead replays
+ *      an authenticated complete capture; that run is labeled capture replay.
+ *
  * The static envelope/catalog shapes assert the shape the mock is CONTRACTED to
  * emit (mock-vs-exemplar, mirroring openrouter-video.drift.ts) — the live canary
  * above is what catches provider-side catalog/family drift.
  */
 
 import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type ServerInstance } from "../../server.js";
-import type { Fixture } from "../../types.js";
+import { LLMock } from "../../llmock.js";
+import type { Fixture, SSEChunk } from "../../types.js";
 import { extractShape, triangulate, formatDriftReport } from "./schema.js";
 import { httpPost, parseDataOnlySSE } from "./helpers.js";
 import { listOpenRouterModels } from "./providers.js";
@@ -43,6 +51,241 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // A provider-prefixed slug drives the mock's `deriveOpenRouterProvider`
 // (author segment before `/`) so the top-level `provider` is deterministic.
 const OPENROUTER_CHAT_MODEL = "openai/gpt-4o";
+
+const K9_CAPTURE = process.env.OPENROUTER_K9_CAPTURE;
+const K9_REQUEST = {
+  model: "deepseek/deepseek-r1",
+  messages: [
+    {
+      role: "user",
+      content:
+        "Find the smallest positive integer n such that n mod 17 = 8, n mod 19 = 11, and n mod 23 = 15. Work through the calculation carefully.",
+    },
+  ],
+  max_tokens: 16,
+  reasoning: { enabled: true },
+  stream: true,
+  stream_options: { include_usage: true },
+  provider: { order: ["novita/fp8"], allow_fallbacks: false, require_parameters: true },
+};
+
+// JSON is deliberately inspected independently of SDK stream decoding: [DONE],
+// every choice, and the usage event must all survive on the actual wire.
+function inspectK9Stream(raw: string) {
+  const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
+  // EOF does not dispatch pending SSE data. Only comments may remain after
+  // the last blank-line separator, including after the DONE event.
+  const pending = blocks.pop() ?? "";
+  expect(
+    pending.split("\n").every((line) => !line || line.startsWith(":")),
+    "Unterminated SSE data event",
+  ).toBe(true);
+  const frames = blocks.flatMap((block) => {
+    const lines = block.split("\n").filter((line) => line && !line.startsWith(":"));
+    if (lines.length === 0) return [];
+    expect(
+      lines.every((line) => line.startsWith("data:")),
+      "Malformed SSE frame",
+    ).toBe(true);
+    return [lines.map((line) => line.slice(5).replace(/^ /, "")).join("\n")];
+  });
+  expect(frames.at(-1), "K9 must end with [DONE]").toBe("[DONE]");
+  expect(frames.filter((frame) => frame === "[DONE]")).toHaveLength(1);
+  let reasoning = "";
+  let terminated = false;
+  let hasUsage = false;
+  for (const frame of frames.slice(0, -1)) {
+    const chunk: SSEChunk = JSON.parse(frame);
+    expect(chunk.object).toBe("chat.completion.chunk");
+    expect(chunk.model).toBe(K9_REQUEST.model);
+    expect(Array.isArray(chunk.choices)).toBe(true);
+    for (const choice of chunk.choices) {
+      expect(choice.index).toBe(0);
+      const delta = choice.delta;
+      expect([undefined, null, ""]).toContain(delta.content);
+      expect(delta).not.toHaveProperty("tool_calls");
+      expect(delta).not.toHaveProperty("reasoning_content");
+      if (typeof delta.reasoning === "string" && delta.reasoning.length > 0) {
+        expect(terminated, "Reasoning after length termination").toBe(false);
+        expect(delta.role).toBe("assistant");
+        expect(delta.content).toBe("");
+        expect(delta.reasoning_details).toEqual([
+          { type: "reasoning.text", text: delta.reasoning, format: "unknown", index: 0 },
+        ]);
+        reasoning += delta.reasoning;
+      } else {
+        // Real OpenRouter sends reasoning:null in its length terminal. An
+        // optional role opener and an empty terminal delta are also valid.
+        expect([undefined, null, ""]).toContain(delta.reasoning);
+        expect(delta.reasoning_details ?? []).toEqual([]);
+      }
+      if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+        expect(choice.finish_reason).toBe("length");
+        terminated = true;
+      }
+      if (choice.native_finish_reason !== null && choice.native_finish_reason !== undefined)
+        expect(choice.native_finish_reason).toBe("length");
+    }
+    if (chunk.usage !== undefined) {
+      expect(terminated, "Usage must follow or accompany length").toBe(true);
+      expect(hasUsage, "Duplicate usage").toBe(false);
+      for (const count of [
+        chunk.usage.prompt_tokens,
+        chunk.usage.completion_tokens,
+        chunk.usage.total_tokens,
+      ]) {
+        expect(Number.isInteger(count)).toBe(true);
+        expect(count).toBeGreaterThanOrEqual(0);
+      }
+      hasUsage = true;
+    }
+  }
+  expect(reasoning.length, "K9 requires exposed reasoning").toBeGreaterThan(0);
+  expect(terminated, "Missing length terminal").toBe(true);
+  expect(hasUsage, "Missing requested usage").toBe(true);
+  return reasoning;
+}
+
+async function localK9Stream(reasoning: string) {
+  const mock = new LLMock({ port: 0, chunkSize: 11, logLevel: "silent" });
+  mock.addFixture({
+    match: { userMessage: K9_REQUEST.messages[0].content, model: K9_REQUEST.model },
+    response: { content: "This answer must be suppressed." },
+    misbehavior: { faults: [{ fault: "reasoning-only", reasoning }] },
+  });
+  const url = await mock.start();
+  try {
+    const response = await httpPost(`${url}/api/v1/chat/completions`, K9_REQUEST);
+    expect(response.status, response.body).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/event-stream");
+    return response.body;
+  } finally {
+    await mock.stop();
+  }
+}
+
+async function realK9Stream() {
+  if (K9_CAPTURE) {
+    const bytes = await readFile(K9_CAPTURE);
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      process.env.OPENROUTER_K9_CAPTURE_SHA256,
+    );
+    const capture: {
+      request: typeof K9_REQUEST;
+      response_status: number;
+      response_content_type: string;
+      transport_completed: boolean;
+      capture_error?: string;
+      raw_response: string;
+    } = JSON.parse(bytes.toString());
+    expect(capture.request).toEqual(K9_REQUEST);
+    expect(capture.response_status).toBe(200);
+    expect(capture.response_content_type).toContain("text/event-stream");
+    expect(capture.transport_completed).toBe(true);
+    expect(capture.capture_error).toBeUndefined();
+    console.log(
+      JSON.stringify({
+        k9: "provider capture replay",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        request: capture.request,
+        raw: capture.raw_response,
+      }),
+    );
+    return capture.raw_response;
+  }
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 45_000);
+  let raw = "";
+  let status: number | undefined;
+  let completed = false;
+  try {
+    // Native fetch has no automatic retry. Credential presence explicitly
+    // enables this paid daily drift leg; no static fallback on provider errors.
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(K9_REQUEST),
+      signal: controller.signal,
+    });
+    status = response.status;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    if (!response.body) throw new Error("OpenRouter returned no response body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > 262_144) throw new Error("OpenRouter K9 exceeded 256 KiB");
+      raw += decoder.decode(result.value, { stream: true });
+    }
+    raw += decoder.decode();
+    completed = true;
+    return raw;
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    console.log(
+      JSON.stringify({
+        k9: "live paid provider",
+        request: K9_REQUEST,
+        status,
+        completed,
+        raw: OPENROUTER_API_KEY ? raw.replaceAll(OPENROUTER_API_KEY, "[REDACTED]") : raw,
+      }),
+    );
+  }
+}
+
+describe("OpenRouter K9 reasoning exhaustion", () => {
+  it("local wire preserves reasoning/details and clean length/usage/DONE semantics", async () => {
+    const reasoning = "Work through the arithmetic before giving an answer.";
+    const raw = await localK9Stream(reasoning);
+    console.log(JSON.stringify({ k9: "local", request: K9_REQUEST, raw }));
+    expect(inspectK9Stream(raw)).toBe(reasoning);
+    // Sensitivity checks mutate actual localhost bytes, not product code.
+    expect(() => inspectK9Stream(raw.replace(/\n\n$/, ""))).toThrow();
+    expect(inspectK9Stream(raw.replaceAll("\n", "\r\n") + ": final comment")).toBe(reasoning);
+    expect(() => inspectK9Stream(raw.replace("data: [DONE]", ""))).toThrow();
+    expect(() =>
+      inspectK9Stream(raw.replaceAll('"finish_reason":"length"', '"finish_reason":"stop"')),
+    ).toThrow();
+    expect(() =>
+      inspectK9Stream(raw.replaceAll('"reasoning_details":', '"reasoning_content":')),
+    ).toThrow();
+    const withoutUsage = raw
+      .split("\n\n")
+      .filter((block) => !block.includes('"usage":'))
+      .join("\n\n");
+    expect(() => inspectK9Stream(withoutUsage)).toThrow();
+    const payload = raw.split("\n\n").find((block) => block.includes('"reasoning_details":'));
+    expect(payload).toBeDefined();
+    expect(() =>
+      inspectK9Stream(raw.replace("data: [DONE]", `${payload}\n\ndata: [DONE]`)),
+    ).toThrow();
+    expect(() =>
+      inspectK9Stream(raw.replaceAll('"format":"unknown"', '"format":"broken"')),
+    ).toThrow();
+  });
+
+  it.skipIf(!OPENROUTER_API_KEY && !K9_CAPTURE)(
+    K9_CAPTURE
+      ? "complete provider capture agrees with actual localhost K9"
+      : "paid live provider agrees with actual localhost K9",
+    async () => {
+      const raw = await realK9Stream();
+      const reasoning = inspectK9Stream(raw);
+      const local = await localK9Stream(reasoning);
+      console.log(JSON.stringify({ k9: "local compared with provider", raw: local }));
+      expect(inspectK9Stream(local)).toBe(reasoning);
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // HTTP GET helper (drift helpers.ts only exports httpPost — mirror video.drift.ts)

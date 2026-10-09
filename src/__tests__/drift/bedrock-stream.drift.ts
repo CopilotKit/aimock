@@ -255,7 +255,11 @@ describe("Bedrock mock shape conformance (offline — no live AWS leg)", () => {
 
     // Extract the Anthropic-native event type from each frame's payload
     const payloadEvents = frames.map((f) => {
-      const payload = f.payload as Record<string, unknown>;
+      const envelope = f.payload as { bytes: string };
+      const payload = JSON.parse(Buffer.from(envelope.bytes, "base64").toString("utf8")) as Record<
+        string,
+        unknown
+      >;
       return {
         type: (payload.type as string) ?? "",
         dataShape: extractShape(payload),

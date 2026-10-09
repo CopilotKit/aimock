@@ -5,6 +5,14 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import type {
+  ResponseCreateParamsStreaming,
+  ResponseStreamEvent,
+} from "openai-current-sdk/resources/responses/responses";
+import { LLMock } from "../../llmock.js";
 import { createServer, type ServerInstance } from "../../server.js";
 import type { Fixture } from "../../types.js";
 import {
@@ -69,6 +77,328 @@ afterAll(async () => {
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
+
+// Credential presence enables two bounded paid exhaustion probes in daily
+// drift. An explicit capture directory instead replays the hash-pinned real
+// transcripts, with their exact requests/status metadata checked below.
+const EXHAUSTION_CAPTURE_DIR = process.env.OPENAI_RESPONSES_EXHAUSTION_CAPTURE_DIR;
+const exhaustionCases: {
+  kind: "K5" | "K9";
+  prefix: string;
+  sha256: string;
+  request: ResponseCreateParamsStreaming;
+}[] = [
+  {
+    kind: "K5",
+    prefix: "k5-20261008T170311Z",
+    sha256: "8095336aeb8908dd4647bbecd49a5a06959f1e5dac06b7a9a17416a30c3e7152",
+    request: {
+      model: "gpt-4.1-mini",
+      input:
+        "Call record_text with a detailed 1000-word description of the water cycle in its text argument.",
+      tools: [
+        {
+          type: "function",
+          name: "record_text",
+          parameters: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          strict: false,
+        },
+      ],
+      tool_choice: { type: "function", name: "record_text" },
+      max_output_tokens: 32,
+      stream: true,
+      store: false,
+    },
+  },
+  {
+    kind: "K9",
+    prefix: "k9-20261008T170312Z",
+    sha256: "f96bf0db1dae1cab1956af15d589d26cace087a5893604bd6c727b6347c0d0ae",
+    request: {
+      model: "o4-mini",
+      input:
+        "Find all positive integers n below 100000 for which n squared plus n plus 41 is prime. Explain a rigorous strategy before computing.",
+      reasoning: { effort: "high", summary: "auto" },
+      max_output_tokens: 32,
+      stream: true,
+      store: false,
+    },
+  },
+];
+
+function inspectExhaustion(raw: string, kind: "K5" | "K9") {
+  const blocks = raw.replace(/\r\n/g, "\n").split("\n\n");
+  expect(blocks.pop(), "Responses terminal SSE event must be terminated").toBe("");
+  const events: ResponseStreamEvent[] = blocks.filter(Boolean).map((block) => {
+    const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+    const eventType = lines.filter((line) => line.startsWith("event: "));
+    const data = lines.filter((line) => line.startsWith("data: "));
+    expect(eventType).toHaveLength(1);
+    expect(data).toHaveLength(1);
+    const event: ResponseStreamEvent = JSON.parse(data[0].slice(6));
+    expect(event.type).toBe(eventType[0].slice(7));
+    return event;
+  });
+  const order = events
+    .map((event) => event.type)
+    .filter((type, index, types) => type !== types[index - 1]);
+  expect(order).toEqual([
+    "response.created",
+    "response.in_progress",
+    "response.output_item.added",
+    ...(kind === "K5"
+      ? ["response.function_call_arguments.delta", "response.function_call_arguments.done"]
+      : [
+          "response.reasoning_summary_part.added",
+          "response.reasoning_summary_text.delta",
+          "response.reasoning_summary_text.done",
+          "response.reasoning_summary_part.done",
+        ]),
+    "response.output_item.done",
+    "response.incomplete",
+  ]);
+  const terminal = events.at(-1);
+  if (terminal?.type !== "response.incomplete") throw new Error("Missing incomplete terminal");
+  expect(events.filter((event) => event.type === "response.incomplete")).toHaveLength(1);
+  expect(terminal.response.status).toBe("incomplete");
+  expect(terminal.response.incomplete_details).toEqual({ reason: "max_output_tokens" });
+  expect(terminal.response.output).toHaveLength(1);
+  const item = terminal.response.output[0];
+  const added = events.filter((event) => event.type === "response.output_item.added");
+  const done = events.filter((event) => event.type === "response.output_item.done");
+  expect(added).toHaveLength(1);
+  expect(done).toHaveLength(1);
+  expect(added[0].item.id).toBe(item.id);
+  expect(done[0].item.id).toBe(item.id);
+  expect(added[0].item.type).toBe(item.type);
+  expect(done[0].item.type).toBe(item.type);
+  let text = "";
+  if (kind === "K5") {
+    if (item.type !== "function_call" || done[0].item.type !== "function_call")
+      throw new Error("K5 requires only a function call");
+    expect(item.name).toBe("record_text");
+    expect(item.status).toBe("incomplete");
+    expect(item.arguments.length).toBeGreaterThan(0);
+    expect(() => JSON.parse(item.arguments)).toThrow();
+    const deltas = events.filter(
+      (event) => event.type === "response.function_call_arguments.delta",
+    );
+    const argumentDone = events.filter(
+      (event) => event.type === "response.function_call_arguments.done",
+    );
+    expect(argumentDone).toHaveLength(1);
+    for (const event of [...deltas, ...argumentDone]) {
+      expect(event.item_id).toBe(item.id);
+      expect(event.output_index).toBe(0);
+    }
+    text = deltas.map((event) => event.delta).join("");
+    expect(text).toBe(item.arguments);
+    expect(argumentDone[0].arguments).toBe(text);
+    expect(done[0].item).toMatchObject({
+      arguments: text,
+      status: "incomplete",
+      call_id: item.call_id,
+    });
+  } else {
+    if (item.type !== "reasoning" || done[0].item.type !== "reasoning")
+      throw new Error("K9 requires only a reasoning item");
+    const deltas = events.filter((event) => event.type === "response.reasoning_summary_text.delta");
+    const textDone = events.filter(
+      (event) => event.type === "response.reasoning_summary_text.done",
+    );
+    const partDone = events.filter(
+      (event) => event.type === "response.reasoning_summary_part.done",
+    );
+    expect(textDone).toHaveLength(1);
+    expect(partDone).toHaveLength(1);
+    for (const event of [...deltas, ...textDone, ...partDone]) {
+      expect(event.item_id).toBe(item.id);
+      expect(event.output_index).toBe(0);
+      expect(event.summary_index).toBe(0);
+    }
+    text = deltas.map((event) => event.delta).join("");
+    expect(text.length).toBeGreaterThan(0);
+    // The retained real K9 capture has one item/part whose streamed draft
+    // differs from text.done. Final-summary events agree with each other;
+    // delta-to-final equality is not part of the exhaustion contract.
+    text = textDone[0].text;
+    expect(text.length).toBeGreaterThan(0);
+    expect(partDone[0].part).toEqual({ type: "summary_text", text });
+    expect(item.summary).toEqual([{ type: "summary_text", text }]);
+    expect(done[0].item.summary).toEqual(item.summary);
+  }
+  return {
+    order,
+    text,
+    status: terminal.response.status,
+    reason: terminal.response.incomplete_details?.reason,
+  };
+}
+
+function gradeExhaustion(raw: string, kind: "K5" | "K9", side: "provider" | "localhost") {
+  try {
+    return inspectExhaustion(raw, kind);
+  } catch (error) {
+    throw new Error(
+      formatDriftReport(
+        `Responses ${kind} ${side} exhaustion`,
+        [
+          {
+            path: `${kind}:${side}:exhaustion-contract`,
+            severity: "critical",
+            issue: error instanceof Error ? error.message : String(error),
+            expected: "captured incomplete/max_output_tokens event sequence and consistent payload",
+            real: side === "provider" ? "invalid event stream" : "validated provider stream",
+            mock: side === "localhost" ? "invalid event stream" : "not yet compared",
+          },
+        ],
+        "openai-responses",
+      ),
+    );
+  }
+}
+
+async function exhaustionProviderWire(scenario: (typeof exhaustionCases)[number]) {
+  if (EXHAUSTION_CAPTURE_DIR) {
+    const raw = await readFile(
+      join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-response.sse`),
+      "utf8",
+    );
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(scenario.sha256);
+    const request: { body: ResponseCreateParamsStreaming } = JSON.parse(
+      await readFile(join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-request.json`), "utf8"),
+    );
+    const status: { status: string; content_type: string } = JSON.parse(
+      await readFile(join(EXHAUSTION_CAPTURE_DIR, `${scenario.prefix}-status.json`), "utf8"),
+    );
+    expect(request.body).toEqual(scenario.request);
+    expect(status.status).toBe("200");
+    expect(status.content_type).toContain("text/event-stream");
+    console.log(
+      JSON.stringify({
+        kind: scenario.kind,
+        mode: "retained real capture",
+        sha256: scenario.sha256,
+        request: request.body,
+      }),
+    );
+    return raw;
+  }
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), 45_000);
+  let raw = "";
+  let completed = false;
+  try {
+    const response = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify(scenario.request),
+      signal: controller.signal,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    if (!response.body) throw new Error("Missing Responses body");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let size = 0;
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > 1_048_576) throw new Error("Responses exhaustion exceeded 1 MiB");
+      raw += decoder.decode(result.value, { stream: true });
+    }
+    raw += decoder.decode();
+    completed = true;
+    return raw;
+  } finally {
+    clearTimeout(deadline);
+    controller.abort();
+    console.log(
+      JSON.stringify({
+        kind: scenario.kind,
+        mode: "live paid provider; no retries",
+        request: scenario.request,
+        completed,
+        raw: OPENAI_API_KEY ? raw.replaceAll(OPENAI_API_KEY, "[REDACTED]") : raw,
+      }),
+    );
+  }
+}
+
+describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
+  "Responses K5/K9 exhaustion drift",
+  () => {
+    it.each(exhaustionCases)(
+      "$kind provider terminal agrees with actual localhost",
+      async (scenario) => {
+        const provider = await exhaustionProviderWire(scenario);
+        const expected = gradeExhaustion(provider, scenario.kind, "provider");
+        // Deliberate mutation of authentic provider bytes tests this reader's
+        // sensitivity, not a new product regression or a fabricated SDK response.
+        expect(() =>
+          inspectExhaustion(
+            provider.replaceAll("response.incomplete", "response.completed"),
+            scenario.kind,
+          ),
+        ).toThrow();
+        console.log(
+          JSON.stringify({
+            kind: scenario.kind,
+            sensitivity: "real provider terminal changed to response.completed",
+            rejected: true,
+          }),
+        );
+        const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 17 });
+        mock.addFixture({
+          match: {},
+          response:
+            scenario.kind === "K5"
+              ? {
+                  toolCalls: [
+                    {
+                      name: "record_text",
+                      arguments: JSON.stringify({
+                        text: "The water cycle moves water between the atmosphere and the ground.",
+                      }),
+                    },
+                  ],
+                }
+              : {
+                  content: "This answer must be suppressed",
+                  reasoning: "Consider each integer and test divisibility rigorously.",
+                },
+          misbehavior: scenario.kind === "K5" ? "stop-length-mid-tool" : "reasoning-only",
+        });
+        const url = await mock.start();
+        try {
+          const local = await httpPost(`${url}/v1/responses`, scenario.request);
+          expect(local.status, local.body).toBe(200);
+          expect(local.headers["content-type"]).toContain("text/event-stream");
+          console.log(
+            JSON.stringify({
+              kind: scenario.kind,
+              mode: "actual localhost",
+              request: scenario.request,
+              raw: local.body,
+            }),
+          );
+          const actual = gradeExhaustion(local.body, scenario.kind, "localhost");
+          expect(actual.order).toEqual(expected.order);
+          expect(actual.status).toBe(expected.status);
+          expect(actual.reason).toBe(expected.reason);
+        } finally {
+          await mock.stop();
+        }
+      },
+    );
+  },
+);
 
 /** Maps OpenAI's `/v1/models` listing shape onto {@link LiveModelEntry}. */
 export async function fetchOpenAIModelsListing(): Promise<{

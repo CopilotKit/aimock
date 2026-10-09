@@ -5,6 +5,7 @@
  */
 
 import http from "node:http";
+import { GoogleGenAI, type GenerateContentResponse } from "@google/genai";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type ServerInstance } from "../../server.js";
 import type { Fixture } from "../../types.js";
@@ -664,5 +665,502 @@ describe.skipIf(!GOOGLE_API_KEY)("Gemini Embeddings canary", () => {
       console.warn(`[CANARY] Gemini Embeddings returned ${res.status}`);
     }
     expect(true).toBe(true);
+  });
+});
+
+// Approved M contracts: deterministic modeled faults, native target unverified.
+// Gemini Developer API only. Native NOT_TRIGGERED is not a successful comparison.
+// Seven-case decision (2026-10-08), rows3/4; no Vertex access/evidence exception.
+type ModeledGeminiFault = "stop-length-mid-tool" | "reasoning-only";
+interface ModeledGeminiPart {
+  text?: string;
+  thought?: boolean;
+  functionCall?: object;
+}
+interface ModeledGeminiChunk {
+  candidates: {
+    index: number;
+    content?: { role?: string; parts: ModeledGeminiPart[] };
+    finishReason?: string;
+    finishMessage?: string;
+  }[];
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}
+function modeledGeminiObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+/** Strictly read complete native frames before classifying target occurrence. */
+function readModeledGemini(status: number, raw: string, stream: boolean): ModeledGeminiChunk[] {
+  if (status !== 200) throw new Error(`Gemini modeled drift HTTP ${status}: ${raw}`);
+  let values: unknown[];
+  if (stream) {
+    const normalized = raw.replace(/\r\n/g, "\n");
+    if (!normalized.endsWith("\n\n")) throw new Error("Incomplete Gemini SSE frame");
+    values = normalized
+      .trimEnd()
+      .split("\n\n")
+      .map((frame) => {
+        const lines = frame.split("\n");
+        if (lines.some((line) => !line.startsWith("data: ")))
+          throw new Error("Unexpected Gemini SSE framing");
+        return JSON.parse(lines.map((line) => line.slice(6)).join("\n"));
+      });
+  } else values = [JSON.parse(raw)];
+  if (!values.length) throw new Error("Missing Gemini chunks");
+  const chunks: ModeledGeminiChunk[] = [];
+  let terminal = false;
+  for (const value of values) {
+    if (
+      !modeledGeminiObject(value) ||
+      !Array.isArray(value.candidates) ||
+      value.candidates.length !== 1 ||
+      terminal
+    )
+      throw new Error("Invalid Gemini candidates or output after terminal");
+    const candidate: unknown = value.candidates[0];
+    if (!modeledGeminiObject(candidate) || candidate.index !== 0)
+      throw new Error("Invalid Gemini candidate index");
+    const content = candidate.content;
+    if (content !== undefined) {
+      if (
+        !modeledGeminiObject(content) ||
+        !Array.isArray(content.parts) ||
+        (content.role !== undefined && content.role !== "model")
+      )
+        throw new Error("Invalid Gemini content");
+      for (const part of content.parts) {
+        if (
+          !modeledGeminiObject(part) ||
+          (typeof part.text !== "string" && !modeledGeminiObject(part.functionCall)) ||
+          (part.thought !== undefined && typeof part.thought !== "boolean")
+        )
+          throw new Error("Invalid Gemini part");
+        if (
+          part.functionCall !== undefined &&
+          (!modeledGeminiObject(part.functionCall) ||
+            typeof part.functionCall.name !== "string" ||
+            !modeledGeminiObject(part.functionCall.args))
+        )
+          throw new Error("Invalid Gemini function call");
+      }
+    }
+    if (candidate.finishReason !== undefined) {
+      if (
+        typeof candidate.finishReason !== "string" ||
+        ![
+          "STOP",
+          "MAX_TOKENS",
+          "MALFORMED_FUNCTION_CALL",
+          "SAFETY",
+          "RECITATION",
+          "OTHER",
+          "BLOCKLIST",
+          "PROHIBITED_CONTENT",
+          "SPII",
+          "UNEXPECTED_TOOL_CALL",
+        ].includes(candidate.finishReason)
+      )
+        throw new Error("Unknown Gemini terminal");
+      terminal = true;
+    }
+    if (content === undefined && !terminal)
+      throw new Error("Missing Gemini content before terminal");
+    if (
+      candidate.finishReason === "MALFORMED_FUNCTION_CALL" &&
+      (typeof candidate.finishMessage !== "string" || !candidate.finishMessage.length)
+    )
+      throw new Error("Missing malformed-call diagnostic");
+    if (value.usageMetadata !== undefined) {
+      if (!modeledGeminiObject(value.usageMetadata)) throw new Error("Invalid Gemini usage");
+      for (const key of ["promptTokenCount", "candidatesTokenCount", "totalTokenCount"]) {
+        const count = value.usageMetadata[key];
+        if (
+          count !== undefined &&
+          (typeof count !== "number" || !Number.isInteger(count) || count < 0)
+        )
+          throw new Error("Invalid Gemini token count");
+      }
+    }
+    // Shape checked above; no native fields are removed from the retained raw transcript.
+    chunks.push(value as unknown as ModeledGeminiChunk);
+  }
+  if (!terminal || chunks.at(-1)?.usageMetadata?.totalTokenCount === undefined)
+    throw new Error("Missing Gemini terminal or usage");
+  return chunks;
+}
+function modeledGeminiParts(chunks: ModeledGeminiChunk[]) {
+  return chunks.flatMap((chunk) =>
+    chunk.candidates.flatMap((candidate) => candidate.content?.parts ?? []),
+  );
+}
+function assertModeledGemini(fault: ModeledGeminiFault, chunks: ModeledGeminiChunk[]) {
+  expect(chunks.at(-1)?.candidates[0].finishReason).toBe("MAX_TOKENS");
+  const parts = modeledGeminiParts(chunks);
+  expect(parts.some((part) => part.functionCall !== undefined)).toBe(false);
+  if (fault === "reasoning-only") {
+    expect(parts.length).toBeGreaterThan(0);
+    expect(parts.every((part) => part.thought === true && typeof part.text === "string")).toBe(
+      true,
+    );
+    expect(parts.map((part) => part.text ?? "").join("").length).toBeGreaterThan(0);
+  } else
+    expect(parts.every((part) => part.thought !== true && typeof part.text === "string")).toBe(
+      true,
+    );
+}
+function compareModeledGeminiNative(fault: ModeledGeminiFault, chunks: ModeledGeminiChunk[]) {
+  const parts = modeledGeminiParts(chunks);
+  // A token-limit tool attempt is a triggered K5 comparison, including contradictory
+  // functionCall output. For K9, no-answer thinking triggers comparison even with a wrong stop.
+  const triggered =
+    fault === "stop-length-mid-tool"
+      ? chunks.at(-1)?.candidates[0].finishReason === "MAX_TOKENS"
+      : parts.some((part) => part.thought === true) &&
+        !parts.some((part) => part.thought !== true && (part.text || part.functionCall));
+  if (!triggered) return "NOT_TRIGGERED";
+  assertModeledGemini(fault, chunks);
+  return "NATIVE_TARGET_COMPARED";
+}
+const modeledGeminiCases = (["stop-length-mid-tool", "reasoning-only"] as const).flatMap((fault) =>
+  [false, true].map((stream) => ({ fault, stream })),
+);
+const modeledGeminiRequest = { contents: [{ role: "user", parts: [{ text: "weather" }] }] };
+
+describe("Gemini modeled K5/K9 recurring contracts", () => {
+  it.each(modeledGeminiCases)(
+    "local SDK/wire $fault stream=$stream remains strict",
+    async ({ fault, stream }) => {
+      const server = await createServer(
+        [
+          {
+            match: {},
+            response: {
+              content: "Before.",
+              toolCalls: [{ name: "lookup", arguments: '{"city":"Paris"}', id: "lookup_id" }],
+              usage: { totalTokenCount: 999 },
+            },
+            misbehavior: {
+              faults: [
+                { fault, ...(fault === "reasoning-only" ? { reasoning: "Thinking only." } : {}) },
+              ],
+            },
+          },
+        ],
+        { port: 0 },
+      );
+      try {
+        const wire = await httpPost(
+          `${server.url}/v1beta/models/gemini-2.5-flash:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`,
+          modeledGeminiRequest,
+        );
+        console.log(
+          JSON.stringify({
+            kind: "LOCAL_MODELED",
+            fault,
+            stream,
+            wire,
+            journal: server.journal.getAll(),
+          }),
+        );
+        const chunks = readModeledGemini(wire.status, wire.body, stream);
+        assertModeledGemini(fault, chunks);
+        const expectedText = fault === "reasoning-only" ? "Thinking only." : "Before.";
+        expect(
+          modeledGeminiParts(chunks)
+            .map((part) => part.text ?? "")
+            .join(""),
+        ).toBe(expectedText);
+        expect(chunks.at(-1)?.usageMetadata).toEqual({
+          promptTokenCount: 2,
+          candidatesTokenCount: Math.ceil(expectedText.length / 4),
+          totalTokenCount: 2 + Math.ceil(expectedText.length / 4),
+        });
+        const client = new GoogleGenAI({
+          apiKey: "local",
+          httpOptions: {
+            baseUrl: server.url,
+            apiVersion: "v1beta",
+            timeout: 5000,
+            retryOptions: { attempts: 1 },
+          },
+        });
+        const sdk: GenerateContentResponse[] = [];
+        const request = { model: "gemini-2.5-flash", contents: "weather" };
+        if (stream)
+          for await (const chunk of await client.models.generateContentStream(request))
+            sdk.push(chunk);
+        else sdk.push(await client.models.generateContent(request));
+        const sdkChunks = readModeledGemini(
+          200,
+          stream
+            ? sdk.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")
+            : JSON.stringify(sdk[0]),
+          stream,
+        );
+        assertModeledGemini(fault, sdkChunks);
+        expect(modeledGeminiParts(sdkChunks)).toEqual(modeledGeminiParts(chunks));
+        expect(server.journal.getAll()).toHaveLength(2);
+        for (const entry of server.journal.getAll())
+          expect(entry.response.misbehavior).toMatchObject({
+            applied: true,
+            fault,
+            servedToolCalls: [],
+          });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+  );
+
+  it.skipIf(!GOOGLE_API_KEY).each(modeledGeminiCases)(
+    "live Developer API bounded $fault stream=$stream",
+    async ({ fault, stream }) => {
+      const body =
+        fault === "stop-length-mid-tool"
+          ? {
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    {
+                      text: "Call archive with an array of 200 distinct full city names. Do not abbreviate the names.",
+                    },
+                  ],
+                },
+              ],
+              tools: [
+                {
+                  functionDeclarations: [
+                    {
+                      name: "archive",
+                      description: "Archive a list of city names",
+                      parameters: {
+                        type: "OBJECT",
+                        properties: { cities: { type: "ARRAY", items: { type: "STRING" } } },
+                        required: ["cities"],
+                      },
+                    },
+                  ],
+                },
+              ],
+              toolConfig: { functionCallingConfig: { mode: "ANY" } },
+              generationConfig: { maxOutputTokens: 16, thinkingConfig: { thinkingBudget: 0 } },
+            }
+          : {
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    {
+                      text: "Find every integer solution of x^2 + y^2 + z^2 = 3xyz, explaining the infinite descent argument carefully.",
+                    },
+                  ],
+                },
+              ],
+              generationConfig: {
+                maxOutputTokens: 64,
+                thinkingConfig: { includeThoughts: true, thinkingBudget: 1024 },
+              },
+            };
+      // Exactly one call per fault/mode, no retry, no credentials in URL or logs.
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": GOOGLE_API_KEY! },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(45000),
+        },
+      );
+      const raw = await response.text();
+      console.log(
+        JSON.stringify({
+          kind: "NATIVE_MODELED_COMPARISON",
+          provider: "Gemini Developer API",
+          model: "gemini-2.5-flash",
+          fault,
+          stream,
+          status: response.status,
+          request: body,
+          raw,
+        }),
+      );
+      const chunks = readModeledGemini(response.status, raw, stream);
+      const outcome = compareModeledGeminiNative(fault, chunks);
+      console.log(
+        JSON.stringify({
+          fault,
+          stream,
+          outcome,
+          disclosure:
+            "M: deterministic modeled contract; NOT_TRIGGERED does not verify native target fidelity",
+        }),
+      );
+    },
+  );
+});
+
+// Complete retained native responses (not synthesized or trimmed into target shapes).
+const retainedModeledGeminiCaptures: {
+  fault: ModeledGeminiFault;
+  stream: boolean;
+  status: number;
+  raw: string;
+  capture: string;
+  sha256: string;
+}[] = [
+  {
+    fault: "stop-length-mid-tool",
+    stream: false,
+    status: 200,
+    raw: '{\n  "candidates": [\n    {\n      "finishReason": "MALFORMED_FUNCTION_CALL",\n      "index": 0,\n      "finishMessage": "Malformed function call: print(default_api.archive(cities=[\\"New"\n    }\n  ],\n  "usageMetadata": {\n    "promptTokenCount": 61,\n    "totalTokenCount": 61,\n    "promptTokensDetails": [\n      {\n        "modality": "TEXT",\n        "tokenCount": 61\n      }\n    ],\n    "serviceTier": "standard"\n  },\n  "modelVersion": "gemini-2.5-flash",\n  "responseId": "CdDHapDnNJiyqtsP38a-uQc"\n}\n',
+    capture: "capture-k5-nonstream-20261008T171658Z.json",
+    sha256: "07f2a211af85eb6f5545423156798a4fa067bc38ba61710417172f3952124b74",
+  },
+  {
+    fault: "stop-length-mid-tool",
+    stream: true,
+    status: 200,
+    raw: 'data: {"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL","index": 0,"finishMessage": "Malformed function call: print(default_api.archive(cities=[\\"New"}],"usageMetadata": {"promptTokenCount": 61,"totalTokenCount": 61,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 61}],"serviceTier": "standard"}}\r\n\r\n',
+    capture: "capture-k5-stream-20261008T171659Z.json",
+    sha256: "63963cef16d50e4c2908454e57711a97c290f81712ff957564a4260158ad46c4",
+  },
+  {
+    fault: "reasoning-only",
+    stream: false,
+    status: 200,
+    raw: '{\n  "candidates": [\n    {\n      "content": {\n        "parts": [\n          {\n            "text": "Okay, let me break this down.\\n\\n**Initial Exploration of a Diophantine Equation**\\n\\nRight, so I\'m presented with this equation:  `x² + y² + z² = 3xyz`.  My initial thought is to dive straight into Diophantine analysis, as it\'s clearly an integer solutions problem. The first thing I\'ll always do is start with some small values. Zero is always a good starting point, so let\'s see what happens if I set `x = 0`.  Then, the equation becomes `y² + z² = 0`.  \\n",\n            "thought": true\n          },\n          {\n            "text": "We are looking"\n          }\n        ],\n        "role": "model"\n      },\n      "finishReason": "MAX_TOKENS",\n      "index": 0\n    }\n  ],\n  "usageMetadata": {\n    "promptTokenCount": 29,\n    "candidatesTokenCount": 3,\n    "totalTokenCount": 89,\n    "promptTokensDetails": [\n      {\n        "modality": "TEXT",\n        "tokenCount": 29\n      }\n    ],\n    "thoughtsTokenCount": 57,\n    "serviceTier": "standard"\n  },\n  "modelVersion": "gemini-2.5-flash",\n  "responseId": "DtDHas7TLN2tz7IP_bPjyAo"\n}\n',
+    capture: "capture-k9-nonstream-20261008T171704Z.json",
+    sha256: "88a61d6bea475d279ee2419fe6bb550f1679744062e573d706bce83b746ab60b",
+  },
+  {
+    fault: "reasoning-only",
+    stream: true,
+    status: 200,
+    raw: 'data: {"candidates": [{"content": {"parts": [{"text": "**Initiating the Descent**\\n\\nI\'m now diving into the problem, aiming for a solution using infinite descent. I\'ve grasped the core equation:  x² + y² + z² = 3xyz. My immediate focus is on understanding the equation\'s properties and possible constraints on the integer solutions. Initial impressions suggest this might lead to some interesting number theory insights.\\n\\n\\n","thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 29,"totalTokenCount": 88,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 29}],"thoughtsTokenCount": 59,"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "EdDHavuSDILGjMcPvefFoQg"}\r\n\r\ndata: {"candidates": [{"content": {"parts": [{"text": "We"}],"role": "model"},"finishReason": "MAX_TOKENS","index": 0}],"usageMetadata": {"promptTokenCount": 29,"totalTokenCount": 88,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 29}],"thoughtsTokenCount": 59,"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "EdDHavuSDILGjMcPvefFoQg"}\r\n\r\n',
+    capture: "capture-k9-stream-20261008T171707Z.json",
+    sha256: "aabfaf11f24c32f64d725226681b06f943188d58b08899ba4f29eec55baf0f25",
+  },
+];
+
+describe("Gemini modeled K5/K9 evidence reader", () => {
+  it.each(retainedModeledGeminiCaptures)(
+    "retains $capture as NOT_TRIGGERED",
+    ({ fault, status, raw, stream, capture, sha256 }) => {
+      const chunks = readModeledGemini(status, raw, stream);
+      expect(compareModeledGeminiNative(fault, chunks)).toBe("NOT_TRIGGERED");
+      if (fault === "stop-length-mid-tool")
+        expect(chunks.at(-1)?.candidates[0].finishReason).toBe("MALFORMED_FUNCTION_CALL");
+      else expect(modeledGeminiParts(chunks).some((part) => part.text && !part.thought)).toBe(true);
+      console.log(
+        JSON.stringify({
+          capture,
+          sha256,
+          outcome: "NOT_TRIGGERED",
+          source: "retained genuine native response, not a new live comparison",
+        }),
+      );
+    },
+  );
+  it.each([
+    { stream: false, malformed: true },
+    { stream: true, malformed: true },
+    { stream: false, malformed: false },
+    { stream: true, malformed: false },
+  ])("F1 derived terminal stream=$stream malformed=$malformed", ({ stream, malformed }) => {
+    const record = retainedModeledGeminiCaptures.find(
+      (item) => item.fault === "reasoning-only" && !item.stream,
+    )!;
+    const original = readModeledGemini(record.status, record.raw, false)[0];
+    const derived = {
+      ...original,
+      candidates: original.candidates.map((candidate) => ({
+        ...candidate,
+        finishReason: malformed ? ["STOP"] : "STOP",
+      })),
+    };
+    const body = JSON.stringify(derived);
+    const raw = stream ? `data: ${body}\n\n` : body;
+    let outcome: string;
+    try {
+      outcome = compareModeledGeminiNative(
+        record.fault,
+        readModeledGemini(record.status, raw, stream),
+      );
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      outcome = error.message;
+    }
+    console.log(
+      JSON.stringify({
+        source: "derived terminal from retained capture; not a native capture or product cell",
+        capture: record.capture,
+        captureSha256: record.sha256,
+        stream,
+        malformed,
+        raw,
+        outcome,
+      }),
+    );
+    expect(outcome).toBe(malformed ? "Unknown Gemini terminal" : "NOT_TRIGGERED");
+  });
+  it("rejects access, malformed, truncated and post-terminal artifacts before classification", () => {
+    const record = retainedModeledGeminiCaptures.find((item) => item.stream)!;
+    expect(() => readModeledGemini(403, record.raw, true)).toThrow("HTTP 403");
+    expect(() => readModeledGemini(200, '{"candidates":', false)).toThrow();
+    expect(() => readModeledGemini(200, record.raw.trimEnd(), true)).toThrow("Incomplete");
+    expect(() => readModeledGemini(200, record.raw + record.raw, true)).toThrow("after terminal");
+    expect(() =>
+      readModeledGemini(
+        200,
+        JSON.stringify({
+          candidates: [{ index: 0, content: { parts: [{ text: 7 }] }, finishReason: "STOP" }],
+          usageMetadata: { totalTokenCount: 2 },
+        }),
+        false,
+      ),
+    ).toThrow("Invalid Gemini part");
+    expect(() =>
+      readModeledGemini(
+        200,
+        JSON.stringify({
+          candidates: [{ index: 0, content: { parts: [] } }],
+          usageMetadata: { totalTokenCount: 2 },
+        }),
+        false,
+      ),
+    ).toThrow("Missing Gemini terminal");
+  });
+  it("blocks triggered contradictory shape instead of classifying it NOT_TRIGGERED", () => {
+    const wrongK5: ModeledGeminiChunk[] = [
+      {
+        candidates: [
+          {
+            index: 0,
+            finishReason: "MAX_TOKENS",
+            content: { parts: [{ functionCall: { name: "lookup", args: {} } }] },
+          },
+        ],
+      },
+    ];
+    const wrongK9: ModeledGeminiChunk[] = [
+      {
+        candidates: [
+          {
+            index: 0,
+            finishReason: "STOP",
+            content: { parts: [{ text: "Thought.", thought: true }] },
+          },
+        ],
+      },
+    ];
+    expect(() => compareModeledGeminiNative("stop-length-mid-tool", wrongK5)).toThrow();
+    expect(() => compareModeledGeminiNative("reasoning-only", wrongK9)).toThrow();
   });
 });
