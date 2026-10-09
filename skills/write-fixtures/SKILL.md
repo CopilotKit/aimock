@@ -947,3 +947,29 @@ mock.disableRecording();
 2. **Review**: Check the recorded fixtures in `{fixturePath}/recorded/`. Edit or reorganize as needed.
 3. **Lock down**: Run your test suite with `--strict` to ensure every request hits a fixture. No network calls escape.
 4. **Maintain**: When APIs change, delete stale fixtures and re-record.
+
+## MCP Recording and Fake Reports (1.45.0+)
+
+### Record a live MCP server
+
+```bash
+npx -p @copilotkit/aimock llmock -f ./fixtures \
+  --mcp-record /mcp=http://localhost:3001/mcp
+```
+
+- `--mcp-record <mount>=<url>` (repeatable) is on the `llmock` bin and the Docker image, not on `aimock --config`. It needs a local `--fixtures` path. `--mcp-proxy-only <mount>=<url>` forwards without writing and needs no `--fixtures`.
+- With `aimock --config`, use `llm.record.mcp`: `{ "/mcp": "http://localhost:3001/mcp" }`, or an object with `upstream`, `fixturePath`, `proxyOnly`, `upstreamAuth`, `secretValues`, `strict`, `maxRecordBufferBytes`. `llm.record.mcp` alone does not turn on LLM recording.
+- In code: `mcpMock.enableRecording({ upstream, ... })` and `disableRecording()`.
+- Every MCP request needs a test id (`X-Test-Id`, percent-encoded, or `?testId=`) or a context. Without one, the call is forwarded but not written.
+- The recording lands at `<fixtures>/recorded/<slugified test id>/mcp.json`. Replay it by starting aimock with the same `--fixtures` and no `--mcp-record`. A changed call then fails with `MCP_FAKE_MISMATCH`.
+- A call the file already answers is answered from the file, not forwarded. Delete the file to re-record.
+- Secrets: headers are never written; known secrets become `[REDACTED]` with a `_warnings` pointer. Add custom secret values with `AIMOCK_RECORD_SECRET_VALUES` (newline-separated, each at least 8 characters). Set an upstream credential with `AIMOCK_MCP_UPSTREAM_AUTH="Name: value"`. OAuth is not supported through the recorder.
+- Recorded `mcpFakes` files may hold `list`, `recorded` and `timing` (block) and `notifications` and `durationMs` (call entry). Older aimock versions reject them. Replay sends recorded progress notifications (as SSE) at the recorded timing, scaled by `--replay-speed`. Recorded log notifications replay only after the client calls `logging/setLevel`.
+
+### Fail a test on a swallowed or unused fake
+
+- `GET /__aimock/mcp/fakes/report?testId=<id>` returns `{ ok, served, unconsumed, failures, unfaked, sharedUnconsumed, evicted }` for one test id.
+- `useAimock({ fixtures, fakesReport: "fail" })` (Vitest or Jest) checks each test's report in `afterEach` and throws `AimockFakesReportError` when a fake error was swallowed by the agent or a declared entry was never used. `"warn"` prints instead.
+- `mock().fakesFor()` returns `{ testId, mcpUrl, headers }` for the current test. The default test id is `<file> › <describe> › <test>` (Vitest; Jest joins the names with spaces). Scope the `mcpFakes` block to that id. Pass an explicit id for concurrent tests and, in Jest, for duplicate test names.
+- `assertFakesReport(report)` does the same check anywhere. In pytest: `aimock.fakes_for()`, `aimock.fakes_report()` and `aimock.assert_fakes_report()`; the default id is the pytest node id.
+- Fakes work for any caller over MCP HTTP: agents, Mastra Workflow steps, LangGraph nodes and plain functions.

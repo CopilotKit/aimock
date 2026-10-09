@@ -82,6 +82,15 @@ aimock.reset_fixtures()    # alias for reset() — a full reset, despite the nam
 
 When the server rejects a file with HTTP 400, `load_fixtures` raises `requests.HTTPError` with the message `aimock rejected fixtures from <path>: <error>`, followed by one line for each item of `details`. When the file has `mcpFakes` and the aimock server is a release without MCP fakes, `load_fixtures` raises `RuntimeError` (`aimock server too old for mcpFakes: ...`) and adds nothing from the file.
 
+### Per-test fake reports
+
+These need aimock 1.45.0 or later.
+
+- `aimock.fakes_for(test_id=None, context=None, mount="/mcp")` returns a `FakesTarget` with `test_id`, `mcp_url` (the mount URL with `?testId=`, and `&context=` when given) and `headers` (`X-Test-Id`, and `X-AIMock-Context` when given). Give the URL or the headers to your MCP client.
+- `aimock.fakes_report(test_id=None, context=None)` returns the [fakes report](https://aimock.copilotkit.dev/mcp-mock#fakes-report) from `GET /__aimock/mcp/fakes/report`: `ok`, `served`, `unconsumed`, `failures`, `unfaked`, `sharedUnconsumed` and `evicted`.
+- `aimock.assert_fakes_report(report=None, *, test_id=None, context=None, fail_on_unfaked=False)` raises `AssertionError` when the report is not ok: a fake error (such as `MCP_FAKE_MISMATCH`), an unused entry, or evicted state. With `fail_on_unfaked=True`, a call that no fake answered also fails. With no `report`, it reads the report first. The message has the same lines as the JavaScript `assertFakesReport`.
+- With the function-scoped `aimock` fixture, a `None` test id is the current test's `request.node.nodeid`, for example `tests/test_weather.py::test_seattle`. Scope your `mcpFakes` block to that id. The default is used only by these three methods; LLM and control requests are not tagged. With `aimock_session` there is no current test, so these methods raise `ValueError` unless you pass `test_id`.
+
 ## CLI Options
 
 ```

@@ -1,0 +1,48 @@
+{
+  "mcpFakes": [
+    {
+      "scope": {
+        "testId": "mastra-workflow.test.ts › orders › pipeline"
+      },
+      "undeclaredTools": "deny",
+      "list": [
+        {
+          "name": "lookup_order",
+          "description": "Look up an order status",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string"
+              }
+            },
+            "required": ["orderId"]
+          }
+        }
+      ],
+      "tools": []
+    },
+    {
+      "scope": {
+        "testId": "langgraph-control.test.ts › orders › pipeline"
+      },
+      "undeclaredTools": "deny",
+      "list": [
+        {
+          "name": "lookup_order",
+          "description": "Look up an order status",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string"
+              }
+            },
+            "required": ["orderId"]
+          }
+        }
+      ],
+      "tools": []
+    }
+  ]
+}

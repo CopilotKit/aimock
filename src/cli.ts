@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { isDeepStrictEqual, parseArgs } from "node:util";
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync, type Stats } from "node:fs";
+import { relative, resolve, sep } from "node:path";
 import { createServer } from "./server.js";
 import { FixtureLoadError, validateFixtures } from "./fixture-loader.js";
 import {
@@ -14,11 +15,13 @@ import { build, msg } from "./message-text.js";
 import { Logger, type LogLevel } from "./logger.js";
 import { watchFixtures } from "./watcher.js";
 import { AGUIMock } from "./agui-mock.js";
+import { MCPMock } from "./mcp-mock.js";
+import { mcpRecordEnv, parseMcpRecordFlag } from "./mcp-recorder.js";
 import { parseChaosField, CHAOS_FIELDS, type ChaosField } from "./chaos.js";
 import { resolveFixturesValue } from "./fixtures-remote.js";
 import { readProviderKeysFromEnv } from "./provider-auth.js";
 import { resolveInboundAuth, selectInboundAuthSource } from "./api-key-auth.js";
-import type { Fixture, ChaosConfig, RecordConfig, McpFakeSource } from "./types.js";
+import type { Fixture, ChaosConfig, RecordConfig, McpFakeSource, Mountable } from "./types.js";
 
 const HELP = `
 Usage: aimock [options]
@@ -58,6 +61,8 @@ Options:
       --agui-record              Enable AG-UI recording (proxy unmatched AG-UI requests)
       --agui-upstream <url>      Upstream AG-UI agent URL (used with --agui-record)
       --agui-proxy-only          AG-UI proxy mode: forward without saving
+      --mcp-record <mount>=<url>   Record an upstream MCP server into mcpFakes (repeatable)
+      --mcp-proxy-only <mount>=<url>  Proxy an upstream MCP server without saving
       --replay-speed <n>    Replay speed multiplier (default: 1.0, 2.0 = 2x faster)
       --chaos-drop <rate>   Probability (0-1) of dropping requests with 500
       --chaos-malformed <rate>  Probability (0-1) of returning malformed JSON
@@ -100,6 +105,8 @@ const { values } = parseArgs({
     "agui-record": { type: "boolean", default: false },
     "agui-upstream": { type: "string" },
     "agui-proxy-only": { type: "boolean", default: false },
+    "mcp-record": { type: "string", multiple: true },
+    "mcp-proxy-only": { type: "string", multiple: true },
     "replay-speed": { type: "string", default: "1.0" },
     "chaos-drop": { type: "string" },
     "chaos-malformed": { type: "string" },
@@ -379,6 +386,64 @@ if (values["agui-record"] || values["agui-proxy-only"]) {
   aguiMount = { path: "/agui", handler: agui };
 }
 
+// Parse MCP record/proxy mounts (MR1, AM6): --mcp-record / --mcp-proxy-only <mount>=<url>
+const mcpRecordMounts: { path: string; handler: MCPMock }[] = [];
+{
+  const recordValues = values["mcp-record"] ?? [];
+  const proxyValues = values["mcp-proxy-only"] ?? [];
+  if (recordValues.length > 0) {
+    // C11: check the flag itself; fixtureValues defaults to ./fixtures.
+    if (!(values.fixtures && values.fixtures.length > 0)) {
+      console.error(
+        "Error: --mcp-record requires --fixtures <local path> for the recording destination",
+      );
+      process.exit(1);
+    }
+    if (/^https?:\/\//i.test(values.fixtures[0])) {
+      console.error(
+        `Error: --mcp-record requires a local --fixtures path for the recording destination; got URL ${values.fixtures[0]}`,
+      );
+      process.exit(1);
+    }
+  }
+  const flags = [
+    ...recordValues.map((value) => ({ flag: "--mcp-record", value, proxyOnly: false })),
+    ...proxyValues.map((value) => ({ flag: "--mcp-proxy-only", value, proxyOnly: true })),
+  ];
+  if (flags.length > 0) {
+    let env: ReturnType<typeof mcpRecordEnv>;
+    try {
+      env = mcpRecordEnv(process.env);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    for (const { flag, value, proxyOnly } of flags) {
+      try {
+        const { mount, upstream } = parseMcpRecordFlag(value, flag);
+        if (aguiMount && mount === aguiMount.path) {
+          throw new Error(`${flag} mount ${mount} is held by a mount that is not an MCP mock`);
+        }
+        if (mcpRecordMounts.some((m) => m.path === mount)) {
+          throw new Error(`${flag} mount ${mount} is given more than once`);
+        }
+        const mcp = new MCPMock().enableRecording({
+          upstream,
+          fixturePath: proxyOnly ? undefined : resolve(values.fixtures![0], "recorded"),
+          proxyOnly,
+          secretValues: env.secretValues,
+          upstreamAuth: env.upstreamAuth,
+          strict: values.strict,
+        });
+        mcpRecordMounts.push({ path: mount, handler: mcp });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
 interface ResolvedFixtureSource {
   source: string;
   path: string;
@@ -485,6 +550,58 @@ class WatchLogger extends Logger {
   }
 }
 
+/**
+ * MR13: --watch with record mounts. (a) An event for a recorder temp file, or
+ * for a file whose bytes are exactly what a recorder last wrote there, does
+ * not reload; everything else (a delete, a directory, a user edit) reloads as
+ * on main. (b) Each recorder write moves the --watch baseline of that file,
+ * so the next reload does not reject the recording as a changed `mcpFakes`.
+ * Without record mounts (or for a file source), --watch is exactly as on main.
+ */
+function recorderWatch(
+  primary: ResolvedFixtureSource,
+  moveBaseline: (moved: (boot: McpFakeSource[]) => McpFakeSource[]) => void,
+): { ignore?: (absPath: string) => boolean } {
+  const events = mcpRecordMounts.map((m) => m.handler.recorderEvents()).filter((ev) => ev !== null);
+  if (events.length === 0 || !primary.isDir) return {};
+  for (const ev of events) {
+    ev.onWrite((file, written) => {
+      const source = relative(primary.path, file).split(sep).join("/");
+      const blocks: McpFakeSource[] = Array.isArray(written)
+        ? written.map((raw, blockIndex) => ({ source, blockIndex, raw }))
+        : [{ source, blockIndex: null, raw: written }];
+      moveBaseline((boot) => {
+        // Replace this source's blocks in place; a new source goes last.
+        const others = boot.filter((b) => b.source !== source);
+        const at = boot.findIndex((b) => b.source === source);
+        const pos = at === -1 ? others.length : at;
+        return [...others.slice(0, pos), ...blocks, ...others.slice(pos)];
+      });
+    });
+  }
+  return {
+    ignore: (absPath: string): boolean => {
+      // Recorder temp files only (persistServiceFakes writes `<file>.tmp.<uuid>`, then renames it).
+      if (/\.tmp\.[0-9a-f-]+$/i.test(absPath)) return true;
+      let st: Stats;
+      try {
+        st = statSync(absPath);
+      } catch {
+        return false; // gone: a user deleted a fixture — this MUST reload (r2 N2)
+      }
+      if (st.isDirectory()) return false; // directory events behave as on main
+      let data: Buffer;
+      try {
+        data = readFileSync(absPath);
+      } catch {
+        return false;
+      }
+      const hash = createHash("sha256").update(data).digest("hex");
+      return events.some((ev) => ev.lastWrittenHash(absPath) === hash);
+    },
+  };
+}
+
 async function main() {
   const sources = await resolveAllFixtureSources();
 
@@ -534,7 +651,11 @@ async function main() {
     }
   }
 
-  const mounts = aguiMount ? [aguiMount] : undefined;
+  const allMounts: { path: string; handler: Mountable }[] = [
+    ...(aguiMount ? [aguiMount] : []),
+    ...mcpRecordMounts,
+  ];
+  const mounts = allMounts.length > 0 ? allMounts : undefined;
 
   const instance = await createServer(
     fixtures,
@@ -623,6 +744,7 @@ async function main() {
         logger: new WatchLogger(logLevel),
         validate: validateOnLoad,
         validateFn: validateFixtures,
+        ...recorderWatch(primary, (moved) => (primaryFakes = moved(primaryFakes))),
       });
       logger.info(`Watching ${primary.path} for changes`);
     }

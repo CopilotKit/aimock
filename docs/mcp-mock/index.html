@@ -1034,8 +1034,280 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
             /__aimock/mcp/fakes?testId=&lt;id&gt;&amp;context=&lt;ctx&gt;&amp;mount=&lt;path&gt;</code
           >
           lists, per mount, the blocks that apply to that test id and context, with each
-          entry&rsquo;s id and whether it is used. Use it at the end of a test to check that every
-          declared fake was used. See the <a href="/control-api#mcp-fakes">Control API</a>.
+          entry&rsquo;s id and whether it is used. See the
+          <a href="/control-api#mcp-fakes">Control API</a>. To check a test, read its
+          <a href="#fakes-report">report</a> instead: it also lists the calls that failed.
+        </p>
+
+        <h3 id="recorded-fakes">Recorded fakes</h3>
+        <p>
+          <a href="/record-replay#mcp-recording">MCP recording</a> writes an ordinary
+          <code>mcpFakes</code> file with a few more keys. You can also write these keys by hand. A
+          file without them reads as before. A malformed key fails the load with its own rule
+          (<code>record-replay/fa-list</code>, <code>fa-recorded</code>,
+          <code>fa-notifications</code>, <code>fa-duration</code> or <code>fa-timing</code>).
+          Recorded files need aimock 1.45.0 or later.
+        </p>
+        <div class="code-block" data-sample="inline:recorded-fakes">
+          <div class="code-block-header">
+            fixtures/recorded/research--long-task/mcp.json <span class="lang-tag">json</span>
+          </div>
+          <pre><code>{
+  <span class="prop">"mcpFakes"</span>: {
+    <span class="prop">"scope"</span>: { <span class="prop">"testId"</span>: <span class="str">"research › long task"</span> },
+    <span class="prop">"mount"</span>: <span class="str">"/mcp"</span>,
+    <span class="prop">"list"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"echo"</span>,
+        <span class="prop">"description"</span>: <span class="str">"Echoes back the input string"</span>,
+        <span class="prop">"inputSchema"</span>: {
+          <span class="prop">"type"</span>: <span class="str">"object"</span>,
+          <span class="prop">"properties"</span>: { <span class="prop">"message"</span>: { <span class="prop">"type"</span>: <span class="str">"string"</span> } },
+          <span class="prop">"required"</span>: [<span class="str">"message"</span>]
+        }
+      },
+      {
+        <span class="prop">"name"</span>: <span class="str">"trigger-long-running-operation"</span>,
+        <span class="prop">"description"</span>: <span class="str">"Demonstrates a long running operation with progress updates"</span>,
+        <span class="prop">"inputSchema"</span>: {
+          <span class="prop">"type"</span>: <span class="str">"object"</span>,
+          <span class="prop">"properties"</span>: { <span class="prop">"duration"</span>: { <span class="prop">"type"</span>: <span class="str">"number"</span> }, <span class="prop">"steps"</span>: { <span class="prop">"type"</span>: <span class="str">"number"</span> } }
+        }
+      }
+    ],
+    <span class="prop">"recorded"</span>: {
+      <span class="prop">"upstream"</span>: <span class="str">"http://localhost:3001"</span>,
+      <span class="prop">"protocolVersion"</span>: <span class="str">"2025-11-25"</span>,
+      <span class="prop">"serverInfo"</span>: { <span class="prop">"name"</span>: <span class="str">"mcp-servers/everything"</span>, <span class="prop">"version"</span>: <span class="str">"2.0.0"</span> },
+      <span class="prop">"aimockVersion"</span>: <span class="str">"1.45.0"</span>,
+      <span class="prop">"at"</span>: <span class="str">"2026-10-08T21:17:30.079Z"</span>
+    },
+    <span class="prop">"tools"</span>: [
+      {
+        <span class="prop">"name"</span>: <span class="str">"echo"</span>,
+        <span class="prop">"calls"</span>: [
+          {
+            <span class="prop">"args"</span>: { <span class="prop">"message"</span>: <span class="str">"hi"</span> },
+            <span class="prop">"result"</span>: { <span class="prop">"content"</span>: [{ <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Echo: hi"</span> }] },
+            <span class="prop">"durationMs"</span>: <span class="num">23</span>
+          }
+        ]
+      },
+      {
+        <span class="prop">"name"</span>: <span class="str">"trigger-long-running-operation"</span>,
+        <span class="prop">"calls"</span>: [
+          {
+            <span class="prop">"args"</span>: { <span class="prop">"duration"</span>: <span class="num">2</span>, <span class="prop">"steps"</span>: <span class="num">2</span> },
+            <span class="prop">"result"</span>: {
+              <span class="prop">"content"</span>: [{ <span class="prop">"type"</span>: <span class="str">"text"</span>, <span class="prop">"text"</span>: <span class="str">"Long running operation completed."</span> }]
+            },
+            <span class="prop">"notifications"</span>: [
+              {
+                <span class="prop">"atMs"</span>: <span class="num">1007</span>,
+                <span class="prop">"method"</span>: <span class="str">"notifications/progress"</span>,
+                <span class="prop">"params"</span>: { <span class="prop">"progress"</span>: <span class="num">1</span>, <span class="prop">"total"</span>: <span class="num">2</span>, <span class="prop">"progressToken"</span>: <span class="num">3</span> }
+              },
+              {
+                <span class="prop">"atMs"</span>: <span class="num">2009</span>,
+                <span class="prop">"method"</span>: <span class="str">"notifications/progress"</span>,
+                <span class="prop">"params"</span>: { <span class="prop">"progress"</span>: <span class="num">2</span>, <span class="prop">"total"</span>: <span class="num">2</span>, <span class="prop">"progressToken"</span>: <span class="num">3</span> }
+              }
+            ],
+            <span class="prop">"durationMs"</span>: <span class="num">2009</span>
+          }
+        ]
+      }
+    ]
+  }
+}
+</code></pre>
+        </div>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Where</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>list</code></td>
+              <td>block</td>
+              <td>
+                The recorded <code>tools/list</code>, as MCP <code>Tool</code> objects. A replayed
+                <code>tools/list</code> returns the <code>list</code> of the most specific block
+                that applies and has one, in its order, then the mount&rsquo;s registered tools that
+                are not in it, then fake-only tools that are not in it. A listed tool with no
+                <code>calls</code> is listed, but no fake answers a call to it.
+              </td>
+            </tr>
+            <tr>
+              <td><code>recorded</code></td>
+              <td>block</td>
+              <td>
+                Where the recording came from: <code>upstream</code> (origin only),
+                <code>protocolVersion</code>, <code>serverInfo</code>,
+                <code>aimockVersion</code> and <code>at</code>. Never used for matching.
+              </td>
+            </tr>
+            <tr>
+              <td><code>notifications</code></td>
+              <td>call entry</td>
+              <td>
+                The notifications the server sent before the result, each
+                <code>{ atMs, method, params }</code>. <code>notifications/progress</code> is sent
+                when the request has a <code>progressToken</code>, with the client&rsquo;s token in
+                place of the recorded one. <code>notifications/message</code> is sent after the
+                client asks for logs (below). Other methods are not replayed.
+              </td>
+            </tr>
+            <tr>
+              <td><code>durationMs</code></td>
+              <td>call entry</td>
+              <td>
+                The recorded response time. The answer is sent at
+                <code>durationMs / replaySpeed</code> after the request arrives, and each
+                notification at <code>atMs / replaySpeed</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>timing</code></td>
+              <td>block</td>
+              <td>
+                <code>"recorded"</code> (the default) or <code>"immediate"</code>, which ignores
+                <code>atMs</code> and <code>durationMs</code> for the block.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A call entry with notifications that the request lets through is answered as an SSE stream
+          (<code>text/event-stream</code>) when the request&rsquo;s <code>Accept</code> lists it:
+          the notifications at their times, then the result. Every other answer is
+          <code>application/json</code>, as before. A recorded <code>result</code> is a full
+          <code>CallToolResult</code> and is served as written, including newer fields such as
+          <code>structuredContent</code>.
+        </p>
+        <p>
+          <strong>Log notifications.</strong> A mount that holds at least one recorded
+          <code>notifications/message</code> advertises the <code>logging</code> capability and
+          answers <code>logging/setLevel</code>. After the session sets a level, log notifications
+          at that level or higher (in syslog order, <code>debug</code> to <code>emergency</code>)
+          are replayed; before that, none are. Every other mount does not advertise
+          <code>logging</code>, and <code>logging/setLevel</code> gets <code>-32601</code>. While
+          recording, <code>logging/setLevel</code> goes to the upstream, so a call that a fake
+          answers during a recording session sends no log notifications.
+        </p>
+
+        <h3 id="fakes-report">Reports</h3>
+        <p>
+          A report says, for one test id (and optional context), what the MCP fakes did during the
+          test. Every <code>tools/call</code> on every MCP mount is logged for the report, whether a
+          fake answered it or not. Read it with
+          <a href="/control-api#mcp-fakes-report"><code>GET /__aimock/mcp/fakes/report</code></a
+          >, with the test plugins&rsquo;
+          <a href="/test-plugins#fakes-report"><code>fakesReport</code></a> option, or with
+          <code>fakes_report()</code> in <code>aimock-pytest</code>.
+        </p>
+        <table class="endpoint-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>served</code></td>
+              <td>
+                The entries that answered a call, in call order: <code>entryId</code>,
+                <code>mount</code>, <code>tool</code>, <code>args</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>unconsumed</code></td>
+              <td>
+                Entries this test id did not use, from blocks scoped to the test id (with or without
+                a context)
+              </td>
+            </tr>
+            <tr>
+              <td><code>sharedUnconsumed</code></td>
+              <td>
+                Unused entries from blocks scoped only by context, or <code>"shared"</code>. These
+                never fail a test.
+              </td>
+            </tr>
+            <tr>
+              <td><code>failures</code></td>
+              <td>
+                Calls that got a fake error, in call order, with the
+                <code>code</code> (<code>MCP_FAKE_MISMATCH</code>,
+                <code>MCP_FAKE_NOT_DECLARED</code>, <code>MCP_FAKE_EXHAUSTED</code> or
+                <code>MCP_FAKE_EVICTED</code>)
+              </td>
+            </tr>
+            <tr>
+              <td><code>unfaked</code></td>
+              <td>
+                Calls no fake applied to, with <code>answeredBy</code>: <code>handler</code>,
+                <code>config</code>, <code>empty</code>, <code>unknown-tool</code> or
+                <code>upstream</code> (forwarded while recording)
+              </td>
+            </tr>
+            <tr>
+              <td><code>evicted</code></td>
+              <td>
+                <code>true</code> when the test id&rsquo;s state was dropped by the per-mount
+                test-id cap, or its event log overflowed. The report is then incomplete.
+              </td>
+            </tr>
+            <tr>
+              <td><code>ok</code></td>
+              <td>
+                <code>false</code> when <code>failures</code> or <code>unconsumed</code> is not
+                empty, or <code>evicted</code> is <code>true</code>. <code>unfaked</code> calls
+                count only with <code>failOnUnfaked: true</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Each event log keeps at most 1000 events per test id; the log for requests without a test
+          id keeps the newest 1000. A log that overflows, or that the test-id cap drops, makes the
+          report <code>evicted: true</code> (so <code>ok: false</code>), and the message says
+          <code>the event log overflowed (1000 events); the report is incomplete</code>. This bound
+          is for the report only: it never changes which fake answers a call. Arguments are stored
+          up to 4 KiB of JSON; a larger value shows as
+          <code>{ "__aimock_truncated": true, "originalByteSize": n }</code>. The log is cleared by
+          the same resets that clear consumption state.
+        </p>
+        <p>
+          <code>assertFakesReport(report, { failOnUnfaked? })</code>, exported from
+          <code>@copilotkit/aimock</code>, throws <code>AimockFakesReportError</code> when a report
+          is not ok. The message lists failures first, then unconsumed entry ids, then
+          <code>evicted</code>.
+        </p>
+
+        <h3 id="workflows">Workflows and pipelines</h3>
+        <p>
+          A tool call is faked when it reaches an MCP mount with a test id whose blocks declare it.
+          The kind of caller does not matter: an agent, a Mastra Workflow step, a LangGraph node, or
+          a plain function. Send the test id on each MCP request, for example with
+          <a href="/test-plugins#fakes-for"><code>fakesFor()</code></a
+          >.
+        </p>
+        <p>
+          A framework that catches a tool error and continues hides the mistake from the test.
+          aimock records the mismatch outside the framework, in the journal and the report, and the
+          test plugin turns it into a failing test. In
+          <a href="https://github.com/CopilotKit/aimock/tree/main/examples/mcp-workflow-targets"
+            ><code>examples/mcp-workflow-targets</code></a
+          >, a Mastra Workflow step catches an <code>MCP_FAKE_MISMATCH</code> error and the run ends
+          with status <code>success</code>. With <code>fakesReport: "fail"</code> the test fails
+          anyway, naming the mismatch. The same example runs a two-node LangGraph pipeline with the
+          same result.
         </p>
 
         <h3>What aimock cannot fake: in-process tools</h3>
@@ -1063,7 +1335,11 @@ mcp.onToolCall(<span class="str">"rich-tool"</span>, () =&gt; [
           <li>
             Partial argument matching (subset, regular expression, JSON Schema) is not supported.
           </li>
-          <li>Recording real MCP tool results into fixtures is not supported yet.</li>
+          <li>
+            Recording works with Streamable HTTP servers on protocol versions
+            <code>2025-03-26</code>, <code>2025-06-18</code> and <code>2025-11-25</code>. See
+            <a href="/record-replay#mcp-recording">Recording MCP servers</a>.
+          </li>
         </ul>
 
         <h2>Resources</h2>
