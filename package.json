@@ -199,6 +199,7 @@
     "@google/genai": "^1.0.0",
     "@modelcontextprotocol/client": "2.2.0",
     "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/server-everything": "2026.8.31",
     "@smithy/node-http-handler": "4.12.1",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
