@@ -100,7 +100,7 @@ Multi-part content (e.g., `[{type: "text", text: "hello"}]`) is automatically ex
 
 **Both object and string forms are accepted** for `arguments`. The fixture loader auto-stringifies objects via `JSON.stringify()`. Object form is preferred for readability.
 
-**OpenAI Responses API only** — namespaced and custom tool calls (used by Codex for MCP tools, sub-agents and `apply_patch`). Start the server with `responsesTools: "extended"` (`--responses-tools extended`): it makes namespaced, custom and `additional_tools` tools visible to `toolName` and predicates, counts custom tool rounds for `hasToolResult` / `toolCallId` / `turnIndex`, emits a `toolCalls` entry's `namespace`, and records namespaces and custom calls. The default (`"legacy"`) behaves exactly like 1.44.0. `toolNamespace`, `customToolCalls` and `responsesBlocks` work in both modes.
+**OpenAI Responses API only** — namespaced and custom tool calls (used by Codex for MCP tools, sub-agents and `apply_patch`). Start the server with `responsesTools: "extended"` (`--responses-tools extended`): it makes namespaced, custom and `additional_tools` tools visible to `toolName` and predicates, counts custom tool rounds for `hasToolResult` / `toolCallId` / `turnIndex`, emits a `toolCalls` entry's `namespace`, and records namespaces and custom calls. The default (`"legacy"`) behaves exactly like 1.44.0. `toolNamespace`, `customToolCalls` and `responsesBlocks` also need `"extended"`; the default ignores them.
 
 ```typescript
 const response = {

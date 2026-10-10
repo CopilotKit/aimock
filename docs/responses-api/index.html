@@ -220,13 +220,15 @@
             the <code>namespace</code> of a <code>toolCalls</code> entry or a
             <code>toolCall</code> block is emitted;
           </li>
-          <li>record mode keeps namespaces and custom tool calls.</li>
+          <li>record mode keeps namespaces and custom tool calls;</li>
+          <li>
+            the keys <code>match.toolNamespace</code>, <code>customToolCalls</code> and
+            <code>responsesBlocks</code> apply. By default they are ignored, as in earlier releases.
+          </li>
         </ul>
         <p>
-          Three keys work in either mode, because no earlier fixture used them:
-          <code>match.toolNamespace</code>, <code>customToolCalls</code> and
-          <code>responsesBlocks</code>. Codex CLI needs the option: its <code>apply_patch</code>
-          is a custom tool and its MCP tools are namespaced.
+          Codex CLI needs the option: its <code>apply_patch</code> is a custom tool and its MCP
+          tools are namespaced.
         </p>
 
         <div class="code-block">
@@ -414,11 +416,12 @@
             visible to matching.
           </li>
           <li>
-            <code>toolNamespace</code> matches an offered tool's namespace exactly, in either mode.
-            Alone, it matches when any tool sits in that namespace. With <code>toolName</code>, one
-            tool must carry both. There is no default namespace: a top-level tool has none. Chat
-            Completions passes request tools through unchanged, so a top-level
-            <code>namespace</code> field that a client sends there also matches.
+            <code>toolNamespace</code> matches an offered tool's namespace exactly, with
+            <code>responsesTools: "extended"</code> (by default the key is ignored). Alone, it
+            matches when any tool sits in that namespace. With <code>toolName</code>, one tool must
+            carry both. There is no default namespace: a top-level tool has none. Chat Completions
+            passes request tools through unchanged, so a top-level <code>namespace</code> field that
+            a client sends there also matches.
           </li>
           <li>
             With <code>responsesTools: "extended"</code>, a <code>predicate</code> sees
