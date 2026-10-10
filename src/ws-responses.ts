@@ -49,6 +49,8 @@ type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
   model: string;
   testId?: string;
   upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+  /** @internal Called before each message is processed (the server assigns fixture positions). */
+  beforeProcessMessage?: () => void;
 };
 
 interface ResponseCreateMessage {
@@ -88,7 +90,6 @@ export function handleWebSocketResponses(
   fixtures: Fixture[],
   journal: Journal,
   defaults: ResponsesWebSocketDefaults,
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   // Serialize message processing to prevent event interleaving
@@ -96,7 +97,7 @@ export function handleWebSocketResponses(
   ws.on("message", (raw: string) => {
     pending = pending.then(async () => {
       try {
-        beforeProcessMessage?.();
+        defaults.beforeProcessMessage?.();
         await processMessage(raw, ws, fixtures, journal, defaults);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";

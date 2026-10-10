@@ -5593,49 +5593,34 @@ async function startServer(
       });
       liveSessions.set(sessionId, { testId: wsTestId, dispose });
     } else if (pathname === RESPONSES_PATH) {
-      handleWebSocketResponses(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gpt-4",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketResponses(ws, fixtures, journal, {
+        ...defaults,
+        model: "gpt-4",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === REALTIME_PATH) {
       const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
       const model = transcriptionIntent
         ? "gpt-transcribe"
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
-      handleWebSocketRealtime(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model,
-          transcriptionIntent,
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketRealtime(ws, fixtures, journal, {
+        ...defaults,
+        model,
+        transcriptionIntent,
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === GEMINI_LIVE_PATH) {
-      handleWebSocketGeminiLive(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gemini-2.0-flash",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketGeminiLive(ws, fixtures, journal, {
+        ...defaults,
+        model: "gemini-2.0-flash",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     }
   }
 
