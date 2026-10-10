@@ -548,6 +548,16 @@
           <code>X-AIMock-Misbehavior</code> header are ignored, as in 1.44.0.
         </p>
         <p>
+          With misbehavior on, <code>addFixture</code>, <code>addFixtures</code> and
+          <code>prependFixture</code> store a copy of each fixture per addition, so the same object
+          added twice gives two independent fault sources. <code>getFixtures()[i]</code> is that
+          copy, but <code>findByFixture</code>, <code>getFixtureMatchCount</code>,
+          <code>fixtureMatchCounts</code>, <code>getFixtureMatchCountsForTest</code> and the journal
+          <code>entry.response.fixture</code> still name your object. A new value assigned to
+          <code>fixture.response</code> or another field after the addition has no effect; add the
+          fixture again instead. Without misbehavior, your object is stored, as in 1.44.0.
+        </p>
+        <p>
           Set the server baseline with
           <code>new LLMock({ enableMisbehavior: true, misbehavior: config })</code> or
           <code>mock.setMisbehavior(config)</code>. The config file uses

@@ -1461,6 +1461,12 @@ export interface MockServerOptions {
    * Opt in to model misbehavior. Without it, the `misbehavior` option, a
    * fixture's `misbehavior` key and the `X-AIMock-Misbehavior` header are
    * ignored, as in 1.44.0. CLI: `--misbehavior`.
+   *
+   * When on, addFixture, addFixtures and prependFixture store a per-addition
+   * copy, so getFixtures()[i] is the copy. findByFixture, the match-count APIs
+   * and journal entry.response.fixture still name the caller's object. A field
+   * assigned on that object later (for example `fixture.response = ...`) has no
+   * effect; add the fixture again. When off, the caller's object is stored.
    */
   enableMisbehavior?: boolean;
   /** Server-wide misbehavior baseline; read only with `enableMisbehavior: true`. */
