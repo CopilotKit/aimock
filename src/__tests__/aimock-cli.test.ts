@@ -298,7 +298,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
       await client.listTools();
       await client.callTool({ name: "echo", arguments: { message: "hi" } });
       await client.close();
-      if (llm?.record?.mcp && llm.logLevel === undefined) {
+      if (llm?.enableMcpRecording && llm.record?.mcp && llm.logLevel === undefined) {
         await child.waitForOutput(/MCP-RECORD:/, 5000);
       } else {
         // Give a warning the same time to appear before asserting it did not.
@@ -317,6 +317,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   it("prints the MCP-RECORD warning at the default log level", async () => {
     const out = await outputAfterUnscopedCalls({
       fixtures: fx,
+      enableMcpRecording: true,
       record: { mcp: { "/mcp": up.url } },
     });
     expect(out).toContain("MCP-RECORD: forwarded, not recorded");
@@ -325,6 +326,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   it("an explicit logLevel silent wins: only the listening line", async () => {
     const out = await outputAfterUnscopedCalls({
       fixtures: fx,
+      enableMcpRecording: true,
       logLevel: "silent",
       record: { mcp: { "/mcp": up.url } },
     });
@@ -359,16 +361,54 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   });
 
   it("R2 (C3): an empty llm.record.mcp {} records nothing and still starts silent", async () => {
-    const out = await outputAfterDeprecatedRoute({ fixtures: fx, record: { mcp: {} } });
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: true,
+      record: { mcp: {} },
+    });
     expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
   });
 
   it("positive control: llm.record.mcp with a mount prints the deprecated-route warning", async () => {
     const out = await outputAfterDeprecatedRoute({
       fixtures: fx,
+      enableMcpRecording: true,
       record: { mcp: { "/mcp": up.url } },
     });
     expect(out).toContain("deprecated");
+  });
+
+  // 1.44.0 ignored llm.record.mcp: without the opt-in, only the one warning is new.
+  const IGNORED =
+    "[aimock] Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.";
+
+  it("without llm.enableMcpRecording, a mount is ignored: one warning, logLevel unchanged", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("without llm.enableMcpRecording, an invalid llm.record.mcp still starts", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: "not an object" as unknown as AimockRecordConfig["mcp"] },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("a non-boolean llm.enableMcpRecording is ignored with a warning", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: "true" as unknown as boolean,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([
+      expect.stringMatching(/listening on/),
+      '[aimock] Ignoring llm.enableMcpRecording because it must be true or false, got "true".',
+      IGNORED,
+    ]);
   });
 });
 

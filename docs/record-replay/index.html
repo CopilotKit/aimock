@@ -1298,7 +1298,8 @@ describe(<span class="str">"agent chat"</span>, () => {
           <code>&lt;fixtures&gt;/recorded</code>.
           <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code> forwards in the same way but
           writes nothing, and it does not need <code>--fixtures</code>. With
-          <code>aimock --config</code>, use <code>llm.record.mcp</code> instead (see the
+          <code>aimock --config</code>, use <code>llm.record.mcp</code> with
+          <code>llm.enableMcpRecording: true</code> instead (see the
           <a href="/aimock-cli#mcp-record-config">aimock CLI</a>).
         </p>
         <div class="cli-docker-tabs">
