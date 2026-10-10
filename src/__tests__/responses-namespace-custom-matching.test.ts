@@ -68,8 +68,15 @@ afterEach(async () => {
   mock = null;
 });
 
-async function start(fixtures: Fixture[]): Promise<LLMock> {
-  mock = new LLMock({ port: 0 });
+/**
+ * Tool visibility for toolName / predicates and custom tool rounds are opt-in
+ * (`responsesTools: "extended"`); `toolNamespace` works in either mode.
+ */
+async function start(
+  fixtures: Fixture[],
+  responsesTools: "legacy" | "extended" = "extended",
+): Promise<LLMock> {
+  mock = new LLMock({ port: 0, responsesTools });
   mock.addFixtures(fixtures);
   await mock.start();
   return mock;
@@ -139,8 +146,8 @@ describe("tool flattening: toolName sees namespace, custom and additional_tools 
     expect(await wsPost(m, LITE_REQUEST)).toContain("hit spawn_agent");
   });
 
-  it("normalizes namespace/custom tools into ChatCompletionRequest.tools with namespace and format", () => {
-    const req = responsesToCompletionRequest({
+  it("normalizes namespace/custom tools into tools (with namespace) and customTools (with format)", () => {
+    const body: ResponsesRequest = {
       model: "gpt-5",
       input: "x",
       tools: [
@@ -149,28 +156,88 @@ describe("tool flattening: toolName sees namespace, custom and additional_tools 
         NS_GITHUB,
         { type: "web_search" },
       ],
-    });
+    };
+    const req = responsesToCompletionRequest(body, { extended: true });
     expect(req.tools).toEqual([
       {
         type: "function",
         function: { name: "top", description: undefined, parameters: { type: "object" } },
       },
       {
-        type: "custom",
-        function: { name: "apply_patch", description: undefined },
-        format: CUSTOM_PATCH.format,
-      },
-      {
         type: "function",
         namespace: "mcp__github",
         function: { name: "list_issues", description: undefined, parameters: { type: "object" } },
       },
+    ]);
+    expect(req.customTools).toEqual([
+      { type: "custom", name: "apply_patch", format: CUSTOM_PATCH.format },
+      { type: "custom", name: "raw_query", description: "free text", namespace: "mcp__github" },
+    ]);
+    // Default (legacy): only top-level function tools, as 1.44.0; no customTools key.
+    const legacy = responsesToCompletionRequest(body);
+    expect(legacy.tools).toEqual([
       {
-        type: "custom",
-        namespace: "mcp__github",
-        function: { name: "raw_query", description: "free text" },
+        type: "function",
+        function: { name: "top", description: undefined, parameters: { type: "object" } },
       },
     ]);
+    expect("customTools" in legacy).toBe(false);
+  });
+
+  it("by default (legacy) toolName sees only top-level function tools, as 1.44.0", async () => {
+    const m = await start(fixtures, "legacy");
+    for (const body of [
+      { input: "x", tools: [NS_GITHUB] },
+      { input: "x", tools: [CUSTOM_PATCH] },
+      LITE_REQUEST,
+    ]) {
+      expect((await post(m, body)).status).toBe(404);
+    }
+    // A fixture naming a namespaced tool does not shadow a later fixture.
+    const m2 = await start(
+      [
+        { match: { toolName: "list_issues" }, response: { content: "A-inner" } },
+        { match: { userMessage: "go" }, response: { content: "B-user" } },
+      ],
+      "legacy",
+    );
+    expect((await post(m2, { input: "go", tools: [NS_GITHUB] })).text).toContain("B-user");
+    expect(await wsPost(m2, { input: "go", tools: [NS_GITHUB] })).toContain("B-user");
+    // The journaled request and predicates see the 1.44.0 tools (top-level functions only).
+    await post(m2, { input: "go", tools: [NS_GITHUB, CUSTOM_PATCH] });
+    expect(m2.getLastRequest()?.body).toMatchObject({ tools: [] });
+  });
+
+  it("drops a malformed namespace or additional_tools item instead of failing the request", async () => {
+    for (const mode of ["legacy", "extended"] as const) {
+      const m = await start([{ match: { userMessage: "go" }, response: { content: "ok" } }], mode);
+      for (const extra of [
+        { tools: [{ type: "namespace", name: "", tools: [] }] },
+        { tools: [{ type: "namespace", tools: [{ type: "function", name: "a" }] }] },
+        { tools: [{ type: "namespace", name: "ns", tools: [null] }] },
+        { tools: [{ type: "namespace", name: "ns", tools: { a: 1 } }] },
+        {
+          input: [
+            { role: "user", content: "go" },
+            { type: "additional_tools", tools: [null] },
+          ],
+        },
+        {
+          input: [
+            { role: "user", content: "go" },
+            { type: "tool_search_output", tools: "x" },
+          ],
+        },
+      ]) {
+        const r = await post(m, { input: "go", ...extra });
+        expect(r.status, `${mode} ${JSON.stringify(extra)}: ${r.text}`).toBe(200);
+      }
+      expect(
+        await wsPost(m, { input: "go", tools: [{ type: "namespace", name: "", tools: [] }] }),
+      ).toContain('"response.completed"');
+      await m.stop();
+      mock = null;
+    }
   });
 
   it("keeps the empty additional_tools system message, so system text is unchanged from before #505", async () => {
@@ -184,6 +251,34 @@ describe("tool flattening: toolName sees namespace, custom and additional_tools 
 });
 
 describe("toolNamespace match key", () => {
+  it("works in the default (legacy) mode too: toolNamespace sees every offered tool", async () => {
+    const m = await start(
+      [
+        {
+          match: { toolName: "raw_query", toolNamespace: "mcp__github" },
+          response: { content: "pair fixture" },
+        },
+        { match: { toolNamespace: "mcp__gitlab" }, response: { content: "gitlab fixture" } },
+      ],
+      "legacy",
+    );
+    expect((await post(m, { input: "x", tools: [NS_GITHUB] })).text).toContain("pair fixture");
+    expect((await post(m, { input: "x", tools: [NS_GITLAB] })).text).toContain("gitlab fixture");
+    expect(await wsPost(m, { input: "x", tools: [NS_GITLAB] })).toContain("gitlab fixture");
+    expect(
+      (
+        await post(m, {
+          input: [
+            { role: "user", content: "x" },
+            { type: "additional_tools", tools: [NS_GITLAB] },
+          ],
+        })
+      ).text,
+    ).toContain("gitlab fixture");
+    // The journaled request keeps the 1.44.0 tools.
+    expect(m.getLastRequest()?.body).not.toHaveProperty("customTools");
+  });
+
   it("alone: matches when any offered tool sits in that namespace", async () => {
     const m = await start([
       { match: { toolNamespace: "mcp__gitlab" }, response: { content: "gitlab fixture" } },
@@ -337,7 +432,7 @@ describe("toolNamespace match key", () => {
 });
 
 describe("predicate sees namespace on tools and on history tool calls", () => {
-  it("exposes ToolDefinition.namespace and ToolCallMessage.namespace / type", async () => {
+  it("exposes ToolDefinition.namespace, ToolCallMessage.namespace and custom_tool_calls (extended)", async () => {
     let seen: ChatCompletionRequest | undefined;
     const m = await start([
       {
@@ -384,13 +479,11 @@ describe("predicate sees namespace on tools and on history tool calls", () => {
         namespace: "mcp__github",
         function: { name: "list_issues", arguments: "{}" },
       },
-      { id: "call_b", type: "custom", function: { name: "apply_patch", arguments: PATCH } },
-      {
-        id: "call_c",
-        type: "custom",
-        namespace: "sandbox",
-        function: { name: "run", arguments: "ls -la" },
-      },
+    ]);
+    const customCalls = seen!.messages.flatMap((msg) => msg.custom_tool_calls ?? []);
+    expect(customCalls).toEqual([
+      { id: "call_b", type: "custom", name: "apply_patch", input: PATCH },
+      { id: "call_c", type: "custom", name: "run", input: "ls -la", namespace: "sandbox" },
     ]);
     const tools = seen!.messages.filter((msg) => msg.role === "tool");
     expect(tools.map((t) => [t.tool_call_id, t.content])).toEqual([
@@ -487,7 +580,21 @@ describe("custom_tool_call / custom_tool_call_output history counts as a tool ro
     });
     expect(r.text).toContain("orphan output matched");
     expect(seen?.messages.map((msg) => msg.role)).toEqual(["user", "assistant", "tool"]);
-    expect(seen?.messages[1].tool_calls?.map((tc) => tc.id)).toEqual(["call_orphan"]);
+    expect(seen?.messages[1].custom_tool_calls?.map((tc) => tc.id)).toEqual(["call_orphan"]);
+  });
+
+  it("by default (legacy) custom tool call history is not counted, as 1.44.0", async () => {
+    const m = await start(
+      [
+        { match: { userMessage: "apply it", hasToolResult: true }, response: { content: "R" } },
+        { match: { userMessage: "apply it", toolCallId: "call_p" }, response: { content: "I" } },
+        { match: { userMessage: "apply it", turnIndex: 1 }, response: { content: "T1" } },
+        { match: { userMessage: "apply it" }, response: { content: "plain" } },
+      ],
+      "legacy",
+    );
+    expect((await post(m, { input: history("Done!") })).text).toContain("plain");
+    expect(await wsPost(m, { input: history("Done!") })).toContain("plain");
   });
 
   // Deliberately asymmetric with custom_tool_call_output (whose array output
@@ -510,5 +617,17 @@ describe("custom_tool_call / custom_tool_call_output history counts as a tool ro
       ],
     });
     expect(r.text).toContain("plain tool round");
+  });
+});
+
+describe("responsesTools option", () => {
+  it("rejects a value other than legacy / extended at start", async () => {
+    const bad = new LLMock({
+      port: 0,
+      responsesTools: "Extended" as unknown as "extended",
+    });
+    await expect(bad.start()).rejects.toThrow(
+      'responsesTools must be "legacy" or "extended", got "Extended"',
+    );
   });
 });

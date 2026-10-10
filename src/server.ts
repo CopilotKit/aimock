@@ -2897,6 +2897,15 @@ async function startServer(
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  if (
+    serverOptions.responsesTools !== undefined &&
+    serverOptions.responsesTools !== "legacy" &&
+    serverOptions.responsesTools !== "extended"
+  ) {
+    throw new TypeError(
+      `responsesTools must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}`,
+    );
+  }
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under
@@ -2964,6 +2973,9 @@ async function startServer(
     },
     get strict() {
       return serverOptions.strict;
+    },
+    get responsesTools() {
+      return serverOptions.responsesTools;
     },
     get requestTransform() {
       return serverOptions.requestTransform;

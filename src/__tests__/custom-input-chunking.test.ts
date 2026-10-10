@@ -93,7 +93,10 @@ describe("custom_tool_call_input.delta chunking keeps surrogate pairs whole", ()
         [
           {
             match: { userMessage: "astral" },
-            response: { toolCalls: [{ type: "custom", name: "apply_patch", input: c.input }] },
+            response: {
+              toolCalls: [],
+              customToolCalls: [{ type: "custom", name: "apply_patch", input: c.input }],
+            },
           },
         ],
         c.chunkSize,
@@ -131,7 +134,10 @@ describe("custom_tool_call_input.delta chunking keeps surrogate pairs whole", ()
       [
         {
           match: { userMessage: "astral" },
-          response: { toolCalls: [{ type: "custom", name: "apply_patch", input }] },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "apply_patch", input }],
+          },
         },
       ],
       5,

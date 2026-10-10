@@ -13,14 +13,18 @@ import type {
   ChatMessage,
   ContentPart,
   CustomToolCall,
+  CustomToolDefinition,
   Fixture,
   FixtureBlock,
   FixtureToolCall,
   HandlerDefaults,
   ResponseOverrides,
+  ResponsesFixtureBlock,
   StreamingProfile,
+  ToolCall,
   ToolDefinition,
 } from "./types.js";
+import type { Logger } from "./logger.js";
 import {
   generateId,
   generateToolCallId,
@@ -44,12 +48,15 @@ import {
   strictNoMatchLogLine,
   prepareOpenAIChatMisbehavior,
   resolveOpenAIChatMisbehaviorUsage,
-  resolveFixtureBlockCallOutcome,
+  assertCustomToolCalls,
+  resolveServedBlockOutcome,
+  servedToolCalls,
   toolCallFixtureBlock,
+  withoutLegacyNamespaces,
 } from "./helpers.js";
 import type { MisbehaviorPlan } from "./misbehavior.js";
 import { isReasoningModel } from "./model-utils.js";
-import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
+import { matchFixtureDiagnostic, recordMatchOptions, setResponsesOfferedTools } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { RecordedTimings } from "./types.js";
@@ -168,7 +175,29 @@ function customToolOutputText(output: unknown): string {
     .join("");
 }
 
-export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
+/** Options for converting a Responses request into the router's request shape. */
+export interface ResponsesConversionOptions {
+  /**
+   * `responsesTools: "extended"`: count custom tool call history, keep history
+   * namespaces, and offer namespaced, custom and `additional_tools` /
+   * `tool_search_output` tools to `toolName` and predicates. Default false:
+   * the conversion of earlier releases.
+   */
+  extended?: boolean;
+  /** Receives one warning per malformed tool item dropped in extended mode. */
+  logger?: Logger;
+}
+
+/**
+ * Convert Responses input items into chat messages for fixture matching. The
+ * default is the conversion of earlier releases: `custom_tool_call` and
+ * `custom_tool_call_output` items are skipped, and history namespaces are not
+ * kept. With `extended`, a custom tool call becomes an assistant message with
+ * `custom_tool_calls` (so turn counting sees it), its output becomes a `tool`
+ * message (so `hasToolResult` and `toolCallId` see it), and a `function_call`
+ * keeps its `namespace`.
+ */
+export function responsesInputToMessages(req: ResponsesRequest, extended = false): ChatMessage[] {
   const messages: ChatMessage[] = [];
   // Track item_reference placeholders so we can upgrade or clean them up
   const itemReferencePlaceholders = new WeakSet<ChatMessage>();
@@ -184,6 +213,22 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
     messages.push({ role: "user", content: req.input });
     return messages;
   }
+
+  /** A synthesized call for an output item that has no matching call. */
+  const attachSynthesizedCall = (target: ChatMessage, item: ResponsesInputItem): void => {
+    const id = item.call_id ?? generateToolCallId();
+    if (item.type === "custom_tool_call_output") {
+      (target.custom_tool_calls ??= []).push({ id, type: "custom", name: "", input: "" });
+    } else {
+      (target.tool_calls ??= []).push({
+        id,
+        type: "function",
+        function: { name: "", arguments: "" },
+      });
+    }
+  };
+  const hasCalls = (m: ChatMessage): boolean =>
+    m.tool_calls !== undefined || m.custom_tool_calls !== undefined;
 
   for (const item of req.input) {
     if (item.role === "system" || item.role === "developer") {
@@ -201,45 +246,48 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           {
             id: item.call_id ?? generateToolCallId(),
             type: "function",
-            ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}),
+            ...(extended && typeof item.namespace === "string"
+              ? { namespace: item.namespace }
+              : {}),
             function: { name: item.name ?? "", arguments: item.arguments ?? "" },
           },
         ],
       });
-    } else if (item.type === "custom_tool_call") {
+    } else if (extended && item.type === "custom_tool_call") {
       // Previous assistant custom tool call. The pushed assistant message makes
-      // turn counting see the call; the free-text input rides in
-      // `function.arguments` so predicates can read it.
+      // turn counting see the call. A non-string input (malformed history)
+      // becomes "", the same coercion customToolOutputText applies to a
+      // custom output.
       messages.push({
         role: "assistant",
         content: null,
-        tool_calls: [
+        custom_tool_calls: [
           {
             id: item.call_id ?? generateToolCallId(),
             type: "custom",
+            name: item.name ?? "",
+            input: typeof item.input === "string" ? item.input : "",
             ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}),
-            // A non-string input (malformed history) becomes "", the same
-            // coercion customToolOutputText applies to a custom output, so
-            // predicates can always treat `arguments` as a string.
-            function: {
-              name: item.name ?? "",
-              arguments: typeof item.input === "string" ? item.input : "",
-            },
           },
         ],
       });
-    } else if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
+    } else if (
+      item.type === "function_call_output" ||
+      (extended && item.type === "custom_tool_call_output")
+    ) {
       // Bug 1 fix: If there's no preceding assistant message with a matching
-      // tool_call for this call_id (function_call_output or
-      // custom_tool_call_output), synthesize one. This happens when the AI SDK
+      // tool_call for this call_id, synthesize one. This happens when the AI SDK
       // sends [user, item_reference, function_call_output] — the item_reference
       // placeholder (see below) has no tool_calls, so we need a real assistant
-      // message with the tool_call for turnIndex counting.
+      // message with the tool_call for turnIndex counting. In extended mode a
+      // custom_tool_call_output is handled the same way, and its synthesized
+      // call is a custom one.
       const hasMatchingToolCall = messages.some(
-        (m) => m.role === "assistant" && m.tool_calls?.some((tc) => tc.id === item.call_id),
+        (m) =>
+          m.role === "assistant" &&
+          (m.tool_calls?.some((tc) => tc.id === item.call_id) ||
+            m.custom_tool_calls?.some((tc) => tc.id === item.call_id)),
       );
-      // A synthesized call carries the kind of the output it answers.
-      const synthesizedType = item.type === "custom_tool_call_output" ? "custom" : "function";
       if (!hasMatchingToolCall) {
         // Check if the last message is an item_reference placeholder — if so,
         // upgrade it to carry the tool_call instead of synthesizing a duplicate.
@@ -248,33 +296,22 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
           lastMsg &&
           lastMsg.role === "assistant" &&
           itemReferencePlaceholders.has(lastMsg) &&
-          !lastMsg.tool_calls
+          !hasCalls(lastMsg)
         ) {
           lastMsg.content = null;
-          lastMsg.tool_calls = [
-            {
-              id: item.call_id ?? generateToolCallId(),
-              type: synthesizedType,
-              function: { name: "", arguments: "" },
-            },
-          ];
+          attachSynthesizedCall(lastMsg, item);
           itemReferencePlaceholders.delete(lastMsg);
         } else {
-          // Multi-output case: look for a recent assistant with tool_calls that
-          // belongs to the same turn. After the first tool output (function or
-          // custom) upgrades a placeholder, later outputs see
-          // [assistant(call_A), tool(call_A)] — the last
+          // Multi-fco case: look for a recent assistant with tool_calls that
+          // belongs to the same turn. After the first fco upgrades a placeholder,
+          // subsequent fco's see [assistant(call_A), tool(call_A)] — the last
           // assistant with tool_calls (right before the trailing tool messages)
           // is the correct target.
           let appended = false;
           for (let k = messages.length - 1; k >= 0; k--) {
             const m = messages[k];
-            if (m.role === "assistant" && m.tool_calls) {
-              m.tool_calls.push({
-                id: item.call_id ?? generateToolCallId(),
-                type: synthesizedType,
-                function: { name: "", arguments: "" },
-              });
+            if (m.role === "assistant" && hasCalls(m)) {
+              attachSynthesizedCall(m, item);
               appended = true;
               break;
             }
@@ -282,17 +319,9 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
             if (m.role === "user") break;
           }
           if (!appended) {
-            messages.push({
-              role: "assistant",
-              content: null,
-              tool_calls: [
-                {
-                  id: item.call_id ?? generateToolCallId(),
-                  type: synthesizedType,
-                  function: { name: "", arguments: "" },
-                },
-              ],
-            });
+            const synthesized: ChatMessage = { role: "assistant", content: null };
+            attachSynthesizedCall(synthesized, item);
+            messages.push(synthesized);
           }
         }
       }
@@ -301,34 +330,51 @@ export function responsesInputToMessages(req: ResponsesRequest): ChatMessage[] {
         content:
           item.type === "custom_tool_call_output"
             ? customToolOutputText(item.output)
-            : // function_call_output keeps its handling from before custom
-              // tool calls existed: an array output passes through as content
-              // parts, so text matchers do not see it. Changing that would
-              // change which fixtures existing requests match.
+            : // function_call_output keeps its handling from earlier releases:
+              // an array output passes through as content parts, so text
+              // matchers do not see it.
               ((item.output ?? "") as string | ContentPart[]),
         tool_call_id: item.call_id,
       });
     } else if (item.type === "item_reference") {
-      // Bug 6 fix: item_reference items represent prior assistant turns (text,
-      // function_call or custom_tool_call). Push a placeholder so they count
-      // in assistantCount.
-      // If a subsequent function_call_output or custom_tool_call_output
-      // arrives, the handler above will
+      // Bug 6 fix: item_reference items represent prior assistant turns (text
+      // or function_call). Push a placeholder so they count in assistantCount.
+      // If a subsequent function_call_output arrives, the handler above will
       // upgrade this placeholder to carry tool_calls (avoiding double-count).
       const placeholder: ChatMessage = { role: "assistant", content: "" };
       itemReferencePlaceholders.add(placeholder);
       messages.push(placeholder);
     } else {
       // Skip local_shell_call, mcp_list_tools, etc. — not needed for fixture
-      // matching.
+      // matching. Without extended mode this includes custom tool call items.
     }
   }
 
   return messages;
 }
 
-/** One `function` or `custom` Responses tool in aimock's normalized form. */
-function normalizeResponsesTool(tool: unknown, namespace?: string): ToolDefinition | undefined {
+/** The request tools of earlier releases: top-level `function` tools only. */
+function responsesToolsToCompletionsTools(
+  tools?: ResponsesToolDef[],
+): ToolDefinition[] | undefined {
+  if (!tools || tools.length === 0) return undefined;
+  return tools
+    .filter((t) => t.type === "function")
+    .map((t) => ({
+      type: "function" as const,
+      function: {
+        name: t.name as string,
+        description: t.description as string | undefined,
+        parameters: (t as { parameters?: object }).parameters,
+      },
+    }));
+}
+
+/** One Responses `function` or `custom` tool in aimock's normalized form. */
+function normalizeResponsesTool(
+  tool: unknown,
+  namespace?: string,
+): ToolDefinition | CustomToolDefinition | undefined {
   if (tool === null || typeof tool !== "object") return undefined;
   const t = tool as Record<string, unknown>;
   const ns = namespace !== undefined ? { namespace } : {};
@@ -348,8 +394,9 @@ function normalizeResponsesTool(tool: unknown, namespace?: string): ToolDefiniti
     const custom = t as unknown as ResponsesCustomToolDef;
     return {
       type: "custom",
+      name: custom.name,
+      ...(custom.description !== undefined ? { description: custom.description } : {}),
       ...ns,
-      function: { name: custom.name, description: custom.description },
       ...(custom.format !== undefined ? { format: custom.format } : {}),
     };
   }
@@ -367,118 +414,119 @@ function isToolCarryingItemType(type: unknown): boolean {
 }
 
 /**
- * Error text for a `namespace` tool whose name is not a non-empty string, whose
- * `tools` is not an array, or whose `tools` has a `null` entry.
- *
- * The name rule follows OpenAI's published spec: openai/openai-openapi
- * `openapi.yaml` (version 2.3.0), schema `NamespaceToolParam`, has
- * `name: { type: string, minLength: 1 }` and
- * `required: [type, name, description, tools]`. aimock is deliberately more
- * lenient on the rest of that schema: it accepts a missing `description` and an
- * empty `tools` (the spec has `minItems: 1`).
+ * Why a `namespace` tool cannot be flattened, or undefined when it can: its
+ * name is not a non-empty string (OpenAI's `NamespaceToolParam` requires
+ * `name` with `minLength: 1`), or its `tools` is not an array.
  */
-function namespaceToolError(tool: unknown, path: string): string | undefined {
-  if (tool === null || typeof tool !== "object") return undefined;
-  const t = tool as { type?: unknown; name?: unknown; tools?: unknown };
-  if (t.type !== "namespace") return undefined;
-  if (typeof t.name !== "string" || t.name === "") {
-    return `${path}.name must be a non-empty string for a namespace tool`;
-  }
-  if (!Array.isArray(t.tools)) return `${path}.tools must be an array for a namespace tool`;
-  if (t.tools.some((inner) => inner === null)) return `${path}.tools entries must not be null`;
+function namespaceToolProblem(tool: { name?: unknown; tools?: unknown }): string | undefined {
+  if (typeof tool.name !== "string" || tool.name === "") return "name is not a non-empty string";
+  if (!Array.isArray(tool.tools)) return "tools is not an array";
   return undefined;
 }
 
 /**
- * Validate the request's tool collections before conversion. Shared by the
- * HTTP and WebSocket transports so both reject the same shapes with the same
- * message. Returns the first error, or `undefined` when the tools are usable.
- *
- * - `tools` keeps its falsy/empty bypass; otherwise it must be an array with
- *   no `null` entries.
- * - A `namespace` tool, in `tools` or in a tool-carrying input item,
- *   must have a non-empty string `name`: without one its inner tools would
- *   silently lose their namespace, and `toolNamespace` could never match them.
- *   Its `tools` must be an array with no `null` entries, for the same reason.
- * - A tool-carrying input item's `tools`, when present, must be an array with
- *   no `null` entries, the same rule as the top-level `tools`.
- *
- * Other entries and tool types stay accepted and ignored by flattening.
- */
-export function validateResponsesTools(tools: unknown, input: unknown): string | undefined {
-  if (tools && (tools as { length?: unknown }).length !== 0) {
-    if (!Array.isArray(tools)) return "tools must be an array";
-    if (tools.some((tool) => tool === null)) return "tools entries must not be null";
-    for (const [i, tool] of tools.entries()) {
-      const error = namespaceToolError(tool, `tools[${i}]`);
-      if (error) return error;
-    }
-  }
-  if (Array.isArray(input)) {
-    for (const [i, item] of input.entries()) {
-      const t = item as { type?: unknown; tools?: unknown } | null;
-      if (!isToolCarryingItemType(t?.type) || t?.tools === undefined) continue;
-      if (!Array.isArray(t.tools)) return `input[${i}].tools must be an array`;
-      if (t.tools.some((tool) => tool === null))
-        return `input[${i}].tools entries must not be null`;
-      for (const [j, tool] of t.tools.entries()) {
-        const error = namespaceToolError(tool, `input[${i}].tools[${j}]`);
-        if (error) return error;
-      }
-    }
-  }
-  return undefined;
-}
-
-/**
- * Flatten Responses tools into `ChatCompletionRequest.tools` so `toolName`,
- * `toolNamespace` and predicates see them. Sources, in order:
- * `req.tools`, then the `tools` of every `additional_tools` or
- * `tool_search_output` input item, in input order.
+ * Flatten every Responses tool a request offers, for extended matching and for
+ * `toolNamespace`. Sources, in order: `req.tools`, then the `tools` of every
+ * `additional_tools` or `tool_search_output` input item, in input order.
  * `namespace` tools contribute one entry per inner function/custom tool, each
  * carrying the namespace; other tool types are ignored.
+ *
+ * Malformed items never fail the request (earlier releases ignored them): a
+ * `namespace` tool without a non-empty string name or with a non-array
+ * `tools`, a `null` entry, and a tool-carrying item whose `tools` is not an
+ * array are dropped, with a warning when `warn` is given.
  */
-function flattenResponsesTools(req: ResponsesRequest): ToolDefinition[] | undefined {
-  const sources: unknown[] = Array.isArray(req.tools) ? [...req.tools] : [];
-  if (Array.isArray(req.input)) {
-    for (const item of req.input) {
-      if (isToolCarryingItemType(item?.type) && Array.isArray(item?.tools))
-        sources.push(...item.tools);
-    }
+function flattenResponsesTools(
+  req: ResponsesRequest,
+  warn?: (message: string) => void,
+): { tools: ToolDefinition[]; customTools: CustomToolDefinition[]; sourceCount: number } {
+  const tools: ToolDefinition[] = [];
+  const customTools: CustomToolDefinition[] = [];
+  const add = (normalized: ToolDefinition | CustomToolDefinition | undefined) => {
+    if (!normalized) return;
+    if (normalized.type === "custom") customTools.push(normalized);
+    else tools.push(normalized);
+  };
+  const sources: Array<{ tool: unknown; path: string }> = [];
+  if (Array.isArray(req.tools)) {
+    req.tools.forEach((tool, i) => sources.push({ tool, path: `tools[${i}]` }));
   }
-  if (sources.length === 0) return undefined;
-  const flat: ToolDefinition[] = [];
-  for (const tool of sources) {
-    const t = tool as { type?: unknown; name?: unknown; tools?: unknown } | null;
-    if (t?.type === "namespace" && Array.isArray(t.tools)) {
-      // Both transports (handleResponses and the WebSocket processMessage) run
-      // validateResponsesTools before responsesToCompletionRequest, and it
-      // rejects a namespace tool without a non-empty string name. A direct
-      // caller that skips it gets un-namespaced inner tools, not a throw.
-      const ns = typeof t.name === "string" ? t.name : undefined;
-      for (const inner of t.tools) {
-        const normalized = normalizeResponsesTool(inner, ns);
-        if (normalized) flat.push(normalized);
+  if (Array.isArray(req.input)) {
+    req.input.forEach((item, i) => {
+      if (!isToolCarryingItemType(item?.type) || item?.tools === undefined) return;
+      if (!Array.isArray(item.tools)) {
+        warn?.(`Ignoring input[${i}].tools: not an array`);
+        return;
       }
+      item.tools.forEach((tool, j) => sources.push({ tool, path: `input[${i}].tools[${j}]` }));
+    });
+  }
+  for (const { tool, path } of sources) {
+    const t = tool as { type?: unknown; name?: unknown; tools?: unknown } | null;
+    if (t === null) {
+      warn?.(`Ignoring ${path}: null tool`);
       continue;
     }
-    const normalized = normalizeResponsesTool(tool);
-    if (normalized) flat.push(normalized);
+    if (t?.type === "namespace") {
+      const problem = namespaceToolProblem(t);
+      if (problem) {
+        warn?.(`Ignoring namespace tool ${path}: ${problem}`);
+        continue;
+      }
+      (t.tools as unknown[]).forEach((inner, k) => {
+        if (inner === null) warn?.(`Ignoring ${path}.tools[${k}]: null tool`);
+        else add(normalizeResponsesTool(inner, t.name as string));
+      });
+      continue;
+    }
+    add(normalizeResponsesTool(tool));
   }
-  return flat;
+  return { tools, customTools, sourceCount: sources.length };
 }
 
-export function responsesToCompletionRequest(req: ResponsesRequest): ChatCompletionRequest {
-  return {
+export function responsesToCompletionRequest(
+  req: ResponsesRequest,
+  options: ResponsesConversionOptions = {},
+): ChatCompletionRequest {
+  const extended = options.extended === true;
+  const all = flattenResponsesTools(
+    req,
+    extended && options.logger
+      ? (message) => options.logger?.warn(`Responses request: ${message}`)
+      : undefined,
+  );
+  const completionReq: ChatCompletionRequest = {
     model: req.model,
-    messages: responsesInputToMessages(req),
+    messages: responsesInputToMessages(req, extended),
     stream: req.stream,
     temperature: req.temperature,
     max_tokens: req.max_output_tokens,
-    tools: flattenResponsesTools(req),
+    tools: extended
+      ? all.sourceCount > 0
+        ? all.tools
+        : undefined
+      : responsesToolsToCompletionsTools(req.tools),
+    ...(extended && all.customTools.length > 0 ? { customTools: all.customTools } : {}),
     tool_choice: req.tool_choice,
     response_format: req.response_format,
   };
+  setResponsesOfferedTools(completionReq, { tools: all.tools, customTools: all.customTools });
+  return completionReq;
+}
+
+/**
+ * The HTTP request check of earlier releases for `tools`: keep the
+ * converter's empty/falsy bypass, and reject only a collection the legacy
+ * converter would throw on (not an array, or a `null` entry). Malformed
+ * nested tools (inside a `namespace` tool or a tool-carrying input item) are
+ * dropped by the conversion instead.
+ */
+export function validateResponsesTools(tools: unknown): string | undefined {
+  if (tools && (tools as { length?: unknown }).length !== 0) {
+    if (!Array.isArray(tools)) return "tools must be an array";
+    if (tools.some((tool) => tool === null)) return "tools entries must not be null";
+  }
+  return undefined;
 }
 
 // ─── Response building: fixture → Responses API format ──────────────────────
@@ -583,11 +631,14 @@ function requireFixtureToolInput(value: unknown): string {
  * A tool call to emit: a `toolCalls` entry, or a normalized `toolCall` /
  * `customToolCall` block passed through as-is.
  */
-type EmittableToolCall = FixtureToolCall | Exclude<FixtureBlock, { type: "text" }>;
+type EmittableToolCall = FixtureToolCall | Exclude<ResponsesFixtureBlock, { type: "text" }>;
 
 function isCustomEmittable(
   call: EmittableToolCall,
-): call is CustomToolCall | Extract<FixtureBlock, { type: "customToolCall" }> {
+): call is CustomToolCall | Extract<ResponsesFixtureBlock, { type: "customToolCall" }> {
+  // A non-object entry (only reachable from an untyped fixture) takes the
+  // function path, which fails on it exactly as earlier releases did.
+  if (call === null || typeof call !== "object") return false;
   return call.type === "custom" || call.type === "customToolCall";
 }
 
@@ -643,7 +694,54 @@ function customToolCallItem(
   };
 }
 
+/**
+ * A `toolCalls` entry as earlier releases served it: a function call whose
+ * `type`, `input` and `namespace` are ignored. The exported builders take
+ * fixtures in that form; the handler passes `namespace` (extended mode) and
+ * custom calls to the internal builders instead.
+ */
+function legacyFunctionCall(call: ToolCall): FixtureToolCall {
+  if (call === null || typeof call !== "object") return call;
+  const { name, arguments: args, id } = call;
+  return id !== undefined ? { name, arguments: args, id } : { name, arguments: args };
+}
+
+/** Resolve exported-builder `blocks` as earlier releases did (no namespace emitted). */
+function legacyOrderedBlocks(
+  blocks: FixtureBlock[] | undefined,
+): ResponsesFixtureBlock[] | undefined {
+  if (!blocks || blocks.length === 0) return undefined;
+  return resolveFixtureBlocks(blocks).map((block) => {
+    if (block.type === "text" || block.namespace === undefined) return block;
+    const copy = { ...block };
+    delete copy.namespace;
+    return copy;
+  });
+}
+
 export function buildToolCallStreamEvents(
+  toolCalls: ToolCall[],
+  model: string,
+  chunkSize: number,
+  reasoning?: string,
+  webSearches?: string[],
+  overrides?: ResponseOverrides,
+  emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
+): ResponsesSSEEvent[] {
+  return toolCallStreamEvents(
+    toolCalls.map(legacyFunctionCall),
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    overrides,
+    emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
+  );
+}
+
+export function toolCallStreamEvents(
   toolCalls: FixtureToolCall[],
   model: string,
   chunkSize: number,
@@ -1330,13 +1428,44 @@ function buildToolCallResponse(
 
 export function buildContentWithToolCallsStreamEvents(
   content: string,
-  toolCalls: FixtureToolCall[],
+  toolCalls: ToolCall[],
   model: string,
   chunkSize: number,
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
   blocks?: FixtureBlock[],
+  emitEncryptedReasoning = false,
+  synthesizeSummarylessReasoning = false,
+): ResponsesSSEEvent[] {
+  return contentWithToolCallsStreamEvents(
+    content,
+    toolCalls.map(legacyFunctionCall),
+    model,
+    chunkSize,
+    reasoning,
+    webSearches,
+    overrides,
+    legacyOrderedBlocks(blocks),
+    emitEncryptedReasoning,
+    synthesizeSummarylessReasoning,
+  );
+}
+
+/**
+ * Internal content+tool-calls builder. `ordered` is already resolved (see
+ * {@link resolveServedBlockOutcome}); when non-empty it is streamed in array
+ * order, otherwise the legacy message-first path runs over `toolCalls`.
+ */
+export function contentWithToolCallsStreamEvents(
+  content: string,
+  toolCalls: FixtureToolCall[],
+  model: string,
+  chunkSize: number,
+  reasoning?: string,
+  webSearches?: string[],
+  overrides?: ResponseOverrides,
+  ordered?: ResponsesFixtureBlock[],
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
@@ -1356,11 +1485,10 @@ export function buildContentWithToolCallsStreamEvents(
   // matches that item's slot in the final `response.completed.output` array.
   const orderedOutputItems: object[] = [];
 
-  if (blocks && blocks.length > 0) {
+  if (ordered && ordered.length > 0) {
     // NEW PATH: stream items in the fixture's block ARRAY ORDER. A tool block
     // placed before a text block therefore yields a tool call item at
     // a LOWER output_index than the message — it leads the output array.
-    const ordered = resolveFixtureBlocks(blocks, { allowCustom: true });
     let outputIndex = nextOutputIndex;
     for (const block of ordered) {
       if (block.type === "text") {
@@ -1460,17 +1588,16 @@ function buildContentWithToolCallsResponse(
   reasoning?: string,
   webSearches?: string[],
   overrides?: ResponseOverrides,
-  blocks?: FixtureBlock[],
+  ordered?: ResponsesFixtureBlock[],
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): object {
-  if (blocks && blocks.length > 0) {
+  if (ordered && ordered.length > 0) {
     // NEW PATH: the non-streaming `output[]` array is positionally observable,
     // so emit the prefix (reasoning / web_search_call), then the blocks in
     // fixture ARRAY ORDER. A tool block before a text block therefore
     // yields a tool call item ahead of the message — matching the streaming
     // path's ordering for the same `blocks` fixture.
-    const ordered = resolveFixtureBlocks(blocks, { allowCustom: true });
     const output: object[] = [];
     if (
       reasoning ||
@@ -1655,8 +1782,7 @@ export async function handleResponses(
       }
     }
   }
-  const validationError =
-    inputError ?? validateResponsesTools(responsesReq.tools, responsesReq.input);
+  const validationError = inputError ?? validateResponsesTools(responsesReq.tools);
   if (validationError) {
     journal.add({
       method: req.method ?? "POST",
@@ -1674,7 +1800,11 @@ export async function handleResponses(
   }
 
   // Convert to ChatCompletionRequest for fixture matching
-  const completionReq = responsesToCompletionRequest(responsesReq);
+  const extendedTools = defaults.responsesTools === "extended";
+  const completionReq = responsesToCompletionRequest(responsesReq, {
+    extended: extendedTools,
+    logger: defaults.logger,
+  });
   completionReq._endpointType = "chat";
   completionReq._context = getContext(req);
 
@@ -1819,7 +1949,10 @@ export async function handleResponses(
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  // Without responsesTools "extended", a namespace on a toolCalls entry or a
+  // toolCall block is not emitted, as in earlier releases.
+  const resolvedResponse = await resolveResponse(fixture, completionReq);
+  const response = extendedTools ? resolvedResponse : withoutLegacyNamespaces(resolvedResponse);
   const misbehavior = planMisbehavior({
     wire: "openai-responses",
     fixture,
@@ -1957,30 +2090,35 @@ export async function handleResponses(
       defaults,
       testId,
     });
+    // Resolve the served blocks (responsesBlocks, else legacy blocks) after
+    // journaling, where earlier releases' builders resolved them.
+    const ordered = resolveServedBlockOutcome(response)?.ordered;
+    if (!ordered) assertCustomToolCalls(response);
+    const toolCalls = servedToolCalls(response);
     if (responsesReq.stream !== true) {
       const body = buildContentWithToolCallsResponse(
         response.content ?? "",
-        response.toolCalls ?? [],
+        toolCalls,
         completionReq.model,
         effReasoning,
         response.webSearches,
         overrides,
-        response.blocks,
+        ordered,
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildContentWithToolCallsStreamEvents(
+      const events = contentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        toolCalls,
         completionReq.model,
         chunkSize,
         effReasoning,
         response.webSearches,
         overrides,
-        response.blocks,
+        ordered,
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
@@ -2093,9 +2231,10 @@ export async function handleResponses(
       defaults,
       testId,
     });
+    assertCustomToolCalls(response);
     if (responsesReq.stream !== true) {
       const body = buildToolCallResponse(
-        response.toolCalls,
+        servedToolCalls(response),
         completionReq.model,
         effReasoning,
         response.webSearches,
@@ -2106,8 +2245,8 @@ export async function handleResponses(
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(body));
     } else {
-      const events = buildToolCallStreamEvents(
-        response.toolCalls,
+      const events = toolCallStreamEvents(
+        servedToolCalls(response),
         completionReq.model,
         chunkSize,
         effReasoning,
@@ -2225,16 +2364,13 @@ export function buildResponsesMisbehavior(
   ) {
     const combined = isContentWithToolCallsResponse(response);
     // Custom tool calls and namespaces pass through a fault unchanged.
-    const outcome =
-      combined && response.blocks?.length
-        ? resolveFixtureBlockCallOutcome(response.blocks)
-        : undefined;
-    const blocks: FixtureBlock[] = outcome?.ordered ?? [
+    const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
+    const blocks: ResponsesFixtureBlock[] = outcome?.ordered ?? [
       ...("content" in response && typeof response.content === "string"
         ? [{ type: "text" as const, text: response.content }]
         : []),
       ...(combined || isToolCallResponse(response)
-        ? (response.toolCalls ?? []).map(toolCallFixtureBlock)
+        ? servedToolCalls(response).map(toolCallFixtureBlock)
         : []),
     ];
     let callIndex = 0;

@@ -1,5 +1,12 @@
 import { claimOneShotError, isOneShotError } from "./fixture-loader.js";
-import type { ChatCompletionRequest, ChatMessage, ContentPart, Fixture } from "./types.js";
+import type {
+  ChatCompletionRequest,
+  ChatMessage,
+  ContentPart,
+  CustomToolDefinition,
+  Fixture,
+  ToolDefinition,
+} from "./types.js";
 import {
   describeMatch,
   isLiveResponse,
@@ -16,6 +23,32 @@ export function getLastMessageByRole(messages: ChatMessage[], role: string): Cha
     if (messages[i].role === role) return messages[i];
   }
   return null;
+}
+
+/**
+ * Every tool an OpenAI Responses request offered (top level, inside
+ * `namespace` tools, and from `additional_tools` / `tool_search_output`
+ * items), keyed by the converted request. Kept off the request object so the
+ * request that predicates and the journal see is unchanged by default.
+ */
+const responsesOfferedTools = new WeakMap<
+  object,
+  { tools: ToolDefinition[]; customTools: CustomToolDefinition[] }
+>();
+
+/** Record the tools a Responses request offered (see {@link getResponsesOfferedTools}). */
+export function setResponsesOfferedTools(
+  request: ChatCompletionRequest,
+  offered: { tools: ToolDefinition[]; customTools: CustomToolDefinition[] },
+): void {
+  responsesOfferedTools.set(request, offered);
+}
+
+/** The tools a Responses request offered, for `toolNamespace` matching. */
+export function getResponsesOfferedTools(
+  request: ChatCompletionRequest,
+): { tools: ToolDefinition[]; customTools: CustomToolDefinition[] } | undefined {
+  return responsesOfferedTools.get(request);
 }
 
 /**
@@ -498,16 +531,32 @@ export function matchFixtureDiagnostic(
       if (text === null || !text.includes(match.toolResultContains)) continue;
     }
 
-    // toolName — match against any tool definition by function.name.
+    // toolName — match against any tool definition by function.name (and,
+    // with responsesTools "extended", any Responses custom tool by name).
     // toolNamespace — exact OpenAI Responses namespace of an offered tool; with
-    // toolName, ONE tool must carry both (Codex routes by the exact pair).
+    // toolName, ONE tool must carry both (Codex routes by the exact pair). A
+    // toolNamespace fixture always sees every tool the Responses request
+    // offered, whatever the responsesTools mode, because no earlier fixture
+    // could use the key.
     if (match.toolName !== undefined || match.toolNamespace !== undefined) {
-      const tools = Array.isArray(effective.tools) ? effective.tools : [];
-      const found = tools.some(
-        (t) =>
-          (match.toolName === undefined || t?.function?.name === match.toolName) &&
-          (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
-      );
+      const offered =
+        match.toolNamespace !== undefined
+          ? (getResponsesOfferedTools(effective) ?? getResponsesOfferedTools(req))
+          : undefined;
+      const tools = offered?.tools ?? (Array.isArray(effective.tools) ? effective.tools : []);
+      const customTools =
+        offered?.customTools ?? (Array.isArray(effective.customTools) ? effective.customTools : []);
+      const found =
+        tools.some(
+          (t) =>
+            (match.toolName === undefined || t?.function?.name === match.toolName) &&
+            (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
+        ) ||
+        customTools.some(
+          (t) =>
+            (match.toolName === undefined || t?.name === match.toolName) &&
+            (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
+        );
       if (!found) continue;
     }
 
