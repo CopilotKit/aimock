@@ -1,4 +1,8 @@
-import { claimOneShotError, isOneShotError } from "./fixture-loader.js";
+import {
+  claimOneShotError,
+  isOneShotError,
+  markFixtureResponsesToolsExtended,
+} from "./fixture-loader.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -335,7 +339,12 @@ export function matchFixtureDiagnostic(
   // `responsesBlocks`) apply only with responsesTools "extended". Earlier
   // releases ignored these keys, so the default ignores them too.
   const extendedTools = isExtendedResponsesToolsList(fixtures);
-  if (extendedTools) markExtendedResponsesToolsRequest(req);
+  if (extendedTools) {
+    markExtendedResponsesToolsRequest(req);
+    // A loaded fixture that reached this list unmarked (createServer with
+    // loadFixtureFile output, say) gets its held keys applied before matching.
+    for (const fixture of fixtures) markFixtureResponsesToolsExtended(fixture);
+  }
 
   let skippedBySequenceOrTurn = 0;
   // Every fixture whose content / shape predicates (and sequenceIndex gate)

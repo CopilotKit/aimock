@@ -101,6 +101,8 @@ import {
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
   setFixtureListResponsesTools,
+  isExtendedResponsesToolsList,
+  withoutResponsesToolKeys,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -1008,6 +1010,11 @@ async function handleControlAPI(
       res.end(JSON.stringify({ error: "Invalid 'include': expected 'fixtures'" }));
       return true;
     }
+    // Only a server with responsesTools "extended" reads `match.toolNamespace`,
+    // `customToolCalls` and `responsesBlocks`; elsewhere they do not change
+    // the kind, as in 1.44.0.
+    const extendedTools = isExtendedResponsesToolsList(fixtures);
+    if (extendedTools) fixtures.forEach(markFixtureResponsesToolsExtended);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -1021,7 +1028,13 @@ async function handleControlAPI(
           // the idempotent claim), so the shape test alone reports "factory"
           // and this surface loses the one signal it exists to give: that an
           // injection is armed. Take the kind from the one-shot MARKER.
-          responseKind: isOneShotError(fixture) ? "error" : fixtureResponseKind(fixture.response),
+          responseKind: isOneShotError(fixture)
+            ? "error"
+            : fixtureResponseKind(
+                extendedTools || typeof fixture.response === "function"
+                  ? fixture.response
+                  : withoutResponsesToolKeys(fixture.response),
+              ),
           ...(fixture.latency !== undefined ? { latency: fixture.latency } : {}),
           ...(fixture.chaos !== undefined ? { chaos: fixture.chaos } : {}),
         })),

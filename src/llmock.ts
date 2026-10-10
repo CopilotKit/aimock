@@ -11,6 +11,7 @@ import type {
   FixtureFileResponse,
   FixtureMatch,
   FixtureOpts,
+  FixtureResponse,
   ImageResponse,
   McpFakeSource,
   MockServerOptions,
@@ -37,6 +38,7 @@ import {
   clearFixtureQueue,
   entryToFixture,
   normalizeResponse,
+  normalizeResponsesToolsKeys,
   validateFixtures,
   enableHeldFixtureMisbehavior,
   markFixtureResponsesToolsExtended,
@@ -335,12 +337,16 @@ export class LLMock {
     response: FixtureFileResponse | ResponseFactory,
     opts?: FixtureOpts,
   ): this {
-    return this.addFixture({
-      match,
-      response:
-        typeof response === "function" ? response : normalizeResponse(response, this.options.live),
-      ...opts,
-    });
+    let normalized: FixtureResponse | ResponseFactory = response as ResponseFactory;
+    if (typeof response !== "function") {
+      normalized = normalizeResponse(response, this.options.live);
+      // `customToolCalls` / `responsesBlocks` are normalized only where they are
+      // read; otherwise they stay as written, as in 1.44.0.
+      if (this.options.responsesTools === "extended" && !isLiveResponse(normalized)) {
+        normalizeResponsesToolsKeys(normalized as unknown as Record<string, unknown>);
+      }
+    }
+    return this.addFixture({ match, response: normalized, ...opts });
   }
 
   onLive(
