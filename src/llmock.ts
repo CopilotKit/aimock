@@ -133,8 +133,12 @@ export class LLMock {
     const previousPosition = getFixtureMisbehaviorPosition(fixture);
     const isNewAddition = previousPosition === undefined || /^code#\d+$/.test(previousPosition);
     const position = isNewAddition ? `code#${this.fixtureAddition++}` : previousPosition;
-    // Re-adding a code fixture creates a new source without changing the old entry.
-    if (isNewAddition) fixture = { ...fixture };
+    // With misbehavior enabled, re-adding a code fixture creates a new fault
+    // source without changing the old entry, so each addition is its own copy
+    // (counted under the caller's object, fixtureCountOrigins). Without it the
+    // position is never read, and the caller's object is stored as in 1.44.0,
+    // so findByFixture and JournalEntry.response.fixture name it.
+    if (isNewAddition && misbehaviorEnabled) fixture = { ...fixture };
     if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
       const parsed = parseMisbehavior(fixture.misbehavior);
       if (parsed.ok) fixture = { ...fixture, misbehavior: parsed.config };
