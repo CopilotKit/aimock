@@ -438,6 +438,89 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --strict-tool-arguments", () => {
   });
 });
 
+// The llmock bin passes --misbehavior and --responses-tools through to createServer.
+// Each flag is checked against the same request without it, so a pass-through that
+// drops the flag fails here even though the programmatic options are tested elsewhere.
+describe.skipIf(!CLI_AVAILABLE)("CLI: --misbehavior and --responses-tools", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function serve(
+    fixture: object,
+    flags: string[],
+    request: { path: string; body: object },
+  ): Promise<string> {
+    assertBuiltCliIsCurrent();
+    const fixturePath = join(tmpDir, "fixtures.json");
+    writeFileSync(fixturePath, JSON.stringify({ fixtures: [fixture] }));
+    const child = spawnCli(["--fixtures", fixturePath, "--port", "0", ...flags]);
+    try {
+      await child.waitForOutput(/listening on/i, 5000);
+      const url = /listening on (http:\/\/\S+)/i.exec(child.stdout())![1];
+      const res = await fetch(`${url}${request.path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+      });
+      expect(res.status).toBe(200);
+      return await res.text();
+    } finally {
+      child.kill("SIGTERM");
+      await child.waitForExit();
+    }
+  }
+
+  const faultFixture = {
+    match: { userMessage: "hello" },
+    response: { content: "Hello from test fixture!" },
+    misbehavior: "empty-response",
+  };
+  const chatRequest = {
+    path: "/v1/chat/completions",
+    body: { model: "gpt-4o", messages: [{ role: "user", content: "hello" }] },
+  };
+  const chatContent = (body: string): string => JSON.parse(body).choices[0].message.content;
+
+  it("ignores a fixture misbehavior key without --misbehavior", async () => {
+    expect(chatContent(await serve(faultFixture, [], chatRequest))).toBe(
+      "Hello from test fixture!",
+    );
+  });
+
+  it("applies a fixture misbehavior key with --misbehavior", async () => {
+    expect(chatContent(await serve(faultFixture, ["--misbehavior"], chatRequest))).toBe("");
+  });
+
+  const namespaceFixture = {
+    match: { userMessage: "hello" },
+    response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+  };
+  const responsesRequest = { path: "/v1/responses", body: { model: "gpt-5", input: "hello" } };
+
+  it("does not emit a tool call namespace without --responses-tools", async () => {
+    expect(await serve(namespaceFixture, [], responsesRequest)).not.toContain('"namespace":"docs"');
+  });
+
+  it("emits a tool call namespace with --responses-tools extended", async () => {
+    expect(
+      await serve(namespaceFixture, ["--responses-tools", "extended"], responsesRequest),
+    ).toContain('"namespace":"docs"');
+  });
+
+  it("rejects an invalid --responses-tools value", async () => {
+    const { stderr, code } = await runCli(["--responses-tools", "bogus"]);
+    expect(code).toBe(1);
+    expect(stderr).toContain('Invalid --responses-tools: bogus (expected "legacy" or "extended")');
+  });
+});
+
 describe.skipIf(!CLI_AVAILABLE)("CLI: --validate-on-load", () => {
   let tmpDir: string;
 

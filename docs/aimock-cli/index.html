@@ -187,7 +187,11 @@ $ docker run -d -p 4010:4010 \
                 <code>enableMisbehavior</code> and <code>misbehavior</code>.
                 <code>llm.misbehavior</code> is read only when <code>llm.enableMisbehavior</code> is
                 <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
-                with a warning, as 1.44.0 ignored it. Per-fixture knobs such as
+                with a warning, as 1.44.0 ignored it. An <code>llm.responsesTools</code> other than
+                <code>"legacy"</code> or <code>"extended"</code> is also ignored with a warning, and
+                the server runs in <code>legacy</code> mode. A non-boolean
+                <code>llm.strictToolArguments</code> or <code>llm.enableMisbehavior</code> is
+                ignored with a warning and the option stays off. Per-fixture knobs such as
                 <code>streamingProfile</code> live on the fixture entries.
               </td>
             </tr>
@@ -483,7 +487,10 @@ $ docker run -d -p 4010:4010 \
             <tr>
               <td><code>--responses-tools &lt;mode&gt;</code></td>
               <td>config <code>llm.responsesTools</code>, else <code>legacy</code></td>
-              <td>OpenAI Responses tool handling: <code>legacy</code> or <code>extended</code></td>
+              <td>
+                OpenAI Responses tool handling: <code>legacy</code> or <code>extended</code> (any
+                other value exits 1)
+              </td>
             </tr>
             <tr>
               <td><code>-h</code>, <code>--help</code></td>

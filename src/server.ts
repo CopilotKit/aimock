@@ -13,6 +13,7 @@ import type {
   MockServerOptions,
   Mountable,
   RecordProviderKey,
+  ResponsesToolsMode,
 } from "./types.js";
 import {
   getFixtureMisbehaviorPosition,
@@ -2911,13 +2912,17 @@ async function startServer(
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  // 1.44.0 ignored an unknown `responsesTools` option, so an invalid value is
+  // ignored with a warning (at any logLevel, as aimock --config warns) and the
+  // server runs in "legacy" mode.
+  const validResponsesTools = (mode: unknown): mode is ResponsesToolsMode =>
+    mode === "legacy" || mode === "extended";
   if (
     serverOptions.responsesTools !== undefined &&
-    serverOptions.responsesTools !== "legacy" &&
-    serverOptions.responsesTools !== "extended"
+    !validResponsesTools(serverOptions.responsesTools)
   ) {
-    throw new TypeError(
-      `responsesTools must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}`,
+    new Logger("warn").warn(
+      `Ignoring responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}. Using "legacy".`,
     );
   }
   // Runtime-mutable server chaos config. Reads fall through to the construction
@@ -2997,7 +3002,8 @@ async function startServer(
       return serverOptions.strictToolArguments;
     },
     get responsesTools() {
-      return serverOptions.responsesTools;
+      const mode = serverOptions.responsesTools;
+      return validResponsesTools(mode) ? mode : undefined;
     },
     get requestTransform() {
       return serverOptions.requestTransform;

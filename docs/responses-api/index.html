@@ -203,7 +203,9 @@
           once per server with <code>responsesTools: "extended"</code> (programmatic) or
           <code>--responses-tools extended</code> (the <code>llmock</code> and
           <code>aimock</code> bins), or <code>llm.responsesTools: "extended"</code> in an
-          <code>aimock --config</code> file. With it:
+          <code>aimock --config</code> file. Any other option or config value is ignored with a
+          warning and the server runs in <code>legacy</code> mode, as 1.44.0 ignored it; an invalid
+          <code>--responses-tools</code> flag value exits 1. With it:
         </p>
         <ul>
           <li>

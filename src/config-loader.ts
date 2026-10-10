@@ -181,12 +181,24 @@ export async function startFromConfig(
   overrides?: StartFromConfigOverrides,
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  // 1.44.0 ignored these keys, so a non-boolean value (such as the string
+  // "true") is ignored with a warning, as `llm.misbehavior` is, and the
+  // option stays off.
+  const booleanOptIn = (key: "enableMisbehavior" | "strictToolArguments"): boolean | undefined => {
+    const value: unknown = config.llm?.[key];
+    if (value === undefined || typeof value === "boolean") return value;
+    logger.warn(
+      `Ignoring llm.${key} because it must be true or false, got ${JSON.stringify(value)}.`,
+    );
+    return undefined;
+  };
+  const configEnableMisbehavior = booleanOptIn("enableMisbehavior");
+  const configStrictToolArguments = booleanOptIn("strictToolArguments");
   // Misbehavior needs an explicit opt-in that a 1.44.0 config cannot contain.
   // 1.44.0 ignored `llm.misbehavior`, so without the opt-in the key is ignored
   // (with a warning) and the server serves exactly what 1.44.0 served. With the
   // opt-in, an invalid value fails startup like any other enabled-mode error.
-  const enableMisbehavior =
-    (overrides?.enableMisbehavior ?? config.llm?.enableMisbehavior) === true;
+  const enableMisbehavior = (overrides?.enableMisbehavior ?? configEnableMisbehavior) === true;
   let misbehavior: MisbehaviorConfig | undefined;
   if (config.llm?.misbehavior !== undefined) {
     if (!enableMisbehavior) {
@@ -200,6 +212,20 @@ export async function startFromConfig(
       }
       misbehavior = parsed.config;
     }
+  }
+
+  // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
+  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode.
+  let responsesTools = config.llm?.responsesTools;
+  if (
+    responsesTools !== undefined &&
+    responsesTools !== "legacy" &&
+    responsesTools !== "extended"
+  ) {
+    logger.warn(
+      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using "legacy".`,
+    );
+    responsesTools = undefined;
   }
 
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the
@@ -229,8 +255,8 @@ export async function startFromConfig(
       record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
-      strictToolArguments: overrides?.strictToolArguments ?? config.llm?.strictToolArguments,
-      responsesTools: overrides?.responsesTools ?? config.llm?.responsesTools,
+      strictToolArguments: overrides?.strictToolArguments ?? configStrictToolArguments,
+      responsesTools: overrides?.responsesTools ?? responsesTools,
     },
     resolvedAuth,
   );
