@@ -233,6 +233,49 @@ describe("startFromConfig", () => {
     expect(await resp.text()).not.toContain('"namespace":"docs"');
   });
 
+  it.each(["extended", "legacy"] as const)(
+    "names the --responses-tools mode (%s) in the invalid llm.responsesTools warning",
+    async (mode) => {
+      // The flag overrides the invalid key, so the warning must not claim "legacy"
+      // when the server runs extended.
+      const fixturePath = join(tmpDir, `ns-invalid-override-${mode}.json`);
+      writeFileSync(
+        fixturePath,
+        JSON.stringify({
+          fixtures: [
+            {
+              match: { userMessage: "hello" },
+              response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      cleanups.push(async () => warn.mockRestore());
+      const { llmock, url } = await startFromConfig(
+        { llm: { fixtures: fixturePath, logLevel: "silent", responsesTools: "wide" as "legacy" } },
+        { responsesTools: mode },
+      );
+      cleanups.push(() => llmock.stop());
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[aimock]",
+        `Ignoring llm.responsesTools because it must be "legacy" or "extended", got "wide". Using "${mode}" from --responses-tools.`,
+      );
+      const resp = await fetch(`${url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+      });
+      expect(resp.status).toBe(200);
+      // The effective mode matches the warning: only extended emits the namespace.
+      const body = await resp.text();
+      if (mode === "extended") expect(body).toContain('"namespace":"docs"');
+      else expect(body).not.toContain('"namespace":"docs"');
+    },
+  );
+
   it.each(["strictToolArguments", "enableMisbehavior"] as const)(
     "ignores a non-boolean llm.%s with a warning and leaves the option off",
     async (key) => {

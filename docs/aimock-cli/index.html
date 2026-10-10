@@ -189,10 +189,12 @@ $ docker run -d -p 4010:4010 \
                 <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
                 with a warning, as 1.44.0 ignored it. An <code>llm.responsesTools</code> other than
                 <code>"legacy"</code> or <code>"extended"</code> is also ignored with a warning, and
-                the server runs in <code>legacy</code> mode. A non-boolean
+                the server runs in <code>legacy</code> mode, or in the mode that
+                <code>--responses-tools</code> sets (the warning names it). A non-boolean
                 <code>llm.strictToolArguments</code> or <code>llm.enableMisbehavior</code> is
-                ignored with a warning and the option stays off. Per-fixture knobs such as
-                <code>streamingProfile</code> live on the fixture entries.
+                ignored with a warning and the option stays off, unless
+                <code>--strict-tool-arguments</code> or <code>--misbehavior</code> turns it on.
+                Per-fixture knobs such as <code>streamingProfile</code> live on the fixture entries.
               </td>
             </tr>
             <tr>
