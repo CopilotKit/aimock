@@ -1047,3 +1047,67 @@ describe.skipIf(!existsSync(CJS_CLI_PATH))("aimock: the compiled CJS entry runs 
     expect(esm.stdout).toBe(cjs.stdout);
   });
 });
+
+describe("runAimockCli: opt-in flags", () => {
+  let cleanupFn: (() => void) | null = null;
+  afterEach(() => {
+    cleanupFn?.();
+    cleanupFn = null;
+  });
+
+  async function overridesFor(flags: string[]): Promise<unknown> {
+    const startFromConfigFn = vi.fn().mockResolvedValue({
+      llmock: { stop: vi.fn().mockResolvedValue(undefined) },
+      url: "http://127.0.0.1:1",
+    });
+    runAimockCli({
+      argv: ["--config", "/c.json", ...flags],
+      log: () => {},
+      logError: () => {},
+      exit: () => {},
+      loadConfigFn: vi.fn().mockReturnValue({} as AimockConfig),
+      startFromConfigFn,
+      onReady: (ctx) => {
+        cleanupFn = ctx.shutdown;
+      },
+    });
+    await vi.waitFor(() => expect(startFromConfigFn).toHaveBeenCalled());
+    return startFromConfigFn.mock.calls[0][1];
+  }
+
+  it("passes no opt-in overrides without the flags", async () => {
+    expect(await overridesFor([])).toEqual({ port: undefined, host: undefined });
+  });
+
+  it("passes --misbehavior, --strict-tool-arguments and --responses-tools as overrides", async () => {
+    expect(
+      await overridesFor([
+        "--misbehavior",
+        "--strict-tool-arguments",
+        "--responses-tools",
+        "extended",
+      ]),
+    ).toEqual({
+      port: undefined,
+      host: undefined,
+      enableMisbehavior: true,
+      strictToolArguments: true,
+      responsesTools: "extended",
+    });
+  });
+
+  it("rejects an invalid --responses-tools value", () => {
+    const { errors, exitCode } = callCli(["--config", "/c.json", "--responses-tools", "wide"], {
+      loadConfigFn: () => ({}) as AimockConfig,
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain('invalid --responses-tools "wide"');
+  });
+
+  it("lists the opt-in flags in --help", () => {
+    const help = callCli(["--help"]).logs.join("\n");
+    expect(help).toContain("--misbehavior");
+    expect(help).toContain("--strict-tool-arguments");
+    expect(help).toContain("--responses-tools");
+  });
+});

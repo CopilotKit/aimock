@@ -146,7 +146,7 @@ describe("misbehavior enabled", () => {
     expect(result.body.choices[0].message.content).toBe("");
   });
 
-  it("config llm.misbehavior enables misbehavior and applies its baseline", async () => {
+  it("config llm.enableMisbehavior enables misbehavior and applies the llm.misbehavior baseline", async () => {
     const directory = mkdtempSync(join(tmpdir(), "aimock-opt-in-config-"));
     directories.push(directory);
     const fixtures = join(directory, "fixtures.json");
@@ -157,7 +157,14 @@ describe("misbehavior enabled", () => {
     const configPath = join(directory, "aimock.json");
     writeFileSync(
       configPath,
-      JSON.stringify({ llm: { fixtures, logLevel: "silent", misbehavior: "empty-response" } }),
+      JSON.stringify({
+        llm: {
+          fixtures,
+          logLevel: "silent",
+          misbehavior: "empty-response",
+          enableMisbehavior: true,
+        },
+      }),
     );
     const { llmock, url } = await startFromConfig(loadConfig(configPath));
     mocks.push(llmock);

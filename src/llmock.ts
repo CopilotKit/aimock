@@ -814,10 +814,5 @@ export function createLLMockWithResolvedAuth(
   options: MockServerOptions,
   resolvedAuth: ResolvedInboundAuth,
 ): LLMock {
-  // aimock --config: an `llm.misbehavior` key (the config loader has already
-  // validated it) is the config form of enabling misbehavior.
-  if (options.misbehavior !== undefined && options.enableMisbehavior === undefined) {
-    return new LLMock({ ...options, enableMisbehavior: true }, resolvedAuth);
-  }
   return new LLMock(options, resolvedAuth);
 }

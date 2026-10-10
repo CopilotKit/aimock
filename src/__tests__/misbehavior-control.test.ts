@@ -136,7 +136,7 @@ describe("config-file misbehavior defaults", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function configFromFile(misbehavior?: unknown) {
+  function configFromFile(misbehavior?: unknown, llmExtra: Record<string, unknown> = {}) {
     const fixturePath = join(directory, "fixtures.json");
     writeFileSync(
       fixturePath,
@@ -147,13 +147,19 @@ describe("config-file misbehavior defaults", () => {
     const configPath = join(directory, "aimock.json");
     writeFileSync(
       configPath,
-      JSON.stringify({ llm: { fixtures: fixturePath, logLevel: "silent", misbehavior } }),
+      JSON.stringify({
+        llm: { fixtures: fixturePath, logLevel: "silent", misbehavior, ...llmExtra },
+      }),
     );
     return loadConfig(configPath);
   }
 
-  async function start(misbehavior?: unknown) {
-    const result = await startFromConfig(configFromFile(misbehavior));
+  async function start(
+    misbehavior?: unknown,
+    llmExtra: Record<string, unknown> = {},
+    overrides?: Parameters<typeof startFromConfig>[1],
+  ) {
+    const result = await startFromConfig(configFromFile(misbehavior, llmExtra), overrides);
     servers.push(result.llmock);
     return result;
   }
@@ -173,36 +179,74 @@ describe("config-file misbehavior defaults", () => {
     "empty-response",
     { seed: 7, faults: [{ fault: "empty-response", times: 1 }] },
     { faults: [] },
-  ])("forwards valid config to construction: %j", async (misbehavior) => {
+  ])(
+    "forwards valid config to construction with llm.enableMisbehavior: %j",
+    async (misbehavior) => {
+      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+      await start(misbehavior, { enableMisbehavior: true });
+      expect(construction.mock.calls[0][0].enableMisbehavior).toBe(true);
+      expect(construction.mock.calls[0][0].misbehavior).toEqual(
+        typeof misbehavior === "string" ? { faults: [{ fault: misbehavior }] } : misbehavior,
+      );
+    },
+  );
+
+  // 1.44.0 ignored llm.misbehavior, so its presence alone never enables
+  // misbehavior: valid or not, the key is ignored with a warning and the
+  // server serves what 1.44.0 served for the same config.
+  it.each([
+    "empty-response",
+    { faults: [{ fault: "empty-response" }] },
+    { faults: [], typo: true },
+    { faults: [{ fault: "empty-response", rate: 2 }] },
+    null,
+    "unknown-fault",
+  ])("ignores llm.misbehavior without the opt-in and serves as 1.44.0: %j", async (misbehavior) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
-    await start(misbehavior);
-    expect(construction.mock.calls[0][0].misbehavior).toEqual(
-      typeof misbehavior === "string" ? { faults: [{ fault: misbehavior }] } : misbehavior,
+    const { url } = await start(misbehavior);
+    expect(construction.mock.calls[0][0].misbehavior).toBeUndefined();
+    expect(construction.mock.calls[0][0].enableMisbehavior).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      "[aimock]",
+      expect.stringMatching(/^Ignoring llm\.misbehavior because misbehavior is not enabled/),
     );
+    expect(await responseContent(url)).toBe("configured answer");
   });
 
-  // 1.44.0 ignored llm.misbehavior, so a value it accepted keeps starting: an
-  // invalid value warns and leaves misbehavior disabled (1.44.0 behavior).
+  it("ignores llm.misbehavior when llm.enableMisbehavior is false", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { url } = await start("empty-response", { enableMisbehavior: false });
+    expect(await responseContent(url)).toBe("configured answer");
+  });
+
+  it("applies llm.misbehavior with llm.enableMisbehavior: true", async () => {
+    const { url } = await start("empty-response", { enableMisbehavior: true });
+    expect(await responseContent(url)).toBe("");
+  });
+
+  it("applies llm.misbehavior with the enableMisbehavior override (aimock --misbehavior)", async () => {
+    const { url } = await start("empty-response", {}, { enableMisbehavior: true });
+    expect(await responseContent(url)).toBe("");
+  });
+
   it.each([
     [{ faults: [], typo: true }, "misbehavior/unknown-key"],
     [{ faults: [{ fault: "empty-response", rate: 2 }] }, "misbehavior/bad-value"],
     [null, "misbehavior/bad-value"],
     ["unknown-fault", "misbehavior/bad-value"],
   ])(
-    "warns about bad raw config, leaves misbehavior disabled and serves as 1.44.0: %j",
+    "rejects bad raw config with a plain rule-prefixed TypeError when enabled: %j",
     async (misbehavior, rule) => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
-      const { url } = await start(misbehavior);
-      expect(construction.mock.calls[0][0].misbehavior).toBeUndefined();
-      expect(construction.mock.calls[0][0].enableMisbehavior).toBeUndefined();
-      expect(warn).toHaveBeenCalledWith(
-        "[aimock]",
-        expect.stringMatching(
-          new RegExp(`^${rule}: llm\\.misbehavior.*Ignoring llm\\.misbehavior`),
-        ),
-      );
-      expect(await responseContent(url)).toBe("configured answer");
+      let caught: unknown;
+      try {
+        await start(misbehavior, { enableMisbehavior: true });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(TypeError);
+      expect(Object.getPrototypeOf(caught)).toBe(TypeError.prototype);
+      expect(caught).toHaveProperty("message", expect.stringMatching(new RegExp(`^${rule}`)));
     },
   );
 
@@ -215,7 +259,7 @@ describe("config-file misbehavior defaults", () => {
   it.runIf(process.env.AIMOCK_C1_HTTP_PROOF === "1")(
     "honors raw config fault defaults over real localhost HTTP",
     async () => {
-      const { url } = await start("empty-response");
+      const { url } = await start("empty-response", { enableMisbehavior: true });
       expect(await responseContent(url)).toBe("");
     },
   );

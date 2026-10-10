@@ -156,6 +156,80 @@ describe("startFromConfig", () => {
     ).toBe(500);
   });
 
+  it("llm.responsesTools and the overrides set the Responses tool mode", async () => {
+    const fixturePath = join(tmpDir, "ns.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const emitsNamespace = async (
+      config: AimockConfig,
+      overrides?: Parameters<typeof startFromConfig>[1],
+    ): Promise<boolean> => {
+      const { llmock, url } = await startFromConfig(config, overrides);
+      cleanups.push(() => llmock.stop());
+      const resp = await fetch(`${url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+      });
+      return (await resp.text()).includes('"namespace":"docs"');
+    };
+    const llm = { fixtures: fixturePath, logLevel: "silent" as const };
+    // Default (as in 1.44.0): legacy, no namespace emitted.
+    expect(await emitsNamespace({ llm })).toBe(false);
+    expect(await emitsNamespace({ llm: { ...llm, responsesTools: "extended" } })).toBe(true);
+    expect(await emitsNamespace({ llm }, { responsesTools: "extended" })).toBe(true);
+    expect(
+      await emitsNamespace(
+        { llm: { ...llm, responsesTools: "extended" } },
+        { responsesTools: "legacy" },
+      ),
+    ).toBe(false);
+  });
+
+  it("an invalid llm.responsesTools fails startup", async () => {
+    await expect(
+      startFromConfig({ llm: { logLevel: "silent", responsesTools: "wide" as "legacy" } }),
+    ).rejects.toThrow(/responsesTools must be "legacy" or "extended"/);
+  });
+
+  it("the strictToolArguments override wins over the config", async () => {
+    const fixturePath = join(tmpDir, "bad-args-2.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const { llmock, url } = await startFromConfig(
+      { llm: { fixtures: fixturePath, logLevel: "silent" } },
+      { strictToolArguments: true },
+    );
+    cleanups.push(() => llmock.stop());
+    const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+    });
+    await resp.text();
+    expect(resp.status).toBe(500);
+  });
+
   it("creates server with LLM fixtures from a file", async () => {
     const fixturePath = writeFixtureFile(tmpDir);
     const config: AimockConfig = { llm: { fixtures: fixturePath } };

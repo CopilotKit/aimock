@@ -14,6 +14,7 @@ import type {
   MisbehaviorFaultId,
   Mountable,
   RecordConfig,
+  ResponsesToolsMode,
 } from "./types.js";
 import { parseMisbehavior } from "./misbehavior.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
@@ -114,10 +115,19 @@ export interface AimockConfig {
     replaySpeed?: number;
     logLevel?: "silent" | "warn" | "info" | "debug";
     chaos?: ChaosConfig;
+    /**
+     * Server-wide misbehavior defaults. Read only when misbehavior is enabled
+     * (`llm.enableMisbehavior: true` or `aimock --misbehavior`); otherwise the
+     * key is ignored with a warning, as 1.44.0 ignored it.
+     */
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
+    /** See `MockServerOptions.enableMisbehavior`. */
+    enableMisbehavior?: boolean;
     record?: AimockRecordConfig;
     /** See `MockServerOptions.strictToolArguments`. */
     strictToolArguments?: boolean;
+    /** See `MockServerOptions.responsesTools`. */
+    responsesTools?: ResponsesToolsMode;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -151,23 +161,44 @@ function hasMcpRecordMount(config: AimockConfig): boolean {
   );
 }
 
+/**
+ * Command-line overrides for `startFromConfig`. The opt-in flags win over the
+ * matching `llm.*` config keys.
+ */
+export interface StartFromConfigOverrides {
+  port?: number;
+  host?: string;
+  /** `aimock --misbehavior`: overrides `llm.enableMisbehavior`. */
+  enableMisbehavior?: boolean;
+  /** `aimock --strict-tool-arguments`: overrides `llm.strictToolArguments`. */
+  strictToolArguments?: boolean;
+  /** `aimock --responses-tools`: overrides `llm.responsesTools`. */
+  responsesTools?: ResponsesToolsMode;
+}
+
 export async function startFromConfig(
   config: AimockConfig,
-  overrides?: { port?: number; host?: string },
+  overrides?: StartFromConfigOverrides,
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
-  // A valid `llm.misbehavior` enables misbehavior. 1.44.0 ignored this key, so
-  // an invalid value cannot fail startup: warn and leave misbehavior disabled,
-  // which serves exactly what 1.44.0 served for the same config.
+  // Misbehavior needs an explicit opt-in that a 1.44.0 config cannot contain.
+  // 1.44.0 ignored `llm.misbehavior`, so without the opt-in the key is ignored
+  // (with a warning) and the server serves exactly what 1.44.0 served. With the
+  // opt-in, an invalid value fails startup like any other enabled-mode error.
+  const enableMisbehavior =
+    (overrides?.enableMisbehavior ?? config.llm?.enableMisbehavior) === true;
   let misbehavior: MisbehaviorConfig | undefined;
   if (config.llm?.misbehavior !== undefined) {
-    const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
-    if (parsed.ok) {
-      misbehavior = parsed.config;
-    } else {
+    if (!enableMisbehavior) {
       logger.warn(
-        `${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}. Ignoring llm.misbehavior; misbehavior stays disabled.`,
+        "Ignoring llm.misbehavior because misbehavior is not enabled. Set llm.enableMisbehavior: true or pass --misbehavior to use it.",
       );
+    } else {
+      const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
+      if (!parsed.ok) {
+        throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+      }
+      misbehavior = parsed.config;
     }
   }
 
@@ -194,10 +225,12 @@ export async function startFromConfig(
       logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(config) ? "warn" : undefined),
       chaos: config.llm?.chaos,
       misbehavior,
+      ...(enableMisbehavior ? { enableMisbehavior: true } : {}),
       record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
-      strictToolArguments: config.llm?.strictToolArguments,
+      strictToolArguments: overrides?.strictToolArguments ?? config.llm?.strictToolArguments,
+      responsesTools: overrides?.responsesTools ?? config.llm?.responsesTools,
     },
     resolvedAuth,
   );
