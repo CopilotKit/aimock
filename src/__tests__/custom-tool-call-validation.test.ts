@@ -340,7 +340,8 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     dir = mkdtempSync(join(tmpdir(), "aimock-505-unvalidated-"));
     const file = join(dir, "custom.json");
     writeFileSync(file, JSON.stringify({ fixtures: [entry(response)] }));
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    // Serving customToolCalls / responsesBlocks needs responsesTools "extended".
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     mock.loadFixtureFile(file);
     await mock.start();
     return mock;

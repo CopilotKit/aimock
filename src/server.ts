@@ -98,6 +98,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
+  setFixtureListResponsesTools,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -2920,6 +2921,7 @@ async function startServer(
       `responsesTools must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}`,
     );
   }
+  setFixtureListResponsesTools(fixtures, () => serverOptions.responsesTools);
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under

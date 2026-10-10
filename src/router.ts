@@ -16,6 +16,8 @@ import {
   isVideoResponse,
   isJSONResponse,
   isErrorResponse,
+  isExtendedResponsesToolsList,
+  markExtendedResponsesToolsRequest,
 } from "./helpers.js";
 
 export function getLastMessageByRole(messages: ChatMessage[], role: string): ChatMessage | null {
@@ -329,6 +331,11 @@ export function matchFixtureDiagnostic(
   // legacy hard gate for replay too). Record mode passes `true` explicitly; the
   // env only matters when the caller left it `false`/unset (replay).
   const strictTurnIndex = (options?.strictTurnIndex ?? false) || strictTurnIndexEnv();
+  // `match.toolNamespace` (and, in resolveResponse, `customToolCalls` /
+  // `responsesBlocks`) apply only with responsesTools "extended". Earlier
+  // releases ignored these keys, so the default ignores them too.
+  const extendedTools = isExtendedResponsesToolsList(fixtures);
+  if (extendedTools) markExtendedResponsesToolsRequest(req);
 
   let skippedBySequenceOrTurn = 0;
   // Every fixture whose content / shape predicates (and sequenceIndex gate)
@@ -534,13 +541,13 @@ export function matchFixtureDiagnostic(
     // toolName — match against any tool definition by function.name (and,
     // with responsesTools "extended", any Responses custom tool by name).
     // toolNamespace — exact OpenAI Responses namespace of an offered tool; with
-    // toolName, ONE tool must carry both (Codex routes by the exact pair). A
-    // toolNamespace fixture always sees every tool the Responses request
-    // offered, whatever the responsesTools mode, because no earlier fixture
-    // could use the key.
-    if (match.toolName !== undefined || match.toolNamespace !== undefined) {
+    // toolName, ONE tool must carry both (Codex routes by the exact pair). Only
+    // with responsesTools "extended"; there a toolNamespace fixture sees every
+    // tool the Responses request offered. The default ignores the key.
+    const toolNamespace = extendedTools ? match.toolNamespace : undefined;
+    if (match.toolName !== undefined || toolNamespace !== undefined) {
       const offered =
-        match.toolNamespace !== undefined
+        toolNamespace !== undefined
           ? (getResponsesOfferedTools(effective) ?? getResponsesOfferedTools(req))
           : undefined;
       const tools = offered?.tools ?? (Array.isArray(effective.tools) ? effective.tools : []);
@@ -550,12 +557,12 @@ export function matchFixtureDiagnostic(
         tools.some(
           (t) =>
             (match.toolName === undefined || t?.function?.name === match.toolName) &&
-            (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
+            (toolNamespace === undefined || t?.namespace === toolNamespace),
         ) ||
         customTools.some(
           (t) =>
             (match.toolName === undefined || t?.name === match.toolName) &&
-            (match.toolNamespace === undefined || t?.namespace === match.toolNamespace),
+            (toolNamespace === undefined || t?.namespace === toolNamespace),
         );
       if (!found) continue;
     }

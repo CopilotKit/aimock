@@ -33,8 +33,12 @@ async function post(m: LLMock, path: string, body: Record<string, unknown>) {
   return { status: res.status, text: await res.text() };
 }
 
-async function serve(response: unknown, kind: "static" | "factory"): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function serve(
+  response: unknown,
+  kind: "static" | "factory",
+  responsesTools?: "legacy" | "extended",
+): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   const r = response as FixtureResponse;
   mock.addFixture({ match: { userMessage: "go" }, response: kind === "factory" ? () => r : r });
   await mock.start();
@@ -87,7 +91,7 @@ describe("non-object toolCalls entries serve as in 1.44.0", () => {
 describe("a non-object customToolCalls entry is a coded 500 on the Responses API", () => {
   for (const kind of ["static", "factory"] as const) {
     it(`(${kind})`, async () => {
-      const m = await serve({ toolCalls: [], customToolCalls: ["oops"] }, kind);
+      const m = await serve({ toolCalls: [], customToolCalls: ["oops"] }, kind, "extended");
       for (const stream of [false, true]) {
         const r = await post(m, "/v1/responses", { ...RESPONSES, stream });
         expect(r.status).toBe(500);

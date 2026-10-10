@@ -41,6 +41,7 @@ import type {
   RecordProviderKey,
   McpFakeIdentity,
   McpFakeUndeclaredPolicy,
+  ResponsesToolsMode,
 } from "./types.js";
 import type { MCPSession } from "./mcp-types.js";
 
@@ -593,10 +594,62 @@ export function isResponseFactory(r: FixtureResponse | ResponseFactory): r is Re
   return typeof r === "function";
 }
 
+/**
+ * The `responsesTools` mode of each server's live fixture list. The server
+ * registers its list once; the matcher reads the mode from the list it is
+ * given, so every handler on every wire sees the same mode without extra
+ * parameters. A list that no server registered is `"legacy"`.
+ */
+const fixtureListResponsesTools = new WeakMap<object, () => ResponsesToolsMode | undefined>();
+
+/** Register the `responsesTools` mode (read live) of a server's fixture list. */
+export function setFixtureListResponsesTools(
+  fixtures: readonly Fixture[],
+  mode: () => ResponsesToolsMode | undefined,
+): void {
+  fixtureListResponsesTools.set(fixtures, mode);
+}
+
+/** Whether `fixtures` belongs to a server running with `responsesTools: "extended"`. */
+export function isExtendedResponsesToolsList(fixtures: readonly Fixture[]): boolean {
+  return fixtureListResponsesTools.get(fixtures)?.() === "extended";
+}
+
+/**
+ * Requests matched against an extended fixture list. {@link resolveResponse}
+ * reads it, so the response a handler serves follows the same mode as the
+ * match that chose its fixture.
+ */
+const extendedResponsesToolsRequests = new WeakSet<object>();
+
+/** Mark `request` as matched with `responsesTools: "extended"`. */
+export function markExtendedResponsesToolsRequest(request: ChatCompletionRequest): void {
+  extendedResponsesToolsRequests.add(request);
+}
+
+/**
+ * Drop `customToolCalls` and `responsesBlocks`, for responses served without
+ * `responsesTools: "extended"`. Earlier releases ignored both keys, so a
+ * fixture that carries them serves exactly as before. Returns the same object
+ * when neither key is set.
+ */
+export function withoutResponsesToolKeys<T extends FixtureResponse>(response: T): T {
+  if (!isPlainObject(response)) return response;
+  if (!("customToolCalls" in response) && !("responsesBlocks" in response)) return response;
+  const copy: Record<string, unknown> = { ...(response as Record<string, unknown>) };
+  delete copy.customToolCalls;
+  delete copy.responsesBlocks;
+  return copy as unknown as T;
+}
+
 export async function resolveResponse(
   fixture: Fixture,
   request: ChatCompletionRequest,
 ): Promise<FixtureResponse> {
+  const served = (response: FixtureResponse): FixtureResponse =>
+    sanitizeFixtureResponse(
+      extendedResponsesToolsRequests.has(request) ? response : withoutResponsesToolKeys(response),
+    );
   if (typeof fixture.response === "function") {
     let normalized: FixtureResponse;
     try {
@@ -606,9 +659,9 @@ export async function resolveResponse(
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Response factory threw: ${msg}`, { cause: err });
     }
-    return sanitizeFixtureResponse(normalized);
+    return served(normalized);
   }
-  return sanitizeFixtureResponse(fixture.response);
+  return served(fixture.response);
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -678,9 +731,9 @@ export function sanitizeFixtureResponse(response: FixtureResponse): FixtureRespo
 /**
  * Drop `namespace` from every `toolCalls` entry and `toolCall` block, for
  * OpenAI Responses requests served without `responsesTools: "extended"`:
- * earlier releases never emitted it. `customToolCalls` and `responsesBlocks`
- * keep theirs (new keys are honored in every mode). Returns the same object
- * when no namespace is set.
+ * earlier releases never emitted it. (Without that mode, resolveResponse has
+ * already dropped `customToolCalls` and `responsesBlocks`.) Returns the same
+ * object when no namespace is set.
  */
 export function withoutLegacyNamespaces<T extends FixtureResponse>(response: T): T {
   if (!isPlainObject(response)) return response;
