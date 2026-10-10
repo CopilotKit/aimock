@@ -606,7 +606,7 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
       response: { video: { id: "v1", status: "completed" } },
     });
     mock.addFixture({
-      match: { model: "openai/sora-2", endpoint: "video" },
+      match: { model: "google/veo-3.1", endpoint: "video" },
       response: { video: { id: "v2", status: "completed" } },
     });
     // Non-video fixture model must NOT appear
@@ -627,7 +627,7 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
     const ids = data.data.map((m: { id: string }) => m.id);
     // Order-insensitive: ids come from Set iteration, not a documented order.
     expect(ids).toHaveLength(2);
-    expect(ids).toEqual(expect.arrayContaining(["bytedance/seedance-2.0", "openai/sora-2"]));
+    expect(ids).toEqual(expect.arrayContaining(["bytedance/seedance-2.0", "google/veo-3.1"]));
     for (const entry of data.data) {
       expect(typeof entry.name).toBe("string");
       expect(Array.isArray(entry.supported_durations)).toBe(true);
@@ -674,6 +674,93 @@ describe("GET /api/v1/videos/models (OpenRouter video model listing)", () => {
         c.join(" ").includes("No video fixture contributes a string model"),
       ),
     ).toBe(true);
+  });
+});
+
+// ─── Sunset: openai/sora-2 removed from OpenRouter ─────────────────────────
+//
+// OpenRouter removed openai/sora-2 from its video catalog (absent from the live
+// /api/v1/videos/models listing; /api/v1/models/openai/sora-2/endpoints is a
+// 404). A live submit observed on 2026-10-10 is rejected with:
+//   HTTP 400, content-type: application/json
+//   {"error":{"message":"Model openai/sora-2 does not exist","code":400}}
+// Per the deprecation policy the mock serves that rejection and never success.
+
+describe("OpenRouter video — sunset openai/sora-2", () => {
+  let mock: LLMock | undefined;
+
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+  });
+
+  test("default listing no longer advertises openai/sora-2", async () => {
+    mock = new LLMock({ port: 0 });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    expect(res.status).toBe(200);
+    const ids = (await res.json()).data.map((m: { id: string }) => m.id);
+    expect(ids).toContain("bytedance/seedance-2.0");
+    expect(ids).not.toContain("openai/sora-2");
+  });
+
+  test("a fixture for openai/sora-2 does not put it back in the listing", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "openai/sora-2", endpoint: "video" },
+      response: { video: { id: "v_sora", status: "completed" } },
+    });
+    mock.addFixture({
+      match: { model: "bytedance/seedance-2.0", endpoint: "video" },
+      response: { video: { id: "v_sd", status: "completed" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos/models`);
+    const ids = (await res.json()).data.map((m: { id: string }) => m.id);
+    expect(ids).toEqual(["bytedance/seedance-2.0"]);
+  });
+
+  test("submit for openai/sora-2 returns the live 400 rejection even when a fixture matches", async () => {
+    mock = new LLMock({ port: 0 });
+    mock.addFixture({
+      match: { model: "openai/sora-2", endpoint: "video" },
+      response: { video: { id: "v_sora", status: "completed", b64: "AAAA" } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({ model: "openai/sora-2", prompt: "a cat" }),
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({
+      error: { message: "Model openai/sora-2 does not exist", code: 400 },
+    });
+
+    const entries = mock.getRequests();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].response.status).toBe(400);
+    expect(entries[0].response.fixture).toBeNull();
+  });
+
+  test("submit for openai/sora-2 never reaches a record-mode upstream", async () => {
+    mock = new LLMock({
+      port: 0,
+      record: { providers: { openrouter: UPSTREAM_DOWN_URL } },
+    });
+    await mock.start();
+
+    const res = await fetch(`${mock.url}/api/v1/videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test" },
+      body: JSON.stringify({ model: "openai/sora-2", prompt: "a cat" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toBe("Model openai/sora-2 does not exist");
   });
 });
 
