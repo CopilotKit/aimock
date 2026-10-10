@@ -1,6 +1,6 @@
 import type { LiveTranscript } from "./live-types.js";
 import { normalizeLiveFixture, normalizeLiveOptions } from "./live-fixture.js";
-import { isLiveResponse } from "./helpers.js";
+import { isLiveResponse, markServerOwnedFixtures } from "./helpers.js";
 import type {
   AudioResponse,
   ChaosConfig,
@@ -69,29 +69,6 @@ import {
   validateFixtureMisbehavior,
 } from "./misbehavior.js";
 
-/** Count-map keys retain caller identity while fault registrations remain distinct. */
-class FixtureCountMap extends Map<Fixture, number> {
-  constructor(private readonly identity: (fixture: Fixture) => Fixture) {
-    super();
-  }
-
-  override get(key: Fixture): number | undefined {
-    return super.get(this.identity(key));
-  }
-
-  override has(key: Fixture): boolean {
-    return super.has(this.identity(key));
-  }
-
-  override set(key: Fixture, value: number): this {
-    return super.set(this.identity(key), value);
-  }
-
-  override delete(key: Fixture): boolean {
-    return super.delete(this.identity(key));
-  }
-}
-
 export class LLMock {
   private fixtures: Fixture[] = [];
   private fixtureAddition = 0;
@@ -108,6 +85,8 @@ export class LLMock {
   private readonly resolvedInboundAuth?: ResolvedInboundAuth;
 
   constructor(options?: MockServerOptions, resolvedInboundAuth?: ResolvedInboundAuth) {
+    // Only this LLMock's server reads its array, so fixtures it makes may be marked in place.
+    markServerOwnedFixtures(this.fixtures);
     this.options = options ?? {};
     if (this.options.live !== undefined) normalizeLiveOptions(this.options.live);
     // The `misbehavior` option is read only with `enableMisbehavior: true`;
@@ -764,10 +743,7 @@ export class LLMock {
         )
       : createServer(this.fixtures, this.options, this.mounts, serviceFixtures));
     const countIdentity = (fixture: Fixture) => this.fixtureCountOrigins.get(fixture) ?? fixture;
-    this.serverInstance.journal.configureFixtureCountIdentity(
-      countIdentity,
-      () => new FixtureCountMap(countIdentity),
-    );
+    this.serverInstance.journal.configureFixtureCountIdentity(countIdentity);
     // The server holds the buffered fakes now (W2). A start that rejects took
     // its hand-off back, so the buffer is kept for a retry.
     this.mcpFakeBuffer.length = 0;

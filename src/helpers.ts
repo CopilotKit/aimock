@@ -659,6 +659,25 @@ export function createServerFixtureList(
   return list;
 }
 
+/** Fixture arrays that only their own server reads: see {@link markServerOwnedFixtures}. */
+const serverOwnedFixtureArrays = new WeakSet<Fixture[]>();
+
+/**
+ * @internal Mark `fixtures` as an array no other server reads (LLMock's own
+ * array). A server may change the fixtures it makes itself (the control API)
+ * in place only in such an array; in a caller's array, which another server
+ * may share, they stay as made and an extended server reads them through its
+ * view.
+ */
+export function markServerOwnedFixtures(fixtures: Fixture[]): void {
+  serverOwnedFixtureArrays.add(fixtures);
+}
+
+/** Whether the array behind `fixtures` (a server list or an array) is server-owned. */
+export function isServerOwnedFixtures(fixtures: Fixture[]): boolean {
+  return serverOwnedFixtureArrays.has(fixtureListTarget(fixtures));
+}
+
 /** Whether `fixtures` is the list of a server running with `responsesTools: "extended"`. */
 export function isExtendedResponsesToolsList(fixtures: readonly Fixture[]): boolean {
   return serverFixtureLists.get(fixtures)?.mode() === "extended";

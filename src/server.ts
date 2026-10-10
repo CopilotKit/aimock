@@ -44,6 +44,7 @@ import {
   enableHeldFixtureMisbehavior,
   markFixtureResponsesToolsExtended,
   responsesToolsExtendedView,
+  responsesToolsViewSource,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -103,6 +104,7 @@ import {
   runWithToolArgumentsScope,
   createServerFixtureList,
   isExtendedResponsesToolsList,
+  isServerOwnedFixtures,
   withoutResponsesToolKeys,
   getContext,
   describeMatch,
@@ -978,7 +980,7 @@ async function handleControlAPI(
       "Content-Type": "application/json",
       "X-Total-Count": String(total),
     });
-    res.end(JSON.stringify(entries));
+    res.end(journalJson(entries, fixtures));
     return true;
   }
 
@@ -1333,6 +1335,12 @@ async function handleControlAPI(
       return true;
     }
 
+    // An extended server changes the fixtures it makes in place only in an
+    // array no other server reads (LLMock's). In a caller's array, which a
+    // legacy server may share, they stay as 1.44.0 made them and this server
+    // reads them through its view, as it reads the caller's own fixtures.
+    const extendedResponsesTools = defaults.responsesTools === "extended";
+    const markInPlace = extendedResponsesTools && isServerOwnedFixtures(fixtures);
     const addition = controlFixtureAdditions.get(defaults) ?? 0;
     controlFixtureAdditions.set(defaults, addition + 1);
     const converted: Fixture[] = [];
@@ -1344,7 +1352,7 @@ async function handleControlAPI(
           index,
         });
         if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
-        if (defaults.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
+        if (markInPlace) markFixtureResponsesToolsExtended(fixture);
         converted.push(fixture);
       } catch (error) {
         if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {
@@ -1354,7 +1362,12 @@ async function handleControlAPI(
       }
     }
     // Only a fully converted batch preserves the original validation indices.
-    const issues = loadErrors.length === 0 ? validateFixtures(converted) : [];
+    const issues =
+      loadErrors.length === 0
+        ? validateFixtures(
+            extendedResponsesTools ? converted.map(responsesToolsExtendedView) : converted,
+          )
+        : [];
     const errors = issues.filter((i) => i.severity === "error");
     // The whole body is checked before anything is added (W6): the LLM
     // fixtures, then every `mcpFakes` block against the live mounts.
@@ -2893,6 +2906,26 @@ export async function createServerWithResolvedAuth(
 }
 
 /**
+ * The journal as JSON. The entries hold the caller's fixtures; a server with
+ * `responsesTools: "extended"` shows each one as it reads it (its extended
+ * view), so the journal reads as it did when those fixtures were marked in
+ * place. Any other server shows the entries as they are.
+ */
+function journalJson(entries: JournalEntry[], fixtures: readonly Fixture[]): string {
+  if (!isExtendedResponsesToolsList(fixtures)) return JSON.stringify(entries);
+  return JSON.stringify(
+    entries.map((entry) => {
+      const fixture = entry.response.fixture;
+      if (!fixture) return entry;
+      const view = responsesToolsExtendedView(fixture);
+      return view === fixture
+        ? entry
+        : { ...entry, response: { ...entry.response, fixture: view } };
+    }),
+  );
+}
+
+/**
  * The server of `createServerWithResolvedAuth`, after the MCP fakes hand-off.
  * `commitHandOff` runs once the server listens; if it throws, the server is
  * closed and start rejects.
@@ -3171,6 +3204,11 @@ async function startServer(
       if (req) ownJournalEntry.set(req, entry);
     },
   });
+  // An extended server matches each fixture through its view; the journal
+  // counts and records the caller's fixture behind it, as before the views.
+  if (serverOptions.responsesTools === "extended") {
+    journal.configureFixtureViewSource(responsesToolsViewSource);
+  }
   const videoStates = new VideoStateMap();
   const openRouterVideoJobs = new OpenRouterVideoJobMap();
   const veoVideoJobs = new VeoVideoJobMap();
@@ -4442,7 +4480,7 @@ async function startServer(
         }
         const entries = journal.getAll(opts);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(entries));
+        res.end(journalJson(entries, fixtures));
         return;
       }
       if (req.method === "DELETE") {

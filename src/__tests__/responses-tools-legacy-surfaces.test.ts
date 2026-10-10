@@ -375,3 +375,166 @@ describe("servers that share fixtures keep their own responsesTools mode", () =>
     expect(JSON.stringify(fixtures)).toBe(before);
   });
 });
+
+/**
+ * #518 R4 — an extended server reads a caller fixture with held keys through
+ * its extended view, but every identity API names the caller's object:
+ * getFixtureMatchCount, findByFixture, the count-map keys and
+ * JournalEntry.response.fixture. The journal JSON still shows the extended
+ * form. Expected values are what 608a4842 (which marked fixtures in place)
+ * returned for the same calls.
+ */
+describe("an extended server keeps the caller's fixture objects", () => {
+  /** k1 x2, ctc, tns (no namespace offered: 404), tn2 (namespace offered). */
+  async function drive(url: string): Promise<number[]> {
+    const statuses: number[] = [];
+    const send = async (input: string, tools?: object[]) => {
+      const res = await fetch(`${url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", input, ...(tools && { tools }) }),
+      });
+      await res.text();
+      statuses.push(res.status);
+    };
+    await send("k1");
+    await send("k1");
+    await send("ctc");
+    await send("tns", [{ type: "function", name: "t", parameters: {} }]);
+    await send("tn2", [
+      { type: "namespace", name: "nsX", tools: [{ type: "function", name: "t" }] },
+    ]);
+    return statuses;
+  }
+
+  function expectIdentity(
+    journal: ServerInstance["journal"],
+    caller: readonly Fixture[],
+    statuses: number[],
+  ) {
+    expect(statuses).toEqual([200, 200, 200, 404, 200]);
+    expect(caller.map((f) => journal.getFixtureMatchCount(f))).toEqual([2, 0, 1, 0, 1]);
+    expect(caller.map((f) => journal.findByFixture(f).length)).toEqual([2, 0, 1, 0, 1]);
+    const keys = [...journal.fixtureMatchCounts.keys()];
+    expect(keys.map((k) => caller.indexOf(k))).toEqual([0, 2, 4]);
+    expect([...journal.getFixtureMatchCountsForTest("__default__").keys()]).toEqual(keys);
+    const refs = journal
+      .getAll()
+      .map((e) => (e.response.fixture ? caller.indexOf(e.response.fixture) : null));
+    expect(refs).toEqual([0, 0, 2, null, 4]);
+  }
+
+  it("createServer(loadFixtureFile output)", async () => {
+    const caller = loadFixtureFile(fixtureFile());
+    const before = JSON.stringify(caller);
+    server = await createServer(caller, {
+      port: 0,
+      logLevel: "silent",
+      responsesTools: "extended",
+    });
+    expectIdentity(server.journal, caller, await drive(server.url));
+    const journal = (await (await fetch(`${server.url}/__aimock/journal`)).json()) as {
+      response: { fixture: unknown };
+    }[];
+    expect(JSON.stringify(journal[2].response.fixture)).toBe(EXTENDED_CTC);
+    expect(await listing(server.url)).toBe(EXTENDED_LISTING);
+    expect(JSON.stringify(caller)).toBe(before);
+  });
+
+  it("LLMock.addFixtures(loadFixtureFile output)", async () => {
+    const caller = loadFixtureFile(fixtureFile());
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    mock.addFixtures(caller);
+    await mock.start();
+    mock.getFixtures().forEach((f, i) => expect(f).toBe(caller[i]));
+    expectIdentity(mock.journal, caller, await drive(mock.url));
+    const journal = (await (await fetch(`${mock.url}/__aimock/journal`)).json()) as {
+      response: { fixture: unknown };
+    }[];
+    expect(JSON.stringify(journal[2].response.fixture)).toBe(EXTENDED_CTC);
+  });
+});
+
+/**
+ * #518 R4-F2 — fixtures POSTed to an extended server's control API join the
+ * caller's array as 1.44.0 made them; that server reads them through its view.
+ * A legacy server sharing the array lists and journals them as 1.44.0 did.
+ */
+describe("control-API fixtures on a shared array keep each server's mode", () => {
+  const started: ServerInstance[] = [];
+  afterEach(async () => {
+    for (const s of started.splice(0)) await new Promise<void>((r) => s.server.close(() => r()));
+  });
+
+  it.each([
+    ["legacy first", ["legacy", "extended"] as const],
+    ["extended first", ["extended", "legacy"] as const],
+  ])("POST to the extended server, %s", async (_label, order) => {
+    const shared: Fixture[] = [];
+    const servers: Record<string, ServerInstance> = {};
+    for (const mode of order) {
+      const s = await createServer(shared, {
+        port: 0,
+        logLevel: "silent",
+        ...(mode === "extended" && { responsesTools: "extended" }),
+      });
+      started.push(s);
+      servers[mode] = s;
+    }
+    const posted = await fetch(`${servers.extended.url}/__aimock/fixtures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fixtures: ENTRIES }),
+    });
+    expect(await posted.json()).toEqual({ added: ENTRIES.length });
+    // The caller's array holds the fixtures as 1.44.0 made them.
+    expect(JSON.stringify(shared.map((f) => f.match))).toBe(
+      '[{"userMessage":"k1"},{"userMessage":"k4"},{"userMessage":"ctc"},' +
+        '{"userMessage":"tns"},{"userMessage":"tn2","toolName":"t"}]',
+    );
+    expect(await listing(servers.legacy.url)).toBe(LEGACY_LISTING);
+    expect(await journalFixtures(servers.legacy.url)).toEqual([
+      LEGACY_CTC,
+      '{"match":{"userMessage":"tns"},"response":{"content":"TNS"}}',
+    ]);
+    expect(await listing(servers.extended.url)).toBe(EXTENDED_LISTING);
+    const extendedJournal = await journalFixtures(servers.extended.url);
+    expect(extendedJournal[0]).toBe(EXTENDED_CTC);
+    // The namespaced Responses request matches only on the extended server.
+    expect(extendedJournal[1]).toBe(
+      '{"match":{"userMessage":"tns","toolNamespace":"nsX"},"response":{"content":"TNS"}}',
+    );
+  });
+
+  it("an extended LLMock's own array holds POSTed fixtures in the extended form", async () => {
+    // No other server reads an LLMock's array, so its fixtures are marked in place, as before.
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    await mock.start();
+    await fetch(`${mock.url}/__aimock/fixtures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fixtures: ENTRIES }),
+    });
+    expect(JSON.stringify(mock.getFixtures()[2])).toBe(EXTENDED_CTC);
+    expect(mock.getFixtures()[3].match).toEqual({ userMessage: "tns", toolNamespace: "nsX" });
+  });
+
+  it("an extended server still validates the keys it reads", async () => {
+    const shared: Fixture[] = [];
+    server = await createServer(shared, {
+      port: 0,
+      logLevel: "silent",
+      responsesTools: "extended",
+    });
+    const res = await fetch(`${server.url}/__aimock/fixtures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fixtures: [{ match: { userMessage: "bad" }, response: { customToolCalls: [{ name: 3 }] } }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain("customToolCalls[0].name");
+    expect(shared).toHaveLength(0);
+  });
+});
