@@ -1491,7 +1491,9 @@ export interface MockServerOptions {
    * custom tool call rounds for `turnIndex` / `hasToolResult` / `toolCallId`,
    * emits fixture namespaces, applies `match.toolNamespace`,
    * `customToolCalls` and `responsesBlocks` (which `"legacy"` ignores), and
-   * makes the recorder keep namespaces and custom tool calls.
+   * makes the recorder keep namespaces and custom tool calls. The mode is
+   * fixed when the server starts; changing `responsesTools` on the options
+   * object after `createServer` or `LLMock.start()` is unsupported.
    */
   responsesTools?: ResponsesToolsMode;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
