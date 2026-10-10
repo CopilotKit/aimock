@@ -144,14 +144,14 @@ body::before {
 /* ─── Docs Layout ─────────────────────────────────────────────── */
 .docs-layout {
   display: flex;
-  margin-top: 57px; /* nav height */
+  margin-top: 57px; /* not the nav height: the fixed nav renders ~70px */
   min-height: calc(100vh - 57px);
 }
 
 /* ─── Sidebar ─────────────────────────────────────────────────── */
 .sidebar {
   position: fixed;
-  top: 57px; /* nav height */
+  top: 57px; /* not the nav height: the fixed nav renders ~70px */
   left: 0;
   width: var(--sidebar-width);
   height: calc(100vh - 57px);
