@@ -205,7 +205,7 @@ const fixtures = {
 async function serve(
   wire: Wire,
   response: object,
-  options: { strictToolArguments?: boolean } = {},
+  options: { strictToolArguments?: boolean; enableMisbehavior?: boolean } = {},
 ): Promise<{ status: number; raw: Buffer; warnings: string[] }> {
   const warnings: string[] = [];
   vi.spyOn(console, "warn").mockImplementation((...parts: unknown[]) => {
@@ -254,12 +254,16 @@ describe.each(Object.entries(fixtures))("invalid JSON tool arguments in %s", (_n
 });
 
 describe("misbehavior with invalid JSON tool arguments", () => {
+  // Misbehavior is opt-in (#508), so these servers turn it on. "By default"
+  // below means strictToolArguments is off.
   const anthropicStream = wires.find((wire) => wire.id === "anthropic stream")!;
 
   test("by default a fault is not applied to the fixture and {} is served", async () => {
-    const { status, raw } = await serve(anthropicStream, {
-      toolCalls: [{ name: "lookup", arguments: BAD }],
-    });
+    const { status, raw } = await serve(
+      anthropicStream,
+      { toolCalls: [{ name: "lookup", arguments: BAD }] },
+      { enableMisbehavior: true },
+    );
     expect(status).toBe(200);
     mock!.clearFixtures();
     mock!.addFixture({
@@ -281,9 +285,11 @@ describe("misbehavior with invalid JSON tool arguments", () => {
   });
 
   test("tool-args-invalid-json still sends malformed arguments by default", async () => {
-    const { status, raw } = await serve(anthropicStream, {
-      toolCalls: [{ name: "lookup", arguments: '{"city":"Paris"}' }],
-    });
+    const { status, raw } = await serve(
+      anthropicStream,
+      { toolCalls: [{ name: "lookup", arguments: '{"city":"Paris"}' }] },
+      { enableMisbehavior: true },
+    );
     expect(status).toBe(200);
     expect(anthropicStream.args(raw)).toBe('{"city":"Paris"}');
     mock!.clearFixtures();
