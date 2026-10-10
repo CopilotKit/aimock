@@ -290,6 +290,23 @@ async function start(
   return mock;
 }
 
+/**
+ * The payload of each AWS event-stream frame. A frame is a 12-byte prelude
+ * (total length, headers length, prelude CRC), the headers, the payload and a
+ * 4-byte message CRC.
+ */
+function eventStreamPayloads(buf: Buffer): string[] {
+  const payloads: string[] = [];
+  for (let offset = 0; offset < buf.length; ) {
+    const total = buf.readUInt32BE(offset);
+    const headers = buf.readUInt32BE(offset + 4);
+    if (total < 16 || offset + total > buf.length) throw new Error("bad event-stream frame");
+    payloads.push(buf.subarray(offset + 12 + headers, offset + total - 4).toString("utf8"));
+    offset += total;
+  }
+  return payloads;
+}
+
 async function hit(m: LLMock, path: string, body: Record<string, unknown>) {
   const res = await fetch(m.url + path, {
     method: "POST",
@@ -297,12 +314,21 @@ async function hit(m: LLMock, path: string, body: Record<string, unknown>) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(5000),
   });
-  const text = await res.text();
+  const raw = Buffer.from(await res.arrayBuffer());
+  const text = new TextDecoder().decode(raw);
   // Bedrock InvokeModel streams carry each event's JSON base64-encoded in "bytes".
   const decoded = [...text.matchAll(/"bytes":"([A-Za-z0-9+/=]+)"/g)]
     .map((match) => Buffer.from(match[1], "base64").toString("utf8"))
     .join("\n");
-  return { status: res.status, text: decoded ? `${text}\n${decoded}` : text };
+  // Binary event streams: only the frame payloads, without the framing and CRCs.
+  const payloads = res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream")
+    ? eventStreamPayloads(raw).join("\n")
+    : text;
+  return {
+    status: res.status,
+    text: decoded ? `${text}\n${decoded}` : text,
+    payloads: decoded ? `${payloads}\n${decoded}` : payloads,
+  };
 }
 
 describe.each(variants)("custom tool call on non-Responses HTTP wires: $id", ({ response }) => {
@@ -707,9 +733,9 @@ describe("default responsesTools: customToolCalls and responsesBlocks are ignore
   ];
   // Ids, counters and timestamps differ between two servers; everything else
   // must match. Binary event streams (Bedrock) carry per-frame CRCs that
-  // follow the ids, so only their JSON payloads are compared.
+  // follow the ids, so only their frame payloads (`payloads`) are compared.
   const normalize = (text: string) =>
-    (text.includes("\u0000") ? (text.match(/\{[\x20-\x7e]*\}/g) ?? []).join("\n") : text)
+    text
       .replace(/"bytes":"[^"]*"/g, '"bytes":"<decoded below>"')
       .replace(/"(id|call_id|item_id|toolUseId|tool_call_id)":"[^"]*"/g, '"$1":"<id>"')
       .replace(/(chatcmpl|msg|toolu|call|resp|fc|gen|evt)[-_][A-Za-z0-9_-]+/g, "$1-<id>")
@@ -724,7 +750,7 @@ describe("default responsesTools: customToolCalls and responsesBlocks are ignore
       const r = await hit(m, path, body);
       expect(r.status, r.text).toBe(expected.status);
       expect(r.text).not.toContain("apply_patch");
-      expect(normalize(r.text)).toBe(normalize(expected.text));
+      expect(normalize(r.payloads)).toBe(normalize(expected.payloads));
       expect(m.getLastRequest()?.response.status).toBe(expected.status);
     });
 
