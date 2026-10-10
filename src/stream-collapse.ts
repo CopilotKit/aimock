@@ -11,8 +11,8 @@ import { crc32 } from "node:zlib";
 import type {
   CustomToolCall,
   FixtureBlock,
-  FixtureToolCall,
   RecordProviderKey,
+  ResponsesFixtureBlock,
   ToolCall,
 } from "./types.js";
 import type { Logger } from "./logger.js";
@@ -145,11 +145,16 @@ export interface CollapseResult {
    */
   usage?: Record<string, unknown>;
   /**
-   * Function calls, plus OpenAI Responses custom tool calls
-   * (`{ type: "custom", name, input }`) from `custom_tool_call` items. Only
-   * {@link collapseOpenAISSE} produces custom calls or `namespace`.
+   * Function calls. An OpenAI Responses `function_call` item's `namespace` is
+   * kept on its entry ({@link collapseOpenAISSE} only).
    */
-  toolCalls?: FixtureToolCall[];
+  toolCalls?: ToolCall[];
+  /**
+   * OpenAI Responses custom tool calls (`custom_tool_call` items), in output
+   * order ({@link collapseOpenAISSE} only). They are never part of `toolCalls`
+   * or `blocks`.
+   */
+  customToolCalls?: CustomToolCall[];
   droppedChunks?: number;
   firstDroppedSample?: string;
   truncated?: boolean;
@@ -182,8 +187,17 @@ export interface CollapseResult {
    * a function call becomes a `toolCall` block with the fully-assembled
    * name/arguments/id, and an OpenAI Responses custom call becomes a
    * `customToolCall` block with name/input/id, where `input` is kept verbatim.
+   * Custom calls are left out of `blocks` (which, like `toolCalls`, describes
+   * function calls and text only); see {@link CollapseResult.responsesBlocks}.
    */
   blocks?: FixtureBlock[];
+  /**
+   * OpenAI Responses only: the full ordered output (text, function calls and
+   * custom calls) when the stream carried a custom call whose position the
+   * `content` + `toolCalls` + `customToolCalls` shape cannot express (it is
+   * interleaved with text, or comes before a function call).
+   */
+  responsesBlocks?: ResponsesFixtureBlock[];
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +264,7 @@ function normalizeToolArguments(args: string | undefined): string {
  * normalizing `arguments` so the block agrees byte-for-byte with the flat
  * `toolCalls` entry built from the SAME accumulator object.
  */
-function toToolCallBlock(ref: FunctionCallAcc): FixtureBlock {
+function toToolCallBlock(ref: FunctionCallAcc): FixtureBlock & { type: "toolCall" } {
   return {
     type: "toolCall",
     name: ref.name,
@@ -264,7 +278,7 @@ function toToolCallBlock(ref: FunctionCallAcc): FixtureBlock {
  * Build a `customToolCall` block from a custom-call accumulator. The `input` is
  * free text: it is kept as is, never normalized to `"{}"`.
  */
-function toCustomToolCallBlock(ref: CustomCallAcc): FixtureBlock {
+function toCustomToolCallBlock(ref: CustomCallAcc): ResponsesFixtureBlock {
   return {
     type: "customToolCall",
     name: ref.name,
@@ -319,6 +333,17 @@ function toCustomToolCall(ref: CustomCallAcc): CustomToolCall {
  * normalized to `"{}"`.
  */
 function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
+  return orderedBlocksFrom(atoms.filter((a) => a.kind !== "customToolCall"))?.filter(
+    (block): block is FixtureBlock => block.type !== "customToolCall",
+  );
+}
+
+/**
+ * {@link buildOrderedBlocks} over every atom, custom calls included, for
+ * `CollapseResult.responsesBlocks`. With `force`, the blocks are built even
+ * when text and tools are not interleaved.
+ */
+function orderedBlocksFrom(atoms: OrderAtom[], force = false): ResponsesFixtureBlock[] | undefined {
   let firstTextIndex = -1;
   let firstToolIndex = -1;
   let textAfterTool = false;
@@ -336,14 +361,16 @@ function buildOrderedBlocks(atoms: OrderAtom[]): FixtureBlock[] | undefined {
     }
   }
   // No cross-channel ordering to express unless BOTH channels appear.
-  if (!sawTool || !sawText) return undefined;
-  const toolBeforeText = firstToolIndex < firstTextIndex;
-  if (!toolBeforeText && !textAfterTool) return undefined;
+  if (!force) {
+    if (!sawTool || !sawText) return undefined;
+    const toolBeforeText = firstToolIndex < firstTextIndex;
+    if (!toolBeforeText && !textAfterTool) return undefined;
+  }
 
   // Coalesce contiguous text atoms into one text block; emit each function-call
   // atom as a normalized toolCall block and each custom-call atom as a
   // customToolCall block with its input kept verbatim.
-  const blocks: FixtureBlock[] = [];
+  const blocks: ResponsesFixtureBlock[] = [];
   let pendingText = "";
   let hasPendingText = false;
   const flushText = () => {
@@ -867,7 +894,10 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
   // preserves content VERBATIM and surfaces the distinct `harmonyUnparsed`
   // signal (NOT droppedChunks/truncated — the bytes are not lost).
   const harmonyToolCalls: ToolCall[] = [];
-  if (toolCallMap.size === 0 && isHarmonyContent(content)) {
+  // Custom tool calls do not count as structured calls here, as before they
+  // were collapsed at all.
+  const hasFunctionCalls = Array.from(toolCallMap.values()).some((tc) => tc.kind === "function");
+  if (!hasFunctionCalls && isHarmonyContent(content)) {
     const parsed = parseHarmonyContent(content);
     if (parsed.failed) {
       harmonyUnparsed = true;
@@ -881,7 +911,30 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     }
   }
 
-  if (toolCallMap.size > 0 || harmonyToolCalls.length > 0) {
+  // OpenAI Responses custom tool calls ride in their own fields, so
+  // `toolCalls` and `blocks` describe exactly what earlier releases recorded
+  // (function calls and text). `responsesBlocks` keeps the full order when the
+  // flat fields cannot: a custom call interleaved with text, or placed before
+  // a function call.
+  const sortedEntries = Array.from(toolCallMap.entries()).sort(([a], [b]) => a - b);
+  const customEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "custom" ? [tc] : []));
+  const functionEntries = sortedEntries.flatMap(([, tc]) => (tc.kind === "function" ? [tc] : []));
+  let customFields: Pick<CollapseResult, "customToolCalls" | "responsesBlocks"> = {};
+  if (customEntries.length > 0) {
+    const firstCustomAtom = orderAtoms.findIndex((a) => a.kind === "customToolCall");
+    const customBeforeFunction = orderAtoms.some(
+      (a, i) => a.kind === "toolCall" && i > firstCustomAtom,
+    );
+    const responsesBlocks = orderedBlocksFrom(orderAtoms, customBeforeFunction);
+    customFields = {
+      customToolCalls: responsesBlocks
+        ? orderAtoms.flatMap((a) => (a.kind === "customToolCall" ? [toCustomToolCall(a.ref)] : []))
+        : customEntries.map(toCustomToolCall),
+      ...(responsesBlocks ? { responsesBlocks } : {}),
+    };
+  }
+
+  if (functionEntries.length > 0 || harmonyToolCalls.length > 0) {
     const blocks = buildOrderedBlocks(orderAtoms);
     // When the stream is interleaved we persist ordered `blocks`; the flat
     // `toolCalls` MUST then describe the same calls in the same order so the two
@@ -889,17 +942,11 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
     // same accumulator objects as `toolCallMap`, so derive the flat list from
     // those atoms (stream-arrival order, matching blocks) when blocks exist;
     // otherwise keep the legacy index-sorted order for byte-identical fixtures.
-    // Each kind projects to its own fixture shape: a function call keeps
-    // normalized JSON `arguments`; a custom call keeps its free-text `input`
-    // (never `arguments`, never a `"{}"` default). `namespace` is kept on both.
-    const orderedToolCalls: FixtureToolCall[] = [];
-    for (const a of orderAtoms) {
-      if (a.kind === "toolCall") orderedToolCalls.push(toFunctionToolCall(a.ref));
-      else if (a.kind === "customToolCall") orderedToolCalls.push(toCustomToolCall(a.ref));
-    }
-    const indexSortedToolCalls: FixtureToolCall[] = Array.from(toolCallMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, tc]) => (tc.kind === "custom" ? toCustomToolCall(tc) : toFunctionToolCall(tc)));
+    // `namespace` is kept on a Responses function call.
+    const orderedToolCalls = orderAtoms.flatMap((a) =>
+      a.kind === "toolCall" ? [toFunctionToolCall(a.ref)] : [],
+    );
+    const indexSortedToolCalls = functionEntries.map(toFunctionToolCall);
     return {
       ...(transcriptSeen
         ? {
@@ -915,6 +962,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
       // Fallback-only: harmonyToolCalls are populated ONLY in the
       // no-structured-calls branch, so this is never a merge of both sources.
       toolCalls: [...(blocks ? orderedToolCalls : indexSortedToolCalls), ...harmonyToolCalls],
+      ...customFields,
       // Reasoning is preserved alongside tool calls for ALL structured streams
       // (DeepSeek/OpenRouter reasoning_content, harmony analysis channel), at
       // parity with every other collapser and the non-streaming path.
@@ -942,6 +990,7 @@ export function collapseOpenAISSE(rawBody: string): CollapseResult {
         }
       : {}),
     content,
+    ...customFields,
     ...(reasoning ? { reasoning } : {}),
     ...(webSearchQueries.length > 0 ? { webSearches: webSearchQueries } : {}),
     ...(usage ? { usage } : {}),
