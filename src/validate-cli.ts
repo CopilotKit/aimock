@@ -98,6 +98,7 @@ import { format, parseArgs } from "node:util";
 import {
   entryToFixture,
   enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
   FixtureLoadError,
   MisbehaviorConfigError,
   hasMcpFakesKey,
@@ -143,6 +144,11 @@ Options:
       --json            Emit a JSON report instead of human lines
       --misbehavior     Check fixture misbehavior keys, as the server does with
                         --misbehavior (without it they are not read)
+      --responses-tools <legacy|extended>
+                        With "extended", check match.toolNamespace,
+                        customToolCalls and responsesBlocks, as a server with
+                        --responses-tools extended reads them (default
+                        "legacy": they are not read)
   -h, --help            Show this help message
       --                Stop option parsing; every later argument is a path
                         (use this for a path that begins with "-")
@@ -610,6 +616,7 @@ function validateOneFile(
   mention: number,
   source: string,
   misbehavior = false,
+  extendedResponsesTools = false,
 ): {
   report: FileReport;
   fixtures: Fixture[];
@@ -734,6 +741,8 @@ function validateOneFile(
       });
       // --misbehavior: check `misbehavior` keys as a server with misbehavior enabled does.
       if (misbehavior) enableHeldFixtureMisbehavior(fixture);
+      // --responses-tools extended: check the keys only that mode reads.
+      if (extendedResponsesTools) markFixtureResponsesToolsExtended(fixture);
       fixtures.push(fixture);
       sourceIndex.push(index);
     } catch (err) {
@@ -920,7 +929,13 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
   // server path in src/aimock-cli.ts: strict mode rejects unknown options and
   // the "--" terminator falls out for free, so a fixture path that begins with
   // "-" is still reachable.
-  let values: { strict?: boolean; json?: boolean; misbehavior?: boolean; help?: boolean };
+  let values: {
+    strict?: boolean;
+    json?: boolean;
+    misbehavior?: boolean;
+    "responses-tools"?: string;
+    help?: boolean;
+  };
   let paths: string[];
   try {
     const parsed = parseArgs({
@@ -929,6 +944,7 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
         strict: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
         misbehavior: { type: "boolean", default: false },
+        "responses-tools": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
       strict: true,
@@ -955,6 +971,16 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
   const strict = values.strict === true;
   const json = values.json === true;
   const misbehavior = values.misbehavior === true;
+  const responsesTools = values["responses-tools"];
+  if (
+    responsesTools !== undefined &&
+    responsesTools !== "legacy" &&
+    responsesTools !== "extended"
+  ) {
+    usageError(`invalid --responses-tools "${responsesTools}" (expected "legacy" or "extended").`);
+    return;
+  }
+  const extendedResponsesTools = responsesTools === "extended";
 
   if (paths.length === 0) {
     usageError("no fixture paths given.");
@@ -1107,7 +1133,13 @@ export function runValidateCli(deps: ValidateCliDeps = {}): void {
         identities,
         runErrors: fileRunErrors,
         mcpFakes,
-      } = validateOneFile(target.file, mention, target.source ?? target.file, misbehavior));
+      } = validateOneFile(
+        target.file,
+        mention,
+        target.source ?? target.file,
+        misbehavior,
+        extendedResponsesTools,
+      ));
     } catch (err) {
       // Backstop: nothing unexpected gets to abandon the remaining files.
       report = fatalReport(target.file, mention, `Validation failed: ${errText(err)}`);

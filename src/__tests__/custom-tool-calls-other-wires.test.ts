@@ -21,12 +21,15 @@
  * Ollama `/api/generate` is the exception: it rejects every tool-call fixture
  * with a 400, custom or not.
  *
+ * All of this needs `responsesTools: "extended"`. Without it (the default)
+ * both keys are ignored, as in 1.44.0: see the last describe block.
+ *
  * Real surfaces: a real LLMock over HTTP (streaming and non-streaming) and the
  * Realtime / Gemini Live WebSockets.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
-import type { Fixture, FixtureResponse } from "../types.js";
+import type { Fixture, FixtureResponse, ResponsesToolsMode } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
 
 const SENTINEL = "must not be emitted";
@@ -277,8 +280,11 @@ afterEach(async () => {
   mock = null;
 });
 
-async function start(response: FixtureResponse): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function start(
+  response: FixtureResponse,
+  responsesTools?: ResponsesToolsMode,
+): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   mock.addFixture({ match: {}, response } as Fixture);
   await mock.start();
   return mock;
@@ -303,7 +309,7 @@ describe.each(variants)("custom tool call on non-Responses HTTP wires: $id", ({ 
   it.each(routes)(
     "$path $body.stream → 500 before content, wire envelope, journaled with body + fixture",
     async ({ path, body, wire, shape }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const r = await hit(m, path, body);
       expect(r.status, r.text).toBe(500);
       expect(r.text).not.toContain(SENTINEL);
@@ -325,7 +331,7 @@ describe("custom tool call on Ollama /api/generate", () => {
   it.each(variants)(
     "$id → rejected before content, journaled with body + fixture",
     async ({ response }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const r = await hit(m, "/api/generate", { model: "llama3", prompt: "go", stream: false });
       expect(r.status, r.text).toBe(400);
       expect(r.text).not.toContain(SENTINEL);
@@ -429,7 +435,7 @@ describe("Gemini audio fixture with a custom companion tool call", () => {
     { path: "/v1beta/models/gemini-2.0-flash:streamGenerateContent", wire: "Gemini" },
     { path: `${VERTEX}:generateContent`, wire: "Vertex AI" },
   ])("$path → 500, no audio or functionCall emitted", async ({ path, wire }) => {
-    const m = await start(audio);
+    const m = await start(audio, "extended");
     const r = await hit(m, path, geminiBody);
     expect(r.status, r.text).toBe(500);
     expect(r.text).not.toContain("inlineData");
@@ -530,7 +536,7 @@ describe("custom tool call on WebSocket wires", () => {
   it.each(variants)(
     "Realtime: $id → failed response.done with the code, no output, journaled",
     async ({ response }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const events = await realtimeTurn(m);
       const all = JSON.stringify(events);
       expect(all).not.toContain(SENTINEL);
@@ -563,7 +569,7 @@ describe("custom tool call on WebSocket wires", () => {
       response: { audio: "AAAA", toolCalls: [], customToolCalls: [custom] },
     },
   ])("Gemini Live: $id → coded error frame, no output, socket stays open", async ({ response }) => {
-    const m = await start(response as FixtureResponse);
+    const m = await start(response as FixtureResponse, "extended");
     // A second turn on the same socket is answered too, so the rejection left it open.
     const msgs = await liveTurns(m, ["go", "go"]);
     expect(msgs).toHaveLength(2);
@@ -612,7 +618,7 @@ describe("custom tool call on WebSocket wires", () => {
 
 describe("a rejection changes no session state", () => {
   it("Realtime: the rejected turn adds nothing to the conversation history", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     mock.addFixture({
       match: { userMessage: "first" },
       response: { toolCalls: [], customToolCalls: [custom] },
@@ -633,7 +639,7 @@ describe("a rejection changes no session state", () => {
   });
 
   it("Gemini Live: the rejected turn is not left in the conversation history", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     mock.addFixture({
       match: { userMessage: "first" },
       response: { toolCalls: [], customToolCalls: [custom] },
@@ -648,7 +654,7 @@ describe("a rejection changes no session state", () => {
   });
 
   it("Gemini Interactions: the rejection consumes no interaction id", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     mock.addFixture({ match: { userMessage: "ok" }, response: { content: "fine" } });
     mock.addFixture({
       match: { userMessage: "bad" },
@@ -670,5 +676,73 @@ describe("a rejection changes no session state", () => {
       ids.push(Number(/"id":"aimock-int-(\d+)"/.exec(r.text)?.[1]));
     }
     expect(ids[1] - ids[0]).toBe(1);
+  });
+});
+
+/**
+ * Without `responsesTools: "extended"` (the default) `customToolCalls` and
+ * `responsesBlocks` are ignored, as 1.44.0 ignored them: a fixture 1.44.0
+ * served is served the same way, never rejected.
+ */
+describe("default responsesTools: customToolCalls and responsesBlocks are ignored", () => {
+  const accepted: Array<{ id: string; response: FixtureResponse; without: FixtureResponse }> = [
+    {
+      id: "empty toolCalls + customToolCalls",
+      response: { toolCalls: [], customToolCalls: [custom] },
+      without: { toolCalls: [] },
+    },
+    {
+      id: "content + toolCalls + responsesBlocks with a custom call",
+      response: {
+        content: "before",
+        toolCalls: [fn],
+        responsesBlocks: [
+          { type: "text", text: "before" },
+          { type: "customToolCall", name: "apply_patch", input: "x" },
+          { type: "toolCall", ...fn },
+        ],
+      },
+      without: { content: "before", toolCalls: [fn] },
+    },
+  ];
+  // Ids, counters and timestamps differ between two servers; everything else
+  // must match. Binary event streams (Bedrock) carry per-frame CRCs that
+  // follow the ids, so only their JSON payloads are compared.
+  const normalize = (text: string) =>
+    (text.includes("\u0000") ? (text.match(/\{[\x20-\x7e]*\}/g) ?? []).join("\n") : text)
+      .replace(/"bytes":"[^"]*"/g, '"bytes":"<decoded below>"')
+      .replace(/"(id|call_id|item_id|toolUseId|tool_call_id)":"[^"]*"/g, '"$1":"<id>"')
+      .replace(/(chatcmpl|msg|toolu|call|resp|fc|gen|evt)[-_][A-Za-z0-9_-]+/g, "$1-<id>")
+      .replace(/"(created|created_at|createdAt)":(\d+|"[^"]*")/g, '"$1":0')
+      .replace(/"(responseId|modelVersion)":"[^"]*"/g, '"$1":"<v>"');
+  describe.each(accepted)("$id", ({ response, without }) => {
+    it.each(routes)("$path $body.stream → served as without the keys", async ({ path, body }) => {
+      const reference = await start(without);
+      const expected = await hit(reference, path, body);
+      await reference.stop();
+      const m = await start(response);
+      const r = await hit(m, path, body);
+      expect(r.status, r.text).toBe(expected.status);
+      expect(r.text).not.toContain("apply_patch");
+      expect(normalize(r.text)).toBe(normalize(expected.text));
+      expect(m.getLastRequest()?.response.status).toBe(expected.status);
+    });
+
+    it("Realtime: served, not failed", async () => {
+      const m = await start(response);
+      const events = await realtimeTurn(m);
+      const all = JSON.stringify(events);
+      expect(all).not.toContain("apply_patch");
+      expect(all).not.toContain(CODE);
+      expect(m.getLastRequest()?.response.status).toBe(200);
+    });
+
+    it("Gemini Live: served, no error frame", async () => {
+      const m = await start(response);
+      const msgs = await liveTurns(m, ["go"]);
+      expect(msgs.join("\n")).not.toContain("apply_patch");
+      expect(msgs.join("\n")).not.toContain('"error"');
+      expect(m.getLastRequest()?.response.status).toBe(200);
+    });
   });
 });

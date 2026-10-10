@@ -22,7 +22,8 @@ afterEach(async () => {
 });
 
 async function start(fixtures: Fixture[], chunkSize: number): Promise<LLMock> {
-  mock = new LLMock({ port: 0, chunkSize });
+  // custom_tool_call output needs responsesTools "extended".
+  mock = new LLMock({ port: 0, chunkSize, responsesTools: "extended" });
   mock.addFixtures(fixtures);
   await mock.start();
   return mock;

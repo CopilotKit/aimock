@@ -11,7 +11,11 @@
  * 1.44.0 ignored it.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -20,7 +24,10 @@ const CODE = "aimock_invalid_fixture_tool_call";
 
 function issuesFor(match: Record<string, unknown>, response: Record<string, unknown>) {
   const entry = { match, response } as FixtureFileEntry;
-  return validateFixtures([entryToFixture(entry)]).map((r) => [r.severity, r.message]);
+  // As loaded for a server with responsesTools "extended", which checks the new keys.
+  const fixture = entryToFixture(entry);
+  markFixtureResponsesToolsExtended(fixture);
+  return validateFixtures([fixture]).map((r) => [r.severity, r.message]);
 }
 
 const DIVERGE =
@@ -116,8 +123,8 @@ afterEach(async () => {
   mock = null;
 });
 
-async function serve(fixtures: Fixture[]): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function serve(fixtures: Fixture[], responsesTools?: "legacy" | "extended"): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   for (const f of fixtures) mock.addFixture(f);
   await mock.start();
   return mock;
@@ -188,7 +195,10 @@ describe("programmatic custom calls are guarded at request time; 1.44.0 toolCall
     it.each(cases)(
       `Responses stream=${stream}: a custom call with %s is a 500`,
       async (_label, call, message) => {
-        const m = await serve([fixtureWith({ toolCalls: [], customToolCalls: [call] })]);
+        const m = await serve(
+          [fixtureWith({ toolCalls: [], customToolCalls: [call] })],
+          "extended",
+        );
         const res = await post(m, "/v1/responses", responsesBody(stream));
         expect(res.status).toBe(500);
         const error = errorOf(res.text);
@@ -229,9 +239,10 @@ describe("programmatic custom calls are guarded at request time; 1.44.0 toolCall
   );
 
   it("Chat Completions: a customToolCalls fixture is a 500 aimock_unsupported_tool_call", async () => {
-    const m = await serve([
-      fixtureWith({ toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] }),
-    ]);
+    const m = await serve(
+      [fixtureWith({ toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] })],
+      "extended",
+    );
     for (const stream of [false, true]) {
       const res = await post(m, "/v1/chat/completions", chatBody(stream));
       expect(res.status).toBe(500);
@@ -240,9 +251,15 @@ describe("programmatic custom calls are guarded at request time; 1.44.0 toolCall
   });
 
   it("Responses WebSocket: a malformed custom call is an error event with the code", async () => {
-    const m = await serve([
-      fixtureWith({ toolCalls: [], customToolCalls: [{ name: "run", input: "x", namespace: 7 }] }),
-    ]);
+    const m = await serve(
+      [
+        fixtureWith({
+          toolCalls: [],
+          customToolCalls: [{ name: "run", input: "x", namespace: 7 }],
+        }),
+      ],
+      "extended",
+    );
     const ws = await connectWebSocket(m.url, "/v1/responses");
     let raw: string;
     try {
@@ -338,12 +355,15 @@ describe("response factories are guarded the same way", () => {
 
   for (const stream of [false, true]) {
     it(`Responses stream=${stream}: a factory custom call that also carries arguments is a 500`, async () => {
-      const m = await serve([
-        factory({
-          toolCalls: [],
-          customToolCalls: [{ name: "apply_patch", input: "x", arguments: { a: 1 } }],
-        }),
-      ]);
+      const m = await serve(
+        [
+          factory({
+            toolCalls: [],
+            customToolCalls: [{ name: "apply_patch", input: "x", arguments: { a: 1 } }],
+          }),
+        ],
+        "extended",
+      );
       const res = await post(m, "/v1/responses", responsesBody(stream));
       expect(res.status).toBe(500);
       expect(errorOf(res.text).message).toContain(
@@ -378,10 +398,13 @@ describe('empty namespaces: a request namespace named "" is dropped; toolNamespa
   };
 
   it('a request namespace named "" is served, and toolNamespace "" never matches it', async () => {
-    const m = await serve([
-      { match: { userMessage: "go", toolNamespace: "" }, response: { content: "EMPTY-NS" } },
-      { match: { userMessage: "go" }, response: { content: "fallback" } },
-    ]);
+    const m = await serve(
+      [
+        { match: { userMessage: "go", toolNamespace: "" }, response: { content: "EMPTY-NS" } },
+        { match: { userMessage: "go" }, response: { content: "fallback" } },
+      ],
+      "extended",
+    );
     const res = await post(m, "/v1/responses", responsesBody(false, EMPTY_NS_TOOLS));
     expect(res.status, res.text).toBe(200);
     expect(res.text).toContain("fallback");
@@ -404,10 +427,13 @@ describe('empty namespaces: a request namespace named "" is dropped; toolNamespa
     }
   });
   it('toolNamespace "" matches neither un-namespaced nor namespaced tools', async () => {
-    const m = await serve([
-      { match: { userMessage: "go", toolNamespace: "" }, response: { content: "EMPTY-NS" } },
-      { match: { userMessage: "go" }, response: { content: "fallback" } },
-    ]);
+    const m = await serve(
+      [
+        { match: { userMessage: "go", toolNamespace: "" }, response: { content: "EMPTY-NS" } },
+        { match: { userMessage: "go" }, response: { content: "fallback" } },
+      ],
+      "extended",
+    );
     const res = await post(
       m,
       "/v1/responses",

@@ -208,8 +208,8 @@ export interface FixtureMatch {
   /**
    * Exact OpenAI Responses tool namespace. Alone, it matches when any offered
    * tool sits in this namespace; with `toolName`, a single offered tool must
-   * carry both the name and the namespace. It sees namespaced tools whatever
-   * the server's `responsesTools` mode.
+   * carry both the name and the namespace. Applies only when the server runs
+   * with `responsesTools: "extended"`; otherwise it is ignored, as in 1.44.0.
    */
   toolNamespace?: string;
   model?: string | RegExp;
@@ -439,7 +439,8 @@ export interface ToolCallResponse extends ResponseOverrides {
   /**
    * OpenAI Responses custom tool calls, emitted after `toolCalls`. A turn with
    * only custom calls sets `toolCalls: []`. Every other wire rejects a fixture
-   * with a non-empty `customToolCalls` (`UnsupportedToolCallError`).
+   * with a non-empty `customToolCalls` (`UnsupportedToolCallError`). Applies
+   * only with `responsesTools: "extended"`; otherwise it is ignored.
    */
   customToolCalls?: CustomToolCall[];
   reasoning?: string;
@@ -478,7 +479,8 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
    * OpenAI Responses only: ordered blocks that may include `customToolCall`
    * blocks. On the Responses API they replace `blocks`; a fixture may not set
    * both. Every other wire rejects a `customToolCall` block here
-   * (`UnsupportedToolCallError`) and otherwise ignores this field.
+   * (`UnsupportedToolCallError`) and otherwise ignores this field. Applies
+   * only with `responsesTools: "extended"`; otherwise it is ignored.
    */
   responsesBlocks?: ResponsesFixtureBlock[];
   reasoning?: string;
@@ -1487,9 +1489,9 @@ export interface MockServerOptions {
    * not emitted. `"extended"` makes namespaced, custom and `additional_tools`
    * / `tool_search_output` tools visible to `toolName` and predicates, counts
    * custom tool call rounds for `turnIndex` / `hasToolResult` / `toolCallId`,
-   * emits fixture namespaces, and makes the recorder keep namespaces and
-   * custom tool calls. `match.toolNamespace`, `customToolCalls` and
-   * `responsesBlocks` work in both modes.
+   * emits fixture namespaces, applies `match.toolNamespace`,
+   * `customToolCalls` and `responsesBlocks` (which `"legacy"` ignores), and
+   * makes the recorder keep namespaces and custom tool calls.
    */
   responsesTools?: ResponsesToolsMode;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */

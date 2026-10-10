@@ -42,6 +42,7 @@ import {
   FixtureLoadError,
   MisbehaviorConfigError,
   enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -99,6 +100,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
+  setFixtureListResponsesTools,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -1329,6 +1331,7 @@ async function handleControlAPI(
           index,
         });
         if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
+        if (defaults.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
         converted.push(fixture);
       } catch (error) {
         if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {
@@ -2925,6 +2928,7 @@ async function startServer(
       `Ignoring responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}. Using "legacy".`,
     );
   }
+  setFixtureListResponsesTools(fixtures, () => serverOptions.responsesTools);
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under

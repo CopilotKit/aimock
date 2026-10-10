@@ -10,7 +10,11 @@ import { LLMock } from "../llmock.js";
 import { Journal } from "../journal.js";
 import { responsesToCompletionRequest } from "../responses.js";
 import { getSystemText } from "../router.js";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import type { ChatCompletionRequest, Fixture } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
 
@@ -70,7 +74,7 @@ afterEach(async () => {
 
 /**
  * Tool visibility for toolName / predicates and custom tool rounds are opt-in
- * (`responsesTools: "extended"`); `toolNamespace` works in either mode.
+ * (`responsesTools: "extended"`), like `toolNamespace`, which the default ignores.
  */
 async function start(
   fixtures: Fixture[],
@@ -251,32 +255,45 @@ describe("tool flattening: toolName sees namespace, custom and additional_tools 
 });
 
 describe("toolNamespace match key", () => {
-  it("works in the default (legacy) mode too: toolNamespace sees every offered tool", async () => {
+  it("is ignored in the default (legacy) mode, as 1.44.0 ignored it", async () => {
     const m = await start(
       [
-        {
-          match: { toolName: "raw_query", toolNamespace: "mcp__github" },
-          response: { content: "pair fixture" },
-        },
-        { match: { toolNamespace: "mcp__gitlab" }, response: { content: "gitlab fixture" } },
+        { match: { userMessage: "tns", toolNamespace: "nsX" }, response: { content: "TNS_MATCH" } },
+        { match: { userMessage: "tns" }, response: { content: "TNS_FALLBACK" } },
       ],
       "legacy",
     );
-    expect((await post(m, { input: "x", tools: [NS_GITHUB] })).text).toContain("pair fixture");
-    expect((await post(m, { input: "x", tools: [NS_GITLAB] })).text).toContain("gitlab fixture");
-    expect(await wsPost(m, { input: "x", tools: [NS_GITLAB] })).toContain("gitlab fixture");
-    expect(
-      (
-        await post(m, {
-          input: [
-            { role: "user", content: "x" },
-            { type: "additional_tools", tools: [NS_GITLAB] },
-          ],
-        })
-      ).text,
-    ).toContain("gitlab fixture");
-    // The journaled request keeps the 1.44.0 tools.
-    expect(m.getLastRequest()?.body).not.toHaveProperty("customTools");
+    const TOP_FN = { type: "function", name: "top_fn", parameters: { type: "object" } };
+    // The only offered tool is outside the namespace: the key is ignored, so
+    // the first fixture still matches (HTTP, SSE and WS).
+    for (const stream of [false, true]) {
+      const r = await post(m, { input: "tns", tools: [TOP_FN], stream });
+      expect(r.text).toContain("TNS_MATCH");
+      expect(r.text).not.toContain("TNS_FALLBACK");
+    }
+    expect(await wsPost(m, { input: "tns", tools: [TOP_FN] })).toContain("TNS_MATCH");
+    expect((await post(m, { input: "tns", tools: [NS_GITLAB] })).text).toContain("TNS_MATCH");
+    // Chat Completions too.
+    const chat = await fetch(`${m.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5", messages: [{ role: "user", content: "tns" }] }),
+    });
+    expect(await chat.text()).toContain("TNS_MATCH");
+  });
+
+  it("filters in extended mode when no offered tool sits in the namespace", async () => {
+    const m = await start([
+      { match: { userMessage: "tns", toolNamespace: "nsX" }, response: { content: "TNS_MATCH" } },
+      { match: { userMessage: "tns" }, response: { content: "TNS_FALLBACK" } },
+    ]);
+    const TOP_FN = { type: "function", name: "top_fn", parameters: { type: "object" } };
+    for (const stream of [false, true]) {
+      expect((await post(m, { input: "tns", tools: [TOP_FN], stream })).text).toContain(
+        "TNS_FALLBACK",
+      );
+    }
+    expect(await wsPost(m, { input: "tns", tools: [TOP_FN] })).toContain("TNS_FALLBACK");
   });
 
   it("alone: matches when any offered tool sits in that namespace", async () => {
@@ -372,10 +389,12 @@ describe("toolNamespace match key", () => {
   });
 
   it("validates type and emptiness, keys the duplicate check and the catch-all list on it", () => {
-    const mk = (match: Record<string, unknown>): Fixture => ({
-      match: match as Fixture["match"],
-      response: { content: "x" },
-    });
+    // As loaded for a server with responsesTools "extended", which checks the key.
+    const mk = (match: Record<string, unknown>): Fixture => {
+      const fixture: Fixture = { match: match as Fixture["match"], response: { content: "x" } };
+      markFixtureResponsesToolsExtended(fixture);
+      return fixture;
+    };
     const nonString = validateFixtures([mk({ toolNamespace: 7 })]);
     expect(
       nonString.some(

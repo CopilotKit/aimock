@@ -3,10 +3,14 @@
  * `responsesBlocks`) produces the same coded error whichever transport
  * carries it (HTTP non-streaming, HTTP streaming, WebSocket). Fixtures that
  * 1.44.0 accepted or rejected (legacy `toolCalls` / `blocks`) keep the 1.44.0
- * status and message.
+ * status and message. Serving the new keys needs responsesTools "extended".
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -18,8 +22,8 @@ afterEach(async () => {
   mock = undefined;
 });
 
-async function start(fixtures: Fixture[]): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function start(fixtures: Fixture[], responsesTools?: "legacy" | "extended"): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   for (const f of fixtures) mock.addFixture(f);
   await mock.start();
   return mock;
@@ -103,12 +107,15 @@ describe("malformed responsesBlocks tool blocks carry aimock_invalid_fixture_too
   ];
 
   it.each(cases)("$id: Responses HTTP (both modes) and WS agree", async ({ block, message }) => {
-    const m = await start([
-      {
-        match: {},
-        response: { responsesBlocks: [{ type: "text", text: "hi" }, block] },
-      } as Fixture,
-    ]);
+    const m = await start(
+      [
+        {
+          match: {},
+          response: { responsesBlocks: [{ type: "text", text: "hi" }, block] },
+        } as Fixture,
+      ],
+      "extended",
+    );
     const expected = `Invalid fixture block at index 1: ${message}`;
     for (const stream of [false, true]) {
       const r = await post(m, "/v1/responses", { ...RESPONSES, stream });
@@ -192,7 +199,7 @@ describe("a custom call on a non-Responses wire is unsupported before its fields
       { responsesBlocks: [{ type: "customToolCall", name: "x", namespace: "" }] },
     ],
   ])("%s with a bad namespace answers aimock_unsupported_tool_call", async (_id, response) => {
-    const m = await start([{ match: {}, response } as Fixture]);
+    const m = await start([{ match: {}, response } as Fixture], "extended");
     for (const stream of [false, true]) {
       const r = await post(m, "/v1/chat/completions", { ...CHAT, stream });
       expect(r.status, r.text).toBe(500);
@@ -320,7 +327,7 @@ describe("custom_tool_call.input in request history (responsesTools extended)", 
   });
 });
 
-describe("load-time warning for custom calls on a non-chat endpoint", () => {
+describe("load-time warning for custom calls on a non-chat endpoint (responsesTools extended)", () => {
   it.each([
     ["customToolCalls", { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] }],
     [
@@ -332,6 +339,7 @@ describe("load-time warning for custom calls on a non-chat endpoint", () => {
       match: { userMessage: "go", endpoint: "embedding" },
       response,
     } as FixtureFileEntry);
+    markFixtureResponsesToolsExtended(f);
     const warnings = validateFixtures([f]).filter((r) => r.severity === "warning");
     // The text must hold for every non-chat endpoint: media handlers answer an
     // uncoded 500 shape error, Realtime sends an error event, and openai-live
@@ -356,6 +364,7 @@ describe("load-time warning for custom calls on a non-chat endpoint", () => {
         match: { userMessage: "go", ...(endpoint ? { endpoint } : {}) },
         response: { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] },
       } as FixtureFileEntry);
+      markFixtureResponsesToolsExtended(f);
       expect(validateFixtures([f]).filter((r) => r.severity === "warning")).toEqual([]);
     }
   });
@@ -407,15 +416,18 @@ describe("Ollama /api/generate keeps the 1.44.0 handling of blocks", () => {
 
 describe("BytePlus wire label", () => {
   it("names BytePlus for /api/v3/chat/completions without record config", async () => {
-    const m = await start([
-      {
-        match: {},
-        response: {
-          toolCalls: [],
-          customToolCalls: [{ type: "custom", name: "apply_patch", input: "x" }],
+    const m = await start(
+      [
+        {
+          match: {},
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "apply_patch", input: "x" }],
+          },
         },
-      },
-    ]);
+      ],
+      "extended",
+    );
     for (const stream of [false, true]) {
       const r = await post(m, "/api/v3/chat/completions", { ...CHAT, model: "doubao", stream });
       expect(r.status, r.text).toBe(500);

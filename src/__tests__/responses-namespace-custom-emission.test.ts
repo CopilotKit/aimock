@@ -28,7 +28,7 @@ async function start(
   opts: { chunkSize?: number; responsesTools?: "legacy" | "extended" } = {},
 ): Promise<LLMock> {
   // Namespaces on toolCalls entries and toolCall blocks are emitted only with
-  // responsesTools "extended"; customToolCalls / responsesBlocks in any mode.
+  // responsesTools "extended", like customToolCalls / responsesBlocks.
   mock = new LLMock({ port: 0, responsesTools: "extended", ...opts });
   mock.addFixtures(fixtures);
   await mock.start();
@@ -329,29 +329,62 @@ describe("custom_tool_call", () => {
     }
   });
 
-  it("carries namespace on a namespaced custom call, in either responsesTools mode", async () => {
-    for (const responsesTools of ["extended", "legacy"] as const) {
-      const m = await start(
-        [
-          {
-            match: { userMessage: "custom ns" },
-            response: {
-              toolCalls: [],
-              customToolCalls: [
-                { type: "custom", name: "run", namespace: "sandbox", input: "ls -la" },
-              ],
-            },
+  it("carries namespace on a namespaced custom call (responsesTools extended)", async () => {
+    const m = await start([
+      {
+        match: { userMessage: "custom ns" },
+        response: {
+          toolCalls: [],
+          customToolCalls: [{ type: "custom", name: "run", namespace: "sandbox", input: "ls -la" }],
+        },
+      },
+    ]);
+    for (const events of [await stream(m, "custom ns"), await ws(m, "custom ns")]) {
+      expectCustomSequence(events, 0, { name: "run", input: "ls -la", namespace: "sandbox" });
+    }
+    const out = await nonStream(m, "custom ns");
+    expect(out[0]).toMatchObject({ type: "custom_tool_call", namespace: "sandbox", name: "run" });
+  });
+
+  it("ignores customToolCalls and responsesBlocks by default (responsesTools legacy), as 1.44.0", async () => {
+    const m = await start(
+      [
+        {
+          match: { userMessage: "custom ns" },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "run", namespace: "sandbox", input: "ls" }],
           },
-        ],
-        { responsesTools },
-      );
-      for (const events of [await stream(m, "custom ns"), await ws(m, "custom ns")]) {
-        expectCustomSequence(events, 0, { name: "run", input: "ls -la", namespace: "sandbox" });
-      }
-      const out = await nonStream(m, "custom ns");
-      expect(out[0]).toMatchObject({ type: "custom_tool_call", namespace: "sandbox", name: "run" });
-      await m.stop();
-      mock = null;
+        },
+        {
+          match: { userMessage: "combo" },
+          response: {
+            content: "before",
+            toolCalls: [{ name: "top_fn", arguments: "{}" }],
+            responsesBlocks: [
+              { type: "text", text: "before" },
+              { type: "customToolCall", name: "apply_patch", input: "x" },
+              { type: "toolCall", name: "top_fn", arguments: "{}" },
+            ],
+          },
+        },
+      ],
+      { responsesTools: "legacy" },
+    );
+    // 1.44.0 serves an empty tool turn for `toolCalls: []`.
+    expect(await nonStream(m, "custom ns")).toEqual([]);
+    for (const events of [await stream(m, "custom ns"), await ws(m, "custom ns")]) {
+      expect(JSON.stringify(events)).not.toContain("custom_tool_call");
+    }
+    // 1.44.0 serves content + toolCalls and never reads responsesBlocks.
+    const combo = await nonStream(m, "combo");
+    expect(combo.map((o) => [o.type, o.name])).toEqual([
+      ["message", undefined],
+      ["function_call", "top_fn"],
+    ]);
+    for (const events of [await stream(m, "combo"), await ws(m, "combo")]) {
+      expect(JSON.stringify(events)).not.toContain("custom_tool_call");
+      expect(JSON.stringify(events)).toContain("top_fn");
     }
   });
 
@@ -473,7 +506,7 @@ describe("custom_tool_call", () => {
     // counted chunks, that is 1 delta. Cutting one chunk earlier or later
     // would deliver 0 or 2 deltas.
     expect(PATCH.length).toBe(61);
-    mock = new LLMock({ port: 0, chunkSize: 5 });
+    mock = new LLMock({ port: 0, chunkSize: 5, responsesTools: "extended" });
     mock.addFixture({
       match: { userMessage: "custom truncate" },
       response: {

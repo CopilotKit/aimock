@@ -9,6 +9,7 @@ import {
   FixtureLoadError,
   MisbehaviorConfigError,
   enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
   validateFixtures,
 } from "./fixture-loader.js";
 import {
@@ -662,6 +663,7 @@ async function main() {
 
   // Validate fixtures if requested
   if (validateOnLoad) {
+    if (responsesTools === "extended") fixtures.forEach(markFixtureResponsesToolsExtended);
     const results = validateFixtures(fixtures);
     const errors = results.filter((r) => r.severity === "error");
     const warnings = results.filter((r) => r.severity === "warning");
@@ -772,6 +774,9 @@ async function main() {
               detail: msg`mcpFakes changed on --watch reload; MCP fakes are not reloaded, so the whole reload is rejected and the previous fixtures stay loaded. Restart aimock to load the new fakes`,
             }),
           );
+        }
+        if (responsesTools === "extended") {
+          loaded.fixtures.forEach(markFixtureResponsesToolsExtended);
         }
         return loaded.fixtures;
       };
