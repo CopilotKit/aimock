@@ -27,7 +27,7 @@ import {
   isFixtureToolCallError,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   extractOverrides,
   resolveResponse,
@@ -366,7 +366,7 @@ async function processMessage(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",

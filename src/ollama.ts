@@ -27,7 +27,7 @@ import {
   requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
   validateChatMessages,
@@ -505,7 +505,7 @@ function prepareOllamaMisbehavior(
   logger: HandlerDefaults["logger"],
 ) {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   // The planner skips a custom-call fixture on this wire, so this narrowing
@@ -1009,7 +1009,7 @@ export async function handleOllama(
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Ollama API -- ignoring");
     }
@@ -1531,7 +1531,7 @@ export async function handleOllamaGenerate(
   }
 
   // Tool call fixtures matched but not supported on /api/generate
-  if (isToolCallResponse(response) || isContentWithToolCallsResponse(response)) {
+  if (isToolCallResponse(response) || isCombinedFixtureResponse(response)) {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,

@@ -20,9 +20,9 @@ import { getLastMessageByRole, getTextContent, currentTurnHasToolResult } from "
 import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
 import {
-  collapseStreamingResponse,
+  collapseStreamingResponseWithResponsesTools,
   capturedRedactedData,
-  type CollapseResult,
+  withoutResponsesToolFields,
 } from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
@@ -714,7 +714,7 @@ export async function proxyAndRecord(
   // OpenAI Responses namespaces and custom tool calls are recorded only with
   // responsesTools "extended"; otherwise the recording is what earlier
   // releases wrote (namespaces dropped, custom calls not recorded).
-  const collapsedRaw = collapseStreamingResponse(
+  const collapsedRaw = collapseStreamingResponseWithResponsesTools(
     ctString,
     providerKey,
     isBinaryStream ? rawBuffer : upstreamBody,
@@ -1629,33 +1629,6 @@ function logDroppedReasoningSignature(
 /** Sanitize a collapsed function call before it is persisted: string `name` and `arguments`. */
 function sanitizeRecordedToolCall(tc: ToolCall): ToolCall {
   return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
-}
-
-/**
- * A collapse result as earlier releases recorded it: no `namespace` on a
- * function call or `toolCall` block, and no custom tool calls.
- */
-function withoutResponsesToolFields(collapsed: CollapseResult): CollapseResult {
-  const result: CollapseResult = { ...collapsed };
-  delete result.customToolCalls;
-  delete result.responsesBlocks;
-  if (result.toolCalls) {
-    result.toolCalls = result.toolCalls.map((tc) => {
-      if (tc.namespace === undefined) return tc;
-      const copy = { ...tc };
-      delete copy.namespace;
-      return copy;
-    });
-  }
-  if (result.blocks) {
-    result.blocks = result.blocks.map((block) => {
-      if (block.type === "text" || block.namespace === undefined) return block;
-      const copy = { ...block };
-      delete copy.namespace;
-      return copy;
-    });
-  }
-  return result;
 }
 
 /**

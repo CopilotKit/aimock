@@ -357,6 +357,10 @@ describe("toolNamespace match key", () => {
       match: { toolName: "list_issues", toolNamespace: "mcp__github" },
       response: { content: "from file" },
     });
+    // Held until a server with responsesTools "extended" marks it, as 1.44.0
+    // dropped the key at load.
+    expect("toolNamespace" in fx.match).toBe(false);
+    markFixtureResponsesToolsExtended(fx);
     expect(fx.match.toolNamespace).toBe("mcp__github");
     const m = await start([]);
     const added = await fetch(`${m.url}/__aimock/fixtures`, {

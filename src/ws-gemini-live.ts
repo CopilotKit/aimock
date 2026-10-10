@@ -32,7 +32,7 @@ import {
   strictToolArgumentsEnabled,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isAudioResponse,
   flattenHeaders,
@@ -250,7 +250,7 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
     return { ...plan, summary: { ...plan.summary, servedToolCalls: [] } };
   }
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   const calls =
@@ -788,7 +788,7 @@ async function processMessage(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
     // BLOCKS path (#274): when the fixture carries an ordered `blocks` array,

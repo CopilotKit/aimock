@@ -32,7 +32,7 @@ import {
   requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isEmbeddingResponse,
   isErrorResponse,
   serializeErrorResponse,
@@ -1213,7 +1213,7 @@ export async function handleCohere(
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Cohere v2 Chat API — ignoring",

@@ -67,7 +67,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   serializeErrorResponse,
   isAudioResponse,
@@ -101,6 +101,8 @@ import {
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
   setFixtureListResponsesTools,
+  isExtendedResponsesToolsList,
+  withoutResponsesToolKeys,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -587,7 +589,7 @@ function fixtureResponseKind(response: Fixture["response"]): string {
   if (isImageResponse(response)) return "image";
   if (isEmbeddingResponse(response)) return "embedding";
   if (isJSONResponse(response)) return "json";
-  if (isContentWithToolCallsResponse(response)) return "contentWithToolCalls";
+  if (isCombinedFixtureResponse(response)) return "contentWithToolCalls";
   if (isToolCallResponse(response)) return "toolCalls";
   if (isTextResponse(response)) return "text";
   return "unknown";
@@ -1008,6 +1010,11 @@ async function handleControlAPI(
       res.end(JSON.stringify({ error: "Invalid 'include': expected 'fixtures'" }));
       return true;
     }
+    // Only a server with responsesTools "extended" reads `match.toolNamespace`,
+    // `customToolCalls` and `responsesBlocks`; elsewhere they do not change
+    // the kind, as in 1.44.0.
+    const extendedTools = isExtendedResponsesToolsList(fixtures);
+    if (extendedTools) fixtures.forEach(markFixtureResponsesToolsExtended);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -1021,7 +1028,13 @@ async function handleControlAPI(
           // the idempotent claim), so the shape test alone reports "factory"
           // and this surface loses the one signal it exists to give: that an
           // injection is armed. Take the kind from the one-shot MARKER.
-          responseKind: isOneShotError(fixture) ? "error" : fixtureResponseKind(fixture.response),
+          responseKind: isOneShotError(fixture)
+            ? "error"
+            : fixtureResponseKind(
+                extendedTools || typeof fixture.response === "function"
+                  ? fixture.response
+                  : withoutResponsesToolKeys(fixture.response),
+              ),
           ...(fixture.latency !== undefined ? { latency: fixture.latency } : {}),
           ...(fixture.chaos !== undefined ? { chaos: fixture.chaos } : {}),
         })),
@@ -2324,7 +2337,7 @@ async function handleCompletions(
     appliedPlan.reasoning === undefined &&
     (isTextResponse(response) ||
       isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response))
+      isCombinedFixtureResponse(response))
       ? resolveReasoningForModel(
           response.reasoning,
           responseModel,
@@ -2552,7 +2565,7 @@ async function handleCompletions(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       defaults.logger.warn(
         "webSearches in fixture response are not supported for Chat Completions API — ignoring",

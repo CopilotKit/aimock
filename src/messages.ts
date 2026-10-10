@@ -31,7 +31,7 @@ import {
   requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   resolveFixtureBlockOutcome,
   flattenHeaders,
@@ -1161,13 +1161,13 @@ export function prepareClaudeMisbehavior(
     !(
       isTextResponse(response) ||
       isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response)
+      isCombinedFixtureResponse(response)
     )
   ) {
     throw new TypeError("Claude misbehavior requires a chat response");
   }
   const outcome =
-    isContentWithToolCallsResponse(response) && response.blocks?.length
+    isCombinedFixtureResponse(response) && response.blocks?.length
       ? resolveFixtureBlockOutcome(response.blocks)
       : undefined;
   const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
@@ -1338,7 +1338,7 @@ export function prepareClaudeMisbehavior(
       artifacts.reasoningSignature,
       artifacts.redactedThinking,
     ] as const;
-    const events = isContentWithToolCallsResponse(preparedResponse)
+    const events = isCombinedFixtureResponse(preparedResponse)
       ? buildClaudeContentWithToolCallsStreamEvents(
           preparedResponse.content ?? "",
           toolCalls,
@@ -1383,7 +1383,7 @@ export function prepareClaudeMisbehavior(
     artifacts.reasoningSignature,
     artifacts.redactedThinking,
   ] as const;
-  const body = isContentWithToolCallsResponse(preparedResponse)
+  const body = isCombinedFixtureResponse(preparedResponse)
     ? buildClaudeContentWithToolCallsResponse(
         preparedResponse.content ?? "",
         toolCalls,
@@ -1843,7 +1843,7 @@ export async function handleMessages(
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Claude Messages API — ignoring",

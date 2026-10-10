@@ -27,7 +27,7 @@ import {
   flattenHeaders,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isTranscriptionResponse,
   isErrorResponse,
   resolveFixtureBlocks,
@@ -1415,7 +1415,7 @@ async function handleResponseCreate(
 
   if (misbehavior.kind === "applied") {
     const prepared = misbehavior.response;
-    const combined = isContentWithToolCallsResponse(prepared);
+    const combined = isCombinedFixtureResponse(prepared);
     // Journal first so a fixture tool-call error gets the same coded failed
     // response as the non-misbehavior paths below. (The planner never applies
     // a fault to a custom-call fixture on this wire.)
@@ -1508,7 +1508,7 @@ async function handleResponseCreate(
   }
 
   // ── Content + tool calls response ──────────────────────────────────
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
     // ── Ordered blocks path (#274) ──────────────────────────────────

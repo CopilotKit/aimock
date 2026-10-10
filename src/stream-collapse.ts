@@ -146,12 +146,12 @@ export interface CollapseResult {
   usage?: Record<string, unknown>;
   /**
    * Function calls. An OpenAI Responses `function_call` item's `namespace` is
-   * kept on its entry ({@link collapseOpenAISSE} only).
+   * kept on its entry (internal {@link collapseOpenAISSEWithResponsesTools} only).
    */
   toolCalls?: ToolCall[];
   /**
    * OpenAI Responses custom tool calls (`custom_tool_call` items), in output
-   * order ({@link collapseOpenAISSE} only). They are never part of `toolCalls`
+   * order (internal {@link collapseOpenAISSEWithResponsesTools} only). They are never part of `toolCalls`
    * or `blocks`.
    */
   customToolCalls?: CustomToolCall[];
@@ -236,7 +236,7 @@ interface CustomCallAcc {
 }
 
 /**
- * A tool-call accumulator in {@link collapseOpenAISSE}'s `toolCallMap`. The
+ * A tool-call accumulator in {@link collapseOpenAISSEWithResponsesTools}'s `toolCallMap`. The
  * Responses API puts function and custom calls in one `output_index` space, so
  * the map holds both kinds.
  */
@@ -489,8 +489,54 @@ function extractSSEData(lines: string[]): string | undefined {
  * Format:
  *   data: {"id":"chatcmpl-123","choices":[{"delta":{"content":"Hello"}}]}\n\n
  *   data: [DONE]\n\n
+ *
+ * Public, with the 1.44.0 result: an OpenAI Responses `namespace` and custom
+ * tool calls are dropped. The recorder uses {@link collapseOpenAISSEWithResponsesTools}.
  */
 export function collapseOpenAISSE(rawBody: string): CollapseResult {
+  return withoutResponsesToolFields(collapseOpenAISSEWithResponsesTools(rawBody));
+}
+
+/**
+ * A collapse result as 1.44.0 returned and recorded it: no `namespace` on a
+ * function call or `toolCall` block, and no custom tool calls.
+ */
+export function withoutResponsesToolFields(collapsed: CollapseResult): CollapseResult {
+  if (
+    collapsed.customToolCalls === undefined &&
+    collapsed.responsesBlocks === undefined &&
+    !collapsed.toolCalls?.some((tc) => tc.namespace !== undefined) &&
+    !collapsed.blocks?.some((block) => block.type !== "text" && block.namespace !== undefined)
+  ) {
+    return collapsed;
+  }
+  const result: CollapseResult = { ...collapsed };
+  delete result.customToolCalls;
+  delete result.responsesBlocks;
+  if (result.toolCalls) {
+    result.toolCalls = result.toolCalls.map((tc) => {
+      if (tc.namespace === undefined) return tc;
+      const copy = { ...tc };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  if (result.blocks) {
+    result.blocks = result.blocks.map((block) => {
+      if (block.type === "text" || block.namespace === undefined) return block;
+      const copy = { ...block };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  return result;
+}
+
+/**
+ * @internal {@link collapseOpenAISSE} keeping an OpenAI Responses `namespace`
+ * and custom tool calls, for the recorder with `responsesTools: "extended"`.
+ */
+export function collapseOpenAISSEWithResponsesTools(rawBody: string): CollapseResult {
   const inputTruncated = isCollapseInputTruncated(rawBody);
   const body = guardCollapseBody(rawBody);
   const lines = splitSSEEvents(body);
@@ -2272,8 +2318,30 @@ export function collapseGeminiInteractionsSSE(rawBody: string): CollapseResult {
  * Collapse a streaming response body into a non-streaming fixture response.
  * Returns null if the content type is not a known streaming format.
  * Falls back to OpenAI SSE parsing for unrecognized provider keys with text/event-stream.
+ *
+ * Public, with the 1.44.0 result (see {@link collapseOpenAISSE}). The recorder
+ * uses {@link collapseStreamingResponseWithResponsesTools}.
  */
 export function collapseStreamingResponse(
+  contentType: string,
+  providerKey: RecordProviderKey,
+  body: string | Buffer,
+  logger?: Logger,
+): CollapseResult | null {
+  const collapsed = collapseStreamingResponseWithResponsesTools(
+    contentType,
+    providerKey,
+    body,
+    logger,
+  );
+  return collapsed && withoutResponsesToolFields(collapsed);
+}
+
+/**
+ * @internal {@link collapseStreamingResponse} keeping an OpenAI Responses
+ * `namespace` and custom tool calls.
+ */
+export function collapseStreamingResponseWithResponsesTools(
   contentType: string,
   providerKey: RecordProviderKey,
   body: string | Buffer,
@@ -2310,7 +2378,7 @@ export function collapseStreamingResponse(
       case "azure":
       case "openrouter":
       case "byteplus":
-        return collapseOpenAISSE(str);
+        return collapseOpenAISSEWithResponsesTools(str);
       case "anthropic":
         return collapseAnthropicSSE(str);
       case "gemini":
@@ -2326,7 +2394,7 @@ export function collapseStreamingResponse(
         logger?.warn(
           `[stream-collapse] unknown SSE provider "${providerKey}", falling back to OpenAI SSE format`,
         );
-        return collapseOpenAISSE(str);
+        return collapseOpenAISSEWithResponsesTools(str);
     }
   }
 

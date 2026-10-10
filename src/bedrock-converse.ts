@@ -27,7 +27,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   resolveFixtureBlockOutcome,
   isErrorResponse,
   flattenHeaders,
@@ -722,7 +722,7 @@ function prepareConverseMisbehavior(
   headers: http.IncomingHttpHeaders,
 ): PreparedConverseMisbehavior {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   // The planner skips a custom-call fixture on this wire, so the narrowing
@@ -1178,7 +1178,7 @@ export async function handleConverse(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
@@ -1602,7 +1602,7 @@ export async function handleConverseStream(
   }
 
   // Content + tool calls response — stream as Event Stream
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",

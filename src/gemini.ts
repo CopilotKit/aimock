@@ -24,7 +24,7 @@ import type {
 import {
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isAudioResponse,
   extractOverrides,
@@ -832,7 +832,7 @@ function prepareGeminiMisbehavior(
   strict: boolean,
 ): { chunks: GeminiResponseChunk[]; summary: MisbehaviorPlan["summary"] } {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (!(combined || isToolCallResponse(response) || isTextResponse(response))) {
     throw new Error("Applied Gemini misbehavior requires a chat response");
   }
@@ -1337,7 +1337,7 @@ export async function handleGemini(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }

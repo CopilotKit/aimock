@@ -8,6 +8,7 @@ import type {
   FixtureFile,
   FixtureFileEntry,
   FixtureFileResponse,
+  FixtureMatch,
   FixtureResponse,
   ResponseOverrides,
 } from "./types.js";
@@ -15,7 +16,7 @@ import {
   isLiveResponse,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
   isImageResponse,
@@ -84,8 +85,17 @@ export function normalizeResponse(
     });
   }
 
-  // `responsesBlocks` (OpenAI Responses): the same idiom for its `toolCall`
-  // blocks. A `customToolCall` block's free-text `input` is never stringified.
+  return response as unknown as FixtureResponse;
+}
+
+/**
+ * @internal Normalize `responsesBlocks` and `customToolCalls` in place, for a
+ * server with `responsesTools: "extended"`: stringify object `arguments` on
+ * `toolCall` blocks, and give a `customToolCalls` entry with no `type` the
+ * type `"custom"`. A custom call's free-text `input` is never stringified.
+ * {@link normalizeResponse} leaves both keys as written, as 1.44.0 did.
+ */
+export function normalizeResponsesToolsKeys(response: Record<string, unknown>): void {
   if (Array.isArray(response.responsesBlocks)) {
     response.responsesBlocks = (response.responsesBlocks as unknown[]).map((block) => {
       const b = block as Record<string, unknown> | null;
@@ -101,9 +111,6 @@ export function normalizeResponse(
       return block;
     });
   }
-
-  // `customToolCalls` entries may omit `type` in a file; every entry is a
-  // custom call. Their `input` is free text and is never stringified.
   if (Array.isArray(response.customToolCalls)) {
     response.customToolCalls = (response.customToolCalls as unknown[]).map((tc) => {
       const entry = tc as Record<string, unknown> | null;
@@ -112,8 +119,6 @@ export function normalizeResponse(
         : tc;
     });
   }
-
-  return response as unknown as FixtureResponse;
 }
 
 class InvalidFixtureMatchError extends TypeError {}
@@ -141,9 +146,6 @@ export function entryToFixture(
       toolCallId: entry.match.toolCallId,
       toolResultContains: entry.match.toolResultContains,
       toolName: entry.match.toolName,
-      ...(entry.match.toolNamespace !== undefined && {
-        toolNamespace: entry.match.toolNamespace,
-      }),
       model: entry.match.model,
       responseFormat: entry.match.responseFormat,
       endpoint: entry.match.endpoint,
@@ -177,6 +179,25 @@ export function entryToFixture(
   };
 
   if (source) setFixtureMisbehaviorPosition(fixture, `${source.file}#${source.index}`);
+
+  // `match.toolNamespace`, `customToolCalls` and `responsesBlocks` are held,
+  // not read: 1.44.0 dropped the first and kept the others as written, so the
+  // fixture looks exactly as it did then. Only a server with responsesTools
+  // "extended" applies them (markFixtureResponsesToolsExtended).
+  const heldToolNamespace = entry.match.toolNamespace !== undefined;
+  const response: unknown = fixture.response;
+  const heldResponseKeys =
+    entry.match.endpoint !== "openai-live" &&
+    !isLiveResponse(entry.response) &&
+    typeof response === "object" &&
+    response !== null &&
+    ("customToolCalls" in response || "responsesBlocks" in response);
+  if (heldToolNamespace || heldResponseKeys) {
+    heldResponsesTools.set(fixture, {
+      ...(heldToolNamespace && { toolNamespace: entry.match.toolNamespace }),
+      normalize: heldResponseKeys,
+    });
+  }
 
   // A `misbehavior` key is held, not read: only a server with misbehavior
   // enabled recognizes it (enableHeldFixtureMisbehavior). Otherwise it is
@@ -1075,10 +1096,10 @@ export function validateFixtures(
       // --- Error checks ---
 
       // Response type recognition
-      // Note: isContentWithToolCallsResponse must be checked before isTextResponse
+      // Note: isCombinedFixtureResponse must be checked before isTextResponse
       // and isToolCallResponse since it is a structural superset of both.
       if (
-        !isContentWithToolCallsResponse(response) &&
+        !isCombinedFixtureResponse(response) &&
         !isTextResponse(response) &&
         !isToolCallResponse(response) &&
         !isErrorResponse(response) &&
@@ -1100,7 +1121,7 @@ export function validateFixtures(
 
       // When a non-empty ordered `blocks` array is present, the builders stream
       // `blocks` and IGNORE the legacy `content` mirror (see validateBlocks's
-      // divergence note + isContentWithToolCallsResponse's BLOCKS-ONLY clause).
+      // divergence note + isCombinedFixtureResponse's BLOCKS-ONLY clause).
       // So an empty-string `content` is harmless in that case and must NOT raise
       // the "content is empty string" hard error. Fixtures WITHOUT blocks keep
       // the error (an empty content with no blocks produces no output).
@@ -1127,7 +1148,7 @@ export function validateFixtures(
       }
 
       // ContentWithToolCalls response checks
-      if (isContentWithToolCallsResponse(response)) {
+      if (isCombinedFixtureResponse(response)) {
         // The guard now also matches a BLOCKS-ONLY fixture (non-empty `blocks`,
         // no `content`/`toolCalls`). For that shape the content/toolCalls checks
         // below don't apply (and `content`/`toolCalls` are undefined) — the
@@ -1293,7 +1314,7 @@ export function validateFixtures(
       if (
         isTextResponse(response) ||
         isToolCallResponse(response) ||
-        isContentWithToolCallsResponse(response)
+        isCombinedFixtureResponse(response)
       ) {
         const r = response as ResponseOverrides;
         if (r.id !== undefined && typeof r.id !== "string") {
@@ -1964,14 +1985,42 @@ interface HeldMisbehavior {
 const heldFixtureMisbehavior = new WeakMap<Fixture, HeldMisbehavior>();
 const responsesToolsExtendedFixtures = new WeakSet<Fixture>();
 
+/** The keys a loaded fixture holds until a server with responsesTools "extended" reads them. */
+interface HeldResponsesTools {
+  /** `match.toolNamespace` as written, when the entry set it. */
+  toolNamespace?: unknown;
+  /** Whether the response carries `customToolCalls` / `responsesBlocks` to normalize. */
+  normalize: boolean;
+}
+
+const heldResponsesTools = new WeakMap<Fixture, HeldResponsesTools>();
+
 /**
- * @internal Mark a fixture loaded for a server with `responsesTools:
- * "extended"`, so `validateFixtures` checks its `match.toolNamespace`,
- * `customToolCalls` and `responsesBlocks`. Without the mark they are ignored,
- * as 1.44.0 ignored them.
+ * @internal Mark a fixture for a server with `responsesTools: "extended"`.
+ * A fixture the loader made gets its held `match.toolNamespace` back and its
+ * `customToolCalls` / `responsesBlocks` normalized (in place; the loader made
+ * the objects), and `validateFixtures` checks those keys. Without the mark
+ * they are ignored and the fixture stays as 1.44.0 loaded it. Idempotent.
  */
 export function markFixtureResponsesToolsExtended(fixture: Fixture): void {
   responsesToolsExtendedFixtures.add(fixture);
+  const held = heldResponsesTools.get(fixture);
+  if (held === undefined) return;
+  heldResponsesTools.delete(fixture);
+  if (held.toolNamespace !== undefined) {
+    // Rebuild the match so `toolNamespace` sits after `toolName`, in the same
+    // key order the listing and journal have always shown in this mode.
+    const match: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(fixture.match)) {
+      match[key] = value;
+      if (key === "toolName") match.toolNamespace = held.toolNamespace;
+    }
+    if (!("toolNamespace" in match)) match.toolNamespace = held.toolNamespace;
+    fixture.match = match as FixtureMatch;
+  }
+  if (held.normalize) {
+    normalizeResponsesToolsKeys(fixture.response as unknown as Record<string, unknown>);
+  }
 }
 
 /**

@@ -24,7 +24,7 @@ import {
   requireEmittedFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   extractOverrides,
   generateToolCallId,
@@ -854,7 +854,7 @@ function prepareInteractionsMisbehavior(
     // Earlier completed calls/text survive; omit the cut call before allocating
     // IDs and preparing servedToolCalls/usage.
     const response = plan.response;
-    const combined = isContentWithToolCallsResponse(response);
+    const combined = isCombinedFixtureResponse(response);
     const outcome =
       combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
     const calls =
@@ -1184,7 +1184,7 @@ export async function handleGeminiInteractions(
       const overrides =
         isTextResponse(response) ||
         isToolCallResponse(response) ||
-        isContentWithToolCallsResponse(response)
+        isCombinedFixtureResponse(response)
           ? extractOverrides(response)
           : undefined;
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1251,7 +1251,7 @@ export async function handleGeminiInteractions(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Gemini Interactions API — ignoring",
