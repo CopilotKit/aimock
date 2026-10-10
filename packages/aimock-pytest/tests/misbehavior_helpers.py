@@ -4,9 +4,28 @@ These helpers only create fresh test inputs and use the public fixture API.
 They do not emulate an LLM, interpret faults, or hide SDK response handling.
 """
 
+from collections.abc import Iterator
 from typing import Any, Literal
 
+import pytest
+
 from aimock_pytest import AIMockServer
+
+
+def misbehavior_server(request: pytest.FixtureRequest, node_manager: Any) -> Iterator[AIMockServer]:
+    """The plugin's function-scoped ``aimock`` server, started with the
+    ``--misbehavior`` opt-in. Misbehavior is off by default (as in 1.44.0), so
+    every misbehavior proof module overrides ``aimock`` with this."""
+    server = AIMockServer(
+        node_manager,
+        port=0,
+        api_key=request.config.getoption("--aimock-api-key"),
+        enable_misbehavior=True,
+    )
+    server.start()
+    server._default_test_id = request.node.nodeid
+    yield server
+    server.stop()
 
 
 def tool_response(

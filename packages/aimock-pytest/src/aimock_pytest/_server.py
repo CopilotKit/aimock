@@ -43,11 +43,17 @@ class AIMockServer:
         port: int = 0,
         fixtures_path: str | Path | None = None,
         api_key: str | None = None,
+        enable_misbehavior: bool = False,
     ) -> None:
         self.node_manager = node_manager
         self.port = port
         self.fixtures_path = fixtures_path
         self.api_key = api_key
+        # Model misbehavior is opt-in on the aimock CLI (``--misbehavior``).
+        # Off by default, so fixture ``misbehavior`` keys, the
+        # ``X-AIMock-Misbehavior`` header and ``/__aimock/misbehavior`` do not
+        # apply, as in 1.44.0.
+        self.enable_misbehavior = enable_misbehavior
         self._proc: subprocess.Popen[str] | None = None
         self._base_url: str | None = None
         # Background stdout drainer state. The reader thread continuously
@@ -101,6 +107,8 @@ class AIMockServer:
             "--fixtures",
             fixtures_arg,
         ]
+        if self.enable_misbehavior:
+            cmd.append("--misbehavior")
 
         child_env = os.environ.copy()
         # The plugin option owns child auth. Do not inherit a developer's or

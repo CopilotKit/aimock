@@ -7,7 +7,12 @@ import requests
 from openai import APIStatusError, OpenAI
 
 from aimock_pytest import AIMockServer
-from misbehavior_helpers import add_tool_fixture, tool_response
+from misbehavior_helpers import add_tool_fixture, misbehavior_server, tool_response
+
+
+@pytest.fixture
+def aimock(request, _aimock_node_manager):
+    yield from misbehavior_server(request, _aimock_node_manager)
 
 
 @pytest.fixture
@@ -258,7 +263,9 @@ def test_same_file_readded_after_reset_fires_again(aimock, client, tmp_path, res
 
 
 def test_authenticated_fixture_load_journal_and_direct_control(_aimock_node_manager, tmp_path):
-    server = AIMockServer(_aimock_node_manager, api_key="python-control-key")
+    server = AIMockServer(
+        _aimock_node_manager, api_key="python-control-key", enable_misbehavior=True
+    )
     try:
         server.start()
         path = tmp_path / "keyed.json"

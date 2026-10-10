@@ -5,7 +5,12 @@ import json
 import pytest
 from anthropic import Anthropic, APIStatusError
 
-from misbehavior_helpers import add_tool_fixture, tool_response, tool_schema
+from misbehavior_helpers import add_tool_fixture, misbehavior_server, tool_response, tool_schema
+
+
+@pytest.fixture
+def aimock(request, _aimock_node_manager):
+    yield from misbehavior_server(request, _aimock_node_manager)
 
 
 SHAPES = ["tool", "mixed", "blocks"]
