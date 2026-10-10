@@ -3,13 +3,21 @@
  * custom tool calls: the validating doors (`aimock validate`, the control API,
  * `addFixturesFromJSON`) reject a malformed call at load, and a fixture file
  * loaded without validation fails at request time with a coded 500 (or a
- * failed Realtime `response.done`).
+ * failed Realtime `response.done`). All of that needs responsesTools
+ * "extended"; by default every door treats the new keys as 1.44.0 did (see
+ * the last describe block).
  */
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
 import { runValidateCli } from "../validate-cli.js";
 import type { FixtureFileEntry } from "../types.js";
@@ -18,8 +26,15 @@ import { connectWebSocket } from "./ws-test-client.js";
 const entry = (response: Record<string, unknown>): FixtureFileEntry =>
   ({ match: { userMessage: "go" }, response }) as FixtureFileEntry;
 
+/** A fixture loaded for a server with responsesTools "extended", which checks the new keys. */
+function extended(e: FixtureFileEntry) {
+  const fixture = entryToFixture(e);
+  markFixtureResponsesToolsExtended(fixture);
+  return fixture;
+}
+
 function issuesFor(response: Record<string, unknown>) {
-  return validateFixtures([entryToFixture(entry(response))]).map((r) => [r.severity, r.message]);
+  return validateFixtures([extended(entry(response))]).map((r) => [r.severity, r.message]);
 }
 
 /**
@@ -214,7 +229,7 @@ describe("validateFixtures: namespace and custom tool call rules", () => {
 
   it("accepts valid namespaced and custom calls with no issues, and never parses or stringifies input", () => {
     const input = '{"looks":"like json"} but is free text';
-    const fixture = entryToFixture(
+    const fixture = extended(
       entry({
         toolCalls: [{ name: "f", namespace: "ns", arguments: { a: 1 } }],
         customToolCalls: [{ name: "apply_patch", namespace: "sandbox", input }],
@@ -232,7 +247,7 @@ describe("validateFixtures: namespace and custom tool call rules", () => {
       namespace: "sandbox",
       input,
     });
-    const blocksFixture = entryToFixture(
+    const blocksFixture = extended(
       entry({
         responsesBlocks: [
           { type: "toolCall", name: "f", namespace: "ns", arguments: { a: 1 } },
@@ -294,14 +309,14 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     expect(() => new LLMock({ port: 0 }).addFixturesFromJSON([entry(legacy)])).not.toThrow();
   });
 
-  it("aimock validate", () => {
+  it("aimock validate --responses-tools extended", () => {
     dir = mkdtempSync(join(tmpdir(), "aimock-505-validate-"));
     const file = join(dir, "custom.json");
     writeFileSync(file, JSON.stringify({ fixtures: [entry(bad)] }));
     const logs: string[] = [];
     let code: number | null = null;
     runValidateCli({
-      argv: [file],
+      argv: ["--responses-tools", "extended", file],
       log: (m) => logs.push(m),
       logError: (m) => logs.push(m),
       exit: (c) => {
@@ -314,8 +329,8 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     );
   });
 
-  it("control API", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+  it("control API (responsesTools extended)", async () => {
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     await mock.start();
     const res = await fetch(`${mock.url}/__aimock/fixtures`, {
       method: "POST",
@@ -328,8 +343,8 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     );
   });
 
-  it("addFixturesFromJSON", () => {
-    const unstarted = new LLMock({ port: 0 });
+  it("addFixturesFromJSON (responsesTools extended)", () => {
+    const unstarted = new LLMock({ port: 0, responsesTools: "extended" });
     expect(() => unstarted.addFixturesFromJSON([entry(bad)])).toThrow(
       /customToolCalls\[0\]\.input must be a string for a custom tool call/,
     );
@@ -472,4 +487,214 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     expect(journaled?.status).toBe(500);
     expect(journaled?.error).toContain(UNSUPPORTED);
   });
+});
+
+/**
+ * Without responsesTools "extended" (the default), `match.toolNamespace`,
+ * `customToolCalls` and `responsesBlocks` are unused data, as in 1.44.0, so
+ * every validating door gives the result 1.44.0 gave for the same input. The
+ * expected findings are what 1.44.0's `validateFixtures` returned.
+ */
+describe("default responsesTools: validating doors treat the new keys as 1.44.0 did", () => {
+  const EMPTY_TOOL_CALLS = "toolCalls array is empty — fixture will never produce tool calls";
+  const accepted: Array<{ id: string; entries: FixtureFileEntry[]; findings: string[][] }> = [
+    {
+      id: "a custom call with arguments",
+      entries: [entry({ toolCalls: [], customToolCalls: [{ name: "p", arguments: "{}" }] })],
+      findings: [["warning", EMPTY_TOOL_CALLS]],
+    },
+    {
+      id: "a malformed responsesBlocks entry",
+      entries: [entry({ content: "x", responsesBlocks: [{ type: "customToolCall" }] })],
+      findings: [],
+    },
+    {
+      id: "a non-string toolNamespace",
+      entries: [{ match: { userMessage: "go", toolNamespace: 5 }, response: { content: "x" } }],
+      findings: [],
+    },
+    {
+      id: "an empty toolNamespace",
+      entries: [{ match: { userMessage: "go", toolNamespace: "" }, response: { content: "x" } }],
+      findings: [],
+    },
+    {
+      id: "a valid custom call beside empty toolCalls",
+      entries: [entry({ toolCalls: [], customToolCalls: [{ name: "p", input: "x" }] })],
+      findings: [["warning", EMPTY_TOOL_CALLS]],
+    },
+    {
+      id: "a string customToolCalls",
+      entries: [entry({ content: "x", customToolCalls: "nope" })],
+      findings: [],
+    },
+    {
+      id: "blocks beside responsesBlocks",
+      entries: [
+        entry({
+          content: "x",
+          blocks: [{ type: "text", text: "x" }],
+          responsesBlocks: [{ type: "text", text: "x" }],
+        }),
+      ],
+      findings: [],
+    },
+    {
+      id: "toolNamespace on a non-chat endpoint",
+      entries: [
+        {
+          match: { userMessage: "go", toolNamespace: "ns", endpoint: "image" },
+          response: { image: { url: "http://x/y.png" } },
+        },
+      ],
+      findings: [],
+    },
+    {
+      id: "a custom call on a non-chat endpoint",
+      entries: [
+        {
+          match: { userMessage: "go", endpoint: "image" },
+          response: {
+            image: { url: "http://x/y.png" },
+            customToolCalls: [{ name: "p", input: "x" }],
+          },
+        },
+      ],
+      findings: [],
+    },
+    {
+      id: "two fixtures that differ only in toolNamespace",
+      entries: [
+        { match: { userMessage: "go", toolNamespace: "n1" }, response: { content: "1" } },
+        { match: { userMessage: "go" }, response: { content: "2" } },
+      ],
+      findings: [["warning", "duplicate userMessage 'go' — shadows fixture 0"]],
+    },
+  ] as Array<{ id: string; entries: FixtureFileEntry[]; findings: string[][] }>;
+
+  // 1.44.0 rejected these; it still rejects them for the same reason.
+  const rejected: Array<{ id: string; entries: FixtureFileEntry[]; findings: string[][] }> = [
+    {
+      id: "empty content beside responsesBlocks",
+      entries: [entry({ content: "", responsesBlocks: [{ type: "text", text: "hi" }] })],
+      findings: [["error", "content is empty string"]],
+    },
+    {
+      id: "responsesBlocks alone",
+      entries: [entry({ responsesBlocks: [{ type: "text", text: "x" }] })],
+      findings: [
+        [
+          "error",
+          "response is not a recognized type (must have content, toolCalls, error, embedding, image, audio, transcription, video, json, or live)",
+        ],
+      ],
+    },
+  ] as Array<{ id: string; entries: FixtureFileEntry[]; findings: string[][] }>;
+
+  let dir: string | undefined;
+  let mock: LLMock | undefined;
+  afterEach(async () => {
+    await mock?.stop();
+    mock = undefined;
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  function writeFixtureFile(entries: FixtureFileEntry[]): string {
+    dir = mkdtempSync(join(tmpdir(), "aimock-505-default-validate-"));
+    const file = join(dir, "fixtures.json");
+    writeFileSync(file, JSON.stringify({ fixtures: entries }));
+    return file;
+  }
+
+  function validateCli(argv: string[]): number {
+    let code: number | null = null;
+    runValidateCli({ argv, log: () => {}, logError: () => {}, exit: (c) => (code = c) });
+    return code ?? 0;
+  }
+
+  describe.each([...accepted, ...rejected])("$id", ({ entries, findings }) => {
+    const fails = findings.some(([severity]) => severity === "error");
+
+    it("validateFixtures gives the 1.44.0 findings", () => {
+      const fixtures = entries.map((e) => entryToFixture(e));
+      expect(validateFixtures(fixtures).map((r) => [r.severity, r.message])).toEqual(findings);
+    });
+
+    it("addFixturesFromJSON, the control API and aimock validate agree with 1.44.0", async () => {
+      const add = () => new LLMock({ port: 0, logLevel: "silent" }).addFixturesFromJSON(entries);
+      if (fails) expect(add).toThrow(/Fixture validation failed/);
+      else expect(add).not.toThrow();
+
+      mock = new LLMock({ port: 0, logLevel: "silent" });
+      await mock.start();
+      const res = await fetch(`${mock.url}/__aimock/fixtures`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fixtures: entries }),
+      });
+      const text = await res.text();
+      expect(res.status, text).toBe(fails ? 400 : 200);
+
+      expect(validateCli([writeFixtureFile(entries)])).toBe(fails ? 1 : 0);
+    });
+  });
+
+  /** Start `llmock --validate-on-load`; resolve with its exit code, or "listening". */
+  function validateOnLoad(file: string, extra: string[] = []) {
+    return new Promise<{ result: number | "listening"; output: string }>((done, fail) => {
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          createRequire(import.meta.url).resolve("tsx"),
+          resolve("src/cli.ts"),
+          "--validate-on-load",
+          "--port",
+          "0",
+          "--fixtures",
+          file,
+          ...extra,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let output = "";
+      const timer = setTimeout(() => {
+        child.kill();
+        fail(new Error(`llmock neither listened nor exited within 20s:\n${output}`));
+      }, 20_000);
+      const onData = (chunk: Buffer) => {
+        output += chunk.toString();
+        if (/listening on/.test(output)) {
+          clearTimeout(timer);
+          child.kill();
+          done({ result: "listening", output });
+        }
+      };
+      child.stdout.on("data", onData);
+      child.stderr.on("data", onData);
+      child.on("exit", (code) => {
+        clearTimeout(timer);
+        done({ result: code ?? -1, output });
+      });
+    });
+  }
+
+  it("llmock --validate-on-load starts with every 1.44.0-accepted shape, and extended rejects them", async () => {
+    // Distinct userMessages, so the files hold no cross-fixture warning.
+    const all = accepted.flatMap(({ entries }, i) =>
+      entries.map((e) => ({ ...e, match: { ...e.match, userMessage: `case-${i}` } })),
+    );
+    const file = writeFixtureFile(all);
+    const legacy = await validateOnLoad(file);
+    expect(legacy.result, legacy.output).toBe("listening");
+    expect(legacy.output).not.toMatch(/customToolCalls\[|responsesBlocks\[|match\.toolNamespace/);
+
+    const ext = await validateOnLoad(file, ["--responses-tools", "extended"]);
+    expect(ext.result, ext.output).toBe(1);
+    expect(ext.output).toContain(
+      "customToolCalls[0].input must be a string for a custom tool call",
+    );
+    expect(ext.output).toContain("match.toolNamespace must be a string, got number");
+  }, 60_000);
 });

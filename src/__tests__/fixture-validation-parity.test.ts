@@ -11,7 +11,11 @@
  * 1.44.0 ignored it.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -20,7 +24,10 @@ const CODE = "aimock_invalid_fixture_tool_call";
 
 function issuesFor(match: Record<string, unknown>, response: Record<string, unknown>) {
   const entry = { match, response } as FixtureFileEntry;
-  return validateFixtures([entryToFixture(entry)]).map((r) => [r.severity, r.message]);
+  // As loaded for a server with responsesTools "extended", which checks the new keys.
+  const fixture = entryToFixture(entry);
+  markFixtureResponsesToolsExtended(fixture);
+  return validateFixtures([fixture]).map((r) => [r.severity, r.message]);
 }
 
 const DIVERGE =

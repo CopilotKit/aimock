@@ -39,6 +39,7 @@ import {
   normalizeResponse,
   validateFixtures,
   enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
   markFixtureMisbehaviorEnabled,
   MisbehaviorConfigError,
 } from "./fixture-loader.js";
@@ -161,6 +162,7 @@ export class LLMock {
     if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
       markFixtureMisbehaviorEnabled(fixture);
     }
+    if (this.options.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
     return fixture;
   }
 
@@ -211,6 +213,9 @@ export class LLMock {
   private acceptLoaded(loaded: FixturesWithServices): this {
     // With misbehavior enabled, a bad `misbehavior` key throws before anything is added.
     if (this.misbehaviorEnabled) loaded.fixtures.forEach(enableHeldFixtureMisbehavior);
+    if (this.options.responsesTools === "extended") {
+      loaded.fixtures.forEach(markFixtureResponsesToolsExtended);
+    }
     if (loaded.mcpFakes.length > 0) {
       if (this.serverInstance) {
         this.addFakesAfterStart(this.serverInstance, loaded.mcpFakes);
@@ -300,6 +305,7 @@ export class LLMock {
       });
       setFixtureMisbehaviorPosition(fixture, position);
       if (this.misbehaviorEnabled) enableHeldFixtureMisbehavior(fixture);
+      if (this.options.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
       return fixture;
     });
 

@@ -41,6 +41,7 @@ import {
   FixtureLoadError,
   MisbehaviorConfigError,
   enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -1329,6 +1330,7 @@ async function handleControlAPI(
           index,
         });
         if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
+        if (defaults.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
         converted.push(fixture);
       } catch (error) {
         if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {

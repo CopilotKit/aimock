@@ -1020,17 +1020,23 @@ export function validateFixtures(
   const seenUserMessages = new Map<string, number>();
 
   for (let i = 0; i < fixtures.length; i++) {
-    const f = fixtures[i];
+    const original = fixtures[i];
+    // Only a fixture loaded for a server with responsesTools "extended" has its
+    // `match.toolNamespace`, `customToolCalls` and `responsesBlocks` checked;
+    // for any other fixture they are unused data, as in 1.44.0.
+    const f = responsesToolsExtendedFixtures.has(original)
+      ? original
+      : withoutResponsesToolsKeys(original);
     const response = f.response;
 
     // Only a fixture recognized under enabled misbehavior is checked; for any
     // other fixture a `misbehavior` key is unused data, as in 1.44.0.
-    const misbehaviorIssue = misbehaviorEnabledFixtures.has(f)
-      ? validateFixtureMisbehavior(f, `fixtures[${i}].misbehavior`)
+    const misbehaviorIssue = misbehaviorEnabledFixtures.has(original)
+      ? validateFixtureMisbehavior(original, `fixtures[${i}].misbehavior`)
       : undefined;
     if (misbehaviorIssue) {
       results.push({ severity: "error", fixtureIndex: i, message: misbehaviorIssue.message });
-    } else if (misbehaviorEnabledFixtures.has(f) && f.misbehavior !== undefined) {
+    } else if (misbehaviorEnabledFixtures.has(original) && f.misbehavior !== undefined) {
       const parsed = parseMisbehavior(f.misbehavior);
       if (parsed.ok && parsed.config.seed === undefined) {
         for (const fault of parsed.config.faults) {
@@ -1956,6 +1962,45 @@ interface HeldMisbehavior {
 }
 
 const heldFixtureMisbehavior = new WeakMap<Fixture, HeldMisbehavior>();
+const responsesToolsExtendedFixtures = new WeakSet<Fixture>();
+
+/**
+ * @internal Mark a fixture loaded for a server with `responsesTools:
+ * "extended"`, so `validateFixtures` checks its `match.toolNamespace`,
+ * `customToolCalls` and `responsesBlocks`. Without the mark they are ignored,
+ * as 1.44.0 ignored them.
+ */
+export function markFixtureResponsesToolsExtended(fixture: Fixture): void {
+  responsesToolsExtendedFixtures.add(fixture);
+}
+
+/**
+ * The fixture as 1.44.0 saw it: without `match.toolNamespace`,
+ * `customToolCalls` and `responsesBlocks`. Returns the same object when none
+ * is set; factory responses are left as they are.
+ */
+function withoutResponsesToolsKeys(fixture: Fixture): Fixture {
+  let match = fixture.match;
+  if ("toolNamespace" in match) {
+    const copy = { ...match };
+    delete copy.toolNamespace;
+    match = copy;
+  }
+  let response = fixture.response;
+  if (
+    typeof response !== "function" &&
+    response !== null &&
+    typeof response === "object" &&
+    ("customToolCalls" in response || "responsesBlocks" in response)
+  ) {
+    const copy = { ...(response as unknown as Record<string, unknown>) };
+    delete copy.customToolCalls;
+    delete copy.responsesBlocks;
+    response = copy as unknown as FixtureResponse;
+  }
+  if (match === fixture.match && response === fixture.response) return fixture;
+  return { ...fixture, match, response };
+}
 const misbehaviorEnabledFixtures = new WeakSet<Fixture>();
 
 /**

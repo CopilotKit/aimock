@@ -10,7 +10,11 @@ import { LLMock } from "../llmock.js";
 import { Journal } from "../journal.js";
 import { responsesToCompletionRequest } from "../responses.js";
 import { getSystemText } from "../router.js";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import type { ChatCompletionRequest, Fixture } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
 
@@ -385,10 +389,12 @@ describe("toolNamespace match key", () => {
   });
 
   it("validates type and emptiness, keys the duplicate check and the catch-all list on it", () => {
-    const mk = (match: Record<string, unknown>): Fixture => ({
-      match: match as Fixture["match"],
-      response: { content: "x" },
-    });
+    // As loaded for a server with responsesTools "extended", which checks the key.
+    const mk = (match: Record<string, unknown>): Fixture => {
+      const fixture: Fixture = { match: match as Fixture["match"], response: { content: "x" } };
+      markFixtureResponsesToolsExtended(fixture);
+      return fixture;
+    };
     const nonString = validateFixtures([mk({ toolNamespace: 7 })]);
     expect(
       nonString.some(
