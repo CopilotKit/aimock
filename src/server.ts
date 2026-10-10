@@ -39,6 +39,8 @@ import {
   clearFixtureQueue,
   releaseOneShotError,
   FixtureLoadError,
+  MisbehaviorConfigError,
+  enableHeldFixtureMisbehavior,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -1043,6 +1045,12 @@ async function handleControlAPI(
       return true;
     };
     const scope = defaults.misbehavior;
+    if (!scope && req.method !== "GET") {
+      return reply(409, {
+        error:
+          "misbehavior is not enabled: start aimock with enableMisbehavior: true (CLI: --misbehavior)",
+      });
+    }
     if (req.method === "POST") {
       let raw: string;
       try {
@@ -1312,14 +1320,19 @@ async function handleControlAPI(
     const addition = controlFixtureAdditions.get(defaults) ?? 0;
     controlFixtureAdditions.set(defaults, addition + 1);
     const converted: Fixture[] = [];
-    const loadErrors: FixtureLoadError[] = [];
+    const loadErrors: (FixtureLoadError | MisbehaviorConfigError)[] = [];
     for (const [index, entry] of entries.entries()) {
       try {
-        converted.push(
-          entryToFixture(entry, undefined, undefined, { file: `control-api#${addition}`, index }),
-        );
+        const fixture = entryToFixture(entry, undefined, undefined, {
+          file: `control-api#${addition}`,
+          index,
+        });
+        if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
+        converted.push(fixture);
       } catch (error) {
-        if (!(error instanceof FixtureLoadError)) throw error;
+        if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {
+          throw error;
+        }
         loadErrors.push(error);
       }
     }
@@ -2918,7 +2931,12 @@ async function startServer(
       else if (this.byTestId.has(DEFAULT_TEST_ID)) this.byTestId.set(DEFAULT_TEST_ID, config);
     },
   };
-  if (serverOptions.misbehavior !== undefined) {
+  // Misbehavior is opt-in (enableMisbehavior). Without it there is no scope,
+  // so no fault is planned, and the `misbehavior` option, fixture keys and the
+  // X-AIMock-Misbehavior header are ignored, as in 1.44.0.
+  const misbehaviorEnabled = serverOptions.enableMisbehavior === true;
+  if (misbehaviorEnabled) fixtures.forEach(enableHeldFixtureMisbehavior);
+  if (misbehaviorEnabled && serverOptions.misbehavior !== undefined) {
     const parsed = parseMisbehavior(serverOptions.misbehavior);
     if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
     misbehavior.baseline =
@@ -2933,7 +2951,7 @@ async function startServer(
     replaySpeed: serverOptions.replaySpeed ?? 1.0,
     logger,
     chaosByTestId,
-    misbehavior,
+    misbehavior: misbehaviorEnabled ? misbehavior : undefined,
     get misbehaviorCounters(): Journal {
       return journal;
     },
@@ -3615,7 +3633,9 @@ async function startServer(
     // Validate the entire Node-normalized value before any provider can serve
     // or skip unsupported faults. Repeated fields must parse as one grammar;
     // never select only the first value. Keep valid headers intact for planning.
-    const misbehaviorHeader = parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"]);
+    const misbehaviorHeader = defaults.misbehavior
+      ? parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"])
+      : undefined;
     if (misbehaviorHeader && !misbehaviorHeader.ok) {
       const detail = misbehaviorHeader.issue.message;
       const message = `aimock_misbehavior_invalid: ${detail}`;
@@ -5517,7 +5537,11 @@ async function startServer(
       return;
     }
 
-    if (pathname !== LIVE_PATH && req.headers["x-aimock-misbehavior"] !== undefined) {
+    if (
+      defaults.misbehavior &&
+      pathname !== LIVE_PATH &&
+      req.headers["x-aimock-misbehavior"] !== undefined
+    ) {
       const code = "aimock_misbehavior_invalid";
       const message = "use the runtime scope: POST /__aimock/misbehavior with X-Test-Id";
       const body = JSON.stringify({
@@ -5601,49 +5625,34 @@ async function startServer(
       });
       liveSessions.set(sessionId, { testId: wsTestId, dispose });
     } else if (pathname === RESPONSES_PATH) {
-      handleWebSocketResponses(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gpt-4",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketResponses(ws, fixtures, journal, {
+        ...defaults,
+        model: "gpt-4",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === REALTIME_PATH) {
       const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
       const model = transcriptionIntent
         ? "gpt-transcribe"
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
-      handleWebSocketRealtime(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model,
-          transcriptionIntent,
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketRealtime(ws, fixtures, journal, {
+        ...defaults,
+        model,
+        transcriptionIntent,
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === GEMINI_LIVE_PATH) {
-      handleWebSocketGeminiLive(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gemini-2.0-flash",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketGeminiLive(ws, fixtures, journal, {
+        ...defaults,
+        model: "gemini-2.0-flash",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     }
   }
 

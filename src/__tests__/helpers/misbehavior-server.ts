@@ -2,8 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import OpenAI from "openai";
-import { LLMock } from "../../llmock.js";
 import type { FixtureFileResponse, FixtureFileToolCall } from "../../types.js";
+import { LLMock } from "./misbehavior-enabled.js";
 
 export async function withFaultFixture(
   misbehavior: unknown,

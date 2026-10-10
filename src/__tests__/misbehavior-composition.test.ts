@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import OpenAI from "openai";
 import { expect, test, vi } from "vitest";
-import { LLMock } from "../llmock.js";
 import * as sseWriter from "../sse-writer.js";
 import type { Fixture, FixtureFile } from "../types.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const testId = "recording-lifecycle";
 const upstreamArguments = { city: "Tokyo" };

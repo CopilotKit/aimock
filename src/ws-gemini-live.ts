@@ -347,8 +347,9 @@ export function handleWebSocketGeminiLive(
     misbehavior?: HandlerDefaults["misbehavior"];
     misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
     registry?: HandlerDefaults["registry"];
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const session: SessionState = {
@@ -365,7 +366,7 @@ export function handleWebSocketGeminiLive(
       // message's turn begins in the history.
       const historyMark = session.conversationHistory.length;
       try {
-        beforeProcessMessage?.();
+        defaults.beforeProcessMessage?.();
         await runWithToolArgumentsScope(
           { strict: defaults.strictToolArguments === true, logger },
           () => processMessage(raw, ws, fixtures, journal, defaults, session),

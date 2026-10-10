@@ -1615,6 +1615,8 @@ export function planMisbehavior(input: {
   url: string | undefined;
 }): MisbehaviorPlan | MisbehaviorSkip | MisbehaviorError {
   const { wire, fixture, defaults } = input;
+  // Misbehavior not enabled: the header and fixture keys are ignored (1.44.0).
+  if (!defaults.misbehavior) return { kind: "skipped" };
   const testId = resolveTestId(input.rawHeaders, input.url);
   let source: NonNullable<MisbehaviorSummary["source"]>;
   let parsed = parseMisbehaviorHeader(input.rawHeaders["x-aimock-misbehavior"]);
@@ -1854,6 +1856,7 @@ export function resolveMisbehaviorShortCircuit(input: {
   reason: "proxied" | "chaos-fired";
 }): MisbehaviorSummary | undefined {
   const { wire, fixture, defaults, rawHeaders, url, reason } = input;
+  if (!defaults.misbehavior) return undefined;
   const testId = resolveTestId(rawHeaders, url);
   let source: NonNullable<MisbehaviorSummary["source"]>;
   if (rawHeaders["x-aimock-misbehavior"] !== undefined) source = "header";

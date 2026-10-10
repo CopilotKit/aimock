@@ -38,7 +38,9 @@ import {
   entryToFixture,
   normalizeResponse,
   validateFixtures,
-  FixtureLoadError,
+  enableHeldFixtureMisbehavior,
+  markFixtureMisbehaviorEnabled,
+  MisbehaviorConfigError,
 } from "./fixture-loader.js";
 import {
   loadFixtureFileWithServices,
@@ -105,25 +107,41 @@ export class LLMock {
   constructor(options?: MockServerOptions, resolvedInboundAuth?: ResolvedInboundAuth) {
     this.options = options ?? {};
     if (this.options.live !== undefined) normalizeLiveOptions(this.options.live);
-    if (this.options.misbehavior !== undefined) this.setMisbehavior(this.options.misbehavior);
+    // The `misbehavior` option is read only with `enableMisbehavior: true`;
+    // otherwise it is unused data, as in 1.44.0.
+    if (this.misbehaviorEnabled && this.options.misbehavior !== undefined) {
+      this.setMisbehavior(this.options.misbehavior);
+    }
     this.resolvedInboundAuth = resolvedInboundAuth;
+  }
+
+  /** Misbehavior (fixture keys, header, `misbehavior` option) needs `enableMisbehavior: true`. */
+  private get misbehaviorEnabled(): boolean {
+    return this.options.enableMisbehavior === true;
   }
 
   // ---- Fixture management ----
 
   private normalizeFixture(fixture: Fixture): Fixture {
+    const misbehaviorEnabled = this.misbehaviorEnabled;
+    // A fixture loaded from a file holds its `misbehavior` key until enabled.
+    if (misbehaviorEnabled) enableHeldFixtureMisbehavior(fixture);
     const countIdentity = this.fixtureCountOrigins.get(fixture) ?? fixture;
     const previousPosition = getFixtureMisbehaviorPosition(fixture);
     const isNewAddition = previousPosition === undefined || /^code#\d+$/.test(previousPosition);
     const position = isNewAddition ? `code#${this.fixtureAddition++}` : previousPosition;
     // Re-adding a code fixture creates a new source without changing the old entry.
     if (isNewAddition) fixture = { ...fixture };
-    if (fixture.misbehavior !== undefined) {
+    if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
       const parsed = parseMisbehavior(fixture.misbehavior);
       if (parsed.ok) fixture = { ...fixture, misbehavior: parsed.config };
       const issue = parsed.ok ? validateFixtureMisbehavior(fixture) : parsed.issue;
       if (issue) {
-        throw new FixtureLoadError({ rule: issue.rule, file: position, detail: issue.message });
+        throw new MisbehaviorConfigError({
+          rule: issue.rule,
+          file: position,
+          detail: issue.message,
+        });
       }
     }
 
@@ -140,6 +158,9 @@ export class LLMock {
       this.fixtureCountOrigins.set(fixture, countIdentity);
     }
     setFixtureMisbehaviorPosition(fixture, position);
+    if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
+      markFixtureMisbehaviorEnabled(fixture);
+    }
     return fixture;
   }
 
@@ -188,6 +209,8 @@ export class LLMock {
    * still make `start()` reject.
    */
   private acceptLoaded(loaded: FixturesWithServices): this {
+    // With misbehavior enabled, a bad `misbehavior` key throws before anything is added.
+    if (this.misbehaviorEnabled) loaded.fixtures.forEach(enableHeldFixtureMisbehavior);
     if (loaded.mcpFakes.length > 0) {
       if (this.serverInstance) {
         this.addFakesAfterStart(this.serverInstance, loaded.mcpFakes);
@@ -276,6 +299,7 @@ export class LLMock {
         index: 0,
       });
       setFixtureMisbehaviorPosition(fixture, position);
+      if (this.misbehaviorEnabled) enableHeldFixtureMisbehavior(fixture);
       return fixture;
     });
 
@@ -620,6 +644,11 @@ export class LLMock {
 
   /** Replace construction/runtime baselines without changing named test overrides. */
   setMisbehavior(config: MisbehaviorConfig | MisbehaviorFaultId): this {
+    if (!this.misbehaviorEnabled) {
+      throw new TypeError(
+        "setMisbehavior: misbehavior is not enabled; construct with enableMisbehavior: true",
+      );
+    }
     const parsed = parseMisbehavior(config);
     if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
     this.options.misbehavior = parsed.config;
@@ -785,5 +814,10 @@ export function createLLMockWithResolvedAuth(
   options: MockServerOptions,
   resolvedAuth: ResolvedInboundAuth,
 ): LLMock {
+  // aimock --config: an `llm.misbehavior` key (the config loader has already
+  // validated it) is the config form of enabling misbehavior.
+  if (options.misbehavior !== undefined && options.enableMisbehavior === undefined) {
+    return new LLMock({ ...options, enableMisbehavior: true }, resolvedAuth);
+  }
   return new LLMock(options, resolvedAuth);
 }

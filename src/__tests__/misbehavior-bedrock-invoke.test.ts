@@ -6,9 +6,9 @@ import {
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { expect, test } from "vitest";
-import { LLMock } from "../llmock.js";
 import { withClaudeFault } from "./helpers/misbehavior-claude-stage3.js";
 import type { FixtureFileResponse, MisbehaviorFault } from "../types.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const request: Anthropic.MessageCreateParamsNonStreaming = {
   model: "claude-sonnet-4-20250514",

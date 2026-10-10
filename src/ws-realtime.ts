@@ -555,8 +555,9 @@ export function handleWebSocketRealtime(
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
     transcriptionIntent?: boolean;
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const sessionId = realtimeId("sess");
@@ -605,7 +606,7 @@ export function handleWebSocketRealtime(
   ws.on("message", (raw: string) => {
     pending = pending.then(async () => {
       try {
-        beforeProcessMessage?.();
+        defaults.beforeProcessMessage?.();
         await processMessage(
           raw,
           ws,

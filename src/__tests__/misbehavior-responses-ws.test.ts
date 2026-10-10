@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { Response, ResponseStreamEvent } from "openai/resources/responses/responses";
-import { LLMock } from "../llmock.js";
 import type { FixtureFileResponse, MisbehaviorFault } from "../types.js";
 import { withFaultFixture } from "./helpers/misbehavior-server.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const tools = [
   {

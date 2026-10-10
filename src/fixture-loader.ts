@@ -153,18 +153,15 @@ export function entryToFixture(
 
   if (source) setFixtureMisbehaviorPosition(fixture, `${source.file}#${source.index}`);
 
+  // A `misbehavior` key is held, not read: only a server with misbehavior
+  // enabled recognizes it (enableHeldFixtureMisbehavior). Otherwise it is
+  // unused data, as in 1.44.0.
   if (entry.misbehavior !== undefined) {
-    const path = source ? `fixtures[${source.index}].misbehavior` : "misbehavior";
-    const parsed = parseMisbehavior(entry.misbehavior, path);
-    if (parsed.ok) fixture.misbehavior = parsed.config;
-    const issue = parsed.ok ? validateFixtureMisbehavior(fixture, path) : parsed.issue;
-    if (issue) {
-      throw new FixtureLoadError({
-        rule: issue.rule,
-        file: source?.file ?? null,
-        detail: issue.message,
-      });
-    }
+    heldFixtureMisbehavior.set(fixture, {
+      value: entry.misbehavior,
+      path: source ? `fixtures[${source.index}].misbehavior` : "misbehavior",
+      file: source?.file ?? null,
+    });
   }
 
   // Sanitize recordedTimings to guard against NaN or negative values that
@@ -1023,10 +1020,14 @@ export function validateFixtures(
     const f = fixtures[i];
     const response = f.response;
 
-    const misbehaviorIssue = validateFixtureMisbehavior(f, `fixtures[${i}].misbehavior`);
+    // Only a fixture recognized under enabled misbehavior is checked; for any
+    // other fixture a `misbehavior` key is unused data, as in 1.44.0.
+    const misbehaviorIssue = misbehaviorEnabledFixtures.has(f)
+      ? validateFixtureMisbehavior(f, `fixtures[${i}].misbehavior`)
+      : undefined;
     if (misbehaviorIssue) {
       results.push({ severity: "error", fixtureIndex: i, message: misbehaviorIssue.message });
-    } else if (f.misbehavior !== undefined) {
+    } else if (misbehaviorEnabledFixtures.has(f) && f.misbehavior !== undefined) {
       const parsed = parseMisbehavior(f.misbehavior);
       if (parsed.ok && parsed.config.seed === undefined) {
         for (const fault of parsed.config.faults) {
@@ -1726,7 +1727,6 @@ export type McpFakesLoadRule = (typeof MCP_FAKES_LOAD_RULES)[number];
  */
 export interface FixtureLoadRuleRegistry {
   "mcp-fakes": McpFakesLoadRule;
-  misbehavior: MisbehaviorRule;
 }
 
 /**
@@ -1804,8 +1804,28 @@ function namePart(text: string): Message {
 }
 
 /**
+ * The message of a `FixtureLoadError` or `MisbehaviorConfigError`: the
+ * `file`, every non-null `blockId` and `entryId`, then `[rule] detail`.
+ */
+function loadErrorMessage(init: {
+  rule: string;
+  file: string | null;
+  blockId?: string | null;
+  entryId?: string | null;
+  detail: string | Message;
+}): string {
+  const file = init.file === null ? msg`<no file>` : namePart(init.file);
+  const block = init.blockId == null ? msg`` : msg`, block ${namePart(init.blockId)}`;
+  const entry = init.entryId == null ? msg`` : msg`, entry ${namePart(init.entryId)}`;
+  return oneLine(
+    build(msg`${file}${block}${entry}: [${fixed(init.rule)}] ${capPart(init.detail)}`),
+  );
+}
+
+/**
  * Thrown for a fixture-load case aimock cannot honor (fail-loud rule). Only
- * MCP fakes and misbehavior use it; other fixture-loader paths log warnings.
+ * MCP fakes use it (misbehavior throws its own `MisbehaviorConfigError`);
+ * other fixture-loader paths log warnings.
  * `blockId` and `entryId` are own properties only when supplied, so
  * `toJSON()` (the control API's HTTP 400 `details`) omits them otherwise.
  * The message names `file` and every non-null `blockId` and `entryId`, an
@@ -1822,13 +1842,7 @@ export class FixtureLoadError extends Error {
   declare readonly entryId?: string | null;
 
   constructor(init: FixtureLoadErrorInit, options?: ErrorOptions) {
-    const file = init.file === null ? msg`<no file>` : namePart(init.file);
-    const block = init.blockId == null ? msg`` : msg`, block ${namePart(init.blockId)}`;
-    const entry = init.entryId == null ? msg`` : msg`, entry ${namePart(init.entryId)}`;
-    super(
-      oneLine(build(msg`${file}${block}${entry}: [${fixed(init.rule)}] ${capPart(init.detail)}`)),
-      options,
-    );
+    super(loadErrorMessage(init), options);
     this.rule = init.rule;
     this.file = init.file;
     if (init.blockId !== undefined) {
@@ -1858,4 +1872,77 @@ export class FixtureLoadError extends Error {
     if (this.entryId !== undefined) json.entryId = this.entryId;
     return json;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Misbehavior in fixtures: recognized only when misbehavior is enabled
+// ---------------------------------------------------------------------------
+
+export interface MisbehaviorConfigErrorJSON {
+  /** `"MisbehaviorConfigError"`. */
+  name: string;
+  rule: string;
+  file: string | null;
+  message: string;
+}
+
+/**
+ * Thrown for an invalid fixture `misbehavior` key, or one that cannot apply
+ * to its fixture, on a server with misbehavior enabled (`enableMisbehavior:
+ * true`, CLI `--misbehavior`). Without that opt-in the key is unused data
+ * and nothing throws. The message has the `FixtureLoadError` layout:
+ * `"<file>": [<rule>] <detail>`.
+ */
+export class MisbehaviorConfigError extends Error {
+  override readonly name: string = "MisbehaviorConfigError";
+  readonly rule: MisbehaviorRule;
+  readonly file: string | null;
+
+  constructor(init: { rule: MisbehaviorRule; file: string | null; detail: string }) {
+    super(loadErrorMessage(init));
+    this.rule = init.rule;
+    this.file = init.file;
+  }
+
+  toJSON(): MisbehaviorConfigErrorJSON {
+    return { name: this.name, rule: this.rule, file: this.file, message: this.message };
+  }
+}
+
+/** A fixture entry's `misbehavior` value, held until misbehavior is enabled. */
+interface HeldMisbehavior {
+  value: unknown;
+  /** Path for messages, e.g. `fixtures[2].misbehavior`. */
+  path: string;
+  file: string | null;
+}
+
+const heldFixtureMisbehavior = new WeakMap<Fixture, HeldMisbehavior>();
+const misbehaviorEnabledFixtures = new WeakSet<Fixture>();
+
+/**
+ * @internal Recognize the `misbehavior` key a loaded fixture entry carried,
+ * for a server with misbehavior enabled: parse it onto the fixture (in place;
+ * the loader made the object) and check it applies, or throw
+ * `MisbehaviorConfigError`. A fixture with no held key is left unchanged.
+ */
+export function enableHeldFixtureMisbehavior(fixture: Fixture): void {
+  const held = heldFixtureMisbehavior.get(fixture);
+  if (held === undefined) return;
+  const parsed = parseMisbehavior(held.value, held.path);
+  if (parsed.ok) fixture.misbehavior = parsed.config;
+  const issue = parsed.ok ? validateFixtureMisbehavior(fixture, held.path) : parsed.issue;
+  if (issue) {
+    throw new MisbehaviorConfigError({ rule: issue.rule, file: held.file, detail: issue.message });
+  }
+  heldFixtureMisbehavior.delete(fixture);
+  misbehaviorEnabledFixtures.add(fixture);
+}
+
+/**
+ * @internal Mark a fixture whose `misbehavior` a server with misbehavior
+ * enabled has recognized, so `validateFixtures` checks it.
+ */
+export function markFixtureMisbehaviorEnabled(fixture: Fixture): void {
+  misbehaviorEnabledFixtures.add(fixture);
 }

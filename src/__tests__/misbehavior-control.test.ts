@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import OpenAI from "openai";
 import { loadConfig, startFromConfig } from "../config-loader.js";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import { DEFAULT_TEST_ID } from "../constants.js";
 import * as serverModule from "../server.js";
 import type { MisbehaviorConfig, MisbehaviorFaultId } from "../types.js";
 import * as llmockModule from "../llmock.js";
 import { getFixtureMisbehaviorPosition } from "../misbehavior.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 describe("fixture additions over localhost HTTP", () => {
   let mock: llmockModule.LLMock;
@@ -20,7 +21,7 @@ describe("fixture additions over localhost HTTP", () => {
   };
 
   beforeEach(async () => {
-    mock = new llmockModule.LLMock();
+    mock = new LLMock();
     mock.onMessage("existing", { content: "existing answer" });
     await mock.start();
   });
@@ -52,13 +53,13 @@ describe("fixture additions over localhost HTTP", () => {
     expect(result.body.details).toHaveLength(2);
     expect(result.body.details).toEqual([
       expect.objectContaining({
-        name: "FixtureLoadError",
+        name: "MisbehaviorConfigError",
         rule: "misbehavior/unknown-key",
         file: "control-api#0",
         message: expect.stringContaining("fixtures[1].misbehavior.typo"),
       }),
       expect.objectContaining({
-        name: "FixtureLoadError",
+        name: "MisbehaviorConfigError",
         rule: "misbehavior/bad-value",
         file: "control-api#0",
         message: expect.stringContaining("fixtures[2].misbehavior.faults[0].rate"),
@@ -221,7 +222,7 @@ describe("programmatic misbehavior defaults", () => {
   });
 
   async function start(misbehavior?: MisbehaviorConfig | MisbehaviorFaultId) {
-    const mock = new llmockModule.LLMock({ misbehavior });
+    const mock = new LLMock({ misbehavior });
     mock.onMessage("hello", { content: "original answer" });
     await mock.start();
     servers.push(mock);
@@ -246,13 +247,11 @@ describe("programmatic misbehavior defaults", () => {
 
   it("rejects invalid construction options with a rule-prefixed TypeError", () => {
     const invalid = JSON.parse('{"faults":[],"typo":true}');
-    expect(() => new llmockModule.LLMock({ misbehavior: invalid })).toThrow(
-      /^misbehavior\/unknown-key/,
-    );
+    expect(() => new LLMock({ misbehavior: invalid })).toThrow(/^misbehavior\/unknown-key/);
   });
 
   it("validates setters before and after start without replacing the current baseline", async () => {
-    const mock = new llmockModule.LLMock();
+    const mock = new LLMock();
     const invalid = JSON.parse('{"faults":[{"fault":"empty-response","rate":2}]}');
     expect(() => mock.setMisbehavior(invalid)).toThrow(/^misbehavior\/bad-value/);
     expect(mock.setMisbehavior("empty-response")).toBe(mock);
@@ -352,7 +351,7 @@ describe("misbehavior control routes over localhost HTTP", () => {
   const replacement = { faults: [{ fault: "content-filter" }] } as const;
 
   beforeEach(async () => {
-    mock = new llmockModule.LLMock({ misbehavior: { ...baseline, faults: [...baseline.faults] } });
+    mock = new LLMock({ misbehavior: { ...baseline, faults: [...baseline.faults] } });
     await mock.start();
   });
   afterEach(async () => mock.stop());

@@ -1,9 +1,8 @@
 import OpenAI from "openai";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createServer } from "../server.js";
-import { LLMock } from "../llmock.js";
 import { DEFAULT_TEST_ID } from "../journal.js";
 import type { Fixture, FixtureResponse, MisbehaviorConfig } from "../types.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 const mocks: LLMock[] = [];
 afterEach(async () => {

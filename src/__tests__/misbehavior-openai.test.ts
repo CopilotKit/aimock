@@ -1,5 +1,4 @@
-import { createServer, type ServerInstance } from "../server.js";
-import { LLMock } from "../llmock.js";
+import type { ServerInstance } from "../server.js";
 import type { Fixture, MisbehaviorConfig } from "../types.js";
 import OpenAI from "openai";
 import { LengthFinishReasonError, ContentFilterFinishReasonError } from "openai/error";
@@ -32,6 +31,7 @@ import {
 } from "../misbehavior.js";
 import type { FixtureResponse, ChatCompletionRequest } from "../types.js";
 import { withFaultFixture } from "./helpers/misbehavior-server.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 const cases = [
   { cell: "control", fault: undefined },
