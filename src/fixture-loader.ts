@@ -2049,6 +2049,19 @@ interface ExtendedView {
 }
 
 const extendedViews = new WeakMap<Fixture, ExtendedView>();
+/** Each extended view's fixture, so identity bookkeeping can name the caller's object. */
+const extendedViewSources = new WeakMap<Fixture, Fixture>();
+
+/**
+ * @internal The fixture an extended view was made from
+ * ({@link responsesToolsExtendedView}); any other fixture is itself. An
+ * extended server counts and journals the caller's fixture, not its view, so
+ * the identity APIs (`getFixtureMatchCount`, `findByFixture`, the count-map
+ * keys, `JournalEntry.response.fixture`) take the object the caller passed in.
+ */
+export function responsesToolsViewSource(fixture: Fixture): Fixture {
+  return extendedViewSources.get(fixture) ?? fixture;
+}
 
 /**
  * @internal The fixture as a server with `responsesTools: "extended"` reads
@@ -2066,6 +2079,7 @@ export function responsesToolsExtendedView(fixture: Fixture): Fixture {
   if (cached === undefined) {
     cached = { view: {} as Fixture };
     responsesToolsExtendedFixtures.add(cached.view);
+    extendedViewSources.set(cached.view, fixture);
     extendedViews.set(fixture, cached);
   }
   if (cached.viewMatch === undefined || cached.match !== fixture.match) {

@@ -123,6 +123,29 @@ function matchCriteriaEqual(a: FixtureMatch, b: FixtureMatch): boolean {
   );
 }
 
+/** Count-map keys resolve through `identity`, so every alias of a fixture finds its caller entry. */
+class FixtureCountMap extends Map<Fixture, number> {
+  constructor(private readonly identity: (fixture: Fixture) => Fixture) {
+    super();
+  }
+
+  override get(key: Fixture): number | undefined {
+    return super.get(this.identity(key));
+  }
+
+  override has(key: Fixture): boolean {
+    return super.has(this.identity(key));
+  }
+
+  override set(key: Fixture, value: number): this {
+    return super.set(this.identity(key), value);
+  }
+
+  override delete(key: Fixture): boolean {
+    return super.delete(this.identity(key));
+  }
+}
+
 export interface JournalOptions {
   /**
    * Maximum number of entries to retain. When exceeded, oldest entries are
@@ -166,9 +189,15 @@ export class Journal implements MisbehaviorCounters {
   private entries: JournalEntry[] = [];
   private readonly matchedFixtures = new WeakMap<JournalEntry, Fixture>();
   private readonly fixtureMatchCountsByTestId: Map<string, Map<Fixture, number>> = new Map();
+  /** An extended server's view of a fixture to the caller's fixture (configureFixtureViewSource). */
+  private fixtureViewSource = (fixture: Fixture): Fixture => fixture;
   private fixtureCountIdentity = (fixture: Fixture): Fixture => fixture;
+  /** The key a fixture is counted under: the caller's object behind any view or copy. */
+  private readonly fixtureCountKey = (fixture: Fixture): Fixture =>
+    this.fixtureCountIdentity(this.fixtureViewSource(fixture));
   private createFixtureCountMap = (): Map<Fixture, number> => new Map();
   private fixtureCountIdentityConfigured = false;
+  private fixtureViewSourceConfigured = false;
   private readonly counterTestIds = new Set<string>();
   private readonly misbehaviorCountersByTestId = new Map<
     string,
@@ -222,7 +251,11 @@ export class Journal implements MisbehaviorCounters {
       ...entry,
       body: capBody(entry.body),
     };
-    if (matchedFixture) this.matchedFixtures.set(full, matchedFixture);
+    // An extended server matches a fixture's view; the entry names the caller's fixture.
+    const fixture = full.response.fixture;
+    const source = fixture ? this.fixtureViewSource(fixture) : fixture;
+    if (source !== fixture) full.response = { ...full.response, fixture: source };
+    if (matchedFixture) this.matchedFixtures.set(full, this.fixtureViewSource(matchedFixture));
     this.entries.push(full);
     // FIFO eviction when over capacity. Array.prototype.shift() is O(n)
     // regardless of how many we drop per add; we accept it at small caps
@@ -355,16 +388,28 @@ export class Journal implements MisbehaviorCounters {
   }
 
   /** @internal LLMock configures caller count identity before serving requests. */
-  configureFixtureCountIdentity(
-    identity: (fixture: Fixture) => Fixture,
-    createMap: () => Map<Fixture, number>,
-  ): void {
+  configureFixtureCountIdentity(identity: (fixture: Fixture) => Fixture): void {
     if (this.fixtureCountIdentityConfigured || this.fixtureMatchCountsByTestId.size > 0) {
       throw new Error("Fixture count identity must be configured once before counting");
     }
     this.fixtureCountIdentity = identity;
-    this.createFixtureCountMap = createMap;
+    this.createFixtureCountMap = () => new FixtureCountMap(this.fixtureCountKey);
     this.fixtureCountIdentityConfigured = true;
+  }
+
+  /**
+   * @internal A server with `responsesTools: "extended"` matches each fixture
+   * through its extended view. `source` maps a view back to the caller's
+   * fixture, so counts, `findByFixture` and `JournalEntry.response.fixture`
+   * keep the caller's object. Configured once, before counting.
+   */
+  configureFixtureViewSource(source: (fixture: Fixture) => Fixture): void {
+    if (this.fixtureViewSourceConfigured || this.fixtureMatchCountsByTestId.size > 0) {
+      throw new Error("Fixture view source must be configured once before counting");
+    }
+    this.fixtureViewSource = source;
+    this.createFixtureCountMap = () => new FixtureCountMap(this.fixtureCountKey);
+    this.fixtureViewSourceConfigured = true;
   }
 
   getFixtureMatchCount(fixture: Fixture, testId = DEFAULT_TEST_ID): number {
@@ -381,7 +426,7 @@ export class Journal implements MisbehaviorCounters {
     // When a sequenced fixture matches, also increment all siblings with matching criteria
     if (fixture.match.sequenceIndex !== undefined && allFixtures) {
       for (const sibling of allFixtures) {
-        if (this.fixtureCountIdentity(sibling) === this.fixtureCountIdentity(fixture)) continue;
+        if (this.fixtureCountKey(sibling) === this.fixtureCountKey(fixture)) continue;
         if (sibling.match.sequenceIndex === undefined) continue;
         if (matchCriteriaEqual(fixture.match, sibling.match)) {
           counts.set(sibling, (counts.get(sibling) ?? 0) + 1);
