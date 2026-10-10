@@ -182,8 +182,13 @@ $ docker run -d -p 4010:4010 \
               <td>
                 LLMock configuration. Accepts <code>fixtures</code>, <code>latency</code>,
                 <code>chunkSize</code>, <code>replaySpeed</code>, <code>logLevel</code>,
-                <code>chaos</code>, <code>record</code>, <code>strictToolArguments</code>.
-                Per-fixture knobs such as <code>streamingProfile</code> live on the fixture entries.
+                <code>chaos</code>, <code>record</code>, <code>strictToolArguments</code>,
+                <code>responsesTools</code> (<code>"legacy"</code> or <code>"extended"</code>),
+                <code>enableMisbehavior</code> and <code>misbehavior</code>.
+                <code>llm.misbehavior</code> is read only when <code>llm.enableMisbehavior</code> is
+                <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
+                with a warning, as 1.44.0 ignored it. Per-fixture knobs such as
+                <code>streamingProfile</code> live on the fixture entries.
               </td>
             </tr>
             <tr>
@@ -459,6 +464,26 @@ $ docker run -d -p 4010:4010 \
                 <code>-h</code> is help; the <code>llmock</code> bin keeps its own
                 <code>-h, --host</code>
               </td>
+            </tr>
+            <tr>
+              <td><code>--misbehavior</code></td>
+              <td>config <code>llm.enableMisbehavior</code>, else off</td>
+              <td>
+                Enable model misbehavior, so <code>llm.misbehavior</code> and fixture keys apply
+              </td>
+            </tr>
+            <tr>
+              <td><code>--strict-tool-arguments</code></td>
+              <td>config <code>llm.strictToolArguments</code>, else off</td>
+              <td>
+                Reject fixture tool calls with invalid JSON arguments instead of serving
+                <code>{}</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>--responses-tools &lt;mode&gt;</code></td>
+              <td>config <code>llm.responsesTools</code>, else <code>legacy</code></td>
+              <td>OpenAI Responses tool handling: <code>legacy</code> or <code>extended</code></td>
             </tr>
             <tr>
               <td><code>-h</code>, <code>--help</code></td>

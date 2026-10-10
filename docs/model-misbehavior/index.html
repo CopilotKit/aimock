@@ -540,10 +540,20 @@
           <code>faults</code> list explicitly disables faults at that configuration level.
         </p>
         <p>
-          Set the server baseline with <code>new LLMock({ misbehavior: config })</code> or
+          Misbehavior is opt-in. Turn it on with <code>enableMisbehavior: true</code> (programmatic
+          and test plugins), <code>llmock --misbehavior</code>, or for
+          <code>aimock --config</code> with <code>llm.enableMisbehavior: true</code> or
+          <code>aimock --misbehavior</code>. Without it, fixture <code>misbehavior</code> keys, the
+          <code>misbehavior</code> option, <code>llm.misbehavior</code> and the
+          <code>X-AIMock-Misbehavior</code> header are ignored, as in 1.44.0.
+        </p>
+        <p>
+          Set the server baseline with
+          <code>new LLMock({ enableMisbehavior: true, misbehavior: config })</code> or
           <code>mock.setMisbehavior(config)</code>. The config file uses
-          <code>llm.misbehavior</code>. The setter preserves named test overrides;
-          <code>mock.clearMisbehavior()</code> clears the baseline and all runtime overrides.
+          <code>llm.misbehavior</code> together with <code>llm.enableMisbehavior: true</code>. The
+          setter preserves named test overrides; <code>mock.clearMisbehavior()</code> clears the
+          baseline and all runtime overrides.
         </p>
         <p>
           A <a href="/fixtures#misbehavior">fixture's misbehavior field</a> accepts the same config
