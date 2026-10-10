@@ -982,7 +982,7 @@ npx -p @copilotkit/aimock llmock -f ./fixtures \
 ```
 
 - `--mcp-record <mount>=<url>` (repeatable) is on the `llmock` bin and the Docker image, not on `aimock --config`. It needs a local `--fixtures` path. `--mcp-proxy-only <mount>=<url>` forwards without writing and needs no `--fixtures`.
-- With `aimock --config`, use `llm.record.mcp`: `{ "/mcp": "http://localhost:3001/mcp" }`, or an object with `upstream`, `fixturePath`, `proxyOnly`, `upstreamAuth`, `secretValues`, `strict`, `maxRecordBufferBytes`. `llm.record.mcp` alone does not turn on LLM recording.
+- With `aimock --config`, set `llm.enableMcpRecording: true` and use `llm.record.mcp`: `{ "/mcp": "http://localhost:3001/mcp" }`, or an object with `upstream`, `fixturePath`, `proxyOnly`, `upstreamAuth`, `secretValues`, `strict`, `maxRecordBufferBytes`. Without the opt-in, `llm.record.mcp` is ignored with a warning. `llm.record.mcp` alone does not turn on LLM recording.
 - In code: `mcpMock.enableRecording({ upstream, ... })` and `disableRecording()`.
 - Every MCP request needs a test id (`X-Test-Id`, percent-encoded, or `?testId=`) or a context. Without one, the call is forwarded but not written.
 - The recording lands at `<fixtures>/recorded/<slugified test id>/mcp.json`. Replay it by starting aimock with the same `--fixtures` and no `--mcp-record`. A changed call then fails with `MCP_FAKE_MISMATCH`.

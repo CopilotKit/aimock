@@ -184,14 +184,17 @@ $ docker run -d -p 4010:4010 \
                 <code>chunkSize</code>, <code>replaySpeed</code>, <code>logLevel</code>,
                 <code>chaos</code>, <code>record</code>, <code>strictToolArguments</code>,
                 <code>responsesTools</code> (<code>"legacy"</code> or <code>"extended"</code>),
-                <code>enableMisbehavior</code> and <code>misbehavior</code>.
-                <code>llm.misbehavior</code> is read only when <code>llm.enableMisbehavior</code> is
-                <code>true</code> or <code>--misbehavior</code> is given; otherwise it is ignored
-                with a warning, as 1.44.0 ignored it. An <code>llm.responsesTools</code> other than
-                <code>"legacy"</code> or <code>"extended"</code> is also ignored with a warning, and
-                the server runs in <code>legacy</code> mode. A non-boolean
-                <code>llm.strictToolArguments</code> or <code>llm.enableMisbehavior</code> is
-                ignored with a warning and the option stays off. Per-fixture knobs such as
+                <code>enableMisbehavior</code>, <code>misbehavior</code> and
+                <code>enableMcpRecording</code>. <code>llm.misbehavior</code> is read only when
+                <code>llm.enableMisbehavior</code> is <code>true</code> or
+                <code>--misbehavior</code> is given; otherwise it is ignored with a warning, as
+                1.44.0 ignored it. In the same way, <code>llm.record.mcp</code> is read only when
+                <code>llm.enableMcpRecording</code> is <code>true</code>. An
+                <code>llm.responsesTools</code> other than <code>"legacy"</code> or
+                <code>"extended"</code> is also ignored with a warning, and the server runs in
+                <code>legacy</code> mode. A non-boolean <code>llm.strictToolArguments</code>,
+                <code>llm.enableMisbehavior</code> or <code>llm.enableMcpRecording</code> is ignored
+                with a warning and the option stays off. Per-fixture knobs such as
                 <code>streamingProfile</code> live on the fixture entries.
               </td>
             </tr>
@@ -347,8 +350,11 @@ $ docker run -d -p 4010:4010 \
           see <a href="/record-replay#mcp-recording">Recording MCP servers</a>. A mount path that
           the config already serves with an MCP mock (<code>mcp.path</code>) records through that
           mount. A free path gets a new MCP mock. A path held by another kind of mock fails at
-          start. <code>llm.record.mcp</code> alone does not turn on LLM recording: that needs
-          <code>llm.record.providers</code>. When <code>llm.record.mcp</code> is set and
+          start. MCP recording is opt-in: <code>llm.record.mcp</code> is read only when
+          <code>llm.enableMcpRecording</code> is <code>true</code>. Without it, the key is ignored
+          with a warning, as 1.44.0 ignored it: nothing is mounted or validated, and the log level
+          does not change. <code>llm.record.mcp</code> alone does not turn on LLM recording: that
+          needs <code>llm.record.providers</code>. When <code>llm.record.mcp</code> is enabled and
           <code>llm.logLevel</code> is not, the log level is <code>"warn"</code>, so that the
           <code>MCP-RECORD:</code> warnings for skipped or failed recordings are visible; an
           explicit <code>llm.logLevel</code>, including <code>"silent"</code>, wins.
@@ -358,6 +364,7 @@ $ docker run -d -p 4010:4010 \
           <pre><code>{
   <span class="prop">"llm"</span>: {
     <span class="prop">"fixtures"</span>: <span class="str">"./fixtures"</span>,
+    <span class="prop">"enableMcpRecording"</span>: <span class="kw">true</span>,
     <span class="prop">"record"</span>: {
       <span class="prop">"mcp"</span>: {
         <span class="prop">"/mcp"</span>: <span class="str">"http://localhost:3001/mcp"</span>,
@@ -531,7 +538,7 @@ $ docker run -d -p 4010:4010 \
           <a href="/record-replay#mcp-recording">Recording MCP servers</a>. With
           <code>aimock --config</code>, record through
           <a href="#mcp-record-config"><code>llm.record.mcp</code></a
-          >.
+          >, with <code>llm.enableMcpRecording: true</code>.
         </p>
 
         <h2>Single-Port Routing</h2>
