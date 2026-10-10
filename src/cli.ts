@@ -4,7 +4,14 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, type Stats } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { createServer } from "./server.js";
-import { FixtureLoadError, validateFixtures } from "./fixture-loader.js";
+import type { ResponsesToolsMode } from "./types.js";
+import {
+  FixtureLoadError,
+  MisbehaviorConfigError,
+  enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "./fixture-loader.js";
 import {
   loadFixtureFileWithServices,
   loadFixturesFromDirWithServices,
@@ -37,11 +44,16 @@ Options:
   -w, --watch               Watch fixture path for changes and reload
       --log-level <level>   Log verbosity: silent, warn, info, debug (default: info)
       --validate-on-load    Validate fixture schemas at startup
+      --misbehavior         Enable model misbehavior: fixture misbehavior keys and the
+                            X-AIMock-Misbehavior header (ignored without this flag)
       --metrics             Enable Prometheus metrics at GET /metrics
       --record              Record mode: proxy unmatched requests and save fixtures
       --record-full-model-version  Record exact model version without date stripping (default: false)
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
+      --strict-tool-arguments  Reject fixture tool calls with invalid JSON arguments instead of serving {} (default: false)
+      --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or extended (namespaced and
+                            custom tools visible to matching, custom tool rounds counted, namespaces emitted and recorded)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
@@ -83,11 +95,14 @@ const { values } = parseArgs({
     watch: { type: "boolean", short: "w", default: false },
     "log-level": { type: "string", default: "info" },
     "validate-on-load": { type: "boolean", default: false },
+    misbehavior: { type: "boolean", default: false },
     metrics: { type: "boolean", default: false },
     record: { type: "boolean", default: false },
     "record-full-model-version": { type: "boolean", default: false },
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
+    "strict-tool-arguments": { type: "boolean", default: false },
+    "responses-tools": { type: "string" },
     "provider-openai": { type: "string" },
     "provider-anthropic": { type: "string" },
     "provider-gemini": { type: "string" },
@@ -161,6 +176,19 @@ if (Number.isNaN(replaySpeed) || replaySpeed <= 0) {
   console.error("--replay-speed must be a positive number");
   process.exit(1);
 }
+
+const responsesToolsFlag = values["responses-tools"];
+if (
+  responsesToolsFlag !== undefined &&
+  responsesToolsFlag !== "legacy" &&
+  responsesToolsFlag !== "extended"
+) {
+  console.error(
+    `Invalid --responses-tools: ${responsesToolsFlag} (expected "legacy" or "extended")`,
+  );
+  process.exit(1);
+}
+const responsesTools: ResponsesToolsMode | undefined = responsesToolsFlag;
 
 const journalMax = Number(values["journal-max"]);
 if (Number.isNaN(journalMax) || !Number.isInteger(journalMax) || journalMax < 0) {
@@ -488,9 +516,12 @@ async function resolveAllFixtureSources(): Promise<ResolvedFixtureSource[]> {
 // --fixtures value as given: the path, or the URL of a remote file (whose
 // `path` is the on-disk cache).
 function loadSource(source: ResolvedFixtureSource): FixturesWithServices {
-  return source.isDir
+  const loaded = source.isDir
     ? loadFixturesFromDirWithServices(source.path, logger)
     : loadFixtureFileWithServices(source.path, logger, undefined, source.source);
+  // --misbehavior: a bad fixture `misbehavior` key fails the load; without it the key is ignored.
+  if (values.misbehavior) loaded.fixtures.forEach(enableHeldFixtureMisbehavior);
+  return loaded;
 }
 
 /** Each source's `mcpFakes` blocks, in load order, for the --watch comparison. */
@@ -528,7 +559,7 @@ function changedFakesSource(
  * L3: a load error on stderr, whatever the log level: every error of a
  * `McpFakesAddError`, one per line, then its L8 warnings.
  */
-function printLoadError(err: FixtureLoadError): void {
+function printLoadError(err: FixtureLoadError | MisbehaviorConfigError): void {
   const errors = err instanceof McpFakesAddError ? err.errors : [err];
   for (const e of errors) console.error(e.message);
   if (err instanceof McpFakesAddError) {
@@ -632,6 +663,7 @@ async function main() {
 
   // Validate fixtures if requested
   if (validateOnLoad) {
+    if (responsesTools === "extended") fixtures.forEach(markFixtureResponsesToolsExtended);
     const results = validateFixtures(fixtures);
     const errors = results.filter((r) => r.severity === "error");
     const warnings = results.filter((r) => r.severity === "warning");
@@ -670,6 +702,9 @@ async function main() {
       metrics: values.metrics,
       record,
       strict: values.strict,
+      strictToolArguments: values["strict-tool-arguments"],
+      enableMisbehavior: values.misbehavior,
+      ...(responsesTools !== undefined ? { responsesTools } : {}),
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,
@@ -710,7 +745,7 @@ async function main() {
       // A rejected reload is printed here, whatever the log level, then
       // thrown as ReloadRejected: watchFixtures keeps the previous fixtures,
       // and its WatchLogger does not print the error a second time.
-      const reject = (err: FixtureLoadError): never => {
+      const reject = (err: FixtureLoadError | MisbehaviorConfigError): never => {
         printLoadError(err);
         throw new ReloadRejected(build(msg`--watch reload rejected`));
       };
@@ -720,7 +755,9 @@ async function main() {
           loaded = loadSource(primary);
         } catch (err) {
           // L3: a bad block in the reloaded file.
-          if (err instanceof FixtureLoadError) return reject(err);
+          if (err instanceof FixtureLoadError || err instanceof MisbehaviorConfigError) {
+            return reject(err);
+          }
           throw err;
         }
         const changed = changedFakesSource(
@@ -738,6 +775,9 @@ async function main() {
             }),
           );
         }
+        if (responsesTools === "extended") {
+          loaded.fixtures.forEach(markFixtureResponsesToolsExtended);
+        }
         return loaded.fixtures;
       };
       watcher = watchFixtures(primary.path, fixtures, loadFn, {
@@ -752,7 +792,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  if (err instanceof FixtureLoadError) {
+  if (err instanceof FixtureLoadError || err instanceof MisbehaviorConfigError) {
     printLoadError(err);
   } else {
     console.error(err);

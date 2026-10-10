@@ -35,7 +35,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   flattenHeaders,
   isJsonObject,
@@ -50,8 +50,7 @@ import {
   strictNoMatchLogLine,
   validateChatMessages,
   validateToolsField,
-  toolArgsForWire,
-  InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -324,13 +323,7 @@ function buildBedrockToolCallResponse(
     contentBlocks.push({ type: "thinking", thinking: reasoning, signature: "" });
   }
   for (const tc of toolCalls) {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     contentBlocks.push({
       type: "tool_use",
       id: tc.id || generateToolUseId(),
@@ -379,13 +372,7 @@ function buildBedrockBlocksResponse(
     if (block.type === "text") {
       contentBlocks.push({ type: "text", text: block.text });
     } else {
-      const args = toolArgsForWire(block);
-      if (args.kind === "verbatim") {
-        logger.warn(
-          `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-        );
-        throw new InvalidToolArgumentsError(block);
-      }
+      const args = servedToolArgs(block, "object", logger);
       contentBlocks.push({
         type: "tool_use",
         id: block.id || generateToolUseId(),
@@ -718,7 +705,7 @@ export async function handleBedrock(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
@@ -925,14 +912,7 @@ function buildBedrockInvokeMessageStop(): { eventType: string; payload: object }
 }
 
 function parseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  const args = toolArgsForWire(toolCall);
-  if (args.kind === "verbatim") {
-    logger.warn(
-      `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
-    );
-    return args.raw;
-  }
-  return args.text;
+  return servedToolArgs(toolCall, "string", logger).text;
 }
 
 export function buildBedrockStreamTextEvents(
@@ -1659,7 +1639,7 @@ export async function handleBedrockStream(
   }
 
   // Content + tool calls response — stream as Event Stream
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }

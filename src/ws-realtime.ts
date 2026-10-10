@@ -20,13 +20,14 @@ import {
   fixtureToolCallErrorCode,
   isFixtureToolCallError,
   journalFixtureToolCallError,
-  requireFunctionToolCalls,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
   type FunctionFixtureBlock,
   generateToolCallId,
   flattenHeaders,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isTranscriptionResponse,
   isErrorResponse,
   resolveFixtureBlocks,
@@ -555,8 +556,9 @@ export function handleWebSocketRealtime(
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
     transcriptionIntent?: boolean;
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const sessionId = realtimeId("sess");
@@ -605,7 +607,7 @@ export function handleWebSocketRealtime(
   ws.on("message", (raw: string) => {
     pending = pending.then(async () => {
       try {
-        beforeProcessMessage?.();
+        defaults.beforeProcessMessage?.();
         await processMessage(
           raw,
           ws,
@@ -1413,7 +1415,7 @@ async function handleResponseCreate(
 
   if (misbehavior.kind === "applied") {
     const prepared = misbehavior.response;
-    const combined = isContentWithToolCallsResponse(prepared);
+    const combined = isCombinedFixtureResponse(prepared);
     // Journal first so a fixture tool-call error gets the same coded failed
     // response as the non-misbehavior paths below. (The planner never applies
     // a fault to a custom-call fixture on this wire.)
@@ -1426,16 +1428,13 @@ async function handleResponseCreate(
       defaults.logger,
       () =>
         combined && prepared.blocks?.length
-          ? resolveFixtureBlocks(prepared.blocks, { wire: REALTIME_WIRE })
+          ? resolveFixtureBlocks(prepared.blocks)
           : [
               ...((isTextResponse(prepared) || combined) && prepared.content
                 ? [{ type: "text" as const, text: prepared.content }]
                 : []),
               ...(isToolCallResponse(prepared) || combined
-                ? requireFunctionToolCalls(prepared.toolCalls ?? [], REALTIME_WIRE).map((call) => ({
-                    ...call,
-                    type: "toolCall" as const,
-                  }))
+                ? (prepared.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
                 : []),
             ],
     );
@@ -1509,7 +1508,7 @@ async function handleResponseCreate(
   }
 
   // ── Content + tool calls response ──────────────────────────────────
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
     // ── Ordered blocks path (#274) ──────────────────────────────────
@@ -1529,7 +1528,10 @@ async function handleResponseCreate(
         responseId,
         isBeta,
         defaults.logger,
-        () => resolveFixtureBlocks(blocks, { wire: REALTIME_WIRE }),
+        () => {
+          rejectResponsesOnlyToolCalls(response, REALTIME_WIRE);
+          return resolveFixtureBlocks(blocks);
+        },
       );
       if (!resolvedBlocks) return;
       await streamRealtimeBlocks(
@@ -1553,7 +1555,7 @@ async function handleResponseCreate(
       responseId,
       isBeta,
       defaults.logger,
-      () => requireFunctionToolCalls(response.toolCalls ?? [], REALTIME_WIRE),
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
     );
     if (!functionToolCalls) return;
 
@@ -2160,7 +2162,7 @@ async function handleResponseCreate(
       responseId,
       isBeta,
       defaults.logger,
-      () => requireFunctionToolCalls(response.toolCalls, REALTIME_WIRE),
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
     );
     if (!toolCalls) return;
 

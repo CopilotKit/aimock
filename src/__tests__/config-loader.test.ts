@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { loadConfig, startFromConfig } from "../config-loader.js";
 import type { AimockConfig } from "../config-loader.js";
 import type { RecordedTimings } from "../types.js";
 import { Logger } from "../logger.js";
+import * as llmockModule from "../llmock.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "config-loader-test-"));
@@ -120,6 +121,231 @@ describe("startFromConfig", () => {
       await cleanup();
     }
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("llm.strictToolArguments opts into rejecting invalid JSON tool arguments", async () => {
+    const fixturePath = join(tmpDir, "bad-args.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const statusFor = async (config: AimockConfig): Promise<number> => {
+      const { llmock, url } = await startFromConfig(config);
+      cleanups.push(() => llmock.stop());
+      const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      });
+      await resp.text();
+      return resp.status;
+    };
+    // Default (as in 1.44.0): served as {}.
+    expect(await statusFor({ llm: { fixtures: fixturePath, logLevel: "silent" } })).toBe(200);
+    expect(
+      await statusFor({
+        llm: { fixtures: fixturePath, logLevel: "silent", strictToolArguments: true },
+      }),
+    ).toBe(500);
+  });
+
+  it("llm.responsesTools and the overrides set the Responses tool mode", async () => {
+    const fixturePath = join(tmpDir, "ns.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const emitsNamespace = async (
+      config: AimockConfig,
+      overrides?: Parameters<typeof startFromConfig>[1],
+    ): Promise<boolean> => {
+      const { llmock, url } = await startFromConfig(config, overrides);
+      cleanups.push(() => llmock.stop());
+      const resp = await fetch(`${url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+      });
+      return (await resp.text()).includes('"namespace":"docs"');
+    };
+    const llm = { fixtures: fixturePath, logLevel: "silent" as const };
+    // Default (as in 1.44.0): legacy, no namespace emitted.
+    expect(await emitsNamespace({ llm })).toBe(false);
+    expect(await emitsNamespace({ llm: { ...llm, responsesTools: "extended" } })).toBe(true);
+    expect(await emitsNamespace({ llm }, { responsesTools: "extended" })).toBe(true);
+    expect(
+      await emitsNamespace(
+        { llm: { ...llm, responsesTools: "extended" } },
+        { responsesTools: "legacy" },
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores an invalid llm.responsesTools with a warning and runs in legacy mode", async () => {
+    // 1.44.0 ignored the key and started, so an invalid value must not fail startup.
+    const fixturePath = join(tmpDir, "ns-invalid.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cleanups.push(async () => warn.mockRestore());
+    const { llmock, url } = await startFromConfig({
+      llm: { fixtures: fixturePath, logLevel: "silent", responsesTools: "wide" as "legacy" },
+    });
+    cleanups.push(() => llmock.stop());
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "[aimock]",
+      'Ignoring llm.responsesTools because it must be "legacy" or "extended", got "wide". Using "legacy".',
+    );
+    const resp = await fetch(`${url}/v1/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+    });
+    expect(resp.status).toBe(200);
+    // Legacy mode: the tool call's namespace is not emitted.
+    expect(await resp.text()).not.toContain('"namespace":"docs"');
+  });
+
+  it.each(["extended", "legacy"] as const)(
+    "names the --responses-tools mode (%s) in the invalid llm.responsesTools warning",
+    async (mode) => {
+      // The flag overrides the invalid key, so the warning must not claim "legacy"
+      // when the server runs extended.
+      const fixturePath = join(tmpDir, `ns-invalid-override-${mode}.json`);
+      writeFileSync(
+        fixturePath,
+        JSON.stringify({
+          fixtures: [
+            {
+              match: { userMessage: "hello" },
+              response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      cleanups.push(async () => warn.mockRestore());
+      const { llmock, url } = await startFromConfig(
+        { llm: { fixtures: fixturePath, logLevel: "silent", responsesTools: "wide" as "legacy" } },
+        { responsesTools: mode },
+      );
+      cleanups.push(() => llmock.stop());
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[aimock]",
+        `Ignoring llm.responsesTools because it must be "legacy" or "extended", got "wide". Using "${mode}" from --responses-tools.`,
+      );
+      const resp = await fetch(`${url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+      });
+      expect(resp.status).toBe(200);
+      // The effective mode matches the warning: only extended emits the namespace.
+      const body = await resp.text();
+      if (mode === "extended") expect(body).toContain('"namespace":"docs"');
+      else expect(body).not.toContain('"namespace":"docs"');
+    },
+  );
+
+  it.each(["strictToolArguments", "enableMisbehavior"] as const)(
+    "ignores a non-boolean llm.%s with a warning and leaves the option off",
+    async (key) => {
+      // 1.44.0 ignored the key, so a string "true" must not enable anything or fail.
+      const fixturePath = join(tmpDir, `non-boolean-${key}.json`);
+      writeFileSync(
+        fixturePath,
+        JSON.stringify({
+          fixtures: [
+            {
+              match: { userMessage: "hello" },
+              response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+      cleanups.push(async () => {
+        warn.mockRestore();
+        construction.mockRestore();
+      });
+      const { llmock, url } = await startFromConfig({
+        llm: { fixtures: fixturePath, logLevel: "silent", [key]: "true" as unknown as boolean },
+      });
+      cleanups.push(() => llmock.stop());
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[aimock]",
+        `Ignoring llm.${key} because it must be true or false, got "true".`,
+      );
+      expect(construction.mock.calls[0][0][key]).toBeUndefined();
+      // strictToolArguments stays off: malformed arguments are served as {} (HTTP 200).
+      const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      });
+      await resp.text();
+      expect(resp.status).toBe(200);
+    },
+  );
+
+  it("the strictToolArguments override wins over the config", async () => {
+    const fixturePath = join(tmpDir, "bad-args-2.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const { llmock, url } = await startFromConfig(
+      { llm: { fixtures: fixturePath, logLevel: "silent" } },
+      { strictToolArguments: true },
+    );
+    cleanups.push(() => llmock.stop());
+    const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+    });
+    await resp.text();
+    expect(resp.status).toBe(500);
   });
 
   it("creates server with LLM fixtures from a file", async () => {
@@ -950,5 +1176,137 @@ describe("startFromConfig", () => {
 
     // Server should start successfully with record config
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+});
+
+describe("startFromConfig: llm.record.mcp needs llm.enableMcpRecording", () => {
+  // 1.44.0 ignored llm.record.mcp, so without the opt-in it must change nothing:
+  // no MCP mount, no validation, no logLevel default, one warning.
+  const IGNORED =
+    "Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.";
+  let tmpDir: string;
+  let fixtures: string;
+  let cleanups: Array<() => Promise<void>> = [];
+  let warn: MockInstance<typeof console.warn>;
+  let construction: MockInstance<typeof llmockModule.createLLMockWithResolvedAuth>;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    // A fixture directory, so an enabled mount can record into <fixtures>/recorded.
+    fixtures = join(tmpDir, "fixtures");
+    mkdirSync(fixtures);
+    writeFixtureFile(fixtures);
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+    cleanups = [];
+  });
+
+  afterEach(async () => {
+    for (const cleanup of cleanups) await cleanup();
+    warn.mockRestore();
+    construction.mockRestore();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** POST an MCP initialize to `<url>/upmcp` and return the HTTP status. */
+  async function initializeStatus(url: string): Promise<number> {
+    const resp = await fetch(`${url}/upmcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "t", version: "1" },
+        },
+      }),
+    });
+    await resp.text();
+    return resp.status;
+  }
+
+  /** `llm.record.mcp` values as JSON; the type does not allow the invalid ones. */
+  function withMcp(mcp: unknown, llm: Record<string, unknown> = {}): AimockConfig {
+    return { llm: { fixtures, ...llm, record: { mcp } } } as unknown as AimockConfig;
+  }
+
+  it("without the opt-in, a valid mount is ignored with one warning", async () => {
+    const { llmock, url } = await startFromConfig(withMcp({ "/upmcp": "http://127.0.0.1:9" }));
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+    const options = construction.mock.calls[0][0];
+    expect(options.logLevel).toBeUndefined();
+    expect(options.record).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "http://127.0.0.1:9"],
+    ["an array", ["/upmcp", "http://127.0.0.1:9"]],
+    ["null", null],
+    ["a mount with no leading /", { upmcp: "http://127.0.0.1:9" }],
+    ["a bad upstream URL", { "/upmcp": "not a url" }],
+  ])("without the opt-in, %s starts with one warning", async (_name, mcp) => {
+    const { llmock, url } = await startFromConfig(withMcp(mcp));
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+  });
+
+  it("without the opt-in, a mount with no llm.fixtures starts", async () => {
+    const { llmock, url } = await startFromConfig({
+      llm: { record: { mcp: { "/upmcp": "http://127.0.0.1:9" } } },
+    } as unknown as AimockConfig);
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+  });
+
+  it("without the opt-in, LLM recording still gets the record config without mcp", async () => {
+    const config = withMcp({ "/upmcp": "http://127.0.0.1:9" });
+    config.llm!.record!.providers = { openai: "http://127.0.0.1:9" };
+    const { llmock } = await startFromConfig(config);
+    cleanups.push(() => llmock.stop());
+    expect(construction.mock.calls[0][0].record).toEqual({
+      providers: { openai: "http://127.0.0.1:9" },
+    });
+  });
+
+  it("with the opt-in, the mount is proxied and logLevel defaults to warn", async () => {
+    const { llmock, url } = await startFromConfig(
+      withMcp({ "/upmcp": "http://127.0.0.1:9" }, { enableMcpRecording: true }),
+    );
+    cleanups.push(() => llmock.stop());
+    // The recorder answers 502 because nothing listens upstream.
+    expect(await initializeStatus(url)).toBe(502);
+    expect(warn).not.toHaveBeenCalledWith("[aimock]", IGNORED);
+    expect(construction.mock.calls[0][0].logLevel).toBe("warn");
+  });
+
+  it("with the opt-in, an invalid llm.record.mcp fails startup", async () => {
+    await expect(
+      startFromConfig(withMcp("http://127.0.0.1:9", { enableMcpRecording: true })),
+    ).rejects.toThrow("llm.record.mcp must be an object of <mount>");
+  });
+
+  it("ignores a non-boolean llm.enableMcpRecording with a warning, and llm.record.mcp too", async () => {
+    const { llmock, url } = await startFromConfig(
+      withMcp("http://127.0.0.1:9", { enableMcpRecording: "true" }),
+    );
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn.mock.calls).toEqual([
+      ["[aimock]", 'Ignoring llm.enableMcpRecording because it must be true or false, got "true".'],
+      ["[aimock]", IGNORED],
+    ]);
+    expect(construction.mock.calls[0][0].logLevel).toBeUndefined();
   });
 });

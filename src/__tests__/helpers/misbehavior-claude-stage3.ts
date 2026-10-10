@@ -2,8 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LLMock } from "../../llmock.js";
 import type { FixtureFileResponse } from "../../types.js";
+import { LLMock } from "./misbehavior-enabled.js";
 
 export async function withClaudeFault(
   fault: unknown,

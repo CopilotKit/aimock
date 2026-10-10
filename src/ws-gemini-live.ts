@@ -13,7 +13,6 @@ import type {
   ToolDefinition,
   AudioResponse,
   ToolCall,
-  FixtureToolCall,
   FixtureFileBlock,
   JournalEntry,
   HandlerDefaults,
@@ -21,17 +20,19 @@ import type {
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
-  InvalidToolArgumentsError,
   fixtureToolCallErrorCode,
   googleFixtureToolCallErrorDetails,
   isFixtureToolCallError,
   journalFixtureToolCallError,
-  requireFunctionToolCalls,
-  toolCallFixtureBlock,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
   toolArgsForWire,
+  runWithToolArgumentsScope,
+  servedToolArgs,
+  strictToolArgumentsEnabled,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isAudioResponse,
   flattenHeaders,
@@ -238,9 +239,7 @@ function convertTools(geminiTools?: GeminiLiveToolDef[]): ToolDefinition[] {
 }
 
 function liveToolArguments(tc: Pick<ToolCall, "name" | "arguments">) {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
-  return args.value;
+  return servedToolArgs(tc, "object").value;
 }
 
 const GEMINI_LIVE_WIRE = "Gemini Live";
@@ -251,17 +250,12 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
     return { ...plan, summary: { ...plan.summary, servedToolCalls: [] } };
   }
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
-  // The planner skips a custom-call fixture on this wire, so this narrowing
-  // never throws; the preflight guard rejects it instead.
   const calls =
     outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      GEMINI_LIVE_WIRE,
-    );
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
   const duplicate = plan.duplicateId;
   const toolCalls = calls.map((call, index) => {
     const args = toolArgsForWire(call);
@@ -278,7 +272,7 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
   if (outcome) {
     let index = 0;
     const blocks = outcome.ordered.map((block) =>
-      block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[index++]),
+      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
     );
     preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
   } else if (combined || isToolCallResponse(response)) {
@@ -307,21 +301,26 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
  * this turn from the history, and leaves the socket open.
  */
 function preflightToolArguments(
-  toolCalls: FixtureToolCall[],
+  response: { toolCalls?: ToolCall[] },
   journalEntry: JournalEntry,
 ): ToolCall[] {
   return journalFixtureToolCallError(journalEntry, () => {
-    const functionCalls = requireFunctionToolCalls(toolCalls, GEMINI_LIVE_WIRE);
-    for (const tc of functionCalls) liveToolArguments(tc);
+    const functionCalls = requireServedFunctionToolCalls(response, GEMINI_LIVE_WIRE);
+    if (strictToolArgumentsEnabled()) for (const tc of functionCalls) liveToolArguments(tc);
     return functionCalls;
   });
 }
 
 /** Resolve ordered blocks (rejecting custom tool calls) and preflight their arguments. */
-function preflightBlocks(blocks: FixtureFileBlock[], journalEntry: JournalEntry) {
+function preflightBlocks(
+  response: { blocks?: FixtureFileBlock[]; customToolCalls?: unknown },
+  journalEntry: JournalEntry,
+) {
   return journalFixtureToolCallError(journalEntry, () => {
-    const resolved = resolveFixtureBlocks(blocks, { wire: GEMINI_LIVE_WIRE });
-    for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
+    rejectResponsesOnlyToolCalls(response, GEMINI_LIVE_WIRE);
+    const resolved = resolveFixtureBlocks(response.blocks ?? []);
+    if (strictToolArgumentsEnabled())
+      for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
     return resolved;
   });
 }
@@ -339,14 +338,16 @@ export function handleWebSocketGeminiLive(
     model: string;
     logger: Logger;
     strict?: boolean;
+    strictToolArguments?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
     misbehavior?: HandlerDefaults["misbehavior"];
     misbehaviorCounters?: HandlerDefaults["misbehaviorCounters"];
     registry?: HandlerDefaults["registry"];
+    /** @internal Called before each message is processed (the server assigns fixture positions). */
+    beforeProcessMessage?: () => void;
   },
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   const session: SessionState = {
@@ -363,8 +364,11 @@ export function handleWebSocketGeminiLive(
       // message's turn begins in the history.
       const historyMark = session.conversationHistory.length;
       try {
-        beforeProcessMessage?.();
-        await processMessage(raw, ws, fixtures, journal, defaults, session);
+        defaults.beforeProcessMessage?.();
+        await runWithToolArgumentsScope(
+          { strict: defaults.strictToolArguments === true, logger },
+          () => processMessage(raw, ws, fixtures, journal, defaults, session),
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket Gemini Live error: ${msg}`);
@@ -719,7 +723,7 @@ async function processMessage(
     const journalEntry = addResponseEntry(200);
 
     const audioResp = response as AudioResponse;
-    const audioToolCalls = preflightToolArguments(audioResp.toolCalls ?? [], journalEntry);
+    const audioToolCalls = preflightToolArguments(audioResp, journalEntry);
     let mimeType: string;
     let data: string;
 
@@ -784,7 +788,7 @@ async function processMessage(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
     // BLOCKS path (#274): when the fixture carries an ordered `blocks` array,
@@ -797,7 +801,7 @@ async function processMessage(
     // blocks-only fixture (post-F0 it matches this guard) would stream an EMPTY
     // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
     if (response.blocks && response.blocks.length > 0) {
-      const resolvedBlocks = preflightBlocks(response.blocks, journalEntry);
+      const resolvedBlocks = preflightBlocks(response, journalEntry);
       const interruption = createInterruptionSignal(fixture);
       const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
       const { recordedTimings } = fixture;
@@ -931,7 +935,7 @@ async function processMessage(
       return;
     }
 
-    const functionToolCalls = preflightToolArguments(response.toolCalls ?? [], journalEntry);
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
     const content = response.content ?? "";
     const chunkList: string[] = [];
     for (let i = 0; i < content.length; i += chunkSize) {
@@ -1158,7 +1162,7 @@ async function processMessage(
   if (isToolCallResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
-    const functionToolCalls = preflightToolArguments(response.toolCalls ?? [], journalEntry);
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
 
     const interruption = createInterruptionSignal(fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;

@@ -152,9 +152,11 @@
               <td>
                 Match on tool name &mdash; compared against the names of tool definitions in the
                 request&rsquo;s <code>tools:</code> array (the function name on most APIs). On the
-                OpenAI Responses API this includes tools inside a <code>namespace</code> tool,
-                <code>custom</code> tools (by their <code>name</code>), and tools in an
-                <code>additional_tools</code> or <code>tool_search_output</code> input item
+                OpenAI Responses API, with <code>responsesTools: "extended"</code>, this also
+                includes tools inside a <code>namespace</code> tool, <code>custom</code> tools (by
+                their <code>name</code>), and tools in an <code>additional_tools</code> or
+                <code>tool_search_output</code> input item; by default only top-level function
+                tools, as before
               </td>
             </tr>
             <tr>
@@ -170,7 +172,8 @@
                 fixture that sets <code>toolNamespace</code> with an <code>endpoint</code> other
                 than <code>"chat"</code>. Alone, it matches when any offered tool sits in that
                 namespace; with <code>toolName</code>, one offered tool must carry both. No default
-                namespace is assumed. See
+                namespace is assumed. It sees every offered tool whatever the
+                <code>responsesTools</code> mode. See
                 <a href="/responses-api#namespaced-and-custom-tool-calls"
                   >Namespaced and custom tool calls</a
                 >
@@ -376,22 +379,11 @@
               <td>Tool Call</td>
               <td>toolCalls[], finishReason?</td>
               <td>
-                Function call(s) <code>{ "name", "arguments", "id"?, "namespace"? }</code>, or
-                custom tool call(s)
-                <code>{ "type": "custom", "name", "input", "id"?, "namespace"? }</code>.
-                <code>namespace</code> is emitted on the OpenAI Responses API only. A custom tool
-                call loads on any fixture, but only the OpenAI Responses API serves it. On any other
-                endpoint, a request that would emit it fails before any content with
-                <code>aimock_unsupported_tool_call</code> (Ollama <code>/api/generate</code> instead
-                rejects every tool-call fixture with HTTP 400 and no aimock code).
-                <code>"type": "customToolCall"</code> is not a <code>toolCalls</code> type: such an
-                entry fails fixture validation (<code>aimock validate</code>,
-                <code>--validate-on-load</code>, <code>addFixturesFromJSON()</code>,
-                <code>POST /__aimock/fixtures</code>), and otherwise fails each request with
-                <code>aimock_invalid_fixture_tool_call</code>; releases up to 1.44.0 served it as a
-                function call. When the fixture also has non-empty <code>blocks</code>, a request
-                never emits or rejects its <code>toolCalls</code>, so a custom entry there is
-                ignored; load validation still checks them (see
+                Function call(s) <code>{ "name", "arguments", "id"?, "namespace"? }</code>.
+                <code>namespace</code> is emitted on the OpenAI Responses API only, with
+                <code>responsesTools: "extended"</code>. An entry is always a function call: a
+                <code>type</code> or <code>input</code> on it is ignored, as in earlier releases.
+                Custom tool calls go in <code>customToolCalls</code> (see
                 <a href="/responses-api#namespaced-and-custom-tool-calls"
                   >Namespaced and custom tool calls</a
                 >)
@@ -608,8 +600,15 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
 
         <h2 id="tool-arguments">Tool argument JSON</h2>
         <p>
-          Malformed JSON in a tool call's <code>arguments</code> is no longer silently replaced with
-          <code>{}</code>. The response depends on how the selected API carries arguments:
+          By default, malformed JSON in a tool call's <code>arguments</code> is logged as a warning
+          and replaced with <code>{}</code> on the APIs listed below (an object, or the string
+          <code>"{}"</code>), as in 1.44.0. The OpenAI APIs always send the string unchanged. To
+          send invalid JSON on purpose, use <code>misbehavior: tool-args-invalid-json</code>.
+        </p>
+        <p>
+          With <code>strictToolArguments: true</code> (CLI <code>--strict-tool-arguments</code>,
+          config <code>llm.strictToolArguments</code>) the malformed text is not replaced. The
+          response then depends on how the selected API carries arguments:
         </p>
         <ul>
           <li>
@@ -622,24 +621,23 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             <strong>Object arguments:</strong> Malformed JSON produces an explicit error before
             response content is sent. This applies to non-streaming Anthropic Messages, Bedrock
             InvokeModel, Bedrock Converse, and Gemini Interactions, and to Gemini, Gemini Live, and
-            Ollama. HTTP requests return status <code>500</code>; Gemini Live sends an error on the
-            existing WebSocket connection.
+            Ollama. HTTP requests return status <code>500</code> with code
+            <code>aimock_invalid_tool_arguments</code>; Gemini Live sends an error on the existing
+            WebSocket connection.
           </li>
         </ul>
         <p>
           Valid JSON retains its existing behavior, including arrays, primitives, and
           <code>null</code>. Empty or omitted legacy tool-call arguments still default to
           <code>{}</code>; whitespace-only strings are malformed JSON. The OpenAI Responses API is
-          an exception: it sends a string unchanged, but a function call (no <code>type</code>,
-          <code>"function"</code> or <code>"toolCall"</code>) whose <code>arguments</code> is
-          omitted or not a string (an object or array too, in a fixture passed to
-          <code>addFixture</code>, <code>addFixtures</code>, <code>prependFixture</code> or
-          <code>createServer</code>; <code>on</code>, a response factory's result and file loading
-          convert it to a string) fails with HTTP 500 and no error <code>code</code>. Fixture
-          validation is unchanged: <code>validateFixtures()</code> can still reject malformed
-          arguments before replay, and a <code>toolCall</code> block still requires an
-          <code>arguments</code> field (a <code>customToolCall</code> block takes
-          <code>input</code> instead).
+          an exception: it sends a string unchanged, but a function call whose
+          <code>arguments</code> is omitted or not a string (an object or array too, in a fixture
+          passed to <code>addFixture</code>, <code>addFixtures</code>,
+          <code>prependFixture</code> or <code>createServer</code>; <code>on</code>, a response
+          factory's result and file loading convert it to a string) fails with HTTP 500 and no error
+          <code>code</code>. Fixture validation is unchanged: <code>validateFixtures()</code> can
+          still reject malformed arguments before replay, and a <code>toolCall</code> block still
+          requires an <code>arguments</code> field.
         </p>
 
         <h2 id="ordered-blocks">Ordered blocks (tool-first &amp; interleaved streaming)</h2>
@@ -655,23 +653,23 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             <code>{ "type": "toolCall", "name": "...", "arguments": ..., "id": "..." }</code>
             &mdash; a tool call (<code>id</code> optional; <code>arguments</code> accepts an object
             or string, same auto-stringify rules as elsewhere; optional <code>namespace</code>,
-            emitted on the OpenAI Responses API only)
-          </li>
-          <li>
-            <code>{ "type": "customToolCall", "name": "...", "input": "...", "id": "..." }</code>
-            &mdash; a custom tool call with free-text <code>input</code> (<code>id</code> and
-            <code>namespace</code> optional). The fixture loads normally, but only the OpenAI
-            Responses API serves it; every other endpoint rejects the request before any content
-            with <code>aimock_unsupported_tool_call</code> (Ollama <code>/api/generate</code>: HTTP
-            400 and no aimock code)
+            emitted on the OpenAI Responses API only, with <code>responsesTools: "extended"</code>)
           </li>
         </ul>
+        <p>
+          On the OpenAI Responses API, use <code>responsesBlocks</code> instead of
+          <code>blocks</code> to order custom tool calls too: it accepts the same blocks plus
+          <code>{ "type": "customToolCall", "name": "...", "input": "..." }</code> (see
+          <a href="/responses-api#namespaced-and-custom-tool-calls"
+            >Namespaced and custom tool calls</a
+          >).
+        </p>
         <p>
           When <code>blocks</code> is present it <strong>takes precedence</strong> over the
           <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
           streamed in array order. When <code>blocks</code> is <strong>absent</strong>, legacy
-          <code>{ content, toolCalls }</code> fixtures with valid JSON arguments stream as before
-          &mdash; text-first, byte-identical to prior releases. The field is purely additive.
+          <code>{ content, toolCalls }</code> fixtures stream as before &mdash; text-first,
+          byte-identical to prior releases. The field is purely additive.
         </p>
 
         <h3 id="blocks-only">Blocks-only fixtures (first-class)</h3>
@@ -710,18 +708,13 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             <code>blocks</code>
             array at load time so a malformed array is rejected before it reaches a builder &mdash;
             <code>blocks</code> must be an array; each entry must be an object with
-            <code>type</code> <code>"text"</code>, <code>"toolCall"</code> or
-            <code>"customToolCall"</code>; a <code>text</code> block needs a non-empty string
-            <code>text</code>; a <code>toolCall</code> block needs a non-empty <code>name</code>,
-            <code>arguments</code> that are a valid-JSON string or an object, an optional string
-            <code>id</code>, and no <code>input</code>; a <code>customToolCall</code> block needs a
-            non-empty string <code>name</code>, a string <code>input</code> (an empty one only
-            warns), no <code>arguments</code>, and an optional string <code>id</code>. On both
-            tool-call block types, <code>namespace</code> is optional but must be a non-empty string
-            when present. When <code>blocks</code> is non-empty, the builders stream only the blocks
-            and ignore the legacy <code>content</code>/<code>toolCalls</code>: a request never emits
-            or rejects those legacy <code>toolCalls</code>. Load validation still checks them like
-            any <code>toolCalls</code> entry, and only warns if they disagree with
+            <code>type</code> <code>"text"</code> or <code>"toolCall"</code>; a
+            <code>text</code> block needs a non-empty string <code>text</code>; a
+            <code>toolCall</code> block needs a non-empty <code>name</code> and
+            <code>arguments</code> that are a valid-JSON string or an object. When
+            <code>blocks</code> is non-empty, the builders stream only the blocks and ignore the
+            legacy <code>content</code>/<code>toolCalls</code>. Load validation still checks them
+            like any <code>toolCalls</code> entry, and only warns if their names disagree with
             <code>blocks</code>.
           </p>
         </div>

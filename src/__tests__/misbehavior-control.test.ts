@@ -4,12 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import OpenAI from "openai";
 import { loadConfig, startFromConfig } from "../config-loader.js";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import { DEFAULT_TEST_ID } from "../constants.js";
 import * as serverModule from "../server.js";
 import type { MisbehaviorConfig, MisbehaviorFaultId } from "../types.js";
 import * as llmockModule from "../llmock.js";
 import { getFixtureMisbehaviorPosition } from "../misbehavior.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 describe("fixture additions over localhost HTTP", () => {
   let mock: llmockModule.LLMock;
@@ -20,7 +21,7 @@ describe("fixture additions over localhost HTTP", () => {
   };
 
   beforeEach(async () => {
-    mock = new llmockModule.LLMock();
+    mock = new LLMock();
     mock.onMessage("existing", { content: "existing answer" });
     await mock.start();
   });
@@ -52,13 +53,13 @@ describe("fixture additions over localhost HTTP", () => {
     expect(result.body.details).toHaveLength(2);
     expect(result.body.details).toEqual([
       expect.objectContaining({
-        name: "FixtureLoadError",
+        name: "MisbehaviorConfigError",
         rule: "misbehavior/unknown-key",
         file: "control-api#0",
         message: expect.stringContaining("fixtures[1].misbehavior.typo"),
       }),
       expect.objectContaining({
-        name: "FixtureLoadError",
+        name: "MisbehaviorConfigError",
         rule: "misbehavior/bad-value",
         file: "control-api#0",
         message: expect.stringContaining("fixtures[2].misbehavior.faults[0].rate"),
@@ -135,7 +136,7 @@ describe("config-file misbehavior defaults", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function configFromFile(misbehavior?: unknown) {
+  function configFromFile(misbehavior?: unknown, llmExtra: Record<string, unknown> = {}) {
     const fixturePath = join(directory, "fixtures.json");
     writeFileSync(
       fixturePath,
@@ -146,13 +147,19 @@ describe("config-file misbehavior defaults", () => {
     const configPath = join(directory, "aimock.json");
     writeFileSync(
       configPath,
-      JSON.stringify({ llm: { fixtures: fixturePath, logLevel: "silent", misbehavior } }),
+      JSON.stringify({
+        llm: { fixtures: fixturePath, logLevel: "silent", misbehavior, ...llmExtra },
+      }),
     );
     return loadConfig(configPath);
   }
 
-  async function start(misbehavior?: unknown) {
-    const result = await startFromConfig(configFromFile(misbehavior));
+  async function start(
+    misbehavior?: unknown,
+    llmExtra: Record<string, unknown> = {},
+    overrides?: Parameters<typeof startFromConfig>[1],
+  ) {
+    const result = await startFromConfig(configFromFile(misbehavior, llmExtra), overrides);
     servers.push(result.llmock);
     return result;
   }
@@ -172,24 +179,68 @@ describe("config-file misbehavior defaults", () => {
     "empty-response",
     { seed: 7, faults: [{ fault: "empty-response", times: 1 }] },
     { faults: [] },
-  ])("forwards valid config to construction: %j", async (misbehavior) => {
+  ])(
+    "forwards valid config to construction with llm.enableMisbehavior: %j",
+    async (misbehavior) => {
+      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+      await start(misbehavior, { enableMisbehavior: true });
+      expect(construction.mock.calls[0][0].enableMisbehavior).toBe(true);
+      expect(construction.mock.calls[0][0].misbehavior).toEqual(
+        typeof misbehavior === "string" ? { faults: [{ fault: misbehavior }] } : misbehavior,
+      );
+    },
+  );
+
+  // 1.44.0 ignored llm.misbehavior, so its presence alone never enables
+  // misbehavior: valid or not, the key is ignored with a warning and the
+  // server serves what 1.44.0 served for the same config.
+  it.each([
+    "empty-response",
+    { faults: [{ fault: "empty-response" }] },
+    { faults: [], typo: true },
+    { faults: [{ fault: "empty-response", rate: 2 }] },
+    null,
+    "unknown-fault",
+  ])("ignores llm.misbehavior without the opt-in and serves as 1.44.0: %j", async (misbehavior) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
-    await start(misbehavior);
-    expect(construction.mock.calls[0][0].misbehavior).toEqual(
-      typeof misbehavior === "string" ? { faults: [{ fault: misbehavior }] } : misbehavior,
+    const { url } = await start(misbehavior);
+    expect(construction.mock.calls[0][0].misbehavior).toBeUndefined();
+    expect(construction.mock.calls[0][0].enableMisbehavior).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      "[aimock]",
+      expect.stringMatching(/^Ignoring llm\.misbehavior because misbehavior is not enabled/),
     );
+    expect(await responseContent(url)).toBe("configured answer");
+  });
+
+  it("ignores llm.misbehavior when llm.enableMisbehavior is false", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { url } = await start("empty-response", { enableMisbehavior: false });
+    expect(await responseContent(url)).toBe("configured answer");
+  });
+
+  it("applies llm.misbehavior with llm.enableMisbehavior: true", async () => {
+    const { url } = await start("empty-response", { enableMisbehavior: true });
+    expect(await responseContent(url)).toBe("");
+  });
+
+  it("applies llm.misbehavior with the enableMisbehavior override (aimock --misbehavior)", async () => {
+    const { url } = await start("empty-response", {}, { enableMisbehavior: true });
+    expect(await responseContent(url)).toBe("");
   });
 
   it.each([
     [{ faults: [], typo: true }, "misbehavior/unknown-key"],
     [{ faults: [{ fault: "empty-response", rate: 2 }] }, "misbehavior/bad-value"],
     [null, "misbehavior/bad-value"],
+    ["unknown-fault", "misbehavior/bad-value"],
   ])(
-    "rejects bad raw config with a plain rule-prefixed TypeError: %j",
+    "rejects bad raw config with a plain rule-prefixed TypeError when enabled: %j",
     async (misbehavior, rule) => {
       let caught: unknown;
       try {
-        await start(misbehavior);
+        await start(misbehavior, { enableMisbehavior: true });
       } catch (error) {
         caught = error;
       }
@@ -208,7 +259,7 @@ describe("config-file misbehavior defaults", () => {
   it.runIf(process.env.AIMOCK_C1_HTTP_PROOF === "1")(
     "honors raw config fault defaults over real localhost HTTP",
     async () => {
-      const { url } = await start("empty-response");
+      const { url } = await start("empty-response", { enableMisbehavior: true });
       expect(await responseContent(url)).toBe("");
     },
   );
@@ -221,7 +272,7 @@ describe("programmatic misbehavior defaults", () => {
   });
 
   async function start(misbehavior?: MisbehaviorConfig | MisbehaviorFaultId) {
-    const mock = new llmockModule.LLMock({ misbehavior });
+    const mock = new LLMock({ misbehavior });
     mock.onMessage("hello", { content: "original answer" });
     await mock.start();
     servers.push(mock);
@@ -246,13 +297,11 @@ describe("programmatic misbehavior defaults", () => {
 
   it("rejects invalid construction options with a rule-prefixed TypeError", () => {
     const invalid = JSON.parse('{"faults":[],"typo":true}');
-    expect(() => new llmockModule.LLMock({ misbehavior: invalid })).toThrow(
-      /^misbehavior\/unknown-key/,
-    );
+    expect(() => new LLMock({ misbehavior: invalid })).toThrow(/^misbehavior\/unknown-key/);
   });
 
   it("validates setters before and after start without replacing the current baseline", async () => {
-    const mock = new llmockModule.LLMock();
+    const mock = new LLMock();
     const invalid = JSON.parse('{"faults":[{"fault":"empty-response","rate":2}]}');
     expect(() => mock.setMisbehavior(invalid)).toThrow(/^misbehavior\/bad-value/);
     expect(mock.setMisbehavior("empty-response")).toBe(mock);
@@ -352,7 +401,7 @@ describe("misbehavior control routes over localhost HTTP", () => {
   const replacement = { faults: [{ fault: "content-filter" }] } as const;
 
   beforeEach(async () => {
-    mock = new llmockModule.LLMock({ misbehavior: { ...baseline, faults: [...baseline.faults] } });
+    mock = new LLMock({ misbehavior: { ...baseline, faults: [...baseline.faults] } });
     await mock.start();
   });
   afterEach(async () => mock.stop());

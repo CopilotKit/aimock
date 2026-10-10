@@ -1,10 +1,16 @@
 /**
- * The same fixture mistake produces the same coded error no matter where it is
- * written (a `toolCalls` entry or an ordered `blocks` entry) or which transport
- * carries it (HTTP non-streaming, HTTP streaming, WebSocket).
+ * The same fixture mistake in the new Responses keys (`customToolCalls`,
+ * `responsesBlocks`) produces the same coded error whichever transport
+ * carries it (HTTP non-streaming, HTTP streaming, WebSocket). Fixtures that
+ * 1.44.0 accepted or rejected (legacy `toolCalls` / `blocks`) keep the 1.44.0
+ * status and message. Serving the new keys needs responsesTools "extended".
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { entryToFixture, validateFixtures } from "../fixture-loader.js";
+import {
+  entryToFixture,
+  markFixtureResponsesToolsExtended,
+  validateFixtures,
+} from "../fixture-loader.js";
 import { LLMock } from "../llmock.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
@@ -16,8 +22,8 @@ afterEach(async () => {
   mock = undefined;
 });
 
-async function start(fixtures: Fixture[]): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function start(fixtures: Fixture[], responsesTools?: "legacy" | "extended"): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   for (const f of fixtures) mock.addFixture(f);
   await mock.start();
   return mock;
@@ -61,7 +67,7 @@ const CHAT = { model: "gpt-4o", messages: [{ role: "user", content: "go" }] };
 const RESPONSES = { model: "gpt-5", input: "go" };
 const INVALID = "aimock_invalid_fixture_tool_call";
 
-describe("malformed tool-call blocks carry aimock_invalid_fixture_tool_call", () => {
+describe("malformed responsesBlocks tool blocks carry aimock_invalid_fixture_tool_call", () => {
   const cases: Array<{ id: string; block: Record<string, unknown>; message: string }> = [
     {
       id: "customToolCall without input",
@@ -101,9 +107,15 @@ describe("malformed tool-call blocks carry aimock_invalid_fixture_tool_call", ()
   ];
 
   it.each(cases)("$id: Responses HTTP (both modes) and WS agree", async ({ block, message }) => {
-    const m = await start([
-      { match: {}, response: { blocks: [{ type: "text", text: "hi" }, block] } } as Fixture,
-    ]);
+    const m = await start(
+      [
+        {
+          match: {},
+          response: { responsesBlocks: [{ type: "text", text: "hi" }, block] },
+        } as Fixture,
+      ],
+      "extended",
+    );
     const expected = `Invalid fixture block at index 1: ${message}`;
     for (const stream of [false, true]) {
       const r = await post(m, "/v1/responses", { ...RESPONSES, stream });
@@ -116,32 +128,78 @@ describe("malformed tool-call blocks carry aimock_invalid_fixture_tool_call", ()
     expect(ev.error).toMatchObject({ code: INVALID, message: expected });
   });
 
-  it("a malformed toolCall block is coded on Chat Completions and Gemini Interactions", async () => {
+  it("a malformed legacy blocks entry keeps the 1.44.0 uncoded error on every wire", async () => {
     const m = await start([
       { match: {}, response: { blocks: [{ type: "toolCall", arguments: "{}" }] } } as Fixture,
     ]);
+    const message =
+      'Invalid fixture block at index 0: "toolCall" block requires a string "name" field';
     for (const stream of [false, true]) {
-      const chat = await post(m, "/v1/chat/completions", { ...CHAT, stream });
-      expect(chat.status, chat.text).toBe(500);
-      expect(errorOf(chat.text).code, chat.text).toBe(INVALID);
-      expect(m.getLastRequest()?.response.error).toContain('"toolCall" block requires');
-      const gi = await post(m, "/v1beta/interactions", {
-        model: "gemini-2.5-flash",
-        input: "go",
-        stream,
-      });
-      expect(gi.status, gi.text).toBe(500);
-      expect(gi.text).toContain(INVALID);
+      for (const [path, body] of [
+        ["/v1/chat/completions", CHAT],
+        ["/v1/responses", RESPONSES],
+      ] as const) {
+        const r = await post(m, path, { ...body, stream });
+        expect(r.status, r.text).toBe(500);
+        expect(errorOf(r.text)).toEqual({ message, type: "server_error" });
+      }
+    }
+  });
+
+  it.each([
+    ["a stray input", { type: "toolCall", name: "f", arguments: "{}", input: "zz" }],
+    ["an empty namespace", { type: "toolCall", name: "f", arguments: "{}", namespace: "" }],
+  ])("a legacy toolCall block with %s serves, as 1.44.0", async (_l, block) => {
+    const m = await start([
+      { match: {}, response: { blocks: [{ type: "text", text: "hi" }, block] } } as Fixture,
+    ]);
+    for (const stream of [false, true]) {
+      expect((await post(m, "/v1/responses", { ...RESPONSES, stream })).status).toBe(200);
+      expect((await post(m, "/v1/chat/completions", { ...CHAT, stream })).status).toBe(200);
+    }
+    const ev = await wsFirstEvent(m, RESPONSES);
+    expect(ev.type).toBe("response.created");
+  });
+
+  it("a customToolCall block in legacy blocks keeps the 1.44.0 unknown-type error", async () => {
+    const m = await start([
+      {
+        match: {},
+        response: {
+          blocks: [
+            { type: "text", text: "hi" },
+            { type: "customToolCall", name: "p", input: "x" },
+          ],
+        },
+      } as Fixture,
+    ]);
+    const message =
+      'Invalid fixture block at index 1: unknown type "customToolCall" (expected "text" or "toolCall")';
+    for (const stream of [false, true]) {
+      for (const [path, body] of [
+        ["/v1/chat/completions", CHAT],
+        ["/v1/responses", RESPONSES],
+      ] as const) {
+        const r = await post(m, path, { ...body, stream });
+        expect(r.status, r.text).toBe(500);
+        expect(errorOf(r.text)).toEqual({ message, type: "server_error" });
+      }
     }
   });
 });
 
 describe("a custom call on a non-Responses wire is unsupported before its fields are checked", () => {
   it.each([
-    ["toolCalls entry", { toolCalls: [{ type: "custom", name: "x", input: "a", namespace: "" }] }],
-    ["customToolCall block", { blocks: [{ type: "customToolCall", name: "x", namespace: "" }] }],
+    [
+      "customToolCalls entry",
+      { toolCalls: [], customToolCalls: [{ name: "x", input: "a", namespace: "" }] },
+    ],
+    [
+      "customToolCall responsesBlock",
+      { responsesBlocks: [{ type: "customToolCall", name: "x", namespace: "" }] },
+    ],
   ])("%s with a bad namespace answers aimock_unsupported_tool_call", async (_id, response) => {
-    const m = await start([{ match: {}, response } as Fixture]);
+    const m = await start([{ match: {}, response } as Fixture], "extended");
     for (const stream of [false, true]) {
       const r = await post(m, "/v1/chat/completions", { ...CHAT, stream });
       expect(r.status, r.text).toBe(500);
@@ -150,8 +208,8 @@ describe("a custom call on a non-Responses wire is unsupported before its fields
   });
 });
 
-describe("nested Responses tool lists are validated like top-level tools", () => {
-  const cases: Array<{ id: string; extra: Record<string, unknown>; message: string }> = [
+describe("malformed nested Responses tool lists are dropped, not rejected (1.44.0 ignored them)", () => {
+  const cases: Array<{ id: string; extra: Record<string, unknown>; message?: string }> = [
     {
       id: "namespace tool without tools",
       extra: { tools: [{ type: "namespace", name: "ns" }] },
@@ -201,34 +259,58 @@ describe("nested Responses tool lists are validated like top-level tools", () =>
     },
   ];
 
-  it.each(cases)("$id: 400 on HTTP (both modes) and WS", async ({ extra, message }) => {
+  it.each(cases)(
+    "$id: 200 on HTTP (both modes) and WS, in either responsesTools mode",
+    async ({ extra }) => {
+      for (const responsesTools of ["legacy", "extended"] as const) {
+        mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
+        mock.addFixture({ match: {}, response: { content: "ok" } });
+        await mock.start();
+        const m = mock;
+        for (const stream of [false, true]) {
+          const r = await post(m, "/v1/responses", { ...RESPONSES, ...extra, stream });
+          expect(r.status, r.text).toBe(200);
+        }
+        const ev = await wsFirstEvent(m, { ...RESPONSES, ...extra });
+        expect(ev.type).toBe("response.created");
+        expect(m.getLastRequest()?.response.status).toBe(200);
+        await m.stop();
+        mock = undefined;
+      }
+    },
+  );
+
+  it("a top-level null tool or non-array tools stays a 400 on HTTP, as 1.44.0", async () => {
     const m = await start([{ match: {}, response: { content: "ok" } }]);
-    for (const stream of [false, true]) {
-      const r = await post(m, "/v1/responses", { ...RESPONSES, ...extra, stream });
+    for (const [extra, message] of [
+      [{ tools: [null] }, "tools entries must not be null"],
+      [{ tools: { a: 1 } }, "tools must be an array"],
+    ] as const) {
+      const r = await post(m, "/v1/responses", { ...RESPONSES, ...extra });
       expect(r.status, r.text).toBe(400);
-      expect(errorOf(r.text)).toMatchObject({ type: "invalid_request_error", message });
+      expect(errorOf(r.text)).toEqual({ type: "invalid_request_error", message });
     }
-    const ev = await wsFirstEvent(m, { ...RESPONSES, ...extra });
-    expect(ev.type).toBe("error");
-    expect(ev.error).toMatchObject({ type: "invalid_request_error", message });
-    expect(m.getLastRequest()?.response.status).toBe(400);
   });
 });
 
-describe("custom_tool_call.input in request history", () => {
+describe("custom_tool_call.input in request history (responsesTools extended)", () => {
   it("a non-string input reaches predicates as a string", async () => {
-    const m = await start([
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    for (const f of [
       {
         match: {
-          predicate: (req) =>
+          predicate: (req: { messages: Array<{ custom_tool_calls?: Array<{ input: string }> }> }) =>
             req.messages.some((msg) =>
-              msg.tool_calls?.some((tc) => tc.function.arguments.includes("PATCH")),
+              msg.custom_tool_calls?.some((tc) => tc.input.includes("PATCH")),
             ),
         },
         response: { content: "matched" },
       },
       { match: {}, response: { content: "fallback" } },
-    ]);
+    ] as Fixture[])
+      mock.addFixture(f);
+    await mock.start();
+    const m = mock;
     const input = [
       { role: "user", content: "go" },
       { type: "custom_tool_call", call_id: "c1", name: "apply_patch", input: { a: 1 } },
@@ -238,22 +320,26 @@ describe("custom_tool_call.input in request history", () => {
     expect(r.status, r.text).toBe(200);
     expect(r.text).toContain("fallback");
     const body = m.getLastRequest()?.body as {
-      messages: Array<{ tool_calls?: Array<{ function: { arguments: unknown } }> }>;
+      messages: Array<{ custom_tool_calls?: Array<{ input: unknown }> }>;
     };
-    const call = body.messages.find((msg) => msg.tool_calls)?.tool_calls?.[0];
-    expect(call?.function.arguments).toBe("");
+    const call = body.messages.find((msg) => msg.custom_tool_calls)?.custom_tool_calls?.[0];
+    expect(call?.input).toBe("");
   });
 });
 
-describe("load-time warning for custom calls on a non-chat endpoint", () => {
+describe("load-time warning for custom calls on a non-chat endpoint (responsesTools extended)", () => {
   it.each([
-    ["toolCalls", { toolCalls: [{ type: "custom", name: "apply_patch", input: "x" }] }],
-    ["blocks", { blocks: [{ type: "customToolCall", name: "apply_patch", input: "x" }] }],
+    ["customToolCalls", { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] }],
+    [
+      "responsesBlocks",
+      { responsesBlocks: [{ type: "customToolCall", name: "apply_patch", input: "x" }] },
+    ],
   ])("%s with endpoint embedding warns", (id, response) => {
     const f = entryToFixture({
       match: { userMessage: "go", endpoint: "embedding" },
       response,
     } as FixtureFileEntry);
+    markFixtureResponsesToolsExtended(f);
     const warnings = validateFixtures([f]).filter((r) => r.severity === "warning");
     // The text must hold for every non-chat endpoint: media handlers answer an
     // uncoded 500 shape error, Realtime sends an error event, and openai-live
@@ -263,19 +349,12 @@ describe("load-time warning for custom calls on a non-chat endpoint", () => {
     ]);
   });
 
-  it("ignores a custom call in legacy toolCalls when non-empty blocks are served", () => {
-    // Non-empty blocks are authoritative, so the legacy toolCalls entry is never sent.
+  it("a 1.44.0 typed toolCalls entry on a non-chat endpoint gets no new warning", () => {
     const f = entryToFixture({
       match: { userMessage: "go", endpoint: "image" },
-      response: {
-        content: "x",
-        toolCalls: [{ type: "custom", name: "apply_patch", input: "x" }],
-        blocks: [{ type: "text", text: "x" }],
-      },
+      response: { toolCalls: [{ type: "custom", name: "apply_patch", arguments: "{}" }] },
     } as FixtureFileEntry);
-    const messages = validateFixtures([f])
-      .filter((r) => r.severity === "warning")
-      .map((w) => w.message);
+    const messages = validateFixtures([f]).map((w) => w.message);
     expect(messages.filter((m) => m.includes("is a custom tool call"))).toEqual([]);
   });
 
@@ -283,159 +362,44 @@ describe("load-time warning for custom calls on a non-chat endpoint", () => {
     for (const endpoint of ["chat", undefined]) {
       const f = entryToFixture({
         match: { userMessage: "go", ...(endpoint ? { endpoint } : {}) },
-        response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "x" }] },
+        response: { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "x" }] },
       } as FixtureFileEntry);
+      markFixtureResponsesToolsExtended(f);
       expect(validateFixtures([f]).filter((r) => r.severity === "warning")).toEqual([]);
     }
   });
 });
 
-describe("Ollama /api/generate", () => {
-  it("rejects content plus a customToolCall block like other tool-call fixtures", async () => {
+describe("Ollama /api/generate keeps the 1.44.0 handling of blocks", () => {
+  // /api/generate serves only text fixtures. A text fixture (string content,
+  // no toolCalls) is served as text and its blocks are not read there, as in
+  // 1.44.0; a blocks-only fixture is a tool-call fixture rejected with a 400.
+  it.each([
+    [
+      "a customToolCall block",
+      [
+        { type: "text", text: "hi" },
+        { type: "customToolCall", name: "p", input: "x" },
+      ],
+    ],
+    ["a misspelled block type", [{ type: "toolcall", name: "f", arguments: "{}" }]],
+    ["a toolCall block", [{ type: "toolCall", name: "f", arguments: "{}" }]],
+  ])("content plus %s serves the content as text", async (_l, blocks) => {
+    const m = await start([{ match: {}, response: { content: "hi", blocks } } as Fixture]);
+    for (const stream of [false, true]) {
+      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream });
+      expect(r.status, r.text).toBe(200);
+      expect(r.text).toContain("hi");
+    }
+  });
+
+  it("a blocks-only fixture is rejected as a tool-call fixture", async () => {
     const m = await start([
       {
         match: {},
-        response: {
-          content: "hi",
-          blocks: [
-            { type: "text", text: "hi" },
-            { type: "customToolCall", name: "p", input: "x" },
-          ],
-        },
+        response: { blocks: [{ type: "toolCall", name: "f", arguments: "{}" }] },
       } as Fixture,
     ]);
-    for (const stream of [false, true]) {
-      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream });
-      expect(r.status, r.text).toBe(400);
-      expect(r.text).toContain("Tool call fixtures are not supported on /api/generate");
-    }
-  });
-
-  it.each([
-    ["misspelled type", { type: "toolcall", name: "f", arguments: "{}" }],
-    ["unknown type", { type: "image", url: "x" }],
-    ["null type", { type: null }],
-  ])("answers a %s block with the same error as /api/chat", async (_label, block) => {
-    const m = await start([{ match: {}, response: { content: "", blocks: [block] } } as Fixture]);
-    const chat = await post(m, "/api/chat", {
-      model: "llama3",
-      messages: [{ role: "user", content: "go" }],
-      stream: false,
-    });
-    expect(chat.status, chat.text).toBe(500);
-    expect(chat.text).toContain("Invalid fixture block at index 0");
-    for (const stream of [false, true]) {
-      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream });
-      expect(r.status, r.text).toBe(chat.status);
-      expect(r.text).toBe(chat.text);
-    }
-  });
-
-  it.each([
-    [
-      "toolCall then unknown",
-      [
-        { type: "toolCall", name: "f", arguments: "{}" },
-        { type: "image", url: "x" },
-      ],
-      "Invalid fixture block at index 1",
-    ],
-    [
-      "unknown then toolCall",
-      [
-        { type: "image", url: "x" },
-        { type: "toolCall", name: "f", arguments: "{}" },
-      ],
-      "Invalid fixture block at index 0",
-    ],
-  ])("answers a %s block list with the same error as /api/chat", async (_l, blocks, msg) => {
-    const m = await start([{ match: {}, response: { content: "", blocks } } as Fixture]);
-    const chat = await post(m, "/api/chat", {
-      model: "llama3",
-      messages: [{ role: "user", content: "go" }],
-      stream: false,
-    });
-    expect(chat.status, chat.text).toBe(500);
-    expect(chat.text).toContain(msg);
-    for (const stream of [false, true]) {
-      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream });
-      expect(r.status, r.text).toBe(chat.status);
-      expect(r.text).toBe(chat.text);
-    }
-  });
-
-  it("reports a malformed toolCall block with /api/chat's status, message and code", async () => {
-    // The body envelope differs: server.ts gives only /api/chat Ollama's bare
-    // string error shape, so /api/generate keeps the OpenAI-style envelope.
-    const blocks = [
-      { type: "toolCall", arguments: "{}" },
-      { type: "image", url: "x" },
-    ];
-    const m = await start([{ match: {}, response: { content: "", blocks } } as Fixture]);
-    const chat = await post(m, "/api/chat", {
-      model: "llama3",
-      messages: [{ role: "user", content: "go" }],
-      stream: false,
-    });
-    const chatBody = JSON.parse(chat.text) as { error: string; code: string };
-    expect(chat.status, chat.text).toBe(500);
-    expect(chatBody.code).toBe(INVALID);
-    expect(chatBody.error).toContain('index 0: "toolCall" block requires a string "name" field');
-    for (const stream of [false, true]) {
-      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream });
-      expect(r.status, r.text).toBe(chat.status);
-      expect(errorOf(r.text)).toMatchObject({ message: chatBody.error, code: chatBody.code });
-    }
-  });
-
-  it.each([
-    ["no misbehavior", {}],
-    ["a misbehavior header", { "x-aimock-misbehavior": "empty-response" }],
-  ])("journals a bad block on /api/generate as /api/chat does, with %s", async (_l, headers) => {
-    const m = await start([
-      { match: {}, response: { content: "", blocks: [{ type: "image", url: "x" }] } } as Fixture,
-    ]);
-    const chat = await post(
-      m,
-      "/api/chat",
-      { model: "llama3", messages: [{ role: "user", content: "go" }], stream: false },
-      headers,
-    );
-    expect(chat.status, chat.text).toBe(500);
-    const chatEntry = m.getLastRequest()!;
-    expect(chatEntry.body).not.toBeNull();
-    expect(chatEntry.response.fixture).not.toBeNull();
-    for (const stream of [false, true]) {
-      const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream }, headers);
-      expect(r.text).toBe(chat.text);
-      const entry = m.getLastRequest()!;
-      expect(entry.path).toBe("/api/generate");
-      expect(entry.body).toMatchObject({
-        model: "llama3",
-        messages: [{ role: "user", content: "go" }],
-      });
-      expect(entry.response).toEqual(chatEntry.response);
-    }
-  });
-
-  it.each([
-    ["toolCall", { type: "toolCall", name: "f", arguments: "{}" }],
-    ["customToolCall", { type: "customToolCall", name: "p", input: "x" }],
-  ])("still rejects a %s block as a tool-call fixture", async (_label, block) => {
-    const m = await start([{ match: {}, response: { content: "", blocks: [block] } } as Fixture]);
-    const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream: false });
-    expect(r.status, r.text).toBe(400);
-    expect(r.text).toContain("Tool call fixtures are not supported on /api/generate");
-  });
-
-  it("rejects a customToolCall block ahead of an unknown block, as /api/chat does", async () => {
-    // /api/chat rejects a custom call before any other block check, so the
-    // unknown block is never reported there either.
-    const blocks = [
-      { type: "image", url: "x" },
-      { type: "customToolCall", name: "p", input: "x" },
-    ];
-    const m = await start([{ match: {}, response: { content: "", blocks } } as Fixture]);
     const r = await post(m, "/api/generate", { model: "llama3", prompt: "go", stream: false });
     expect(r.status, r.text).toBe(400);
     expect(r.text).toContain("Tool call fixtures are not supported on /api/generate");
@@ -452,12 +416,18 @@ describe("Ollama /api/generate", () => {
 
 describe("BytePlus wire label", () => {
   it("names BytePlus for /api/v3/chat/completions without record config", async () => {
-    const m = await start([
-      {
-        match: {},
-        response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "x" }] },
-      },
-    ]);
+    const m = await start(
+      [
+        {
+          match: {},
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "apply_patch", input: "x" }],
+          },
+        },
+      ],
+      "extended",
+    );
     for (const stream of [false, true]) {
       const r = await post(m, "/api/v3/chat/completions", { ...CHAT, model: "doubao", stream });
       expect(r.status, r.text).toBe(500);

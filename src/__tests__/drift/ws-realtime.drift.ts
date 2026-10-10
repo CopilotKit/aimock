@@ -483,7 +483,7 @@ async function localRealtimeK5(at: number) {
         misbehavior: { faults: [{ fault: "stop-length-mid-tool", at }] },
       },
     ],
-    { logLevel: "silent" },
+    { logLevel: "silent", enableMisbehavior: true },
   );
   const address = new URL(server.url);
   const sdk = new OpenAIRealtimeWS(

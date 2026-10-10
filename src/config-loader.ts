@@ -14,6 +14,7 @@ import type {
   MisbehaviorFaultId,
   Mountable,
   RecordConfig,
+  ResponsesToolsMode,
 } from "./types.js";
 import { parseMisbehavior } from "./misbehavior.js";
 import type { MCPToolDefinition, MCPPromptDefinition } from "./mcp-types.js";
@@ -114,8 +115,24 @@ export interface AimockConfig {
     replaySpeed?: number;
     logLevel?: "silent" | "warn" | "info" | "debug";
     chaos?: ChaosConfig;
+    /**
+     * Server-wide misbehavior defaults. Read only when misbehavior is enabled
+     * (`llm.enableMisbehavior: true` or `aimock --misbehavior`); otherwise the
+     * key is ignored with a warning, as 1.44.0 ignored it.
+     */
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
+    /** See `MockServerOptions.enableMisbehavior`. */
+    enableMisbehavior?: boolean;
     record?: AimockRecordConfig;
+    /**
+     * Turns on `llm.record.mcp`. Without it the key is ignored with a warning,
+     * as 1.44.0 ignored it.
+     */
+    enableMcpRecording?: boolean;
+    /** See `MockServerOptions.strictToolArguments`. */
+    strictToolArguments?: boolean;
+    /** See `MockServerOptions.responsesTools`. */
+    responsesTools?: ResponsesToolsMode;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -142,25 +159,97 @@ export function loadConfig(configPath: string): AimockConfig {
 }
 
 /** C3: `llm.record.mcp` is an object with at least one mount. */
-function hasMcpRecordMount(config: AimockConfig): boolean {
-  const mcp: unknown = config.llm?.record?.mcp;
+function hasMcpRecordMount(mcp: unknown): boolean {
   return (
     typeof mcp === "object" && mcp !== null && !Array.isArray(mcp) && Object.keys(mcp).length > 0
   );
 }
 
+/**
+ * Command-line overrides for `startFromConfig`. The opt-in flags win over the
+ * matching `llm.*` config keys.
+ */
+export interface StartFromConfigOverrides {
+  port?: number;
+  host?: string;
+  /** `aimock --misbehavior`: overrides `llm.enableMisbehavior`. */
+  enableMisbehavior?: boolean;
+  /** `aimock --strict-tool-arguments`: overrides `llm.strictToolArguments`. */
+  strictToolArguments?: boolean;
+  /** `aimock --responses-tools`: overrides `llm.responsesTools`. */
+  responsesTools?: ResponsesToolsMode;
+}
+
 export async function startFromConfig(
   config: AimockConfig,
-  overrides?: { port?: number; host?: string },
+  overrides?: StartFromConfigOverrides,
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  // 1.44.0 ignored these keys, so a non-boolean value (such as the string
+  // "true") is ignored with a warning, as `llm.misbehavior` is, and the
+  // option stays off unless a CLI flag turns it on (`llm.enableMcpRecording`
+  // has no CLI flag).
+  const booleanOptIn = (
+    key: "enableMisbehavior" | "enableMcpRecording" | "strictToolArguments",
+  ): boolean | undefined => {
+    const value: unknown = config.llm?.[key];
+    if (value === undefined || typeof value === "boolean") return value;
+    logger.warn(
+      `Ignoring llm.${key} because it must be true or false, got ${JSON.stringify(value)}.`,
+    );
+    return undefined;
+  };
+  const configEnableMisbehavior = booleanOptIn("enableMisbehavior");
+  const configStrictToolArguments = booleanOptIn("strictToolArguments");
+  // MCP recording also needs an explicit opt-in. 1.44.0 ignored
+  // `llm.record.mcp`, so without `llm.enableMcpRecording: true` the key is
+  // ignored (with a warning): nothing is mounted or validated and the log level
+  // is unchanged. With the opt-in, an invalid value fails startup.
+  const enableMcpRecording = booleanOptIn("enableMcpRecording") === true;
+  const mcpRecord = enableMcpRecording ? config.llm?.record?.mcp : undefined;
+  // Misbehavior needs an explicit opt-in that a 1.44.0 config cannot contain.
+  // 1.44.0 ignored `llm.misbehavior`, so without the opt-in the key is ignored
+  // (with a warning) and the server serves exactly what 1.44.0 served. With the
+  // opt-in, an invalid value fails startup like any other enabled-mode error.
+  const enableMisbehavior = (overrides?.enableMisbehavior ?? configEnableMisbehavior) === true;
   let misbehavior: MisbehaviorConfig | undefined;
   if (config.llm?.misbehavior !== undefined) {
-    const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
-    if (!parsed.ok) {
-      throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+    if (!enableMisbehavior) {
+      logger.warn(
+        "Ignoring llm.misbehavior because misbehavior is not enabled. Set llm.enableMisbehavior: true or pass --misbehavior to use it.",
+      );
+    } else {
+      const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
+      if (!parsed.ok) {
+        throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+      }
+      misbehavior = parsed.config;
     }
-    misbehavior = parsed.config;
+  }
+  if (config.llm?.record?.mcp !== undefined && !enableMcpRecording) {
+    logger.warn(
+      "Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.",
+    );
+  }
+
+  // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
+  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode,
+  // unless `--responses-tools` sets the mode. The warning names the mode that
+  // actually runs.
+  let responsesTools = config.llm?.responsesTools;
+  if (
+    responsesTools !== undefined &&
+    responsesTools !== "legacy" &&
+    responsesTools !== "extended"
+  ) {
+    const effective =
+      overrides?.responsesTools !== undefined
+        ? `"${overrides.responsesTools}" from --responses-tools`
+        : '"legacy"';
+    logger.warn(
+      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using ${effective}.`,
+    );
+    responsesTools = undefined;
   }
 
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the
@@ -181,14 +270,17 @@ export async function startFromConfig(
       chunkSize: config.llm?.chunkSize,
       replaySpeed,
       // llm.record.mcp reports skipped or failed recordings only as MCP-RECORD: warnings,
-      // so a config with at least one mount defaults to "warn" rather than the silent
+      // so an enabled config with at least one mount defaults to "warn" rather than the silent
       // default. An empty llm.record.mcp records nothing. An explicit logLevel wins.
-      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(config) ? "warn" : undefined),
+      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(mcpRecord) ? "warn" : undefined),
       chaos: config.llm?.chaos,
       misbehavior,
+      ...(enableMisbehavior ? { enableMisbehavior: true } : {}),
       record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
+      strictToolArguments: overrides?.strictToolArguments ?? configStrictToolArguments,
+      responsesTools: overrides?.responsesTools ?? responsesTools,
     },
     resolvedAuth,
   );
@@ -369,8 +461,8 @@ export async function startFromConfig(
   }
 
   // MR1: llm.record.mcp — record mounts (auto-mount an MCPMock where none is).
-  // Any value that is present is validated, so null, false, 0 and "" fail at start too.
-  const mcpRecord = config.llm?.record?.mcp;
+  // Read only with llm.enableMcpRecording: true. Any value that is present is then
+  // validated, so null, false, 0 and "" fail at start too.
   if (mcpRecord !== undefined) {
     wireMcpRecording(llmock, mcpRecord, {
       mounted: configMounts,

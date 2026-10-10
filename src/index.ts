@@ -13,8 +13,9 @@ export {
   normalizeResponse,
 } from "./fixture-loader.js";
 export type { ValidationRef, ValidationResult } from "./fixture-loader.js";
-export { FixtureLoadError } from "./fixture-loader.js";
-export type { FixtureLoadErrorJSON } from "./fixture-loader.js";
+export { FixtureLoadError, MisbehaviorConfigError } from "./fixture-loader.js";
+export type { FixtureLoadErrorJSON, MisbehaviorConfigErrorJSON } from "./fixture-loader.js";
+export type { MisbehaviorRule } from "./misbehavior.js";
 export {
   loadFixtureFileWithServices,
   loadFixturesFromDirWithServices,
@@ -227,6 +228,7 @@ export {
   isToolCallResponse,
   isContentWithToolCallsResponse,
   resolveFixtureBlocks,
+  resolveResponsesBlocks,
   UnsupportedToolCallError,
   InvalidFixtureToolCallError,
   requireFunctionToolCalls,
@@ -502,6 +504,10 @@ export type {
   CustomToolCall,
   FixtureToolCall,
   FixtureBlock,
+  ResponsesFixtureBlock,
+  CustomToolDefinition,
+  CustomToolCallMessage,
+  ResponsesToolsMode,
   ToolCallResponse,
   ErrorResponse,
   EmbeddingResponse,
@@ -541,6 +547,8 @@ export type {
   ContentWithToolCallsResponse,
   FixtureFileResponse,
   FixtureFileToolCall,
+  FixtureFileCustomToolCall,
+  FixtureFileResponsesBlock,
   FixtureFileTextResponse,
   FixtureFileToolCallResponse,
   FixtureFileContentWithToolCallsResponse,

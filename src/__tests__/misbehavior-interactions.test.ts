@@ -1,8 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { expect, test } from "vitest";
 import { withFaultFixture } from "./helpers/misbehavior-server.js";
-import { LLMock } from "../llmock.js";
 import type { FixtureFileResponse, MisbehaviorFault } from "../types.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const calls = [{ name: "weather", arguments: { city: "Paris", unit: "C" } }];
 const shapes: { shape: string; response: FixtureFileResponse }[] = [

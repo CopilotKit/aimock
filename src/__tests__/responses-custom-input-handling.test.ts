@@ -20,8 +20,12 @@ afterEach(async () => {
   mock = null;
 });
 
-async function start(fixtures: Fixture[]): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+/** Custom tool rounds and nested tool sources are read with responsesTools "extended". */
+async function start(
+  fixtures: Fixture[],
+  responsesTools: "legacy" | "extended" = "extended",
+): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   mock.addFixtures(fixtures);
   await mock.start();
   return mock;
@@ -140,8 +144,9 @@ describe("orphan custom_tool_call_output", () => {
     for (const e of entries) {
       expect(e.response.status).toBe(200);
       const assistant = messagesOf(e).find((msg) => msg.role === "assistant");
-      expect(assistant?.tool_calls).toEqual([
-        { id: "orph", type: "custom", function: { name: "", arguments: "" } },
+      expect(assistant?.tool_calls).toBeUndefined();
+      expect(assistant?.custom_tool_calls).toEqual([
+        { id: "orph", type: "custom", name: "", input: "" },
       ]);
     }
   });
@@ -163,10 +168,10 @@ describe("orphan custom_tool_call_output", () => {
     expect(entries).toHaveLength(3);
     for (const e of entries) {
       const assistant = messagesOf(e).find((msg) => msg.role === "assistant");
-      expect(assistant?.tool_calls?.map((tc) => [tc.id, tc.type])).toEqual([
+      expect(assistant?.custom_tool_calls?.map((tc) => [tc.id, tc.type])).toEqual([
         ["c1", "custom"],
-        ["f1", "function"],
       ]);
+      expect(assistant?.tool_calls?.map((tc) => [tc.id, tc.type])).toEqual([["f1", "function"]]);
     }
   });
 });
@@ -176,7 +181,8 @@ describe("WebSocket builder failure journals status and message", () => {
     match: { userMessage: "bad" },
     response: {
       ...(content !== undefined ? { content } : {}),
-      toolCalls: [{ type: "custom", name: "apply_patch", input: 42 as unknown as string }],
+      toolCalls: [],
+      customToolCalls: [{ type: "custom", name: "apply_patch", input: 42 as unknown as string }],
     },
   });
 
@@ -208,55 +214,45 @@ describe("WebSocket builder failure journals status and message", () => {
   }
 });
 
-describe("malformed tools are rejected consistently over HTTP and WS", () => {
+describe("malformed tools: HTTP keeps the 1.44.0 400s; nested tool items are dropped", () => {
   const fixtures: Fixture[] = [{ match: { userMessage: "hi" }, response: { content: "ok" } }];
 
-  async function expectRejected(body: Record<string, unknown>, message: RegExp) {
-    const m = await start(fixtures);
-    for (const stream of [false, true]) {
-      const r = await post(m, body, stream);
-      expect(r.status, r.text).toBe(400);
-      expect(JSON.parse(r.text).error).toMatchObject({ type: "invalid_request_error" });
-      expect(JSON.parse(r.text).error.message).toMatch(message);
+  for (const mode of ["legacy", "extended"] as const) {
+    for (const [tools, message] of [
+      [{ type: "function", name: "f" }, "tools must be an array"],
+      ["abc", "tools must be an array"],
+      [5, "tools must be an array"],
+      [[null], "tools entries must not be null"],
+    ] as const) {
+      it(`(${mode}) HTTP rejects tools ${JSON.stringify(tools)} with a 400`, async () => {
+        const m = await start(fixtures, mode);
+        for (const stream of [false, true]) {
+          const r = await post(m, { input: [USER], tools }, stream);
+          expect(r.status, r.text).toBe(400);
+          expect(JSON.parse(r.text).error).toEqual({ message, type: "invalid_request_error" });
+        }
+      });
     }
-    const msgs = await wsPost(m, body);
-    expect(msgs).toHaveLength(1);
-    const event = JSON.parse(msgs[0]);
-    expect(event).toMatchObject({ type: "error", error: { type: "invalid_request_error" } });
-    expect(event.error.message).toMatch(message);
-    const entries = m.getRequests();
-    expect(entries).toHaveLength(3);
-    for (const e of entries) expect(e.response.status).toBe(400);
-  }
 
-  for (const tools of [{ type: "function", name: "f" }, "abc", 5]) {
-    it(`rejects non-array tools ${JSON.stringify(tools)}`, async () => {
-      await expectRejected({ input: [USER], tools }, /^tools must be an array$/);
-    });
-  }
-
-  it("rejects null tools entries on WS as on HTTP", async () => {
-    await expectRejected({ input: [USER], tools: [null] }, /^tools entries must not be null$/);
-  });
-
-  for (const [label, ns] of [
-    ["missing", { type: "namespace", tools: [{ type: "function", name: "f" }] }],
-    ["non-string", { type: "namespace", name: 7, tools: [{ type: "function", name: "f" }] }],
-    ["empty", { type: "namespace", name: "", tools: [{ type: "function", name: "f" }] }],
-  ] as const) {
-    it(`rejects a namespace tool whose name is ${label}`, async () => {
-      await expectRejected(
-        { input: [USER], tools: [{ type: "function", name: "top" }, ns] },
-        /^tools\[1\]\.name must be a non-empty string for a namespace tool$/,
-      );
-    });
-
-    it(`rejects an additional_tools namespace whose name is ${label}`, async () => {
-      await expectRejected(
-        { input: [USER, { type: "additional_tools", tools: [ns] }] },
-        /^input\[1\]\.tools\[0\]\.name must be a non-empty string for a namespace tool$/,
-      );
-    });
+    for (const [label, ns] of [
+      ["missing", { type: "namespace", tools: [{ type: "function", name: "f" }] }],
+      ["non-string", { type: "namespace", name: 7, tools: [{ type: "function", name: "f" }] }],
+      ["empty", { type: "namespace", name: "", tools: [{ type: "function", name: "f" }] }],
+    ] as const) {
+      it(`(${mode}) drops a namespace tool whose name is ${label}, in tools and additional_tools`, async () => {
+        const m = await start(fixtures, mode);
+        for (const body of [
+          { input: [USER], tools: [{ type: "function", name: "top" }, ns] },
+          { input: [USER, { type: "additional_tools", tools: [ns] }] },
+        ]) {
+          for (const stream of [false, true]) {
+            const r = await post(m, body, stream);
+            expect(r.status, r.text).toBe(200);
+          }
+          expect((await wsPost(m, body)).join("\n")).toContain('"response.completed"');
+        }
+      });
+    }
   }
 
   it("still accepts empty / absent tools and well-formed namespaces on both transports", async () => {
@@ -326,21 +322,13 @@ describe("tools loaded by a tool_search_output input item", () => {
     }
   });
 
-  it("rejects a tool_search_output namespace without a name, like other tool sources", async () => {
+  it("drops a tool_search_output namespace without a name, like other tool sources", async () => {
     const m = await start(fixtures);
     const input = searchRound([{ ...GITHUB, name: "" }]);
-    const message = "input[2].tools[0].name must be a non-empty string for a namespace tool";
     const r = await post(m, { input });
-    expect(r.status).toBe(400);
-    expect(JSON.parse(r.text).error).toEqual({ message, type: "invalid_request_error" });
-    const msgs = await wsPost(m, { input });
-    expect(msgs).toHaveLength(1);
-    expect(JSON.parse(msgs[0])).toEqual({
-      type: "error",
-      error: { message, type: "invalid_request_error" },
-    });
-    const entries = m.getRequests();
-    expect(entries).toHaveLength(2);
-    for (const e of entries) expect(e.response.status).toBe(400);
+    expect(r.status, r.text).toBe(200);
+    expect(r.text).toContain("fell through");
+    expect((await wsPost(m, { input })).join("\n")).toContain("fell through");
+    for (const e of m.getRequests()) expect(e.response.status).toBe(200);
   });
 });

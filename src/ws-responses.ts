@@ -14,11 +14,10 @@ import {
   requestIncludesEncryptedReasoning,
   requestWantsEncryptedReasoning,
   buildTextStreamEvents,
-  buildToolCallStreamEvents,
-  buildContentWithToolCallsStreamEvents,
+  toolCallStreamEvents,
+  contentWithToolCallsStreamEvents,
   prepareResponsesMisbehavior,
   buildResponsesMisbehavior,
-  validateResponsesTools,
   type ResponsesSSEEvent,
   type ResponsesInputItem,
   type ResponsesToolDef,
@@ -28,7 +27,7 @@ import {
   isFixtureToolCallError,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   extractOverrides,
   resolveResponse,
@@ -38,6 +37,10 @@ import {
   flattenHeaders,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  assertCustomToolCalls,
+  resolveServedBlockOutcome,
+  servedToolCalls,
+  withoutLegacyNamespaces,
 } from "./helpers.js";
 import { createInterruptionSignal } from "./interruption.js";
 import { delay, calculateDelay } from "./sse-writer.js";
@@ -49,6 +52,8 @@ type ResponsesWebSocketDefaults = Omit<HandlerDefaults, "replaySpeed"> & {
   model: string;
   testId?: string;
   upgradeHeaders?: import("node:http").IncomingHttpHeaders;
+  /** @internal Called before each message is processed (the server assigns fixture positions). */
+  beforeProcessMessage?: () => void;
 };
 
 interface ResponseCreateMessage {
@@ -88,7 +93,6 @@ export function handleWebSocketResponses(
   fixtures: Fixture[],
   journal: Journal,
   defaults: ResponsesWebSocketDefaults,
-  beforeProcessMessage?: () => void,
 ): void {
   const { logger } = defaults;
   // Serialize message processing to prevent event interleaving
@@ -96,7 +100,7 @@ export function handleWebSocketResponses(
   ws.on("message", (raw: string) => {
     pending = pending.then(async () => {
       try {
-        beforeProcessMessage?.();
+        defaults.beforeProcessMessage?.();
         await processMessage(raw, ws, fixtures, journal, defaults);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
@@ -162,21 +166,6 @@ async function processMessage(
     store: (parsed as { store?: boolean }).store,
   };
 
-  // Reject malformed tool collections exactly as the HTTP transport does,
-  // instead of silently dropping them during conversion.
-  const toolsError = validateResponsesTools(parsed.tools, parsed.input);
-  if (toolsError) {
-    journal.add({
-      method: "WS",
-      path: "/v1/responses",
-      headers: flattenHeaders(defaults.upgradeHeaders ?? {}),
-      body: responsesReq,
-      response: { status: 400, fixture: null },
-    });
-    ws.send(JSON.stringify(buildErrorEvent(toolsError, "invalid_request_error")));
-    return;
-  }
-
   // Gate encrypted-reasoning emission identically to the HTTP transport so the
   // agent-framework#7233 stateless-replay path works over WebSocket too.
   const emitEncryptedReasoning = requestWantsEncryptedReasoning(responsesReq);
@@ -185,7 +174,11 @@ async function processMessage(
   // request with a summary-less fixture still gets no reasoning item.
   const synthesizeSummarylessReasoning = requestIncludesEncryptedReasoning(responsesReq);
 
-  const completionReq = responsesToCompletionRequest(responsesReq);
+  const extendedTools = defaults.responsesTools === "extended";
+  const completionReq = responsesToCompletionRequest(responsesReq, {
+    extended: extendedTools,
+    logger: defaults.logger,
+  });
   completionReq._endpointType = "chat";
   const contextHeader = defaults.upgradeHeaders?.["x-aimock-context"];
   completionReq._context =
@@ -243,7 +236,10 @@ async function processMessage(
     return;
   }
 
-  const response = await resolveResponse(fixture, completionReq);
+  // Without responsesTools "extended", a namespace on a toolCalls entry or a
+  // toolCall block is not emitted, as in earlier releases.
+  const resolvedResponse = await resolveResponse(fixture, completionReq);
+  const response = extendedTools ? resolvedResponse : withoutLegacyNamespaces(resolvedResponse);
   const misbehaviorDefaults: HandlerDefaults = {
     ...defaults,
     replaySpeed: defaults.replaySpeed ?? 1,
@@ -370,7 +366,7 @@ async function processMessage(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const journalEntry = journal.add({
       method: "WS",
       path: "/v1/responses",
@@ -382,9 +378,11 @@ async function processMessage(
 
     let events: ResponsesSSEEvent[];
     try {
-      events = buildContentWithToolCallsStreamEvents(
+      const ordered = resolveServedBlockOutcome(response)?.ordered;
+      if (!ordered) assertCustomToolCalls(response);
+      events = contentWithToolCallsStreamEvents(
         response.content ?? "",
-        response.toolCalls ?? [],
+        servedToolCalls(response),
         completionReq.model,
         chunkSize,
         resolveReasoningForModel(
@@ -395,13 +393,13 @@ async function processMessage(
         ),
         response.webSearches,
         extractOverrides(response),
-        response.blocks,
+        ordered,
         emitEncryptedReasoning,
         synthesizeSummarylessReasoning,
       );
     } catch (error) {
       journalEntry.response.status = 500;
-      journalEntry.response.error = error instanceof Error ? error.message : String(error);
+      if (isFixtureToolCallError(error)) journalEntry.response.error = error.message;
       throw error;
     }
 
@@ -481,8 +479,9 @@ async function processMessage(
     recordOutcome(journalEntry);
     let events: ResponsesSSEEvent[];
     try {
-      events = buildToolCallStreamEvents(
-        response.toolCalls,
+      assertCustomToolCalls(response);
+      events = toolCallStreamEvents(
+        servedToolCalls(response),
         completionReq.model,
         chunkSize,
         // Gate the synthesized reasoning channel on the requested model's
@@ -501,7 +500,7 @@ async function processMessage(
       );
     } catch (error) {
       journalEntry.response.status = 500;
-      journalEntry.response.error = error instanceof Error ? error.message : String(error);
+      if (isFixtureToolCallError(error)) journalEntry.response.error = error.message;
       throw error;
     }
     const interruption = createInterruptionSignal(fixture);

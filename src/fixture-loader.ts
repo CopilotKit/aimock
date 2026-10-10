@@ -8,6 +8,7 @@ import type {
   FixtureFile,
   FixtureFileEntry,
   FixtureFileResponse,
+  FixtureMatch,
   FixtureResponse,
   ResponseOverrides,
 } from "./types.js";
@@ -15,7 +16,7 @@ import {
   isLiveResponse,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
   isImageResponse,
@@ -23,13 +24,14 @@ import {
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
-  isPlainObject,
+  fixtureListTarget,
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import {
+  copyFixtureMisbehaviorPosition,
   parseMisbehavior,
   setFixtureMisbehaviorPosition,
   validateFixtureMisbehavior,
@@ -37,10 +39,8 @@ import {
 } from "./misbehavior.js";
 
 /**
- * Auto-stringify object-valued `content`, `toolCalls[].arguments` (function
- * calls only; a custom call's `input` is left as-is) and `arguments` on
- * `toolCall` blocks. This lets fixture authors write plain JSON objects instead
- * of escaped strings.
+ * Auto-stringify object-valued `content` and `toolCalls[].arguments` fields.
+ * This lets fixture authors write plain JSON objects instead of escaped strings.
  * All other fields (including ResponseOverrides, and the ErrorResponse
  * `fallthrough` OpenRouter-failover flag) pass through unmodified via the
  * shallow clone below.
@@ -58,11 +58,10 @@ export function normalizeResponse(
     response.content = JSON.stringify(response.content);
   }
 
-  // Auto-stringify object arguments in function toolCalls. A custom call's
-  // free-text `input` is never stringified, and it takes no `arguments`.
+  // Auto-stringify object arguments in toolCalls
   if (Array.isArray(response.toolCalls)) {
     response.toolCalls = (response.toolCalls as Array<Record<string, unknown>>).map((tc) => {
-      if (typeof tc.arguments === "object" && tc.arguments !== null && tc.type !== "custom") {
+      if (typeof tc.arguments === "object" && tc.arguments !== null) {
         return { ...tc, arguments: JSON.stringify(tc.arguments) };
       }
       return tc;
@@ -91,6 +90,39 @@ export function normalizeResponse(
   return response as unknown as FixtureResponse;
 }
 
+/**
+ * @internal Normalize `responsesBlocks` and `customToolCalls` in place, for a
+ * server with `responsesTools: "extended"`: stringify object `arguments` on
+ * `toolCall` blocks, and give a `customToolCalls` entry with no `type` the
+ * type `"custom"`. A custom call's free-text `input` is never stringified.
+ * {@link normalizeResponse} leaves both keys as written, as 1.44.0 did.
+ */
+export function normalizeResponsesToolsKeys(response: Record<string, unknown>): void {
+  if (Array.isArray(response.responsesBlocks)) {
+    response.responsesBlocks = (response.responsesBlocks as unknown[]).map((block) => {
+      const b = block as Record<string, unknown> | null;
+      if (
+        b !== null &&
+        typeof b === "object" &&
+        b.type === "toolCall" &&
+        typeof b.arguments === "object" &&
+        b.arguments !== null
+      ) {
+        return { ...b, arguments: JSON.stringify(b.arguments) };
+      }
+      return block;
+    });
+  }
+  if (Array.isArray(response.customToolCalls)) {
+    response.customToolCalls = (response.customToolCalls as unknown[]).map((tc) => {
+      const entry = tc as Record<string, unknown> | null;
+      return entry !== null && typeof entry === "object" && entry.type === undefined
+        ? { ...entry, type: "custom" }
+        : tc;
+    });
+  }
+}
+
 class InvalidFixtureMatchError extends TypeError {}
 
 export function entryToFixture(
@@ -116,9 +148,6 @@ export function entryToFixture(
       toolCallId: entry.match.toolCallId,
       toolResultContains: entry.match.toolResultContains,
       toolName: entry.match.toolName,
-      ...(entry.match.toolNamespace !== undefined && {
-        toolNamespace: entry.match.toolNamespace,
-      }),
       model: entry.match.model,
       responseFormat: entry.match.responseFormat,
       endpoint: entry.match.endpoint,
@@ -153,18 +182,34 @@ export function entryToFixture(
 
   if (source) setFixtureMisbehaviorPosition(fixture, `${source.file}#${source.index}`);
 
+  // `match.toolNamespace`, `customToolCalls` and `responsesBlocks` are held,
+  // not read: 1.44.0 dropped the first and kept the others as written, so the
+  // fixture looks exactly as it did then. Only a server with responsesTools
+  // "extended" applies them (markFixtureResponsesToolsExtended).
+  const heldToolNamespace = entry.match.toolNamespace !== undefined;
+  const response: unknown = fixture.response;
+  const heldResponseKeys =
+    entry.match.endpoint !== "openai-live" &&
+    !isLiveResponse(entry.response) &&
+    typeof response === "object" &&
+    response !== null &&
+    ("customToolCalls" in response || "responsesBlocks" in response);
+  if (heldToolNamespace || heldResponseKeys) {
+    heldResponsesTools.set(fixture, {
+      ...(heldToolNamespace && { toolNamespace: entry.match.toolNamespace }),
+      normalize: heldResponseKeys,
+    });
+  }
+
+  // A `misbehavior` key is held, not read: only a server with misbehavior
+  // enabled recognizes it (enableHeldFixtureMisbehavior). Otherwise it is
+  // unused data, as in 1.44.0.
   if (entry.misbehavior !== undefined) {
-    const path = source ? `fixtures[${source.index}].misbehavior` : "misbehavior";
-    const parsed = parseMisbehavior(entry.misbehavior, path);
-    if (parsed.ok) fixture.misbehavior = parsed.config;
-    const issue = parsed.ok ? validateFixtureMisbehavior(fixture, path) : parsed.issue;
-    if (issue) {
-      throw new FixtureLoadError({
-        rule: issue.rule,
-        file: source?.file ?? null,
-        detail: issue.message,
-      });
-    }
+    heldFixtureMisbehavior.set(fixture, {
+      value: entry.misbehavior,
+      path: source ? `fixtures[${source.index}].misbehavior` : "misbehavior",
+      file: source?.file ?? null,
+    });
   }
 
   // Sanitize recordedTimings to guard against NaN or negative values that
@@ -529,92 +574,135 @@ function validateWebSearches(
 }
 
 /**
- * Per-entry `toolCalls` checks. A custom tool call (`type: "custom"`) takes
- * free-text `input`, no `arguments`, a non-empty string `name` and a string
- * `id` when present. `namespace`, when present, must be a non-empty string on
- * either kind, and `type: "customToolCall"` (the block discriminator) is an
- * error. Every other entry is a function call: an empty `name` and `arguments`
- * that `JSON.parse` rejects are errors. The check does not require a string, so
- * a value such as `null` or a number that `JSON.parse` accepts after string
- * coercion passes. A non-string `name` or `id`, a stray `input`, or any other
- * `type` (including the legacy `"toolCall"`) loads with a warning.
- */
-function validateToolCallEntries(
-  toolCalls: unknown[],
-  fixtureIndex: number,
-  results: ValidationResult[],
-): void {
-  const error = (message: string) => results.push({ severity: "error", fixtureIndex, message });
-  const warning = (message: string) => results.push({ severity: "warning", fixtureIndex, message });
-  for (let j = 0; j < toolCalls.length; j++) {
-    const tc = (toolCalls[j] ?? {}) as Record<string, unknown>;
-    const isCustom = tc.type === "custom";
-    if (!tc.name) {
-      error(`toolCalls[${j}].name is empty`);
-    } else if (typeof tc.name !== "string") {
-      (isCustom ? error : warning)(`toolCalls[${j}].name must be a string, got ${typeof tc.name}`);
-    }
-    if (tc.id !== undefined && typeof tc.id !== "string") {
-      (isCustom ? error : warning)(`toolCalls[${j}].id must be a string, got ${typeof tc.id}`);
-    }
-    if (tc.namespace !== undefined && (typeof tc.namespace !== "string" || tc.namespace === "")) {
-      error(`toolCalls[${j}].namespace must be a non-empty string`);
-    }
-    if (tc.type === "customToolCall") {
-      error(`toolCalls[${j}].type must be "function" or "custom", got "customToolCall"`);
-      continue;
-    }
-    if (isCustom) {
-      if (typeof tc.input !== "string") {
-        error(`toolCalls[${j}].input must be a string for a custom tool call`);
-      } else if (tc.input === "") {
-        warning(`toolCalls[${j}].input is empty`);
-      }
-      if (tc.arguments !== undefined) {
-        error(`toolCalls[${j}].arguments is not valid on a custom tool call; use input`);
-      }
-      continue;
-    }
-    if (tc.type !== undefined && tc.type !== "function") {
-      warning(
-        `toolCalls[${j}].type ${JSON.stringify(tc.type)} is read as a function call; use "function" (or omit type), or "custom" for a custom tool call`,
-      );
-    }
-    if (tc.input !== undefined) {
-      warning(
-        `toolCalls[${j}].input is ignored on a function call; it is only valid when type is "custom"`,
-      );
-    }
-    try {
-      JSON.parse(tc.arguments as string);
-    } catch {
-      error(
-        `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
-      );
-    }
-  }
-}
-
-/**
- * Path (`toolCalls[j]` or `blocks[j]`) of the first custom tool call that a
- * static fixture response would serve, or undefined. Factory responses are
- * skipped. Like `requireEmittedFunctionToolCalls`, non-empty `blocks` are
- * authoritative: only they are scanned, and the legacy `toolCalls` list is
- * read only when there are no blocks to serve.
+ * Path (`customToolCalls[j]` or `responsesBlocks[j]`) of the first custom
+ * tool call a static fixture response carries, or undefined. Factory
+ * responses are skipped.
  */
 function firstCustomToolCallPath(response: unknown): string | undefined {
   if (response === null || typeof response !== "object") return undefined;
-  const r = response as { toolCalls?: unknown; blocks?: unknown };
-  const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object";
-  if (Array.isArray(r.blocks) && r.blocks.length > 0) {
-    const j = r.blocks.findIndex((b) => isObj(b) && b.type === "customToolCall");
-    return j >= 0 ? `blocks[${j}]` : undefined;
+  const r = response as { customToolCalls?: unknown; responsesBlocks?: unknown };
+  if (Array.isArray(r.customToolCalls) && r.customToolCalls.length > 0) {
+    return "customToolCalls[0]";
   }
-  if (Array.isArray(r.toolCalls)) {
-    const j = r.toolCalls.findIndex((tc) => isObj(tc) && tc.type === "custom");
-    if (j >= 0) return `toolCalls[${j}]`;
+  if (Array.isArray(r.responsesBlocks)) {
+    const j = r.responsesBlocks.findIndex(
+      (b) =>
+        b !== null && typeof b === "object" && (b as { type?: unknown }).type === "customToolCall",
+    );
+    if (j >= 0) return `responsesBlocks[${j}]`;
   }
   return undefined;
+}
+
+/**
+ * Checks for the OpenAI Responses keys `customToolCalls` and
+ * `responsesBlocks`. Both are new, so their findings never touch a fixture an
+ * earlier release accepted. A custom tool call takes a non-empty string
+ * `name`, a string `input` (empty: warning), no `arguments`, a string `id`
+ * when present and a non-empty string `namespace` when present.
+ * `responsesBlocks` follows the `blocks` rules plus `customToolCall` blocks,
+ * and may not be combined with `blocks`.
+ */
+function validateResponsesToolKeys(
+  response: unknown,
+  fixtureIndex: number,
+  results: ValidationResult[],
+): void {
+  if (response === null || typeof response !== "object") return;
+  const r = response as { customToolCalls?: unknown; responsesBlocks?: unknown; blocks?: unknown };
+  const error = (message: string) => results.push({ severity: "error", fixtureIndex, message });
+  const warning = (message: string) => results.push({ severity: "warning", fixtureIndex, message });
+  const checkCustom = (tc: Record<string, unknown>, path: string) => {
+    if (typeof tc.name !== "string" || tc.name === "") {
+      error(`${path}.name must be a non-empty string`);
+    }
+    if (typeof tc.input !== "string") {
+      error(`${path}.input must be a string for a custom tool call`);
+    } else if (tc.input === "") {
+      warning(`${path}.input is empty`);
+    }
+    if (tc.arguments !== undefined) {
+      error(`${path}.arguments is not valid on a custom tool call; use input`);
+    }
+    if (tc.id !== undefined && typeof tc.id !== "string") {
+      error(`${path}.id must be a string, got ${typeof tc.id}`);
+    }
+    if (tc.namespace !== undefined && (typeof tc.namespace !== "string" || tc.namespace === "")) {
+      error(`${path}.namespace must be a non-empty string`);
+    }
+  };
+  if (r.customToolCalls !== undefined) {
+    if (!Array.isArray(r.customToolCalls)) {
+      error(`customToolCalls must be an array, got ${typeof r.customToolCalls}`);
+    } else {
+      r.customToolCalls.forEach((entry: unknown, j) => {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          error(`customToolCalls[${j}] must be an object`);
+          return;
+        }
+        const tc = entry as Record<string, unknown>;
+        if (tc.type !== undefined && tc.type !== "custom") {
+          error(`customToolCalls[${j}].type must be "custom" when present`);
+        }
+        checkCustom(tc, `customToolCalls[${j}]`);
+      });
+    }
+  }
+  if (r.responsesBlocks === undefined) return;
+  if (!Array.isArray(r.responsesBlocks)) {
+    error(`responsesBlocks must be an array, got ${typeof r.responsesBlocks}`);
+    return;
+  }
+  if (Array.isArray(r.blocks) && r.blocks.length > 0 && r.responsesBlocks.length > 0) {
+    error("blocks and responsesBlocks cannot both be set; use responsesBlocks alone");
+  }
+  r.responsesBlocks.forEach((entry: unknown, j) => {
+    const path = `responsesBlocks[${j}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      error(`${path} must be an object`);
+      return;
+    }
+    const block = entry as Record<string, unknown>;
+    if (block.type === "text") {
+      if (typeof block.text !== "string") error(`${path}.text must be a string`);
+      return;
+    }
+    if (block.type === "customToolCall") {
+      checkCustom(block, path);
+      return;
+    }
+    if (block.type !== "toolCall") {
+      error(
+        `${path}.type must be "text", "toolCall" or "customToolCall", got ${JSON.stringify(block.type)}`,
+      );
+      return;
+    }
+    if (typeof block.name !== "string" || block.name === "") {
+      error(`${path}.name must be a non-empty string`);
+    }
+    if (block.id !== undefined && typeof block.id !== "string") {
+      error(`${path}.id must be a string, got ${typeof block.id}`);
+    }
+    if (block.input !== undefined) {
+      error(`${path}.input is only valid on a "customToolCall" block`);
+    }
+    if (
+      block.namespace !== undefined &&
+      (typeof block.namespace !== "string" || block.namespace === "")
+    ) {
+      error(`${path}.namespace must be a non-empty string`);
+    }
+    const args = block.arguments;
+    if (typeof args === "string") {
+      try {
+        JSON.parse(args);
+      } catch {
+        error(`${path}.arguments is not valid JSON: ${args}; ${INVALID_ARGUMENTS_HINT}`);
+      }
+    } else if (args === null || typeof args !== "object") {
+      error(`${path}.arguments must be a string or an object`);
+    }
+  });
 }
 
 function validateBlocks(
@@ -638,8 +726,8 @@ function validateBlocks(
   }
 
   for (let j = 0; j < response.blocks.length; j++) {
-    const block: unknown = response.blocks[j];
-    if (!isPlainObject(block)) {
+    const block = response.blocks[j] as Record<string, unknown> | null | undefined;
+    if (typeof block !== "object" || block === null) {
       results.push({
         severity: "error",
         fixtureIndex,
@@ -647,61 +735,12 @@ function validateBlocks(
       });
       continue;
     }
-    if (block.type !== "text" && block.type !== "toolCall" && block.type !== "customToolCall") {
+    if (block.type !== "text" && block.type !== "toolCall") {
       results.push({
         severity: "error",
         fixtureIndex,
-        message: `blocks[${j}].type must be "text", "toolCall" or "customToolCall", got ${JSON.stringify(block.type)}`,
+        message: `blocks[${j}].type must be "text" or "toolCall", got ${JSON.stringify(block.type)}`,
       });
-      continue;
-    }
-    if (
-      block.type !== "text" &&
-      block.namespace !== undefined &&
-      (typeof block.namespace !== "string" || block.namespace === "")
-    ) {
-      results.push({
-        severity: "error",
-        fixtureIndex,
-        message: `blocks[${j}].namespace must be a non-empty string`,
-      });
-    }
-    if (block.type === "customToolCall") {
-      // Same rules as a custom `toolCalls` entry, with blocks[j] paths.
-      if (typeof block.name !== "string" || block.name === "") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].name must be a non-empty string`,
-        });
-      }
-      if (typeof block.input !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].input must be a string for a custom tool call`,
-        });
-      } else if (block.input === "") {
-        results.push({
-          severity: "warning",
-          fixtureIndex,
-          message: `blocks[${j}].input is empty`,
-        });
-      }
-      if (block.arguments !== undefined) {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].arguments is not valid on a custom tool call; use input`,
-        });
-      }
-      if (block.id !== undefined && typeof block.id !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].id must be a string, got ${typeof block.id}`,
-        });
-      }
       continue;
     }
     if (block.type === "text") {
@@ -722,13 +761,6 @@ function validateBlocks(
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.
-      if (block.input !== undefined) {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].input is only valid on a "customToolCall" block`,
-        });
-      }
       if (typeof block.name !== "string" || block.name === "") {
         results.push({
           severity: "error",
@@ -781,21 +813,15 @@ function validateBlocks(
         (b as { type?: unknown }).type === "text" &&
         typeof (b as { text?: unknown }).text === "string",
     );
-    // Each tool call is compared as kind + name + namespace, so a custom call
-    // and a function call of the same name (or two namespaces) differ.
-    const callKey = (kind: string, name: unknown, namespace: unknown) =>
-      JSON.stringify([kind, name, namespace ?? null]);
-    const toolCallBlockKeys = response.blocks
+    const toolCallBlockNames = response.blocks
       .filter(
-        (b): b is { type: "toolCall" | "customToolCall"; name: unknown; namespace?: unknown } =>
+        (b): b is { type: "toolCall"; name: string } =>
           b != null &&
           typeof b === "object" &&
-          ((b as { type?: unknown }).type === "toolCall" ||
-            (b as { type?: unknown }).type === "customToolCall"),
+          (b as { type?: unknown }).type === "toolCall" &&
+          typeof (b as { name?: unknown }).name === "string",
       )
-      .map((b) =>
-        callKey(b.type === "customToolCall" ? "custom" : "function", b.name, b.namespace),
-      );
+      .map((b) => b.name);
 
     // Text divergence: blocks' concatenated text vs legacy `content`.
     if (hasLegacyContent) {
@@ -810,18 +836,15 @@ function validateBlocks(
       }
     }
 
-    // Tool-call divergence: blocks' ordered toolCall and customToolCall blocks
-    // vs legacy `toolCalls`, by kind, name and namespace.
+    // ToolCall divergence: blocks' ordered toolCall names vs legacy `toolCalls`.
     if (hasLegacyToolCalls) {
-      const legacyKeys = (
-        response.toolCalls as Array<{ type?: unknown; name?: unknown; namespace?: unknown } | null>
-      ).map((tc) =>
-        callKey(tc?.type === "custom" ? "custom" : "function", tc?.name, tc?.namespace),
+      const legacyNames = (response.toolCalls as Array<{ name?: unknown }>).map((tc) =>
+        typeof tc?.name === "string" ? tc.name : undefined,
       );
-      const sameCalls =
-        legacyKeys.length === toolCallBlockKeys.length &&
-        legacyKeys.every((k, i) => k === toolCallBlockKeys[i]);
-      if (!sameCalls) {
+      const sameNames =
+        legacyNames.length === toolCallBlockNames.length &&
+        legacyNames.every((n, k) => n === toolCallBlockNames[k]);
+      if (!sameNames) {
         results.push({
           severity: "warning",
           fixtureIndex,
@@ -936,14 +959,15 @@ export function claimOneShotError(fixtures: Fixture[], fixture: Fixture): boolea
  * generation means the queue was cleared or reset while the claim was parked
  * (in the chaos-latency await) and the claim is stale — re-arming it would
  * plant the previous test's injection in the next test's freshly reset queue.
- * Keyed by array identity: every clear path preserves the array reference
- * (`length = 0`), so the counter follows the live queue.
+ * Keyed by the caller's array (a server's own list resolves to it): every
+ * clear path preserves the array reference (`length = 0`), so the counter
+ * follows the live queue.
  */
 const fixtureQueueGeneration = new WeakMap<Fixture[], number>();
 const oneShotClaimGeneration = new WeakMap<Fixture, number>();
 
 function queueGeneration(fixtures: Fixture[]): number {
-  return fixtureQueueGeneration.get(fixtures) ?? 0;
+  return fixtureQueueGeneration.get(fixtureListTarget(fixtures)) ?? 0;
 }
 
 /**
@@ -956,7 +980,7 @@ function queueGeneration(fixtures: Fixture[]): number {
  */
 export function clearFixtureQueue(fixtures: Fixture[]): void {
   fixtures.length = 0;
-  fixtureQueueGeneration.set(fixtures, queueGeneration(fixtures) + 1);
+  fixtureQueueGeneration.set(fixtureListTarget(fixtures), queueGeneration(fixtures) + 1);
 }
 
 /**
@@ -1020,13 +1044,23 @@ export function validateFixtures(
   const seenUserMessages = new Map<string, number>();
 
   for (let i = 0; i < fixtures.length; i++) {
-    const f = fixtures[i];
+    const original = fixtures[i];
+    // Only a fixture loaded for a server with responsesTools "extended" has its
+    // `match.toolNamespace`, `customToolCalls` and `responsesBlocks` checked;
+    // for any other fixture they are unused data, as in 1.44.0.
+    const f = responsesToolsExtendedFixtures.has(original)
+      ? original
+      : withoutResponsesToolsKeys(original);
     const response = f.response;
 
-    const misbehaviorIssue = validateFixtureMisbehavior(f, `fixtures[${i}].misbehavior`);
+    // Only a fixture recognized under enabled misbehavior is checked; for any
+    // other fixture a `misbehavior` key is unused data, as in 1.44.0.
+    const misbehaviorIssue = misbehaviorEnabledFixtures.has(original)
+      ? validateFixtureMisbehavior(original, `fixtures[${i}].misbehavior`)
+      : undefined;
     if (misbehaviorIssue) {
       results.push({ severity: "error", fixtureIndex: i, message: misbehaviorIssue.message });
-    } else if (f.misbehavior !== undefined) {
+    } else if (misbehaviorEnabledFixtures.has(original) && f.misbehavior !== undefined) {
       const parsed = parseMisbehavior(f.misbehavior);
       if (parsed.ok && parsed.config.seed === undefined) {
         for (const fault of parsed.config.faults) {
@@ -1065,10 +1099,10 @@ export function validateFixtures(
       // --- Error checks ---
 
       // Response type recognition
-      // Note: isContentWithToolCallsResponse must be checked before isTextResponse
+      // Note: isCombinedFixtureResponse must be checked before isTextResponse
       // and isToolCallResponse since it is a structural superset of both.
       if (
-        !isContentWithToolCallsResponse(response) &&
+        !isCombinedFixtureResponse(response) &&
         !isTextResponse(response) &&
         !isToolCallResponse(response) &&
         !isErrorResponse(response) &&
@@ -1090,13 +1124,18 @@ export function validateFixtures(
 
       // When a non-empty ordered `blocks` array is present, the builders stream
       // `blocks` and IGNORE the legacy `content` mirror (see validateBlocks's
-      // divergence note + isContentWithToolCallsResponse's BLOCKS-ONLY clause).
+      // divergence note + isCombinedFixtureResponse's BLOCKS-ONLY clause).
       // So an empty-string `content` is harmless in that case and must NOT raise
       // the "content is empty string" hard error. Fixtures WITHOUT blocks keep
       // the error (an empty content with no blocks produces no output).
       const hasNonEmptyBlocks =
-        Array.isArray((response as { blocks?: unknown }).blocks) &&
-        (response as { blocks: unknown[] }).blocks.length > 0;
+        (Array.isArray((response as { blocks?: unknown }).blocks) &&
+          (response as { blocks: unknown[] }).blocks.length > 0) ||
+        (Array.isArray((response as { responsesBlocks?: unknown }).responsesBlocks) &&
+          (response as { responsesBlocks: unknown[] }).responsesBlocks.length > 0);
+      const hasCustomToolCalls =
+        Array.isArray((response as { customToolCalls?: unknown }).customToolCalls) &&
+        (response as { customToolCalls: unknown[] }).customToolCalls.length > 0;
 
       // Text response checks
       if (isTextResponse(response)) {
@@ -1112,7 +1151,7 @@ export function validateFixtures(
       }
 
       // ContentWithToolCalls response checks
-      if (isContentWithToolCallsResponse(response)) {
+      if (isCombinedFixtureResponse(response)) {
         // The guard now also matches a BLOCKS-ONLY fixture (non-empty `blocks`,
         // no `content`/`toolCalls`). For that shape the content/toolCalls checks
         // below don't apply (and `content`/`toolCalls` are undefined) — the
@@ -1129,14 +1168,32 @@ export function validateFixtures(
           }
         }
         if (Array.isArray(response.toolCalls)) {
-          if (response.toolCalls.length === 0) {
+          if (response.toolCalls.length === 0 && !hasCustomToolCalls) {
             results.push({
               severity: "warning",
               fixtureIndex: i,
               message: "toolCalls array is empty — fixture will never produce tool calls",
             });
           }
-          validateToolCallEntries(response.toolCalls, i, results);
+          for (let j = 0; j < response.toolCalls.length; j++) {
+            const tc = response.toolCalls[j];
+            if (!tc.name) {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].name is empty`,
+              });
+            }
+            try {
+              JSON.parse(tc.arguments);
+            } catch {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
+              });
+            }
+          }
         }
         validateReasoning(response, i, results);
         validateWebSearches(response, i, results);
@@ -1150,17 +1207,37 @@ export function validateFixtures(
         i,
         results,
       );
+      // OpenAI Responses keys (new): customToolCalls and responsesBlocks.
+      validateResponsesToolKeys(response, i, results);
 
       // Tool call response checks
       if (isToolCallResponse(response)) {
-        if (response.toolCalls.length === 0) {
+        if (response.toolCalls.length === 0 && !hasCustomToolCalls) {
           results.push({
             severity: "warning",
             fixtureIndex: i,
             message: "toolCalls array is empty — fixture will never produce tool calls",
           });
         }
-        validateToolCallEntries(response.toolCalls, i, results);
+        for (let j = 0; j < response.toolCalls.length; j++) {
+          const tc = response.toolCalls[j];
+          if (!tc.name) {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].name is empty`,
+            });
+          }
+          try {
+            JSON.parse(tc.arguments);
+          } catch {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
+            });
+          }
+        }
         validateWebSearches(response, i, results);
       }
 
@@ -1240,7 +1317,7 @@ export function validateFixtures(
       if (
         isTextResponse(response) ||
         isToolCallResponse(response) ||
-        isContentWithToolCallsResponse(response)
+        isCombinedFixtureResponse(response)
       ) {
         const r = response as ResponseOverrides;
         if (r.id !== undefined && typeof r.id !== "string") {
@@ -1502,11 +1579,10 @@ export function validateFixtures(
           message: `match.toolNamespace must be a string, got ${typeof f.match.toolNamespace}`,
         });
       } else if (f.match.toolNamespace.length === 0) {
-        // A request never carries an empty namespace: aimock rejects a
-        // namespace tool named "" with a 400 (validateResponsesTools), as
-        // OpenAI's spec requires (openai/openai-openapi openapi.yaml 2.3.0,
-        // NamespaceToolParam: `name` has `minLength: 1`), so this value never
-        // matches. Reject it as an authoring mistake.
+        // OpenAI's spec gives a namespace tool a non-empty name
+        // (openai/openai-openapi openapi.yaml 2.3.0, NamespaceToolParam: `name`
+        // has `minLength: 1`), and aimock drops a namespace tool named "", so
+        // this value never matches. Reject it as an authoring mistake.
         results.push({
           severity: "error",
           fixtureIndex: i,
@@ -1535,9 +1611,7 @@ export function validateFixtures(
         : undefined;
     if (customCallPath !== undefined) {
       // No non-"chat" endpoint can carry a custom tool call, but the failure
-      // differs per wire: media handlers answer an uncoded 500 shape error,
-      // Realtime sends an error event, and openai-live rejects the fixture at
-      // load. So the text names no status or error code.
+      // differs per wire, so the text names no status or error code.
       results.push({
         severity: "warning",
         fixtureIndex: i,
@@ -1588,9 +1662,8 @@ export function validateFixtures(
     // duplicates when they would match the SAME requests, so the dedup key must
     // include EVERY match discriminator the router (matchFixtureDiagnostic in
     // router.ts) actually gates on: userMessage, systemMessage, inputText,
-    // toolCallId, toolResultContains, toolName, toolNamespace, model,
-    // responseFormat, endpoint, context, sequenceIndex, turnIndex, and
-    // hasToolResult. Omitting any of these
+    // toolCallId, toolResultContains, toolName, model, responseFormat, endpoint,
+    // context, sequenceIndex, turnIndex, and hasToolResult. Omitting any of these
     // (the old key only carried turnIndex/hasToolResult/toolResultContains/
     // sequenceIndex/context) flags two legitimately-distinct fixtures — e.g. two
     // that differ ONLY in toolCallId or model — as false duplicates.
@@ -1603,36 +1676,32 @@ export function validateFixtures(
     // Values are serialised kind-aware so RegExp / string[] matchers do not
     // collide (a template literal would coerce a RegExp to its source and an
     // array via join, losing the distinction) — mirroring describeMatch in
-    // router.ts. The field tuple is JSON-encoded rather than joined with a
-    // delimiter, so a "|" inside a value (e.g. toolName "a|" + toolNamespace
-    // "b" vs toolName "a" + toolNamespace "|b") cannot shift field boundaries.
-    // The key is not collision-free: an absent field and an empty-string
-    // field both encode as "", so e.g. toolCallId (or toolName, context)
-    // absent vs "" share a key.
+    // router.ts.
     const um = f.match.userMessage;
     if (typeof um === "string" && um) {
       const m = f.match;
       const dedupKey =
         m.predicate !== undefined
           ? `predicate:${i}`
-          : JSON.stringify(
-              [
-                serializeMatcher(m.userMessage),
-                serializeMatcher(m.systemMessage),
-                serializeMatcher(m.inputText),
-                m.toolCallId,
-                m.toolResultContains,
-                m.toolName,
-                m.toolNamespace,
-                serializeMatcher(m.model),
-                m.responseFormat,
-                m.endpoint,
-                m.context,
-                m.sequenceIndex,
-                m.turnIndex,
-                m.hasToolResult,
-              ].map((v) => (v === undefined ? "" : String(v))),
-            );
+          : [
+              serializeMatcher(m.userMessage),
+              serializeMatcher(m.systemMessage),
+              serializeMatcher(m.inputText),
+              m.toolCallId,
+              m.toolResultContains,
+              m.toolName,
+              serializeMatcher(m.model),
+              m.responseFormat,
+              m.endpoint,
+              m.context,
+              m.sequenceIndex,
+              m.turnIndex,
+              m.hasToolResult,
+              // Appended only when set, so every key without it is unchanged.
+              ...(m.toolNamespace !== undefined ? [`toolNamespace=${m.toolNamespace}`] : []),
+            ]
+              .map((v) => (v === undefined ? "" : String(v)))
+              .join("|");
       const prev = seenUserMessages.get(dedupKey);
       if (prev !== undefined) {
         const ref: ValidationRef = {
@@ -1726,7 +1795,6 @@ export type McpFakesLoadRule = (typeof MCP_FAKES_LOAD_RULES)[number];
  */
 export interface FixtureLoadRuleRegistry {
   "mcp-fakes": McpFakesLoadRule;
-  misbehavior: MisbehaviorRule;
 }
 
 /**
@@ -1804,8 +1872,28 @@ function namePart(text: string): Message {
 }
 
 /**
+ * The message of a `FixtureLoadError` or `MisbehaviorConfigError`: the
+ * `file`, every non-null `blockId` and `entryId`, then `[rule] detail`.
+ */
+function loadErrorMessage(init: {
+  rule: string;
+  file: string | null;
+  blockId?: string | null;
+  entryId?: string | null;
+  detail: string | Message;
+}): string {
+  const file = init.file === null ? msg`<no file>` : namePart(init.file);
+  const block = init.blockId == null ? msg`` : msg`, block ${namePart(init.blockId)}`;
+  const entry = init.entryId == null ? msg`` : msg`, entry ${namePart(init.entryId)}`;
+  return oneLine(
+    build(msg`${file}${block}${entry}: [${fixed(init.rule)}] ${capPart(init.detail)}`),
+  );
+}
+
+/**
  * Thrown for a fixture-load case aimock cannot honor (fail-loud rule). Only
- * MCP fakes and misbehavior use it; other fixture-loader paths log warnings.
+ * MCP fakes use it (misbehavior throws its own `MisbehaviorConfigError`);
+ * other fixture-loader paths log warnings.
  * `blockId` and `entryId` are own properties only when supplied, so
  * `toJSON()` (the control API's HTTP 400 `details`) omits them otherwise.
  * The message names `file` and every non-null `blockId` and `entryId`, an
@@ -1822,13 +1910,7 @@ export class FixtureLoadError extends Error {
   declare readonly entryId?: string | null;
 
   constructor(init: FixtureLoadErrorInit, options?: ErrorOptions) {
-    const file = init.file === null ? msg`<no file>` : namePart(init.file);
-    const block = init.blockId == null ? msg`` : msg`, block ${namePart(init.blockId)}`;
-    const entry = init.entryId == null ? msg`` : msg`, entry ${namePart(init.entryId)}`;
-    super(
-      oneLine(build(msg`${file}${block}${entry}: [${fixed(init.rule)}] ${capPart(init.detail)}`)),
-      options,
-    );
+    super(loadErrorMessage(init), options);
     this.rule = init.rule;
     this.file = init.file;
     if (init.blockId !== undefined) {
@@ -1858,4 +1940,228 @@ export class FixtureLoadError extends Error {
     if (this.entryId !== undefined) json.entryId = this.entryId;
     return json;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Misbehavior in fixtures: recognized only when misbehavior is enabled
+// ---------------------------------------------------------------------------
+
+export interface MisbehaviorConfigErrorJSON {
+  /** `"MisbehaviorConfigError"`. */
+  name: string;
+  rule: string;
+  file: string | null;
+  message: string;
+}
+
+/**
+ * Thrown for an invalid fixture `misbehavior` key, or one that cannot apply
+ * to its fixture, on a server with misbehavior enabled (`enableMisbehavior:
+ * true`, CLI `--misbehavior`). Without that opt-in the key is unused data
+ * and nothing throws. The message has the `FixtureLoadError` layout:
+ * `"<file>": [<rule>] <detail>`.
+ */
+export class MisbehaviorConfigError extends Error {
+  override readonly name: string = "MisbehaviorConfigError";
+  readonly rule: MisbehaviorRule;
+  readonly file: string | null;
+
+  constructor(init: { rule: MisbehaviorRule; file: string | null; detail: string }) {
+    super(loadErrorMessage(init));
+    this.rule = init.rule;
+    this.file = init.file;
+  }
+
+  toJSON(): MisbehaviorConfigErrorJSON {
+    return { name: this.name, rule: this.rule, file: this.file, message: this.message };
+  }
+}
+
+/** A fixture entry's `misbehavior` value, held until misbehavior is enabled. */
+interface HeldMisbehavior {
+  value: unknown;
+  /** Path for messages, e.g. `fixtures[2].misbehavior`. */
+  path: string;
+  file: string | null;
+}
+
+const heldFixtureMisbehavior = new WeakMap<Fixture, HeldMisbehavior>();
+const responsesToolsExtendedFixtures = new WeakSet<Fixture>();
+
+/** The keys a loaded fixture holds until a server with responsesTools "extended" reads them. */
+interface HeldResponsesTools {
+  /** `match.toolNamespace` as written, when the entry set it. */
+  toolNamespace?: unknown;
+  /** Whether the response carries `customToolCalls` / `responsesBlocks` to normalize. */
+  normalize: boolean;
+}
+
+const heldResponsesTools = new WeakMap<Fixture, HeldResponsesTools>();
+
+/**
+ * @internal Mark a fixture for a server with `responsesTools: "extended"`,
+ * where that server made the fixture itself (its own load, `--validate`, the
+ * control API): the held `match.toolNamespace` is applied and
+ * `customToolCalls` / `responsesBlocks` are normalized in place, and
+ * `validateFixtures` checks those keys. Idempotent. A fixture the caller
+ * passed in is never marked: an extended server reads it through
+ * {@link responsesToolsExtendedView}, so another server sharing it still sees
+ * it as 1.44.0 loaded it.
+ */
+export function markFixtureResponsesToolsExtended(fixture: Fixture): void {
+  responsesToolsExtendedFixtures.add(fixture);
+  const held = heldResponsesTools.get(fixture);
+  if (held === undefined) return;
+  heldResponsesTools.delete(fixture);
+  if (held.toolNamespace !== undefined) {
+    fixture.match = withHeldToolNamespace(fixture.match, held.toolNamespace);
+  }
+  if (held.normalize) {
+    normalizeResponsesToolsKeys(fixture.response as unknown as Record<string, unknown>);
+  }
+}
+
+/**
+ * `match` with `toolNamespace` after `toolName`, in the same key order the
+ * listing and journal have always shown in extended mode.
+ */
+function withHeldToolNamespace(match: FixtureMatch, toolNamespace: unknown): FixtureMatch {
+  const rebuilt: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(match)) {
+    rebuilt[key] = value;
+    if (key === "toolName") rebuilt.toolNamespace = toolNamespace;
+  }
+  if (!("toolNamespace" in rebuilt)) rebuilt.toolNamespace = toolNamespace;
+  return rebuilt as FixtureMatch;
+}
+
+/**
+ * The extended view of one held fixture. `match` and `response` record the
+ * fixture's values the view was built from, so it is rebuilt only when the
+ * fixture's own `match` or `response` is replaced.
+ */
+interface ExtendedView {
+  view: Fixture;
+  match?: FixtureMatch;
+  viewMatch?: FixtureMatch;
+  response?: Fixture["response"];
+  viewResponse?: Fixture["response"];
+}
+
+const extendedViews = new WeakMap<Fixture, ExtendedView>();
+/** Each extended view's fixture, so identity bookkeeping can name the caller's object. */
+const extendedViewSources = new WeakMap<Fixture, Fixture>();
+
+/**
+ * @internal The fixture an extended view was made from
+ * ({@link responsesToolsExtendedView}); any other fixture is itself. An
+ * extended server counts and journals the caller's fixture, not its view, so
+ * the identity APIs (`getFixtureMatchCount`, `findByFixture`, the count-map
+ * keys, `JournalEntry.response.fixture`) take the object the caller passed in.
+ */
+export function responsesToolsViewSource(fixture: Fixture): Fixture {
+  return extendedViewSources.get(fixture) ?? fixture;
+}
+
+/**
+ * @internal The fixture as a server with `responsesTools: "extended"` reads
+ * it. A fixture with held keys gets a separate object, one per fixture, with
+ * `match.toolNamespace` applied and `customToolCalls` / `responsesBlocks`
+ * normalized, as {@link markFixtureResponsesToolsExtended} would leave it.
+ * The fixture itself is not changed, so a legacy server that shares it is
+ * unaffected. Every other property is read from the fixture on each call.
+ * A fixture with nothing held is returned as it is.
+ */
+export function responsesToolsExtendedView(fixture: Fixture): Fixture {
+  const held = heldResponsesTools.get(fixture);
+  if (held === undefined) return fixture;
+  let cached = extendedViews.get(fixture);
+  if (cached === undefined) {
+    cached = { view: {} as Fixture };
+    responsesToolsExtendedFixtures.add(cached.view);
+    extendedViewSources.set(cached.view, fixture);
+    extendedViews.set(fixture, cached);
+  }
+  if (cached.viewMatch === undefined || cached.match !== fixture.match) {
+    cached.match = fixture.match;
+    cached.viewMatch =
+      held.toolNamespace !== undefined
+        ? withHeldToolNamespace(fixture.match, held.toolNamespace)
+        : fixture.match;
+  }
+  if (!("viewResponse" in cached) || cached.response !== fixture.response) {
+    cached.response = fixture.response;
+    let viewResponse = fixture.response;
+    if (held.normalize && typeof viewResponse === "object" && viewResponse !== null) {
+      const copy = { ...(viewResponse as unknown as Record<string, unknown>) };
+      normalizeResponsesToolsKeys(copy);
+      viewResponse = copy as unknown as FixtureResponse;
+    }
+    cached.viewResponse = viewResponse;
+  }
+  const view = cached.view as unknown as Record<string, unknown>;
+  const source = fixture as unknown as Record<string, unknown>;
+  for (const key of Object.keys(view)) if (!(key in source)) delete view[key];
+  for (const key of Object.keys(source)) {
+    view[key] =
+      key === "match" ? cached.viewMatch : key === "response" ? cached.viewResponse : source[key];
+  }
+  copyFixtureMisbehaviorPosition(fixture, cached.view);
+  return cached.view;
+}
+
+/**
+ * The fixture as 1.44.0 saw it: without `match.toolNamespace`,
+ * `customToolCalls` and `responsesBlocks`. Returns the same object when none
+ * is set; factory responses are left as they are.
+ */
+function withoutResponsesToolsKeys(fixture: Fixture): Fixture {
+  let match = fixture.match;
+  if ("toolNamespace" in match) {
+    const copy = { ...match };
+    delete copy.toolNamespace;
+    match = copy;
+  }
+  let response = fixture.response;
+  if (
+    typeof response !== "function" &&
+    response !== null &&
+    typeof response === "object" &&
+    ("customToolCalls" in response || "responsesBlocks" in response)
+  ) {
+    const copy = { ...(response as unknown as Record<string, unknown>) };
+    delete copy.customToolCalls;
+    delete copy.responsesBlocks;
+    response = copy as unknown as FixtureResponse;
+  }
+  if (match === fixture.match && response === fixture.response) return fixture;
+  return { ...fixture, match, response };
+}
+const misbehaviorEnabledFixtures = new WeakSet<Fixture>();
+
+/**
+ * @internal Recognize the `misbehavior` key a loaded fixture entry carried,
+ * for a server with misbehavior enabled: parse it onto the fixture (in place;
+ * the loader made the object) and check it applies, or throw
+ * `MisbehaviorConfigError`. A fixture with no held key is left unchanged.
+ */
+export function enableHeldFixtureMisbehavior(fixture: Fixture): void {
+  const held = heldFixtureMisbehavior.get(fixture);
+  if (held === undefined) return;
+  const parsed = parseMisbehavior(held.value, held.path);
+  if (parsed.ok) fixture.misbehavior = parsed.config;
+  const issue = parsed.ok ? validateFixtureMisbehavior(fixture, held.path) : parsed.issue;
+  if (issue) {
+    throw new MisbehaviorConfigError({ rule: issue.rule, file: held.file, detail: issue.message });
+  }
+  heldFixtureMisbehavior.delete(fixture);
+  misbehaviorEnabledFixtures.add(fixture);
+}
+
+/**
+ * @internal Mark a fixture whose `misbehavior` a server with misbehavior
+ * enabled has recognized, so `validateFixtures` checks it.
+ */
+export function markFixtureMisbehaviorEnabled(fixture: Fixture): void {
+  misbehaviorEnabledFixtures.add(fixture);
 }

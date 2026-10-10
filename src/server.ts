@@ -13,6 +13,7 @@ import type {
   MockServerOptions,
   Mountable,
   RecordProviderKey,
+  ResponsesToolsMode,
 } from "./types.js";
 import {
   getFixtureMisbehaviorPosition,
@@ -39,6 +40,11 @@ import {
   clearFixtureQueue,
   releaseOneShotError,
   FixtureLoadError,
+  MisbehaviorConfigError,
+  enableHeldFixtureMisbehavior,
+  markFixtureResponsesToolsExtended,
+  responsesToolsExtendedView,
+  responsesToolsViewSource,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -63,7 +69,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   serializeErrorResponse,
   isAudioResponse,
@@ -84,7 +90,7 @@ import {
   fixtureToolCallErrorCode,
   googleFixtureToolCallErrorDetails,
   isFixtureToolCallError,
-  requireFunctionToolCalls,
+  requireServedFunctionToolCalls,
   requireEmittedFunctionToolCalls,
   resolveRequestId,
   markMintedRequestId,
@@ -95,6 +101,11 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  runWithToolArgumentsScope,
+  createServerFixtureList,
+  isExtendedResponsesToolsList,
+  isServerOwnedFixtures,
+  withoutResponsesToolKeys,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -581,7 +592,7 @@ function fixtureResponseKind(response: Fixture["response"]): string {
   if (isImageResponse(response)) return "image";
   if (isEmbeddingResponse(response)) return "embedding";
   if (isJSONResponse(response)) return "json";
-  if (isContentWithToolCallsResponse(response)) return "contentWithToolCalls";
+  if (isCombinedFixtureResponse(response)) return "contentWithToolCalls";
   if (isToolCallResponse(response)) return "toolCalls";
   if (isTextResponse(response)) return "text";
   return "unknown";
@@ -969,7 +980,7 @@ async function handleControlAPI(
       "Content-Type": "application/json",
       "X-Total-Count": String(total),
     });
-    res.end(JSON.stringify(entries));
+    res.end(journalJson(entries, journal));
     return true;
   }
 
@@ -1002,6 +1013,10 @@ async function handleControlAPI(
       res.end(JSON.stringify({ error: "Invalid 'include': expected 'fixtures'" }));
       return true;
     }
+    // Only a server with responsesTools "extended" reads `match.toolNamespace`,
+    // `customToolCalls` and `responsesBlocks`; elsewhere they do not change
+    // the kind, as in 1.44.0.
+    const extendedTools = isExtendedResponsesToolsList(fixtures);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -1015,7 +1030,13 @@ async function handleControlAPI(
           // the idempotent claim), so the shape test alone reports "factory"
           // and this surface loses the one signal it exists to give: that an
           // injection is armed. Take the kind from the one-shot MARKER.
-          responseKind: isOneShotError(fixture) ? "error" : fixtureResponseKind(fixture.response),
+          responseKind: isOneShotError(fixture)
+            ? "error"
+            : fixtureResponseKind(
+                extendedTools || typeof fixture.response === "function"
+                  ? fixture.response
+                  : withoutResponsesToolKeys(fixture.response),
+              ),
           ...(fixture.latency !== undefined ? { latency: fixture.latency } : {}),
           ...(fixture.chaos !== undefined ? { chaos: fixture.chaos } : {}),
         })),
@@ -1042,6 +1063,12 @@ async function handleControlAPI(
       return true;
     };
     const scope = defaults.misbehavior;
+    if (!scope && req.method !== "GET") {
+      return reply(409, {
+        error:
+          "misbehavior is not enabled: start aimock with enableMisbehavior: true (CLI: --misbehavior)",
+      });
+    }
     if (req.method === "POST") {
       let raw: string;
       try {
@@ -1308,22 +1335,39 @@ async function handleControlAPI(
       return true;
     }
 
+    // An extended server changes the fixtures it makes in place only in an
+    // array no other server reads (LLMock's). In a caller's array, which a
+    // legacy server may share, they stay as 1.44.0 made them and this server
+    // reads them through its view, as it reads the caller's own fixtures.
+    const extendedResponsesTools = defaults.responsesTools === "extended";
+    const markInPlace = extendedResponsesTools && isServerOwnedFixtures(fixtures);
     const addition = controlFixtureAdditions.get(defaults) ?? 0;
     controlFixtureAdditions.set(defaults, addition + 1);
     const converted: Fixture[] = [];
-    const loadErrors: FixtureLoadError[] = [];
+    const loadErrors: (FixtureLoadError | MisbehaviorConfigError)[] = [];
     for (const [index, entry] of entries.entries()) {
       try {
-        converted.push(
-          entryToFixture(entry, undefined, undefined, { file: `control-api#${addition}`, index }),
-        );
+        const fixture = entryToFixture(entry, undefined, undefined, {
+          file: `control-api#${addition}`,
+          index,
+        });
+        if (defaults.misbehavior) enableHeldFixtureMisbehavior(fixture);
+        if (markInPlace) markFixtureResponsesToolsExtended(fixture);
+        converted.push(fixture);
       } catch (error) {
-        if (!(error instanceof FixtureLoadError)) throw error;
+        if (!(error instanceof FixtureLoadError || error instanceof MisbehaviorConfigError)) {
+          throw error;
+        }
         loadErrors.push(error);
       }
     }
     // Only a fully converted batch preserves the original validation indices.
-    const issues = loadErrors.length === 0 ? validateFixtures(converted) : [];
+    const issues =
+      loadErrors.length === 0
+        ? validateFixtures(
+            extendedResponsesTools ? converted.map(responsesToolsExtendedView) : converted,
+          )
+        : [];
     const errors = issues.filter((i) => i.severity === "error");
     // The whole body is checked before anything is added (W6): the LLM
     // fixtures, then every `mcpFakes` block against the live mounts.
@@ -2306,7 +2350,7 @@ async function handleCompletions(
     appliedPlan.reasoning === undefined &&
     (isTextResponse(response) ||
       isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response))
+      isCombinedFixtureResponse(response))
       ? resolveReasoningForModel(
           response.reasoning,
           responseModel,
@@ -2534,7 +2578,7 @@ async function handleCompletions(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       defaults.logger.warn(
         "webSearches in fixture response are not supported for Chat Completions API — ignoring",
@@ -2550,12 +2594,13 @@ async function handleCompletions(
           effectiveStrict,
           defaults.logger,
         );
-    // Validate the emitted carrier (authoritative blocks, else toolCalls) before
-    // any byte is written. It runs after journaling so a rejected fixture's 500
-    // entry keeps the request body and the matched fixture (routeError amends
-    // it). Reuse the normalized blocks for both response shapes and the usage
-    // estimate.
+    // Validate authoritative blocks before recording success in either mode.
+    // Reuse their normalized payload for nonstream responses and usage estimates.
     const streaming = body.stream === true;
+    const blockOutcome =
+      response.blocks && response.blocks.length > 0
+        ? resolveFixtureBlockOutcome(response.blocks)
+        : undefined;
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -2564,11 +2609,11 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    // A Responses-only custom tool call (customToolCalls / responsesBlocks) is
+    // rejected before any byte is written. It runs after journaling so the 500
+    // entry keeps the request body and the matched fixture (routeError amends
+    // it).
     const toolCalls = requireEmittedFunctionToolCalls(response, wire);
-    const blockOutcome =
-      response.blocks && response.blocks.length > 0
-        ? resolveFixtureBlockOutcome(response.blocks)
-        : undefined;
     if (!streaming) {
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
@@ -2730,7 +2775,7 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
-    const toolCalls = requireFunctionToolCalls(response.toolCalls, wire);
+    const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
       const completion = buildToolCallCompletion(
         toolCalls,
@@ -2861,6 +2906,30 @@ export async function createServerWithResolvedAuth(
 }
 
 /**
+ * The journal as JSON. An entry names the caller's fixture; the JSON shows
+ * the fixture the request was served from (`Journal.servedFixture`): an
+ * extended server's view, with the held keys applied, or LLMock's
+ * per-addition copy with misbehavior enabled. The journal therefore reads as
+ * it did when the entries held those objects.
+ */
+function journalJson(entries: JournalEntry[], journal: Journal): string {
+  if (!entries.some((entry) => journal.servedFixture(entry) !== entry.response.fixture)) {
+    return JSON.stringify(entries);
+  }
+  return JSON.stringify(
+    entries.map((entry) => {
+      const fixture = entry.response.fixture;
+      let served = journal.servedFixture(entry);
+      if (served === fixture || !served) return entry;
+      // A view is rebuilt from its fixture, as the extended server reads it now.
+      const viewSource = responsesToolsViewSource(served);
+      if (viewSource !== served) served = responsesToolsExtendedView(viewSource);
+      return { ...entry, response: { ...entry.response, fixture: served } };
+    }),
+  );
+}
+
+/**
  * The server of `createServerWithResolvedAuth`, after the MCP fakes hand-off.
  * `commitHandOff` runs once the server listens; if it throws, the server is
  * closed and start rejects.
@@ -2874,13 +2943,16 @@ async function startServer(
   serviceFixtures: ServiceFixtures | undefined,
   commitHandOff: () => void,
 ): Promise<ServerInstance> {
+  const callerFixtures = fixtures;
   // Keep raw entries in the caller's live array, assigning only absent identities.
   let rawFixtureAddition = 0;
   function ensureRawFixturePositions(): void {
     const existingPositions = new Set(
-      fixtures.map(getFixtureMisbehaviorPosition).filter((position) => position !== undefined),
+      callerFixtures
+        .map(getFixtureMisbehaviorPosition)
+        .filter((position) => position !== undefined),
     );
-    for (const fixture of fixtures) {
+    for (const fixture of callerFixtures) {
       if (getFixtureMisbehaviorPosition(fixture) !== undefined) continue;
       let position: string;
       do {
@@ -2896,6 +2968,28 @@ async function startServer(
   const port = options?.port ?? 0;
   const registry = options?.metrics ? createMetricsRegistry() : undefined;
   const serverOptions = options ?? {};
+  // 1.44.0 ignored an unknown `responsesTools` option, so an invalid value is
+  // ignored with a warning (at any logLevel, as aimock --config warns) and the
+  // server runs in "legacy" mode.
+  const validResponsesTools = (mode: unknown): mode is ResponsesToolsMode =>
+    mode === "legacy" || mode === "extended";
+  if (
+    serverOptions.responsesTools !== undefined &&
+    !validResponsesTools(serverOptions.responsesTools)
+  ) {
+    new Logger("warn").warn(
+      `Ignoring responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}. Using "legacy".`,
+    );
+  }
+  // From here on the server reads and writes the caller's array through its
+  // own list, which carries this server's responsesTools mode (and, when
+  // "extended", each fixture's extended view). Nothing is written to the
+  // caller's fixtures for the mode, so servers that share them stay apart.
+  fixtures = createServerFixtureList(
+    callerFixtures,
+    () => serverOptions.responsesTools,
+    responsesToolsExtendedView,
+  );
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under
@@ -2917,7 +3011,12 @@ async function startServer(
       else if (this.byTestId.has(DEFAULT_TEST_ID)) this.byTestId.set(DEFAULT_TEST_ID, config);
     },
   };
-  if (serverOptions.misbehavior !== undefined) {
+  // Misbehavior is opt-in (enableMisbehavior). Without it there is no scope,
+  // so no fault is planned, and the `misbehavior` option, fixture keys and the
+  // X-AIMock-Misbehavior header are ignored, as in 1.44.0.
+  const misbehaviorEnabled = serverOptions.enableMisbehavior === true;
+  if (misbehaviorEnabled) callerFixtures.forEach(enableHeldFixtureMisbehavior);
+  if (misbehaviorEnabled && serverOptions.misbehavior !== undefined) {
     const parsed = parseMisbehavior(serverOptions.misbehavior);
     if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);
     misbehavior.baseline =
@@ -2932,7 +3031,7 @@ async function startServer(
     replaySpeed: serverOptions.replaySpeed ?? 1.0,
     logger,
     chaosByTestId,
-    misbehavior,
+    misbehavior: misbehaviorEnabled ? misbehavior : undefined,
     get misbehaviorCounters(): Journal {
       return journal;
     },
@@ -2963,6 +3062,13 @@ async function startServer(
     },
     get strict() {
       return serverOptions.strict;
+    },
+    get strictToolArguments() {
+      return serverOptions.strictToolArguments;
+    },
+    get responsesTools() {
+      const mode = serverOptions.responsesTools;
+      return validResponsesTools(mode) ? mode : undefined;
     },
     get requestTransform() {
       return serverOptions.requestTransform;
@@ -3102,6 +3208,11 @@ async function startServer(
       if (req) ownJournalEntry.set(req, entry);
     },
   });
+  // An extended server matches each fixture through its view; the journal
+  // counts and records the caller's fixture behind it, as before the views.
+  if (serverOptions.responsesTools === "extended") {
+    journal.configureFixtureViewSource(responsesToolsViewSource);
+  }
   const videoStates = new VideoStateMap();
   const openRouterVideoJobs = new OpenRouterVideoJobMap();
   const veoVideoJobs = new VeoVideoJobMap();
@@ -3436,9 +3547,11 @@ async function startServer(
     // Run inside the request scope so every journal write made while serving
     // this request (in any handler module) is attributed back to it.
     requestScope.run(req, () => {
-      handleHttpRequest(req, res).catch((err: unknown) => {
-        routeError(req, res, err, req.url ?? "?");
-      });
+      runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
+        handleHttpRequest(req, res).catch((err: unknown) => {
+          routeError(req, res, err, req.url ?? "?");
+        }),
+      );
     });
   });
 
@@ -3609,7 +3722,9 @@ async function startServer(
     // Validate the entire Node-normalized value before any provider can serve
     // or skip unsupported faults. Repeated fields must parse as one grammar;
     // never select only the first value. Keep valid headers intact for planning.
-    const misbehaviorHeader = parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"]);
+    const misbehaviorHeader = defaults.misbehavior
+      ? parseMisbehaviorHeader(req.headers["x-aimock-misbehavior"])
+      : undefined;
     if (misbehaviorHeader && !misbehaviorHeader.ok) {
       const detail = misbehaviorHeader.issue.message;
       const message = `aimock_misbehavior_invalid: ${detail}`;
@@ -4369,7 +4484,7 @@ async function startServer(
         }
         const entries = journal.getAll(opts);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(entries));
+        res.end(journalJson(entries, journal));
         return;
       }
       if (req.method === "DELETE") {
@@ -5511,7 +5626,11 @@ async function startServer(
       return;
     }
 
-    if (pathname !== LIVE_PATH && req.headers["x-aimock-misbehavior"] !== undefined) {
+    if (
+      defaults.misbehavior &&
+      pathname !== LIVE_PATH &&
+      req.headers["x-aimock-misbehavior"] !== undefined
+    ) {
       const code = "aimock_misbehavior_invalid";
       const message = "use the runtime scope: POST /__aimock/misbehavior with X-Test-Id";
       const body = JSON.stringify({
@@ -5595,49 +5714,34 @@ async function startServer(
       });
       liveSessions.set(sessionId, { testId: wsTestId, dispose });
     } else if (pathname === RESPONSES_PATH) {
-      handleWebSocketResponses(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gpt-4",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketResponses(ws, fixtures, journal, {
+        ...defaults,
+        model: "gpt-4",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === REALTIME_PATH) {
       const transcriptionIntent = parsedUrl.searchParams.get("intent") === "transcription";
       const model = transcriptionIntent
         ? "gpt-transcribe"
         : (parsedUrl.searchParams.get("model") ?? "gpt-realtime-2");
-      handleWebSocketRealtime(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model,
-          transcriptionIntent,
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketRealtime(ws, fixtures, journal, {
+        ...defaults,
+        model,
+        transcriptionIntent,
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     } else if (pathname === GEMINI_LIVE_PATH) {
-      handleWebSocketGeminiLive(
-        ws,
-        fixtures,
-        journal,
-        {
-          ...defaults,
-          model: "gemini-2.0-flash",
-          testId: wsTestId,
-          upgradeHeaders: req.headers,
-        },
-        ensureRawFixturePositions,
-      );
+      handleWebSocketGeminiLive(ws, fixtures, journal, {
+        ...defaults,
+        model: "gemini-2.0-flash",
+        testId: wsTestId,
+        upgradeHeaders: req.headers,
+        beforeProcessMessage: ensureRawFixturePositions,
+      });
     }
   }
 

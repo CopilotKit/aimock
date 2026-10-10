@@ -358,7 +358,12 @@ describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
             rejected: true,
           }),
         );
-        const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 17 });
+        const mock = new LLMock({
+          port: 0,
+          logLevel: "silent",
+          chunkSize: 17,
+          enableMisbehavior: true,
+        });
         mock.addFixture({
           match: {},
           response:
@@ -910,7 +915,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
         {
           match: { toolName: "apply_patch" },
           response: {
-            toolCalls: [
+            toolCalls: [],
+            customToolCalls: [
               {
                 type: "custom",
                 name: "apply_patch",
@@ -920,7 +926,8 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Responses API drift — namespaced and 
           },
         },
       ] satisfies Fixture[],
-      { port: 0, chunkSize: 100 },
+      // Namespace emission on toolCalls and custom-tool matching are opt-in.
+      { port: 0, chunkSize: 100, responsesTools: "extended" },
     );
   });
 

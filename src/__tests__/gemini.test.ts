@@ -1050,7 +1050,7 @@ describe("Gemini streaming empty content", () => {
 // ─── Tool call with malformed JSON arguments ─────────────────────────────────
 
 describe("Gemini tool call malformed arguments", () => {
-  it("non-streaming: rejects malformed JSON arguments", async () => {
+  it("non-streaming: falls back to empty args for malformed JSON", async () => {
     const malformedToolFixture: Fixture = {
       match: { userMessage: "malformed-args" },
       response: {
@@ -1062,9 +1062,12 @@ describe("Gemini tool call malformed arguments", () => {
       contents: [{ role: "user", parts: [{ text: "malformed-args" }] }],
     });
 
-    expect(res.status).toBe(500);
-    expect(res.body).toContain('fixture tool call \\"broken_tool\\" has invalid JSON arguments');
-    expect(res.body).not.toContain('"candidates"');
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.candidates[0].content.parts[0].functionCall.name).toBe("broken_tool");
+    // Falls back to empty args
+    expect(body.candidates[0].content.parts[0].functionCall.args).toEqual({});
+    expect(body.candidates[0].finishReason).toBe("FUNCTION_CALL");
   });
 
   it("non-streaming: uses empty object for empty arguments string", async () => {
@@ -1085,7 +1088,7 @@ describe("Gemini tool call malformed arguments", () => {
     expect(body.candidates[0].content.parts[0].functionCall.args).toEqual({});
   });
 
-  it("streaming: rejects malformed JSON arguments before output", async () => {
+  it("streaming: falls back to empty args for malformed JSON", async () => {
     const malformedToolFixture: Fixture = {
       match: { userMessage: "malformed-stream" },
       response: {
@@ -1097,9 +1100,16 @@ describe("Gemini tool call malformed arguments", () => {
       contents: [{ role: "user", parts: [{ text: "malformed-stream" }] }],
     });
 
-    expect(res.status).toBe(500);
-    expect(res.body).toContain('fixture tool call \\"broken_tool\\" has invalid JSON arguments');
-    expect(res.body).not.toContain("data: ");
+    expect(res.status).toBe(200);
+    const chunks = parseGeminiSSEChunks(res.body) as {
+      candidates: {
+        content: { parts: { functionCall: { name: string; args: unknown } }[] };
+      }[];
+    }[];
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.name).toBe("broken_tool");
+    expect(chunks[0].candidates[0].content.parts[0].functionCall.args).toEqual({});
   });
 
   it("streaming: uses empty object for empty arguments string", async () => {

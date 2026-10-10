@@ -3,12 +3,13 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, test, vi } from "vitest";
-import { createServer, LLMock, loadFixtureFile } from "../index.js";
+import { loadFixtureFile } from "../index.js";
 import type { Fixture, SSEChunk } from "../types.js";
 import { getFixtureMisbehaviorPosition, fixtureMisbehaviorSourceKey } from "../misbehavior.js";
 import { WebSocketConnection } from "../ws-framing.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
 import { httpPost, stopDriftServer } from "./drift/helpers.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 const args = '{"text":"abcdef"}';
 const request = {

@@ -1,9 +1,8 @@
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LLMock } from "../llmock.js";
 import OpenAI from "openai";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { Journal } from "../journal.js";
 import { Logger } from "../logger.js";
@@ -15,12 +14,15 @@ import {
 } from "../misbehavior.js";
 import type { MisbehaviorSummary } from "../misbehavior.js";
 import type { Fixture, HandlerDefaults } from "../types.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 afterEach(() => vi.restoreAllMocks());
 
 function context() {
   const journal = new Journal();
   const defaults: HandlerDefaults = {
+    // A scope means misbehavior is enabled (the server creates one only then).
+    misbehavior: { byTestId: new Map() },
     latency: 0,
     chunkSize: 10,
     replaySpeed: 1,

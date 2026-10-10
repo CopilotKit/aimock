@@ -21,7 +21,7 @@ declare var expect: { getState(): { testPath?: string; currentTestName?: string 
 /* eslint-enable no-var */
 
 import { LLMock } from "./llmock.js";
-import { FixtureLoadError } from "./fixture-loader.js";
+import { FixtureLoadError, MisbehaviorConfigError } from "./fixture-loader.js";
 import type { MockServerOptions } from "./types.js";
 import {
   FakesPluginState,
@@ -191,8 +191,10 @@ export function useAimock(options: UseAimockOptions = {}): () => AimockFakesHand
 /**
  * Load a fixture file or directory into `llm`: its LLM fixtures and its
  * `mcpFakes` blocks, which the LLMock buffers and auto-mounts at start (F12).
- * A `FixtureLoadError` (a bad `mcpFakes` block) propagates and fails
- * `beforeAll`; any other load failure is only warned about, as before.
+ * A `FixtureLoadError` (a bad `mcpFakes` block) or a `MisbehaviorConfigError`
+ * (a bad fixture `misbehavior` key, thrown only with `enableMisbehavior: true`)
+ * propagates and fails `beforeAll`; any other load failure is only warned
+ * about, as before.
  */
 function loadFixtures(llm: LLMock, fixturePath: string): void {
   try {
@@ -203,7 +205,7 @@ function loadFixtures(llm: LLMock, fixturePath: string): void {
       llm.loadFixtureFile(fixturePath);
     }
   } catch (err) {
-    if (err instanceof FixtureLoadError) throw err;
+    if (err instanceof FixtureLoadError || err instanceof MisbehaviorConfigError) throw err;
     console.warn(
       `[aimock] Failed to load fixtures from ${fixturePath}: ${err instanceof Error ? err.message : String(err)}`,
     );

@@ -735,18 +735,21 @@ try {
           Recording Responses Namespaced and Custom Tool Calls
         </h2>
         <p>
-          A streamed OpenAI Responses turn keeps the
+          With <code>responsesTools: "extended"</code>, a streamed OpenAI Responses turn keeps the
           <a href="/responses-api#namespaced-and-custom-tool-calls"
             >namespaced and custom tool calls</a
           >
           it contains. A <code>function_call</code> with a <code>namespace</code> is saved as a
           <code>toolCalls</code> entry with that <code>namespace</code>. A
-          <code>custom_tool_call</code> is saved as
+          <code>custom_tool_call</code> is saved in <code>customToolCalls</code> as
           <code>{ "type": "custom", "name", "input" }</code>, with the full free-text
-          <code>input</code> and its <code>namespace</code> if it has one. It never gets an
-          <code>arguments</code> field. In an interleaved turn, the ordered <code>blocks</code> hold
-          the same calls as <code>toolCall</code> and <code>customToolCall</code> blocks. The replay
-          sends the same items that the upstream sent.
+          <code>input</code> and its <code>namespace</code> if it has one; a turn with only custom
+          calls is saved with <code>"toolCalls": []</code>. When a custom call is interleaved with
+          text or comes before a function call, the full order is saved in
+          <code>responsesBlocks</code>. The replay sends the same items that the upstream sent.
+          Without the option, recordings are exactly what 1.44.0 wrote (namespaces dropped, custom
+          calls not recorded). A release that predates these keys replays such a recording as it
+          replays its own, because it ignores the new keys.
         </p>
         <p>
           This applies to streamed (SSE) Responses recordings. Recording a non-streaming Responses
@@ -1295,7 +1298,8 @@ describe(<span class="str">"agent chat"</span>, () => {
           <code>&lt;fixtures&gt;/recorded</code>.
           <code>--mcp-proxy-only &lt;mount&gt;=&lt;url&gt;</code> forwards in the same way but
           writes nothing, and it does not need <code>--fixtures</code>. With
-          <code>aimock --config</code>, use <code>llm.record.mcp</code> instead (see the
+          <code>aimock --config</code>, use <code>llm.record.mcp</code> with
+          <code>llm.enableMcpRecording: true</code> instead (see the
           <a href="/aimock-cli#mcp-record-config">aimock CLI</a>).
         </p>
         <div class="cli-docker-tabs">

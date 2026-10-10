@@ -12,9 +12,10 @@
  * Real surfaces: a real server over HTTP and WebSocket (Gemini Live).
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import type { Fixture, FixtureResponse, MisbehaviorConfig } from "../types.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
+import { createServer } from "./helpers/misbehavior-enabled.js";
 
 let server: ServerInstance | undefined;
 let ws: WSTestClient | undefined;
@@ -63,6 +64,7 @@ async function observe(
   const fixture: Fixture = { match: {}, response };
   server = await createServer([fixture], {
     logLevel: "silent",
+    strictToolArguments: true,
     ...(misbehavior ? { misbehavior } : {}),
   });
   const output = await drive(server.url);

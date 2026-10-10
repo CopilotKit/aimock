@@ -22,18 +22,16 @@ import type {
 } from "./types.js";
 import {
   toolArgsForWire,
+  servedToolArgs,
   estimatePromptTokens,
   estimateTokens,
-  InvalidToolArgumentsError,
   generateMessageId,
   generateToolUseId,
   extractOverrides,
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
-  toolCallFixtureBlock,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   resolveFixtureBlockOutcome,
   flattenHeaders,
@@ -656,13 +654,8 @@ function buildClaudeToolCallStreamEvents(
     const toolUseId = tc.id || generateToolUseId();
 
     // Preserve malformed arguments on the streaming string wire.
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
-    const argsJson = args.kind === "parsed" ? args.text : args.raw;
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.text;
 
     // content_block_start
     events.push({
@@ -800,13 +793,7 @@ function buildClaudeToolCallResponse(
   }
 
   for (const tc of toolCalls) {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     const argsObj = args.value;
     contentBlocks.push({
       type: "tool_use",
@@ -937,13 +924,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
       } else {
         const toolUseId = block.id || generateToolUseId();
 
-        const args = toolArgsForWire(block);
-        if (args.kind === "verbatim") {
-          logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-          );
-        }
-        const argsJson = args.kind === "parsed" ? args.text : args.raw;
+        const args = servedToolArgs(block, "string", logger);
+        const argsJson = args.text;
 
         events.push({
           type: "content_block_start",
@@ -1024,13 +1006,8 @@ function buildClaudeContentWithToolCallsStreamEvents(
   for (const tc of toolCalls) {
     const toolUseId = tc.id || generateToolUseId();
 
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
-    const argsJson = args.kind === "parsed" ? args.text : args.raw;
+    const args = servedToolArgs(tc, "string", logger);
+    const argsJson = args.text;
 
     events.push({
       type: "content_block_start",
@@ -1106,13 +1083,7 @@ function buildClaudeContentWithToolCallsResponse(
   // string `arguments` into the object `input` Anthropic emits. Malformed
   // JSON cannot be represented on this object wire and must fail explicitly.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     const argsObj = args.value;
     return {
       type: "tool_use",
@@ -1190,23 +1161,16 @@ export function prepareClaudeMisbehavior(
     !(
       isTextResponse(response) ||
       isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response)
+      isCombinedFixtureResponse(response)
     )
   ) {
     throw new TypeError("Claude misbehavior requires a chat response");
   }
   const outcome =
-    isContentWithToolCallsResponse(response) && response.blocks?.length
+    isCombinedFixtureResponse(response) && response.blocks?.length
       ? resolveFixtureBlockOutcome(response.blocks)
       : undefined;
-  // The planner skips a custom-call fixture on this wire, so this narrowing
-  // never throws; the normal path's guard rejects it instead.
-  const calls =
-    outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      "toolCalls" in response ? (response.toolCalls ?? []) : [],
-      "Anthropic Messages",
-    );
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
   const toolCalls = calls.map((call, index) => ({
     ...call,
     // Captured Claude max_tokens tool output has input {}, even for a cut JSON prefix.
@@ -1229,7 +1193,7 @@ export function prepareClaudeMisbehavior(
       content: outcome.content,
       toolCalls,
       blocks: outcome.ordered.map((block) =>
-        block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[index++]),
+        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
       ),
     };
   } else if ("toolCalls" in response) {
@@ -1374,7 +1338,7 @@ export function prepareClaudeMisbehavior(
       artifacts.reasoningSignature,
       artifacts.redactedThinking,
     ] as const;
-    const events = isContentWithToolCallsResponse(preparedResponse)
+    const events = isCombinedFixtureResponse(preparedResponse)
       ? buildClaudeContentWithToolCallsStreamEvents(
           preparedResponse.content ?? "",
           toolCalls,
@@ -1419,7 +1383,7 @@ export function prepareClaudeMisbehavior(
     artifacts.reasoningSignature,
     artifacts.redactedThinking,
   ] as const;
-  const body = isContentWithToolCallsResponse(preparedResponse)
+  const body = isCombinedFixtureResponse(preparedResponse)
     ? buildClaudeContentWithToolCallsResponse(
         preparedResponse.content ?? "",
         toolCalls,
@@ -1879,7 +1843,7 @@ export async function handleMessages(
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Claude Messages API — ignoring",

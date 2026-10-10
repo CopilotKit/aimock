@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
-import { collapseOpenAISSE } from "../stream-collapse.js";
+import { collapseOpenAISSEWithResponsesTools } from "../stream-collapse.js";
 import { validateFixtures } from "../fixture-loader.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 
@@ -154,7 +154,7 @@ function textEvents(outputIndex: number, text: string): Record<string, unknown>[
 const created = { type: "response.created", response: { id: "resp_1", status: "in_progress" } };
 const completed = { type: "response.completed", response: { id: "resp_1", status: "completed" } };
 
-describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", () => {
+describe("collapseOpenAISSEWithResponsesTools: Responses namespace and custom tool calls (#505)", () => {
   it("collapses a streamed custom_tool_call into a custom tool call with its full input", () => {
     const body = sse([
       created,
@@ -167,16 +167,19 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       }),
       completed,
     ]);
-    const result = collapseOpenAISSE(body);
-    expect(result.content).toBeUndefined();
-    expect(result.toolCalls).toEqual([
+    const result = collapseOpenAISSEWithResponsesTools(body);
+    // `content` and `toolCalls` are what 1.44.0 produced (custom calls were
+    // dropped); the custom call rides in the new `customToolCalls`.
+    expect(result.content).toBe("");
+    expect(result.toolCalls).toBeUndefined();
+    expect(result.customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: PATCH, id: "call_patch" },
     ]);
-    expect(result.toolCalls![0]).not.toHaveProperty("arguments");
+    expect(result.customToolCalls![0]).not.toHaveProperty("arguments");
   });
 
   it("keeps namespace on a custom call, from .added or (when absent there) from output_item.done", () => {
-    const fromAdded = collapseOpenAISSE(
+    const fromAdded = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -187,10 +190,10 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
         }),
       ),
     );
-    expect(fromAdded.toolCalls).toEqual([
+    expect(fromAdded.customToolCalls).toEqual([
       { type: "custom", name: "run", input: "ls -la", id: "c1", namespace: "sandbox" },
     ]);
-    const fromDone = collapseOpenAISSE(
+    const fromDone = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -202,7 +205,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
         }),
       ),
     );
-    expect(fromDone.toolCalls).toEqual([
+    expect(fromDone.customToolCalls).toEqual([
       { type: "custom", name: "run", input: "pwd", id: "c2", namespace: "sandbox" },
     ]);
   });
@@ -215,7 +218,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       input: PATCH,
       deltas: [],
     });
-    expect(collapseOpenAISSE(sse(noDeltas)).toolCalls).toEqual([
+    expect(collapseOpenAISSEWithResponsesTools(sse(noDeltas)).customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: PATCH, id: "c_nd" },
     ]);
     // Only the closing output_item.done: the item alone is a complete call.
@@ -223,13 +226,13 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       string,
       unknown
     >[];
-    expect(collapseOpenAISSE(sse(doneOnly)).toolCalls).toEqual([
+    expect(collapseOpenAISSEWithResponsesTools(sse(doneOnly)).customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: PATCH, id: "c_nd" },
     ]);
   });
 
   it("does not double the input when deltas are followed by the .done events", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -240,13 +243,13 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
         }),
       ),
     );
-    expect(result.toolCalls).toEqual([
+    expect(result.customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: "abc", id: "c_dd" },
     ]);
   });
 
   it("keeps namespace on a function_call, from .added or (when absent there) from output_item.done", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...functionCallEvents({
@@ -282,7 +285,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("ignores an empty-string namespace", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         ...functionCallEvents({ outputIndex: 0, callId: "f", name: "fn", args: "{}" }).map((e) =>
           e.item ? { ...e, item: { ...(e.item as object), namespace: "" } } : e,
@@ -292,14 +295,12 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
         ),
       ]),
     );
-    expect(result.toolCalls).toEqual([
-      { name: "fn", arguments: "{}", id: "f" },
-      { type: "custom", name: "cu", input: "x", id: "c" },
-    ]);
+    expect(result.toolCalls).toEqual([{ name: "fn", arguments: "{}", id: "f" }]);
+    expect(result.customToolCalls).toEqual([{ type: "custom", name: "cu", input: "x", id: "c" }]);
   });
 
   it("keeps a mixed function + custom turn in output_index order", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...functionCallEvents({
@@ -320,14 +321,18 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       ]),
     );
     expect(result.blocks).toBeUndefined();
+    // Function calls then custom calls is the order the flat fields replay.
+    expect(result.responsesBlocks).toBeUndefined();
     expect(result.toolCalls).toEqual([
       { name: "lookup_doc", arguments: '{"id":"7"}', id: "call_mcp", namespace: "mcp__docs" },
+    ]);
+    expect(result.customToolCalls).toEqual([
       { type: "custom", name: "run", input: "ls -la", id: "call_run", namespace: "sandbox" },
     ]);
   });
 
   it("projects an interleaved custom / text / namespaced function turn into ordered blocks", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...customCallEvents({
@@ -348,7 +353,10 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       ]),
     );
     expect(result.content).toBe("Patched.");
-    expect(result.blocks).toEqual([
+    // Without the custom call the stream is text-first, so `blocks` stays unset
+    // (as 1.44.0); the full order lives in `responsesBlocks`.
+    expect(result.blocks).toBeUndefined();
+    expect(result.responsesBlocks).toEqual([
       { type: "customToolCall", name: "apply_patch", input: PATCH, id: "call_p" },
       { type: "text", text: "Patched." },
       {
@@ -360,8 +368,10 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       },
     ]);
     expect(result.toolCalls).toEqual([
-      { type: "custom", name: "apply_patch", input: PATCH, id: "call_p" },
       { name: "lookup_doc", arguments: '{"id":"4"}', id: "call_l", namespace: "mcp__docs" },
+    ]);
+    expect(result.customToolCalls).toEqual([
+      { type: "custom", name: "apply_patch", input: PATCH, id: "call_p" },
     ]);
   });
 });
@@ -412,7 +422,8 @@ const upstreamFixtures: FixtureFileEntry[] = [
   {
     match: { userMessage: "custom only" },
     response: {
-      toolCalls: [{ type: "custom", name: "apply_patch", id: "call_patch_1", input: PATCH }],
+      toolCalls: [],
+      customToolCalls: [{ type: "custom", name: "apply_patch", id: "call_patch_1", input: PATCH }],
     },
   },
   {
@@ -433,6 +444,8 @@ const upstreamFixtures: FixtureFileEntry[] = [
     response: {
       toolCalls: [
         { name: "lookup_doc", namespace: "mcp__stdiodocs", id: "call_mcp_2", arguments: "{}" },
+      ],
+      customToolCalls: [
         { type: "custom", name: "run", namespace: "sandbox", id: "call_run_1", input: "ls -la" },
       ],
     },
@@ -440,7 +453,7 @@ const upstreamFixtures: FixtureFileEntry[] = [
   {
     match: { userMessage: "interleaved" },
     response: {
-      blocks: [
+      responsesBlocks: [
         { type: "customToolCall", name: "apply_patch", id: "call_patch_4", input: PATCH },
         { type: "text", text: "Patched; now looking it up." },
         {
@@ -461,8 +474,8 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
     for (const c of cleanups.splice(0).reverse()) await c();
   });
 
-  it("records the calls with namespace and input intact, and the replay serves the same items", async () => {
-    const upstream = new LLMock({ port: 0, logLevel: "silent" });
+  it("records the calls with namespace and input intact (responsesTools extended), and the replay serves the same items", async () => {
+    const upstream = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     upstream.addFixturesFromJSON(upstreamFixtures);
     await upstream.start();
     cleanups.push(() => upstream.stop());
@@ -472,6 +485,7 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
     const recorder = new LLMock({
       port: 0,
       logLevel: "silent",
+      responsesTools: "extended",
       record: { providers: { openai: upstream.url }, fixturePath: dir },
     });
     await recorder.start();
@@ -494,7 +508,8 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
       for (const fx of parsed.fixtures) recorded.set(fx.match.userMessage, fx.response);
     }
     expect(recorded.get("custom only")).toEqual({
-      toolCalls: [{ type: "custom", name: "apply_patch", input: PATCH, id: "call_patch_1" }],
+      toolCalls: [],
+      customToolCalls: [{ type: "custom", name: "apply_patch", input: PATCH, id: "call_patch_1" }],
     });
     expect(recorded.get("namespaced function")).toEqual({
       toolCalls: [
@@ -509,13 +524,14 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
     expect(recorded.get("mixed")).toEqual({
       toolCalls: [
         { name: "lookup_doc", arguments: "{}", id: "call_mcp_2", namespace: "mcp__stdiodocs" },
+      ],
+      customToolCalls: [
         { type: "custom", name: "run", input: "ls -la", id: "call_run_1", namespace: "sandbox" },
       ],
     });
     expect(recorded.get("interleaved")).toEqual({
       content: "Patched; now looking it up.",
       toolCalls: [
-        { type: "custom", name: "apply_patch", input: PATCH, id: "call_patch_4" },
         {
           name: "lookup_doc",
           arguments: '{"id":"4"}',
@@ -523,7 +539,8 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
           namespace: "mcp__stdiodocs",
         },
       ],
-      blocks: [
+      customToolCalls: [{ type: "custom", name: "apply_patch", input: PATCH, id: "call_patch_4" }],
+      responsesBlocks: [
         { type: "customToolCall", name: "apply_patch", input: PATCH, id: "call_patch_4" },
         { type: "text", text: "Patched; now looking it up." },
         {
@@ -537,7 +554,7 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
     });
 
     // Recorded fixtures pass load-time validation with no errors or warnings.
-    const replay = new LLMock({ port: 0, logLevel: "silent" });
+    const replay = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     replay.loadFixtureDir(dir);
     expect(validateFixtures([...replay.getFixtures()])).toEqual([]);
 
@@ -548,5 +565,48 @@ describe("record -> replay round trip keeps Responses namespace and custom tool 
       const msg = f.match.userMessage as string;
       expect(await streamedItems(replay.url, msg)).toEqual(upstreamItems[msg]);
     }
+  });
+});
+
+describe("record without responsesTools extended writes what 1.44.0 wrote (#505 compat)", () => {
+  const cleanups: (() => Promise<void> | void)[] = [];
+  afterEach(async () => {
+    for (const c of cleanups.splice(0).reverse()) await c();
+  });
+
+  it("drops namespace and does not record custom tool calls", async () => {
+    const upstream = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    upstream.addFixturesFromJSON(upstreamFixtures);
+    await upstream.start();
+    cleanups.push(() => upstream.stop());
+    const dir = mkdtempSync(join(tmpdir(), "aimock-505-record-legacy-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const recorder = new LLMock({
+      port: 0,
+      logLevel: "silent",
+      record: { providers: { openai: upstream.url }, fixturePath: dir },
+    });
+    await recorder.start();
+    cleanups.push(() => recorder.stop());
+    for (const f of upstreamFixtures)
+      await streamedItems(recorder.url, f.match.userMessage as string);
+    const recorded = new Map<string, Fixture["response"]>();
+    for (const file of readdirSync(dir)) {
+      const parsed = JSON.parse(readFileSync(join(dir, file), "utf8")) as {
+        fixtures: { match: { userMessage: string }; response: Fixture["response"] }[];
+      };
+      for (const fx of parsed.fixtures) recorded.set(fx.match.userMessage, fx.response);
+    }
+    expect(recorded.get("custom only")).toEqual({ content: "" });
+    expect(recorded.get("namespaced function")).toEqual({
+      toolCalls: [{ name: "lookup_doc", arguments: '{"id":"505"}', id: "call_mcp_1" }],
+    });
+    expect(recorded.get("mixed")).toEqual({
+      toolCalls: [{ name: "lookup_doc", arguments: "{}", id: "call_mcp_2" }],
+    });
+    expect(recorded.get("interleaved")).toEqual({
+      content: "Patched; now looking it up.",
+      toolCalls: [{ name: "lookup_doc", arguments: '{"id":"4"}', id: "call_mcp_4" }],
+    });
   });
 });

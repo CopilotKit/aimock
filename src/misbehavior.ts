@@ -1,25 +1,30 @@
 import {
+  assertCustomToolCalls,
   assertResponsesToolCalls,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isTextResponse,
   isToolCallResponse,
   rebuildOrderedBlocks,
-  requireFunctionToolCalls,
-  resolveFixtureBlockCallOutcome,
+  requireEmittedFunctionToolCalls,
   resolveFixtureBlocks,
+  resolveServedBlockOutcome,
+  servedToolCalls,
   toolCallFixtureBlock,
+  withServedToolCalls,
   resolveTestId,
   toolArgsForWire,
+  strictToolArgumentsEnabled,
+  keepAuthoredToolArguments,
 } from "./helpers.js";
 import { parseChaosNumber } from "./chaos.js";
 import type {
   ChatCompletionRequest,
   ContentWithToolCallsResponse,
   Fixture,
-  FixtureBlock,
   FixtureResponse,
   FixtureToolCall,
+  ResponsesFixtureBlock,
   HandlerDefaults,
   JournalEntry,
   MisbehaviorConfig,
@@ -222,9 +227,7 @@ function invalidJsonArguments(
  * here with a custom call on any other wire.
  */
 function faultBlockOutcome(response: FixtureResponse) {
-  return isContentWithToolCallsResponse(response) && response.blocks?.length
-    ? resolveFixtureBlockCallOutcome(response.blocks)
-    : undefined;
+  return isCombinedFixtureResponse(response) ? resolveServedBlockOutcome(response) : undefined;
 }
 
 /**
@@ -250,13 +253,12 @@ function rewriteFaultToolCalls(
   outcome: ReturnType<typeof faultBlockOutcome>,
   toolCalls: FixtureToolCall[],
 ): FixtureResponse {
-  if (!outcome) return { ...response, toolCalls };
-  return {
-    ...response,
-    content: outcome.content,
+  if (!outcome) return withServedToolCalls(response, toolCalls);
+  return withServedToolCalls(
+    { ...response, content: outcome.content },
     toolCalls,
-    blocks: rebuildOrderedBlocks(outcome.ordered, toolCalls),
-  };
+    rebuildOrderedBlocks(outcome.ordered, toolCalls),
+  );
 }
 
 /** Prepare K1 without selecting a fault, spending counters, or mutating input. */
@@ -265,11 +267,11 @@ export function prepareInvalidJsonCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-invalid-json" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -297,11 +299,11 @@ export function prepareMissingRequiredCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -360,11 +362,11 @@ export function prepareWrongTypeCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -426,11 +428,11 @@ export function prepareExtraPropertyCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -479,11 +481,11 @@ export function prepareEnumMismatchCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -538,11 +540,11 @@ export function prepareNotObjectCandidate(
   if (!supportsMisbehavior(context.wire, { ...fault, violation: "not-object" }, context.stream))
     return { kind: "not-applicable", detail: "not-object is unsupported on this wire/output mode" };
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1040,7 +1042,7 @@ export function validateFixtureMisbehavior(
     let reason: MisbehaviorRule | undefined;
     if (nonchat) reason = "misbehavior/not-applicable";
     else if (typeof response !== "function") {
-      const combined = isContentWithToolCallsResponse(response);
+      const combined = isCombinedFixtureResponse(response);
       if (
         isErrorResponse(response) ||
         !(combined || isTextResponse(response) || isToolCallResponse(response))
@@ -1048,11 +1050,8 @@ export function validateFixtureMisbehavior(
         reason = "misbehavior/not-applicable";
       } else {
         const calls =
-          combined && response.blocks?.length
-            ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
-            : "toolCalls" in response
-              ? (response.toolCalls ?? [])
-              : [];
+          (combined ? resolveServedBlockOutcome(response)?.toolCalls : undefined) ??
+          ("toolCalls" in response ? servedToolCalls(response) : []);
         const toolFault = fault.fault.startsWith("tool-") || fault.fault === "stop-length-mid-tool";
         // Tool faults target function calls only; other faults may scope to any non-custom call.
         const target = toolFault
@@ -1134,11 +1133,11 @@ export function prepareUnknownNameCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-unknown-name" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1188,11 +1187,11 @@ export function prepareDuplicateIdCandidate(
   if (context.toolCallIdMode === undefined && !context.emitsToolCallIds)
     return { kind: "not-applicable", detail: "Current output mode does not emit tool call IDs" };
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const sourceIndex = faultTargetIndex(calls, fault.tool);
   const source = functionCallAt(calls, sourceIndex);
   if (!source) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1222,17 +1221,17 @@ export function prepareDuplicateIdCandidate(
   }
   if (source.id === undefined) delete toolCalls[destinationIndex].id;
   else toolCalls[destinationIndex].id = source.id;
-  let rewritten: FixtureResponse = { ...response, toolCalls };
+  let rewritten: FixtureResponse = withServedToolCalls(response, toolCalls);
   if (outcome) {
     let callIndex = 0;
-    const blocks = outcome.ordered.flatMap<FixtureBlock>((block) => {
+    const blocks = outcome.ordered.flatMap<ResponsesFixtureBlock>((block) => {
       if (block.type === "text") return [{ ...block }];
       const isSource = callIndex === sourceIndex;
       const rewrittenBlock = toolCallFixtureBlock(toolCalls[callIndex++]);
       if (!(inserted && isSource)) return [rewrittenBlock];
       return [rewrittenBlock, toolCallFixtureBlock(toolCalls[callIndex++])];
     });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
+    rewritten = withServedToolCalls({ ...response, content: outcome.content }, toolCalls, blocks);
   }
   return {
     kind: "ready",
@@ -1250,11 +1249,11 @@ export function prepareLengthCandidate(
   fault: Extract<MisbehaviorFault, { fault: "stop-length-mid-tool" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1271,9 +1270,9 @@ export function prepareLengthCandidate(
         ? { ...call, arguments: canonical.slice(0, cut) }
         : { ...call },
     );
-  let rewritten: FixtureResponse = { ...response, toolCalls };
+  let rewritten: FixtureResponse = withServedToolCalls(response, toolCalls);
   if (outcome) {
-    const blocks: FixtureBlock[] = [];
+    const blocks: ResponsesFixtureBlock[] = [];
     let callIndex = 0;
     let content = "";
     for (const block of outcome.ordered) {
@@ -1285,7 +1284,7 @@ export function prepareLengthCandidate(
         if (callIndex++ === index) break;
       }
     }
-    rewritten = { ...response, content, toolCalls, blocks };
+    rewritten = withServedToolCalls({ ...response, content }, toolCalls, blocks);
   }
   return {
     kind: "ready",
@@ -1297,7 +1296,9 @@ export function prepareLengthCandidate(
 function clearChatOutput(response: ContentWithToolCallsResponse): ContentWithToolCallsResponse {
   const cleared = { ...response, content: "" };
   delete cleared.blocks;
+  delete cleared.responsesBlocks;
   delete cleared.toolCalls;
+  delete cleared.customToolCalls;
   delete cleared.reasoning;
   delete cleared.reasoningSignature;
   delete cleared.redactedThinking;
@@ -1316,7 +1317,7 @@ export function prepareEmptyCandidate(
   if (
     isErrorResponse(response) ||
     !(
-      isContentWithToolCallsResponse(response) ||
+      isCombinedFixtureResponse(response) ||
       isTextResponse(response) ||
       isToolCallResponse(response)
     )
@@ -1324,11 +1325,9 @@ export function prepareEmptyCandidate(
     return { kind: "not-applicable", detail: "Response is not a chat response" };
   if (fault.tool !== undefined) {
     const calls =
-      isContentWithToolCallsResponse(response) && response.blocks?.length
-        ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
-        : "toolCalls" in response
-          ? (response.toolCalls ?? [])
-          : [];
+      (isCombinedFixtureResponse(response)
+        ? resolveServedBlockOutcome(response)?.toolCalls
+        : undefined) ?? ("toolCalls" in response ? servedToolCalls(response) : []);
     // A custom tool call is never a fault target: naming one selects nothing.
     if (!calls.some((call) => call.name === fault.tool && call.type !== "custom"))
       return {
@@ -1539,32 +1538,44 @@ function misbehaviorRoll(seed: number): number {
 function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse): boolean {
   if (typeof response !== "object" || response === null) return true;
   const blocks = "blocks" in response ? response.blocks : undefined;
-  const calls = "toolCalls" in response ? response.toolCalls : undefined;
   let functionCalls: Pick<ToolCall, "name" | "arguments">[] = [];
   try {
-    if (Array.isArray(blocks) && blocks.length > 0) {
-      if (wire === "openai-responses") resolveFixtureBlocks(blocks, { allowCustom: true });
-      else
-        functionCalls = resolveFixtureBlocks(blocks, { wire }).filter(
-          (block) => block.type === "toolCall",
-        );
-    } else if (Array.isArray(calls)) {
-      if (wire === "openai-responses") assertResponsesToolCalls(calls);
-      else functionCalls = requireFunctionToolCalls(calls, wire);
+    if (wire === "openai-responses") {
+      if (!resolveServedBlockOutcome(response) && "toolCalls" in response) {
+        assertCustomToolCalls(response);
+        assertResponsesToolCalls(servedToolCalls(response));
+      }
+    } else if ("toolCalls" in response || "blocks" in response || "responsesBlocks" in response) {
+      functionCalls = requireEmittedFunctionToolCalls(response, wire);
+      if (Array.isArray(blocks) && blocks.length > 0) {
+        functionCalls = resolveFixtureBlocks(blocks).filter((block) => block.type === "toolCall");
+      }
     }
   } catch {
     return false;
   }
+  const normalPathReplaces = strictToolArgumentsEnabled()
+    ? rejectsInvalidToolArguments(wire, stream)
+    : replacesInvalidToolArguments(wire);
   return (
-    !rejectsInvalidToolArguments(wire, stream) ||
-    functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
+    !normalPathReplaces || functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
   );
 }
 
 /**
+ * Whether the normal path of this wire serves invalid-JSON `arguments` as
+ * `{}` / `"{}"` (the default, as in 1.44.0) instead of the authored text. The
+ * OpenAI wires pass the authored text through unchanged.
+ */
+function replacesInvalidToolArguments(wire: WireId): boolean {
+  return rejectsInvalidToolArguments(wire, false) || wire === "cohere";
+}
+
+/**
  * Whether this wire and output mode carry tool arguments as an object, so the
- * normal path must parse a fixture's string `arguments` and answers
- * aimock_invalid_tool_arguments when they are not valid JSON. The other modes
+ * normal path must parse a fixture's string `arguments` and, under
+ * `strictToolArguments`, answers aimock_invalid_tool_arguments when they are
+ * not valid JSON. The other modes
  * pass the authored string through unchanged (the OpenAI wires, Cohere, and
  * the streaming Anthropic, Bedrock and Gemini Interactions paths, which send
  * arguments as a JSON-string fragment).
@@ -1601,6 +1612,8 @@ export function planMisbehavior(input: {
   url: string | undefined;
 }): MisbehaviorPlan | MisbehaviorSkip | MisbehaviorError {
   const { wire, fixture, defaults } = input;
+  // Misbehavior not enabled: the header and fixture keys are ignored (1.44.0).
+  if (!defaults.misbehavior) return { kind: "skipped" };
   const testId = resolveTestId(input.rawHeaders, input.url);
   let source: NonNullable<MisbehaviorSummary["source"]>;
   let parsed = parseMisbehaviorHeader(input.rawHeaders["x-aimock-misbehavior"]);
@@ -1625,13 +1638,13 @@ export function planMisbehavior(input: {
       summary: { applied: false, source, wire, evaluations: [] },
     };
   // A fixture this wire cannot serve (a custom tool call off the OpenAI
-  // Responses API, a malformed tool call, invalid JSON arguments on a wire
-  // that carries arguments as an object, a malformed text block or an
-  // unknown block type) is never faulted and never throws here: the request
-  // takes the normal path exactly as with no misbehavior config, which
-  // journals it and answers the coded fixture tool-call error
-  // (aimock_unsupported_tool_call, aimock_invalid_fixture_tool_call or
-  // aimock_invalid_tool_arguments) or the plain block error.
+  // Responses API, a malformed tool call, invalid JSON arguments that the
+  // normal path replaces or rejects, a malformed text block or an unknown
+  // block type) is never faulted and never throws here: the request takes the
+  // normal path exactly as with no misbehavior config, which journals it and
+  // answers the coded fixture tool-call error (aimock_unsupported_tool_call,
+  // aimock_invalid_fixture_tool_call or, under strictToolArguments,
+  // aimock_invalid_tool_arguments), the plain block error, or `{}` arguments.
   if (!servesFixture(wire, input.stream, input.response)) return { kind: "skipped" };
   const config = parsed.config;
   const explicit = source === "header" || source === "fixture";
@@ -1665,7 +1678,7 @@ export function planMisbehavior(input: {
     let reason: MisbehaviorEvaluation["reason"];
     let detail: string | undefined;
     const response = input.response;
-    const combined = isContentWithToolCallsResponse(response);
+    const combined = isCombinedFixtureResponse(response);
     if (
       isErrorResponse(response) ||
       !(combined || isTextResponse(response) || isToolCallResponse(response))
@@ -1752,6 +1765,9 @@ export function planMisbehavior(input: {
         ordinal,
       };
       evaluations.push(row);
+      // The fault's own malformed arguments (tool-args-invalid-json) must reach
+      // the wire as authored, never the `{}` default of the normal path.
+      keepAuthoredToolArguments();
       return {
         kind: "applied",
         ...candidate,
@@ -1837,6 +1853,7 @@ export function resolveMisbehaviorShortCircuit(input: {
   reason: "proxied" | "chaos-fired";
 }): MisbehaviorSummary | undefined {
   const { wire, fixture, defaults, rawHeaders, url, reason } = input;
+  if (!defaults.misbehavior) return undefined;
   const testId = resolveTestId(rawHeaders, url);
   let source: NonNullable<MisbehaviorSummary["source"]>;
   if (rawHeaders["x-aimock-misbehavior"] !== undefined) source = "header";

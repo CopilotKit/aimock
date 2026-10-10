@@ -23,8 +23,13 @@ afterEach(async () => {
   mock = null;
 });
 
-async function start(fixtures: Fixture[], opts: { chunkSize?: number } = {}): Promise<LLMock> {
-  mock = new LLMock({ port: 0, ...opts });
+async function start(
+  fixtures: Fixture[],
+  opts: { chunkSize?: number; responsesTools?: "legacy" | "extended" } = {},
+): Promise<LLMock> {
+  // Namespaces on toolCalls entries and toolCall blocks are emitted only with
+  // responsesTools "extended", like customToolCalls / responsesBlocks.
+  mock = new LLMock({ port: 0, responsesTools: "extended", ...opts });
   mock.addFixtures(fixtures);
   await mock.start();
   return mock;
@@ -233,6 +238,23 @@ describe("namespaced function_call", () => {
     const blocksOut = await nonStream(m, "ns blocks");
     expect(blocksOut.map((i) => i.type)).toEqual(["function_call", "message"]);
   });
+
+  it("does not emit a toolCalls / blocks namespace by default (responsesTools legacy), as 1.44.0", async () => {
+    const m = await start(fixtures, { responsesTools: "legacy" });
+    for (const input of ["ns tool-only", "ns content-tools", "ns blocks"]) {
+      for (const events of [await stream(m, input), await ws(m, input)]) {
+        for (const item of [
+          ...itemsOf(events, "response.output_item.added", "function_call"),
+          ...completedOutput(events).filter((i) => i.type === "function_call"),
+        ]) {
+          expect("namespace" in item, JSON.stringify(item)).toBe(false);
+        }
+      }
+      for (const item of (await nonStream(m, input)).filter((i) => i.type === "function_call")) {
+        expect("namespace" in item, JSON.stringify(item)).toBe(false);
+      }
+    }
+  });
 });
 
 describe("custom_tool_call", () => {
@@ -242,7 +264,10 @@ describe("custom_tool_call", () => {
         {
           match: { userMessage: "custom patch" },
           response: {
-            toolCalls: [{ type: "custom", name: "apply_patch", input: PATCH, id: "call_patch" }],
+            toolCalls: [],
+            customToolCalls: [
+              { type: "custom", name: "apply_patch", input: PATCH, id: "call_patch" },
+            ],
           },
         },
       ],
@@ -281,11 +306,17 @@ describe("custom_tool_call", () => {
       [
         {
           match: { userMessage: "custom empty" },
-          response: { toolCalls: [{ type: "custom", name: "noop", input: "" }] },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "noop", input: "" }],
+          },
         },
         {
           match: { userMessage: "custom short" },
-          response: { toolCalls: [{ type: "custom", name: "run", input: "ls" }] },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "run", input: "ls" }],
+          },
         },
       ],
       { chunkSize: 50 },
@@ -298,12 +329,13 @@ describe("custom_tool_call", () => {
     }
   });
 
-  it("carries namespace on a namespaced custom call", async () => {
+  it("carries namespace on a namespaced custom call (responsesTools extended)", async () => {
     const m = await start([
       {
         match: { userMessage: "custom ns" },
         response: {
-          toolCalls: [{ type: "custom", name: "run", namespace: "sandbox", input: "ls -la" }],
+          toolCalls: [],
+          customToolCalls: [{ type: "custom", name: "run", namespace: "sandbox", input: "ls -la" }],
         },
       },
     ]);
@@ -314,17 +346,77 @@ describe("custom_tool_call", () => {
     expect(out[0]).toMatchObject({ type: "custom_tool_call", namespace: "sandbox", name: "run" });
   });
 
+  it("ignores customToolCalls and responsesBlocks by default (responsesTools legacy), as 1.44.0", async () => {
+    const m = await start(
+      [
+        {
+          match: { userMessage: "custom ns" },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "run", namespace: "sandbox", input: "ls" }],
+          },
+        },
+        {
+          match: { userMessage: "combo" },
+          response: {
+            content: "before",
+            toolCalls: [{ name: "top_fn", arguments: "{}" }],
+            responsesBlocks: [
+              { type: "text", text: "before" },
+              { type: "customToolCall", name: "apply_patch", input: "x" },
+              { type: "toolCall", name: "top_fn", arguments: "{}" },
+            ],
+          },
+        },
+      ],
+      { responsesTools: "legacy" },
+    );
+    // 1.44.0 serves an empty tool turn for `toolCalls: []`.
+    expect(await nonStream(m, "custom ns")).toEqual([]);
+    for (const events of [await stream(m, "custom ns"), await ws(m, "custom ns")]) {
+      expect(JSON.stringify(events)).not.toContain("custom_tool_call");
+    }
+    // 1.44.0 serves content + toolCalls and never reads responsesBlocks.
+    const combo = await nonStream(m, "combo");
+    expect(combo.map((o) => [o.type, o.name])).toEqual([
+      ["message", undefined],
+      ["function_call", "top_fn"],
+    ]);
+    for (const events of [await stream(m, "combo"), await ws(m, "combo")]) {
+      expect(JSON.stringify(events)).not.toContain("custom_tool_call");
+      expect(JSON.stringify(events)).toContain("top_fn");
+    }
+  });
+
+  it("serves a type:custom toolCalls entry as a function call, as 1.44.0 (custom calls live in customToolCalls)", async () => {
+    // An untyped JSON fixture, as a 1.44.0 user could write it; it validates clean.
+    const m = await start([]);
+    m.addFixturesFromJSON(
+      JSON.stringify([
+        {
+          match: { userMessage: "legacy typed" },
+          response: { toolCalls: [{ type: "custom", name: "apply_patch", arguments: "{}" }] },
+        },
+      ]),
+    );
+    for (const events of [await stream(m, "legacy typed"), await ws(m, "legacy typed")]) {
+      expect(completedOutput(events).map((i) => i.type)).toEqual(["function_call"]);
+    }
+    expect((await nonStream(m, "legacy typed")).map((i) => i.type)).toEqual(["function_call"]);
+  });
+
   it("keeps array order and output_index continuity for mixed calls after reasoning and/or web-search prefixes", async () => {
     const m = await start([
       {
         match: { userMessage: "mixed legacy" },
         response: {
           content: "Working.",
+          // Function calls first, then custom calls (legacy text-first order).
           toolCalls: [
             { name: "f1", arguments: "{}" },
-            { type: "custom", name: "apply_patch", input: PATCH },
             { name: "f2", namespace: "ns", arguments: '{"a":1}' },
           ],
+          customToolCalls: [{ type: "custom", name: "apply_patch", input: PATCH }],
           reasoning: "Plan.",
           webSearches: ["q1"],
         },
@@ -332,17 +424,15 @@ describe("custom_tool_call", () => {
       {
         match: { userMessage: "mixed tool-only" },
         response: {
-          toolCalls: [
-            { type: "custom", name: "apply_patch", input: PATCH },
-            { name: "f1", arguments: "{}" },
-          ],
+          toolCalls: [{ name: "f1", arguments: "{}" }],
+          customToolCalls: [{ type: "custom", name: "apply_patch", input: PATCH }],
           reasoning: "Plan.",
         },
       },
       {
         match: { userMessage: "mixed blocks" },
         response: {
-          blocks: [
+          responsesBlocks: [
             { type: "customToolCall", name: "apply_patch", input: PATCH, id: "call_b1" },
             { type: "text", text: "Patched." },
             { type: "toolCall", name: "f1", arguments: "{}" },
@@ -361,14 +451,14 @@ describe("custom_tool_call", () => {
           "web_search_call",
           "message",
           "function_call",
-          "custom_tool_call",
           "function_call",
+          "custom_tool_call",
         ],
-        custom: { 4: { name: "apply_patch", input: PATCH } },
+        custom: { 5: { name: "apply_patch", input: PATCH } },
       },
       "mixed tool-only": {
-        types: ["reasoning", "custom_tool_call", "function_call"],
-        custom: { 1: { name: "apply_patch", input: PATCH } },
+        types: ["reasoning", "function_call", "custom_tool_call"],
+        custom: { 2: { name: "apply_patch", input: PATCH } },
       },
       "mixed blocks": {
         types: [
@@ -416,10 +506,13 @@ describe("custom_tool_call", () => {
     // counted chunks, that is 1 delta. Cutting one chunk earlier or later
     // would deliver 0 or 2 deltas.
     expect(PATCH.length).toBe(61);
-    mock = new LLMock({ port: 0, chunkSize: 5 });
+    mock = new LLMock({ port: 0, chunkSize: 5, responsesTools: "extended" });
     mock.addFixture({
       match: { userMessage: "custom truncate" },
-      response: { toolCalls: [{ type: "custom", name: "apply_patch", input: PATCH }] },
+      response: {
+        toolCalls: [],
+        customToolCalls: [{ type: "custom", name: "apply_patch", input: PATCH }],
+      },
       truncateAfterChunks: 5,
       latency: 5,
     });

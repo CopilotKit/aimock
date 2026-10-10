@@ -298,7 +298,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
       await client.listTools();
       await client.callTool({ name: "echo", arguments: { message: "hi" } });
       await client.close();
-      if (llm?.record?.mcp && llm.logLevel === undefined) {
+      if (llm?.enableMcpRecording && llm.record?.mcp && llm.logLevel === undefined) {
         await child.waitForOutput(/MCP-RECORD:/, 5000);
       } else {
         // Give a warning the same time to appear before asserting it did not.
@@ -317,6 +317,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   it("prints the MCP-RECORD warning at the default log level", async () => {
     const out = await outputAfterUnscopedCalls({
       fixtures: fx,
+      enableMcpRecording: true,
       record: { mcp: { "/mcp": up.url } },
     });
     expect(out).toContain("MCP-RECORD: forwarded, not recorded");
@@ -325,6 +326,7 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   it("an explicit logLevel silent wins: only the listening line", async () => {
     const out = await outputAfterUnscopedCalls({
       fixtures: fx,
+      enableMcpRecording: true,
       logLevel: "silent",
       record: { mcp: { "/mcp": up.url } },
     });
@@ -359,16 +361,54 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to
   });
 
   it("R2 (C3): an empty llm.record.mcp {} records nothing and still starts silent", async () => {
-    const out = await outputAfterDeprecatedRoute({ fixtures: fx, record: { mcp: {} } });
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: true,
+      record: { mcp: {} },
+    });
     expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
   });
 
   it("positive control: llm.record.mcp with a mount prints the deprecated-route warning", async () => {
     const out = await outputAfterDeprecatedRoute({
       fixtures: fx,
+      enableMcpRecording: true,
       record: { mcp: { "/mcp": up.url } },
     });
     expect(out).toContain("deprecated");
+  });
+
+  // 1.44.0 ignored llm.record.mcp: without the opt-in, only the one warning is new.
+  const IGNORED =
+    "[aimock] Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.";
+
+  it("without llm.enableMcpRecording, a mount is ignored: one warning, logLevel unchanged", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("without llm.enableMcpRecording, an invalid llm.record.mcp still starts", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: "not an object" as unknown as AimockRecordConfig["mcp"] },
+    });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/), IGNORED]);
+  });
+
+  it("a non-boolean llm.enableMcpRecording is ignored with a warning", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      enableMcpRecording: "true" as unknown as boolean,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out.trim().split("\n")).toEqual([
+      expect.stringMatching(/listening on/),
+      '[aimock] Ignoring llm.enableMcpRecording because it must be true or false, got "true".',
+      IGNORED,
+    ]);
   });
 });
 
@@ -1045,5 +1085,69 @@ describe.skipIf(!existsSync(CJS_CLI_PATH))("aimock: the compiled CJS entry runs 
 
     const esm = await runCli(["--help"]);
     expect(esm.stdout).toBe(cjs.stdout);
+  });
+});
+
+describe("runAimockCli: opt-in flags", () => {
+  let cleanupFn: (() => void) | null = null;
+  afterEach(() => {
+    cleanupFn?.();
+    cleanupFn = null;
+  });
+
+  async function overridesFor(flags: string[]): Promise<unknown> {
+    const startFromConfigFn = vi.fn().mockResolvedValue({
+      llmock: { stop: vi.fn().mockResolvedValue(undefined) },
+      url: "http://127.0.0.1:1",
+    });
+    runAimockCli({
+      argv: ["--config", "/c.json", ...flags],
+      log: () => {},
+      logError: () => {},
+      exit: () => {},
+      loadConfigFn: vi.fn().mockReturnValue({} as AimockConfig),
+      startFromConfigFn,
+      onReady: (ctx) => {
+        cleanupFn = ctx.shutdown;
+      },
+    });
+    await vi.waitFor(() => expect(startFromConfigFn).toHaveBeenCalled());
+    return startFromConfigFn.mock.calls[0][1];
+  }
+
+  it("passes no opt-in overrides without the flags", async () => {
+    expect(await overridesFor([])).toEqual({ port: undefined, host: undefined });
+  });
+
+  it("passes --misbehavior, --strict-tool-arguments and --responses-tools as overrides", async () => {
+    expect(
+      await overridesFor([
+        "--misbehavior",
+        "--strict-tool-arguments",
+        "--responses-tools",
+        "extended",
+      ]),
+    ).toEqual({
+      port: undefined,
+      host: undefined,
+      enableMisbehavior: true,
+      strictToolArguments: true,
+      responsesTools: "extended",
+    });
+  });
+
+  it("rejects an invalid --responses-tools value", () => {
+    const { errors, exitCode } = callCli(["--config", "/c.json", "--responses-tools", "wide"], {
+      loadConfigFn: () => ({}) as AimockConfig,
+    });
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain('invalid --responses-tools "wide"');
+  });
+
+  it("lists the opt-in flags in --help", () => {
+    const help = callCli(["--help"]).logs.join("\n");
+    expect(help).toContain("--misbehavior");
+    expect(help).toContain("--strict-tool-arguments");
+    expect(help).toContain("--responses-tools");
   });
 });

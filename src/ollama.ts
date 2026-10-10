@@ -25,10 +25,9 @@ import type {
 } from "./types.js";
 import {
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
   validateChatMessages,
@@ -52,6 +51,7 @@ import {
   strictNoMatchLogLine,
   toolArgsForWire,
   InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -315,9 +315,7 @@ function buildOllamaChatToolCallResponse(
 function toOllamaToolCall(tc: Pick<ToolCall, "name" | "arguments">): {
   function: { name: string; arguments: unknown };
 } {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
-  return { function: { name: tc.name, arguments: args.value } };
+  return { function: { name: tc.name, arguments: servedToolArgs(tc, "object").value } };
 }
 
 function buildOllamaChatContentWithToolCallsChunks(
@@ -507,17 +505,14 @@ function prepareOllamaMisbehavior(
   logger: HandlerDefaults["logger"],
 ) {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   // The planner skips a custom-call fixture on this wire, so this narrowing
   // never throws; the normal path's guard rejects it instead.
   const calls =
     outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      "Ollama",
-    );
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
   const model = request.model;
 
@@ -1014,7 +1009,7 @@ export async function handleOllama(
   }
 
   // Content + tool calls response (must be checked before text/tool-only branches)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Ollama API -- ignoring");
     }
@@ -1478,49 +1473,8 @@ export async function handleOllamaGenerate(
     return;
   }
 
-  // Text response (only type supported for /api/generate). A text fixture
-  // whose ordered `blocks` carry a tool call is a tool-call fixture here, and
-  // is rejected below rather than served with the call silently dropped.
-  // Only `toolCall` and `customToolCall` blocks count as tool calls. The
-  // blocks are first validated in the order /api/chat uses: a
-  // `customToolCall` block is rejected ahead of every other block check, so
-  // such a list goes straight to the tool-call rejection; any other list is
-  // validated block by block, so an unknown, misspelled or malformed block
-  // throws the same error here as on /api/chat, even when the list also
-  // carries a valid `toolCall` block. (routeError shapes a fixture tool-call
-  // error's body by path, so only its envelope differs between the two.)
-  const blocks = (response as { blocks?: unknown }).blocks;
-  const blockList: unknown[] = Array.isArray(blocks) ? blocks : [];
-  const isBlockOfType = (b: unknown, type: string): boolean =>
-    b !== null && typeof b === "object" && "type" in b && b.type === type;
-  const blocksCarryCustomToolCall = blockList.some((b) => isBlockOfType(b, "customToolCall"));
-  const blocksCarryToolCall =
-    blocksCarryCustomToolCall || blockList.some((b) => isBlockOfType(b, "toolCall"));
-  if (!blocksCarryCustomToolCall && blockList.length > 0) {
-    try {
-      resolveFixtureBlocks(blockList as FixtureBlock[]);
-    } catch (err) {
-      // Journal the matched request before the error escapes, as /api/chat
-      // does (it journals, then its builder throws). routeError then keeps
-      // this entry's body, fixture and misbehavior outcome instead of
-      // writing a bodiless "internal" entry.
-      const journalEntry = journal.add({
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-        response: { status: 500, fixture },
-      });
-      recordMisbehaviorOutcome({
-        entry: journalEntry,
-        summary: misbehavior.summary,
-        defaults,
-        testId,
-      });
-      throw err;
-    }
-  }
-  if (isTextResponse(response) && !blocksCarryToolCall) {
+  // Text response (only type supported for /api/generate)
+  if (isTextResponse(response)) {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,
@@ -1577,7 +1531,7 @@ export async function handleOllamaGenerate(
   }
 
   // Tool call fixtures matched but not supported on /api/generate
-  if (isToolCallResponse(response) || isContentWithToolCallsResponse(response)) {
+  if (isToolCallResponse(response) || isCombinedFixtureResponse(response)) {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,

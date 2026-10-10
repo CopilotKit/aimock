@@ -20,7 +20,6 @@ import type {
 } from "./types.js";
 import {
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
   type FunctionFixtureBlock,
   generateToolUseId,
   estimatePromptTokens,
@@ -28,7 +27,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   resolveFixtureBlockOutcome,
   isErrorResponse,
   flattenHeaders,
@@ -42,6 +41,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   toolArgsForWire,
+  servedToolArgs,
   InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
@@ -113,14 +113,7 @@ function converseUsage(overrides?: ResponseOverrides): {
 }
 
 function parseConverseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  const args = toolArgsForWire(toolCall);
-  if (args.kind === "verbatim") {
-    logger.warn(
-      `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
-    );
-    return args.raw;
-  }
-  return args.text;
+  return servedToolArgs(toolCall, "string", logger).text;
 }
 
 function buildBedrockStreamTextEvents(
@@ -617,13 +610,7 @@ function buildConverseToolCallResponse(
     });
   }
   for (const tc of toolCalls) {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     contentBlocks.push({
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
@@ -664,13 +651,7 @@ function buildConverseContentWithToolCallsResponse(
   // Converse `input` requires a JSON value; reject malformed arguments before
   // emitting an object response instead of substituting an empty object.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     return {
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
@@ -741,7 +722,7 @@ function prepareConverseMisbehavior(
   headers: http.IncomingHttpHeaders,
 ): PreparedConverseMisbehavior {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
   // The planner skips a custom-call fixture on this wire, so the narrowing
@@ -750,10 +731,10 @@ function prepareConverseMisbehavior(
     ...("content" in response && response.content
       ? [{ type: "text" as const, text: response.content }]
       : []),
-    ...requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      "Bedrock Converse",
-    ).map((call) => ({ ...call, type: "toolCall" as const })),
+    ...(combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []).map((call) => ({
+      type: "toolCall" as const,
+      ...call,
+    })),
   ];
   const calls = blocks.filter((block) => block.type === "toolCall");
   const preparedCalls = calls.map((call, index) => {
@@ -1197,7 +1178,7 @@ export async function handleConverse(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",
@@ -1621,7 +1602,7 @@ export async function handleConverseStream(
   }
 
   // Content + tool calls response — stream as Event Stream
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn(
         "webSearches in fixture response are not supported for Bedrock Converse API — ignoring",

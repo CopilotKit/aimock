@@ -540,10 +540,30 @@
           <code>faults</code> list explicitly disables faults at that configuration level.
         </p>
         <p>
-          Set the server baseline with <code>new LLMock({ misbehavior: config })</code> or
+          Misbehavior is opt-in. Turn it on with <code>enableMisbehavior: true</code> (programmatic
+          and test plugins), <code>llmock --misbehavior</code>, or for
+          <code>aimock --config</code> with <code>llm.enableMisbehavior: true</code> or
+          <code>aimock --misbehavior</code>. Without it, fixture <code>misbehavior</code> keys, the
+          <code>misbehavior</code> option, <code>llm.misbehavior</code> and the
+          <code>X-AIMock-Misbehavior</code> header are ignored, as in 1.44.0.
+        </p>
+        <p>
+          With misbehavior on, <code>addFixture</code>, <code>addFixtures</code> and
+          <code>prependFixture</code> store a copy of each fixture per addition, so the same object
+          added twice gives two independent fault sources. <code>getFixtures()[i]</code> is that
+          copy, but <code>findByFixture</code>, <code>getFixtureMatchCount</code>,
+          <code>fixtureMatchCounts</code>, <code>getFixtureMatchCountsForTest</code> and the journal
+          <code>entry.response.fixture</code> still name your object. A new value assigned to
+          <code>fixture.response</code> or another field after the addition has no effect; add the
+          fixture again instead. Without misbehavior, your object is stored, as in 1.44.0.
+        </p>
+        <p>
+          Set the server baseline with
+          <code>new LLMock({ enableMisbehavior: true, misbehavior: config })</code> or
           <code>mock.setMisbehavior(config)</code>. The config file uses
-          <code>llm.misbehavior</code>. The setter preserves named test overrides;
-          <code>mock.clearMisbehavior()</code> clears the baseline and all runtime overrides.
+          <code>llm.misbehavior</code> together with <code>llm.enableMisbehavior: true</code>. The
+          setter preserves named test overrides; <code>mock.clearMisbehavior()</code> clears the
+          baseline and all runtime overrides.
         </p>
         <p>
           A <a href="/fixtures#misbehavior">fixture's misbehavior field</a> accepts the same config
@@ -777,10 +797,12 @@ console.log(fault?.applied, fault?.fault, fault?.servedToolCalls);</code></pre>
           Tool faults target function tool calls only. On the OpenAI Responses API, a custom tool
           call has no JSON arguments, so it is never a fault target: a fault that names one with
           <code>tool</code> is not applicable, and custom tool calls and namespaces pass through the
-          faulted output unchanged. A fixture that the wire cannot serve is never faulted: a custom
-          tool call on any other API, or a malformed tool call on any API, returns the coded HTTP
-          500 (<code>aimock_unsupported_tool_call</code> or
-          <code>aimock_invalid_fixture_tool_call</code>) that the request gets without a fault.
+          faulted output unchanged. A fixture that the wire cannot serve is never faulted: custom
+          tool calls (<code>customToolCalls</code> / <code>responsesBlocks</code>) on any other API,
+          or a malformed custom call, return the coded HTTP 500 (<code
+            >aimock_unsupported_tool_call</code
+          >
+          or <code>aimock_invalid_fixture_tool_call</code>) that the request gets without a fault.
         </p>
         <p>
           One-character tool arguments cannot produce a nonempty proper prefix. Empty arguments or

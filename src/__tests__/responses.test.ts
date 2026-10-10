@@ -1,13 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
 import { PassThrough } from "node:stream";
-import type { Fixture } from "../types.js";
+import type { Fixture, ToolCall } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
 import {
   responsesInputToMessages,
   responsesToCompletionRequest,
   handleResponses,
   buildTextStreamEvents,
+  buildToolCallStreamEvents,
   buildContentWithToolCallsStreamEvents,
 } from "../responses.js";
 import { Journal } from "../journal.js";
@@ -1675,6 +1676,85 @@ describe("Bug 2: output_text includes annotations: []", () => {
     expect(partAdded).toBeDefined();
     const part = partAdded!.part as { annotations: unknown[] };
     expect(part.annotations).toEqual([]);
+  });
+});
+
+// ─── Exported builders: untyped non-array toolCalls (as in 1.44.0) ─────────
+
+describe("exported Responses builders with a non-array toolCalls", () => {
+  // Values an untyped JS caller can pass; 1.44.0 walked them by index.
+  const untyped = (value: unknown): ToolCall[] => value as ToolCall[];
+  const types = (events: { type: string }[]) => events.map((e) => e.type);
+
+  it("buildToolCallStreamEvents gives no calls for an object toolCalls", () => {
+    const events = buildToolCallStreamEvents(untyped({ name: "f", arguments: "{}" }), "gpt-4o", 4);
+    expect(types(events)).toEqual([
+      "response.created",
+      "response.in_progress",
+      "response.completed",
+    ]);
+  });
+
+  it("buildContentWithToolCallsStreamEvents gives only the message for an object toolCalls", () => {
+    const events = buildContentWithToolCallsStreamEvents(
+      "hi",
+      untyped({ name: "f", arguments: "{}" }),
+      "gpt-4o",
+      4,
+    );
+    expect(events).toHaveLength(9);
+    expect(events.filter((e) => e.type === "response.output_item.added")).toHaveLength(1);
+    const completed = events[events.length - 1].response as { output: { type: string }[] };
+    expect(completed.output.map((o) => o.type)).toEqual(["message"]);
+  });
+
+  it("walks an array-like toolCalls by index, ignoring namespace and type", () => {
+    const events = buildToolCallStreamEvents(
+      untyped({
+        length: 2,
+        0: { name: "a", arguments: "{}", namespace: "ns", type: "custom", input: "q" },
+        1: { name: "b", arguments: "{}", id: "call_k" },
+      }),
+      "gpt-4o",
+      100,
+    );
+    const completed = events[events.length - 1].response as {
+      output: Record<string, unknown>[];
+    };
+    expect(completed.output.map((o) => [o.type, o.name, "namespace" in o])).toEqual([
+      ["function_call", "a", false],
+      ["function_call", "b", false],
+    ]);
+    expect(completed.output[1].call_id).toBe("call_k");
+  });
+
+  it("does not read toolCalls when blocks are given", () => {
+    const events = buildContentWithToolCallsStreamEvents(
+      "hi",
+      untyped(null),
+      "gpt-4o",
+      100,
+      undefined,
+      undefined,
+      undefined,
+      [{ type: "toolCall", name: "g", arguments: "{}" }],
+    );
+    const completed = events[events.length - 1].response as { output: { name?: string }[] };
+    expect(completed.output.map((o) => o.name)).toEqual(["g"]);
+  });
+
+  it("fails as 1.44.0 did for a string or null toolCalls", () => {
+    for (const build of [
+      (tc: ToolCall[]) => buildToolCallStreamEvents(tc, "gpt-4o", 4),
+      (tc: ToolCall[]) => buildContentWithToolCallsStreamEvents("hi", tc, "gpt-4o", 4),
+    ]) {
+      expect(() => build(untyped("ab"))).toThrow(
+        /^Invalid fixture tool call: "arguments" must be a string/,
+      );
+      expect(() => build(untyped(null))).toThrow(
+        new TypeError("Cannot read properties of null (reading 'length')"),
+      );
+    }
   });
 });
 

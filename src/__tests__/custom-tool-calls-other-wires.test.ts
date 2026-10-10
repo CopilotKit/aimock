@@ -1,12 +1,14 @@
 /**
  * #505 — the non-Responses wires listed in `routes` below, plus the Realtime
- * and Gemini Live WebSockets, reject a custom tool call before any content and
- * drop `namespace` from a function call (in `toolCalls` or a `toolCall` block).
+ * and Gemini Live WebSockets, reject a custom tool call (a non-empty
+ * `customToolCalls`, or a `customToolCall` block in `responsesBlocks`) before
+ * any content and drop `namespace` from a function call (in `toolCalls` or a
+ * `toolCall` block). A `toolCalls` entry is always a function call, whatever
+ * its `type`, as in 1.44.0.
  *
  * The rejection contract on those wires:
- * - it checks only what the wire will emit: the ordered `blocks` when present
- *   (legacy `toolCalls` are not read then, whatever their shape), otherwise
- *   `toolCalls`;
+ * - both custom carriers are new keys, so no 1.44.0 fixture is rejected; with
+ *   non-empty function-only `blocks`, the legacy `toolCalls` are not read;
  * - the message names the wire the request arrived on;
  * - the error is a 500 carrying `aimock_unsupported_tool_call` in the error
  *   envelope that wire's handler uses (Cohere's is the OpenAI-style
@@ -19,12 +21,15 @@
  * Ollama `/api/generate` is the exception: it rejects every tool-call fixture
  * with a 400, custom or not.
  *
+ * All of this needs `responsesTools: "extended"`. Without it (the default)
+ * both keys are ignored, as in 1.44.0: see the last describe block.
+ *
  * Real surfaces: a real LLMock over HTTP (streaming and non-streaming) and the
  * Realtime / Gemini Live WebSockets.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
-import type { Fixture, FixtureResponse } from "../types.js";
+import type { Fixture, FixtureResponse, ResponsesToolsMode } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
 
 const SENTINEL = "must not be emitted";
@@ -40,24 +45,29 @@ function customMessage(wire: string): string {
 const custom = { type: "custom" as const, name: "apply_patch", input: "*** Begin Patch" };
 const fn = { name: "lookup", arguments: '{"q":"x"}' };
 
+// Custom calls live in the Responses-only keys customToolCalls / responsesBlocks.
 const variants: Array<{ id: string; response: FixtureResponse }> = [
-  { id: "toolCalls tool-only", response: { toolCalls: [fn, custom] } },
-  { id: "content+toolCalls", response: { content: SENTINEL, toolCalls: [custom] } },
+  { id: "customToolCalls tool-only", response: { toolCalls: [fn], customToolCalls: [custom] } },
   {
-    id: "blocks-only customToolCall",
+    id: "content+customToolCalls",
+    response: { content: SENTINEL, toolCalls: [], customToolCalls: [custom] },
+  },
+  {
+    id: "responsesBlocks-only customToolCall",
     response: {
-      blocks: [
+      responsesBlocks: [
         { type: "text", text: SENTINEL },
         { type: "customToolCall", name: "apply_patch", input: "*** Begin Patch" },
       ],
     },
   },
   {
-    id: "content+toolCalls+blocks customToolCall",
+    id: "content+customToolCalls+responsesBlocks customToolCall",
     response: {
       content: SENTINEL,
-      toolCalls: [custom],
-      blocks: [
+      toolCalls: [],
+      customToolCalls: [custom],
+      responsesBlocks: [
         { type: "text", text: SENTINEL },
         { type: "customToolCall", name: "apply_patch", input: "*** Begin Patch" },
       ],
@@ -66,7 +76,7 @@ const variants: Array<{ id: string; response: FixtureResponse }> = [
   {
     id: "customToolCall block with an invalid namespace",
     response: {
-      blocks: [
+      responsesBlocks: [
         { type: "text", text: SENTINEL },
         { type: "customToolCall", name: "apply_patch", input: "*** Begin Patch", namespace: "" },
       ],
@@ -270,11 +280,31 @@ afterEach(async () => {
   mock = null;
 });
 
-async function start(response: FixtureResponse): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+async function start(
+  response: FixtureResponse,
+  responsesTools?: ResponsesToolsMode,
+): Promise<LLMock> {
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools });
   mock.addFixture({ match: {}, response } as Fixture);
   await mock.start();
   return mock;
+}
+
+/**
+ * The payload of each AWS event-stream frame. A frame is a 12-byte prelude
+ * (total length, headers length, prelude CRC), the headers, the payload and a
+ * 4-byte message CRC.
+ */
+function eventStreamPayloads(buf: Buffer): string[] {
+  const payloads: string[] = [];
+  for (let offset = 0; offset < buf.length; ) {
+    const total = buf.readUInt32BE(offset);
+    const headers = buf.readUInt32BE(offset + 4);
+    if (total < 16 || offset + total > buf.length) throw new Error("bad event-stream frame");
+    payloads.push(buf.subarray(offset + 12 + headers, offset + total - 4).toString("utf8"));
+    offset += total;
+  }
+  return payloads;
 }
 
 async function hit(m: LLMock, path: string, body: Record<string, unknown>) {
@@ -284,19 +314,28 @@ async function hit(m: LLMock, path: string, body: Record<string, unknown>) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(5000),
   });
-  const text = await res.text();
+  const raw = Buffer.from(await res.arrayBuffer());
+  const text = new TextDecoder().decode(raw);
   // Bedrock InvokeModel streams carry each event's JSON base64-encoded in "bytes".
   const decoded = [...text.matchAll(/"bytes":"([A-Za-z0-9+/=]+)"/g)]
     .map((match) => Buffer.from(match[1], "base64").toString("utf8"))
     .join("\n");
-  return { status: res.status, text: decoded ? `${text}\n${decoded}` : text };
+  // Binary event streams: only the frame payloads, without the framing and CRCs.
+  const payloads = res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream")
+    ? eventStreamPayloads(raw).join("\n")
+    : text;
+  return {
+    status: res.status,
+    text: decoded ? `${text}\n${decoded}` : text,
+    payloads: decoded ? `${payloads}\n${decoded}` : payloads,
+  };
 }
 
 describe.each(variants)("custom tool call on non-Responses HTTP wires: $id", ({ response }) => {
   it.each(routes)(
     "$path $body.stream → 500 before content, wire envelope, journaled with body + fixture",
     async ({ path, body, wire, shape }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const r = await hit(m, path, body);
       expect(r.status, r.text).toBe(500);
       expect(r.text).not.toContain(SENTINEL);
@@ -318,7 +357,7 @@ describe("custom tool call on Ollama /api/generate", () => {
   it.each(variants)(
     "$id → rejected before content, journaled with body + fixture",
     async ({ response }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const r = await hit(m, "/api/generate", { model: "llama3", prompt: "go", stream: false });
       expect(r.status, r.text).toBe(400);
       expect(r.text).not.toContain(SENTINEL);
@@ -352,11 +391,11 @@ describe("namespaced function call on non-Responses HTTP wires emits the bare na
   });
 });
 
-/** Function-only blocks are authoritative; the custom entry in legacy toolCalls is never emitted. */
+/** Function-only blocks are authoritative; the legacy toolCalls entry is never emitted. */
 const BLOCK_TEXT = "from the blocks";
 const blocksAuthoritative: FixtureResponse = {
   content: BLOCK_TEXT,
-  toolCalls: [custom],
+  toolCalls: [{ name: "apply_patch", arguments: "{}" }],
   blocks: [
     { type: "text", text: BLOCK_TEXT },
     { type: "toolCall", name: "lookup", arguments: '{"q":"x"}' },
@@ -387,14 +426,42 @@ describe("non-empty blocks are authoritative: legacy toolCalls are ignored", () 
   });
 });
 
+/**
+ * 1.44.0 shapes: a `toolCalls` entry is always a function call, so a `type`,
+ * an `input` or an invalid `namespace` on it is ignored and the fixture serves
+ * as it did in 1.44.0 (no rejection, no validation finding).
+ */
+describe("1.44.0 toolCalls shapes still serve as function calls on non-Responses wires", () => {
+  const shapes: Array<{ id: string; entry: Record<string, unknown> }> = [
+    { id: 'type "custom" with arguments', entry: { type: "custom", ...fn } },
+    { id: 'type "customToolCall"', entry: { type: "customToolCall", ...fn } },
+    { id: "empty namespace", entry: { ...fn, namespace: "" } },
+    { id: "non-string namespace", entry: { ...fn, namespace: 7 } },
+    { id: "stray input", entry: { ...fn, input: "zz" } },
+  ];
+  describe.each(shapes)("$id", ({ entry }) => {
+    it.each(routes)("$path $body.stream → 200 with the function call", async ({ path, body }) => {
+      mock = new LLMock({ port: 0, logLevel: "silent" });
+      mock.addFixturesFromJSON(
+        JSON.stringify([{ match: { userMessage: "go" }, response: { toolCalls: [entry] } }]),
+      );
+      await mock.start();
+      const r = await hit(mock, path, body);
+      expect(r.status, r.text).toBe(200);
+      expect(r.text).toContain("lookup");
+      expect(mock.getLastRequest()?.response.status).toBe(200);
+    });
+  });
+});
+
 describe("Gemini audio fixture with a custom companion tool call", () => {
-  const audio = { audio: "AAAA", toolCalls: [custom] } as FixtureResponse;
+  const audio = { audio: "AAAA", toolCalls: [], customToolCalls: [custom] } as FixtureResponse;
   it.each([
     { path: "/v1beta/models/gemini-2.0-flash:generateContent", wire: "Gemini" },
     { path: "/v1beta/models/gemini-2.0-flash:streamGenerateContent", wire: "Gemini" },
     { path: `${VERTEX}:generateContent`, wire: "Vertex AI" },
   ])("$path → 500, no audio or functionCall emitted", async ({ path, wire }) => {
-    const m = await start(audio);
+    const m = await start(audio, "extended");
     const r = await hit(m, path, geminiBody);
     expect(r.status, r.text).toBe(500);
     expect(r.text).not.toContain("inlineData");
@@ -495,7 +562,7 @@ describe("custom tool call on WebSocket wires", () => {
   it.each(variants)(
     "Realtime: $id → failed response.done with the code, no output, journaled",
     async ({ response }) => {
-      const m = await start(response);
+      const m = await start(response, "extended");
       const events = await realtimeTurn(m);
       const all = JSON.stringify(events);
       expect(all).not.toContain(SENTINEL);
@@ -523,9 +590,12 @@ describe("custom tool call on WebSocket wires", () => {
 
   it.each([
     ...variants,
-    { id: "audio companion", response: { audio: "AAAA", toolCalls: [custom] } },
+    {
+      id: "audio companion",
+      response: { audio: "AAAA", toolCalls: [], customToolCalls: [custom] },
+    },
   ])("Gemini Live: $id → coded error frame, no output, socket stays open", async ({ response }) => {
-    const m = await start(response as FixtureResponse);
+    const m = await start(response as FixtureResponse, "extended");
     // A second turn on the same socket is answered too, so the rejection left it open.
     const msgs = await liveTurns(m, ["go", "go"]);
     expect(msgs).toHaveLength(2);
@@ -574,8 +644,11 @@ describe("custom tool call on WebSocket wires", () => {
 
 describe("a rejection changes no session state", () => {
   it("Realtime: the rejected turn adds nothing to the conversation history", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
-    mock.addFixture({ match: { userMessage: "first" }, response: { toolCalls: [custom] } });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    mock.addFixture({
+      match: { userMessage: "first" },
+      response: { toolCalls: [], customToolCalls: [custom] },
+    });
     mock.addFixture({ match: { userMessage: "second" }, response: { content: "ok" } });
     await mock.start();
     const turns = await realtimeTurns(mock, ["first", "second"]);
@@ -592,8 +665,11 @@ describe("a rejection changes no session state", () => {
   });
 
   it("Gemini Live: the rejected turn is not left in the conversation history", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
-    mock.addFixture({ match: { userMessage: "first" }, response: { toolCalls: [custom] } });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    mock.addFixture({
+      match: { userMessage: "first" },
+      response: { toolCalls: [], customToolCalls: [custom] },
+    });
     mock.addFixture({ match: { userMessage: "second" }, response: { content: "ok" } });
     await mock.start();
     await liveTurns(mock, ["first", "second"]);
@@ -604,9 +680,12 @@ describe("a rejection changes no session state", () => {
   });
 
   it("Gemini Interactions: the rejection consumes no interaction id", async () => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
     mock.addFixture({ match: { userMessage: "ok" }, response: { content: "fine" } });
-    mock.addFixture({ match: { userMessage: "bad" }, response: { toolCalls: [custom] } });
+    mock.addFixture({
+      match: { userMessage: "bad" },
+      response: { toolCalls: [], customToolCalls: [custom] },
+    });
     await mock.start();
     const ids: number[] = [];
     for (const input of ["ok", "bad", "ok"]) {
@@ -623,5 +702,73 @@ describe("a rejection changes no session state", () => {
       ids.push(Number(/"id":"aimock-int-(\d+)"/.exec(r.text)?.[1]));
     }
     expect(ids[1] - ids[0]).toBe(1);
+  });
+});
+
+/**
+ * Without `responsesTools: "extended"` (the default) `customToolCalls` and
+ * `responsesBlocks` are ignored, as 1.44.0 ignored them: a fixture 1.44.0
+ * served is served the same way, never rejected.
+ */
+describe("default responsesTools: customToolCalls and responsesBlocks are ignored", () => {
+  const accepted: Array<{ id: string; response: FixtureResponse; without: FixtureResponse }> = [
+    {
+      id: "empty toolCalls + customToolCalls",
+      response: { toolCalls: [], customToolCalls: [custom] },
+      without: { toolCalls: [] },
+    },
+    {
+      id: "content + toolCalls + responsesBlocks with a custom call",
+      response: {
+        content: "before",
+        toolCalls: [fn],
+        responsesBlocks: [
+          { type: "text", text: "before" },
+          { type: "customToolCall", name: "apply_patch", input: "x" },
+          { type: "toolCall", ...fn },
+        ],
+      },
+      without: { content: "before", toolCalls: [fn] },
+    },
+  ];
+  // Ids, counters and timestamps differ between two servers; everything else
+  // must match. Binary event streams (Bedrock) carry per-frame CRCs that
+  // follow the ids, so only their frame payloads (`payloads`) are compared.
+  const normalize = (text: string) =>
+    text
+      .replace(/"bytes":"[^"]*"/g, '"bytes":"<decoded below>"')
+      .replace(/"(id|call_id|item_id|toolUseId|tool_call_id)":"[^"]*"/g, '"$1":"<id>"')
+      .replace(/(chatcmpl|msg|toolu|call|resp|fc|gen|evt)[-_][A-Za-z0-9_-]+/g, "$1-<id>")
+      .replace(/"(created|created_at|createdAt)":(\d+|"[^"]*")/g, '"$1":0')
+      .replace(/"(responseId|modelVersion)":"[^"]*"/g, '"$1":"<v>"');
+  describe.each(accepted)("$id", ({ response, without }) => {
+    it.each(routes)("$path $body.stream → served as without the keys", async ({ path, body }) => {
+      const reference = await start(without);
+      const expected = await hit(reference, path, body);
+      await reference.stop();
+      const m = await start(response);
+      const r = await hit(m, path, body);
+      expect(r.status, r.text).toBe(expected.status);
+      expect(r.text).not.toContain("apply_patch");
+      expect(normalize(r.payloads)).toBe(normalize(expected.payloads));
+      expect(m.getLastRequest()?.response.status).toBe(expected.status);
+    });
+
+    it("Realtime: served, not failed", async () => {
+      const m = await start(response);
+      const events = await realtimeTurn(m);
+      const all = JSON.stringify(events);
+      expect(all).not.toContain("apply_patch");
+      expect(all).not.toContain(CODE);
+      expect(m.getLastRequest()?.response.status).toBe(200);
+    });
+
+    it("Gemini Live: served, no error frame", async () => {
+      const m = await start(response);
+      const msgs = await liveTurns(m, ["go"]);
+      expect(msgs.join("\n")).not.toContain("apply_patch");
+      expect(msgs.join("\n")).not.toContain('"error"');
+      expect(m.getLastRequest()?.response.status).toBe(200);
+    });
   });
 });

@@ -22,7 +22,8 @@ afterEach(async () => {
 });
 
 async function start(fixtures: Fixture[], chunkSize: number): Promise<LLMock> {
-  mock = new LLMock({ port: 0, chunkSize });
+  // custom_tool_call output needs responsesTools "extended".
+  mock = new LLMock({ port: 0, chunkSize, responsesTools: "extended" });
   mock.addFixtures(fixtures);
   await mock.start();
   return mock;
@@ -93,7 +94,10 @@ describe("custom_tool_call_input.delta chunking keeps surrogate pairs whole", ()
         [
           {
             match: { userMessage: "astral" },
-            response: { toolCalls: [{ type: "custom", name: "apply_patch", input: c.input }] },
+            response: {
+              toolCalls: [],
+              customToolCalls: [{ type: "custom", name: "apply_patch", input: c.input }],
+            },
           },
         ],
         c.chunkSize,
@@ -131,7 +135,10 @@ describe("custom_tool_call_input.delta chunking keeps surrogate pairs whole", ()
       [
         {
           match: { userMessage: "astral" },
-          response: { toolCalls: [{ type: "custom", name: "apply_patch", input }] },
+          response: {
+            toolCalls: [],
+            customToolCalls: [{ type: "custom", name: "apply_patch", input }],
+          },
         },
       ],
       5,

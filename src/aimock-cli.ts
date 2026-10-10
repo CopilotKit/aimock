@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { resolve, basename } from "node:path";
-import { loadConfig, startFromConfig } from "./config-loader.js";
+import { loadConfig, startFromConfig, type StartFromConfigOverrides } from "./config-loader.js";
 import { runConvertCli, type ConvertCliDeps } from "./convert.js";
 import { runValidateCli } from "./validate-cli.js";
 
@@ -14,6 +14,11 @@ Options:
   -c, --config <path>   Path to aimock config JSON file (required)
   -p, --port <number>   Port override (default: from config or 0)
       --host <string>   Host override (default: from config or 127.0.0.1)
+      --misbehavior     Enable model misbehavior (same as llm.enableMisbehavior: true)
+      --strict-tool-arguments  Reject fixture tool calls with invalid JSON arguments
+                        instead of serving {} (same as llm.strictToolArguments: true)
+      --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or
+                        extended (overrides llm.responsesTools)
   -h, --help            Show this help message
 
 Subcommands:
@@ -87,6 +92,9 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
         config: { type: "string", short: "c" },
         port: { type: "string", short: "p" },
         host: { type: "string" },
+        misbehavior: { type: "boolean", default: false },
+        "strict-tool-arguments": { type: "boolean", default: false },
+        "responses-tools": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
       strict: true,
@@ -120,6 +128,7 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
       ["config", values.config],
       ["port", values.port],
       ["host", values.host],
+      ["responses-tools", values["responses-tools"]],
     ] as const
   ).find(([, value]) => value !== undefined && value.trim() === "");
   if (blank !== undefined) {
@@ -149,9 +158,31 @@ export function runAimockCli(deps: AimockCliDeps = {}): void {
     return;
   }
   const host = values.host;
+  const responsesToolsFlag = values["responses-tools"];
+  if (
+    responsesToolsFlag !== undefined &&
+    responsesToolsFlag !== "legacy" &&
+    responsesToolsFlag !== "extended"
+  ) {
+    logError(
+      `Error: invalid --responses-tools "${responsesToolsFlag}" (expected "legacy" or "extended").\n\n${HELP}`,
+    );
+    exit(1);
+    return;
+  }
+  // The boolean opt-ins override the config only when given, so an absent flag
+  // leaves llm.enableMisbehavior / llm.strictToolArguments in charge.
+  const responsesTools: StartFromConfigOverrides["responsesTools"] = responsesToolsFlag;
+  const overrides: StartFromConfigOverrides = {
+    port,
+    host,
+    ...(values.misbehavior ? { enableMisbehavior: true } : {}),
+    ...(values["strict-tool-arguments"] ? { strictToolArguments: true } : {}),
+    ...(responsesTools !== undefined ? { responsesTools } : {}),
+  };
 
   async function main() {
-    const { llmock, url } = await startFromConfigFn(config!, { port, host });
+    const { llmock, url } = await startFromConfigFn(config!, overrides);
 
     function shutdown() {
       log("Shutting down...");

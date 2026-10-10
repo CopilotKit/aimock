@@ -24,11 +24,11 @@ import type {
 import {
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isAudioResponse,
   extractOverrides,
-  requireFunctionToolCalls,
+  requireServedFunctionToolCalls,
   requireEmittedFunctionToolCalls,
   validateToolsField,
   formatToMime,
@@ -44,8 +44,7 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
-  toolArgsForWire,
-  InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -388,11 +387,7 @@ function buildGeminiTextStreamChunks(
 }
 
 function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    throw new InvalidToolArgumentsError(tc);
-  }
+  const args = servedToolArgs(tc, "object", logger);
   // Surface the fixture's tool_call.id on the Gemini functionCall response
   // so clients can preserve it across the round-trip and any
   // toolCallId-keyed follow-up fixtures match. Pairs with v1.23.1's
@@ -837,7 +832,7 @@ function prepareGeminiMisbehavior(
   strict: boolean,
 ): { chunks: GeminiResponseChunk[]; summary: MisbehaviorPlan["summary"] } {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (!(combined || isToolCallResponse(response) || isTextResponse(response))) {
     throw new Error("Applied Gemini misbehavior requires a chat response");
   }
@@ -846,9 +841,7 @@ function prepareGeminiMisbehavior(
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
   // The planner skips a custom-call fixture on this wire, so this narrowing
   // never throws; the normal path's guard rejects it instead.
-  const calls =
-    outcome?.toolCalls ??
-    requireFunctionToolCalls("toolCalls" in response ? (response.toolCalls ?? []) : [], "Gemini");
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
   const overrides = extractOverrides(response);
   delete overrides.usage;
   const fault = plan.summary.fault;
@@ -1316,7 +1309,7 @@ export async function handleGemini(
     });
     // A non-array companion `toolCalls` emits no tool parts, as before custom calls existed.
     const audioToolCalls = Array.isArray(response.toolCalls)
-      ? requireFunctionToolCalls(response.toolCalls, wire)
+      ? requireServedFunctionToolCalls(response, wire)
       : [];
     if (!streaming) {
       const body = buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning);
@@ -1344,7 +1337,7 @@ export async function handleGemini(
   }
 
   // Content + tool calls response (must be checked before isTextResponse / isToolCallResponse)
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Gemini API — ignoring");
     }

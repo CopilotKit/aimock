@@ -463,7 +463,9 @@ describe.skipIf(!BUILT)("S6: MCP recording through the CLIs", () => {
   describe("aimock --config llm.record.mcp", () => {
     function config(fx: string, cfg: Record<string, unknown>): string {
       const path = join(fx, "..", `cfg-${createHash("sha1").update(fx).digest("hex")}.json`);
-      writeFileSync(path, JSON.stringify(cfg));
+      // llm.record.mcp is read only with llm.enableMcpRecording: true.
+      const llm = { enableMcpRecording: true, ...(cfg.llm as Record<string, unknown>) };
+      writeFileSync(path, JSON.stringify({ ...cfg, llm }));
       return path;
     }
 
