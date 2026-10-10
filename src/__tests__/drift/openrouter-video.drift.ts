@@ -244,11 +244,19 @@ export function openRouterVideoFamily(id: string): string {
 }
 
 // The families aimock's OpenRouter video proxy hardcodes as its default set
-// (DEFAULT_OPENROUTER_VIDEO_MODELS = ["bytedance/seedance-2.0", "openai/sora-2"]
-// in src/openrouter-video.ts) — the ground truth of "what the proxy mirrors".
+// (DEFAULT_OPENROUTER_VIDEO_MODELS = ["bytedance/seedance-2.0"] in
+// src/openrouter-video.ts) — the ground truth of "what the proxy mirrors".
 // A missing family means aimock is mirroring a model the provider retired (or
 // the endpoint contract moved), which is exactly the drift signal.
-const REQUIRED_VIDEO_FAMILIES = ["seedance", "sora"] as const;
+const REQUIRED_VIDEO_FAMILIES = ["seedance"] as const;
+
+// Models OpenRouter REMOVED, which the mock now serves as a sunset rejection
+// (OPENROUTER_VIDEO_SUNSET_MODELS in src/openrouter-video.ts). Per the
+// deprecation policy they are excluded from the family-presence check above
+// explicitly — "sora" left the live listing in October 2026. The check below
+// asserts they are STILL absent: if one comes back, the mock's 400 rejection
+// for it is the thing that has drifted.
+const SUNSET_VIDEO_MODELS = ["openai/sora-2"] as const;
 
 describe.skipIf(!OPENROUTER_API_KEY)("OpenRouter video model-family availability (live)", () => {
   it("live /api/v1/videos/models contains the families aimock mirrors", async () => {
@@ -278,5 +286,33 @@ describe.skipIf(!OPENROUTER_API_KEY)("OpenRouter video model-family availability
         : "No drift detected: OpenRouter video family canary";
 
     expect(missing, report).toEqual([]);
+  });
+
+  it("live /api/v1/videos/models still omits the models aimock serves as sunset", async () => {
+    const ids = await listOpenRouterVideoModels(OPENROUTER_API_KEY!);
+    expect(ids.length, "OpenRouter returned an empty video-model listing").toBeGreaterThan(0);
+
+    const live = new Set(ids);
+    const revived = SUNSET_VIDEO_MODELS.filter((id) => live.has(id));
+    const report =
+      revived.length > 0
+        ? formatDriftReport(
+            "OpenRouter video (live /api/v1/videos/models sunset canary)",
+            revived.map((id) => ({
+              path: `videos/models/${id}`,
+              severity: "critical" as const,
+              issue:
+                `aimock serves "${id}" as a removed model (400 "does not exist"), but the live ` +
+                `/api/v1/videos/models listing contains it again — update ` +
+                `OPENROUTER_VIDEO_SUNSET_MODELS in src/openrouter-video.ts`,
+              expected: `("${id}" absent from live listing)`,
+              real: id,
+              mock: "(sunset: 400 Model does not exist)",
+            })),
+            "openrouter-video",
+          )
+        : "No drift detected: OpenRouter video sunset canary";
+
+    expect(revived, report).toEqual([]);
   });
 });
