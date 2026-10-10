@@ -284,7 +284,7 @@ const exhaustionCases: {
 type ExhaustionCase = (typeof exhaustionCases)[number];
 
 async function localWSExhaustion(scenario: ExhaustionCase): Promise<ResponseStreamEvent[]> {
-  const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 17 });
+  const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 17, enableMisbehavior: true });
   mock.addFixture({
     match: {},
     response:

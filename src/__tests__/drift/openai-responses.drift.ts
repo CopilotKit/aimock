@@ -358,7 +358,12 @@ describe.skipIf(!OPENAI_API_KEY && !EXHAUSTION_CAPTURE_DIR)(
             rejected: true,
           }),
         );
-        const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 17 });
+        const mock = new LLMock({
+          port: 0,
+          logLevel: "silent",
+          chunkSize: 17,
+          enableMisbehavior: true,
+        });
         mock.addFixture({
           match: {},
           response:

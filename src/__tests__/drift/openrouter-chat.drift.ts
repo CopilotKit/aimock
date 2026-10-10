@@ -147,7 +147,7 @@ function inspectK9Stream(raw: string) {
 }
 
 async function localK9Stream(reasoning: string) {
-  const mock = new LLMock({ port: 0, chunkSize: 11, logLevel: "silent" });
+  const mock = new LLMock({ port: 0, chunkSize: 11, logLevel: "silent", enableMisbehavior: true });
   mock.addFixture({
     match: { userMessage: K9_REQUEST.messages[0].content, model: K9_REQUEST.model },
     response: { content: "This answer must be suppressed." },

@@ -850,7 +850,7 @@ describe("Gemini modeled K5/K9 recurring contracts", () => {
             },
           },
         ],
-        { port: 0 },
+        { port: 0, enableMisbehavior: true },
       );
       try {
         const wire = await httpPost(

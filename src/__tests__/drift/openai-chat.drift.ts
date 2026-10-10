@@ -178,7 +178,7 @@ describe.skipIf(!OPENAI_API_KEY)("OpenAI Chat Completions drift", () => {
       return;
     }
     expect(real.status, `Real API error: ${realRaw.slice(0, 300)}`).toBe(200);
-    const k5Mock = new LLMock({ port: 0, chunkSize: 4 });
+    const k5Mock = new LLMock({ port: 0, chunkSize: 4, enableMisbehavior: true });
     k5Mock.addFixture({
       match: {},
       response: {

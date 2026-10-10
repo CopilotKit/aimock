@@ -263,7 +263,12 @@ describe.skipIf(!ANTHROPIC_API_KEY && !K5_CAPTURE_DIR)("Anthropic K5 exhaustion 
             : "wrong terminal rejected; original bytes restored",
         }),
       );
-      const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 9 });
+      const mock = new LLMock({
+        port: 0,
+        logLevel: "silent",
+        chunkSize: 9,
+        enableMisbehavior: true,
+      });
       mock.addFixture({
         match: {},
         response: {
@@ -519,7 +524,7 @@ async function k9Provider(variant: (typeof K9_VARIANTS)[number]) {
 describe("Anthropic K9 modeled exhaustion drift", () => {
   it.each(K9_VARIANTS)("$mode modeled localhost and bounded native trigger", async (variant) => {
     // Local modeled regressions run even when native credentials are absent.
-    const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 9 });
+    const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 9, enableMisbehavior: true });
     mock.addFixture({
       match: {},
       response: { content: "ANSWER MUST BE CLEARED", reasoning: "Consider the constraints." },
