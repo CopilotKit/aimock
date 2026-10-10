@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1133,5 +1133,137 @@ describe("startFromConfig", () => {
 
     // Server should start successfully with record config
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+});
+
+describe("startFromConfig: llm.record.mcp needs llm.enableMcpRecording", () => {
+  // 1.44.0 ignored llm.record.mcp, so without the opt-in it must change nothing:
+  // no MCP mount, no validation, no logLevel default, one warning.
+  const IGNORED =
+    "Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.";
+  let tmpDir: string;
+  let fixtures: string;
+  let cleanups: Array<() => Promise<void>> = [];
+  let warn: MockInstance<typeof console.warn>;
+  let construction: MockInstance<typeof llmockModule.createLLMockWithResolvedAuth>;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    // A fixture directory, so an enabled mount can record into <fixtures>/recorded.
+    fixtures = join(tmpDir, "fixtures");
+    mkdirSync(fixtures);
+    writeFixtureFile(fixtures);
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+    cleanups = [];
+  });
+
+  afterEach(async () => {
+    for (const cleanup of cleanups) await cleanup();
+    warn.mockRestore();
+    construction.mockRestore();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** POST an MCP initialize to `<url>/upmcp` and return the HTTP status. */
+  async function initializeStatus(url: string): Promise<number> {
+    const resp = await fetch(`${url}/upmcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "t", version: "1" },
+        },
+      }),
+    });
+    await resp.text();
+    return resp.status;
+  }
+
+  /** `llm.record.mcp` values as JSON; the type does not allow the invalid ones. */
+  function withMcp(mcp: unknown, llm: Record<string, unknown> = {}): AimockConfig {
+    return { llm: { fixtures, ...llm, record: { mcp } } } as unknown as AimockConfig;
+  }
+
+  it("without the opt-in, a valid mount is ignored with one warning", async () => {
+    const { llmock, url } = await startFromConfig(withMcp({ "/upmcp": "http://127.0.0.1:9" }));
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+    const options = construction.mock.calls[0][0];
+    expect(options.logLevel).toBeUndefined();
+    expect(options.record).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "http://127.0.0.1:9"],
+    ["an array", ["/upmcp", "http://127.0.0.1:9"]],
+    ["null", null],
+    ["a mount with no leading /", { upmcp: "http://127.0.0.1:9" }],
+    ["a bad upstream URL", { "/upmcp": "not a url" }],
+  ])("without the opt-in, %s starts with one warning", async (_name, mcp) => {
+    const { llmock, url } = await startFromConfig(withMcp(mcp));
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+  });
+
+  it("without the opt-in, a mount with no llm.fixtures starts", async () => {
+    const { llmock, url } = await startFromConfig({
+      llm: { record: { mcp: { "/upmcp": "http://127.0.0.1:9" } } },
+    } as unknown as AimockConfig);
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn).toHaveBeenCalledWith("[aimock]", IGNORED);
+  });
+
+  it("without the opt-in, LLM recording still gets the record config without mcp", async () => {
+    const config = withMcp({ "/upmcp": "http://127.0.0.1:9" });
+    config.llm!.record!.providers = { openai: "http://127.0.0.1:9" };
+    const { llmock } = await startFromConfig(config);
+    cleanups.push(() => llmock.stop());
+    expect(construction.mock.calls[0][0].record).toEqual({
+      providers: { openai: "http://127.0.0.1:9" },
+    });
+  });
+
+  it("with the opt-in, the mount is proxied and logLevel defaults to warn", async () => {
+    const { llmock, url } = await startFromConfig(
+      withMcp({ "/upmcp": "http://127.0.0.1:9" }, { enableMcpRecording: true }),
+    );
+    cleanups.push(() => llmock.stop());
+    // The recorder answers 502 because nothing listens upstream.
+    expect(await initializeStatus(url)).toBe(502);
+    expect(warn).not.toHaveBeenCalledWith("[aimock]", IGNORED);
+    expect(construction.mock.calls[0][0].logLevel).toBe("warn");
+  });
+
+  it("with the opt-in, an invalid llm.record.mcp fails startup", async () => {
+    await expect(
+      startFromConfig(withMcp("http://127.0.0.1:9", { enableMcpRecording: true })),
+    ).rejects.toThrow("llm.record.mcp must be an object of <mount>");
+  });
+
+  it("ignores a non-boolean llm.enableMcpRecording with a warning, and llm.record.mcp too", async () => {
+    const { llmock, url } = await startFromConfig(
+      withMcp("http://127.0.0.1:9", { enableMcpRecording: "true" }),
+    );
+    cleanups.push(() => llmock.stop());
+    expect(await initializeStatus(url)).toBe(404);
+    expect(warn.mock.calls).toEqual([
+      ["[aimock]", 'Ignoring llm.enableMcpRecording because it must be true or false, got "true".'],
+      ["[aimock]", IGNORED],
+    ]);
+    expect(construction.mock.calls[0][0].logLevel).toBeUndefined();
   });
 });

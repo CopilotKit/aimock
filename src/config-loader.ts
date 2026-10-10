@@ -124,6 +124,11 @@ export interface AimockConfig {
     /** See `MockServerOptions.enableMisbehavior`. */
     enableMisbehavior?: boolean;
     record?: AimockRecordConfig;
+    /**
+     * Turns on `llm.record.mcp`. Without it the key is ignored with a warning,
+     * as 1.44.0 ignored it.
+     */
+    enableMcpRecording?: boolean;
     /** See `MockServerOptions.strictToolArguments`. */
     strictToolArguments?: boolean;
     /** See `MockServerOptions.responsesTools`. */
@@ -154,8 +159,7 @@ export function loadConfig(configPath: string): AimockConfig {
 }
 
 /** C3: `llm.record.mcp` is an object with at least one mount. */
-function hasMcpRecordMount(config: AimockConfig): boolean {
-  const mcp: unknown = config.llm?.record?.mcp;
+function hasMcpRecordMount(mcp: unknown): boolean {
   return (
     typeof mcp === "object" && mcp !== null && !Array.isArray(mcp) && Object.keys(mcp).length > 0
   );
@@ -184,7 +188,9 @@ export async function startFromConfig(
   // 1.44.0 ignored these keys, so a non-boolean value (such as the string
   // "true") is ignored with a warning, as `llm.misbehavior` is, and the
   // option stays off.
-  const booleanOptIn = (key: "enableMisbehavior" | "strictToolArguments"): boolean | undefined => {
+  const booleanOptIn = (
+    key: "enableMisbehavior" | "enableMcpRecording" | "strictToolArguments",
+  ): boolean | undefined => {
     const value: unknown = config.llm?.[key];
     if (value === undefined || typeof value === "boolean") return value;
     logger.warn(
@@ -194,6 +200,12 @@ export async function startFromConfig(
   };
   const configEnableMisbehavior = booleanOptIn("enableMisbehavior");
   const configStrictToolArguments = booleanOptIn("strictToolArguments");
+  // MCP recording also needs an explicit opt-in. 1.44.0 ignored
+  // `llm.record.mcp`, so without `llm.enableMcpRecording: true` the key is
+  // ignored (with a warning): nothing is mounted or validated and the log level
+  // is unchanged. With the opt-in, an invalid value fails startup.
+  const enableMcpRecording = booleanOptIn("enableMcpRecording") === true;
+  const mcpRecord = enableMcpRecording ? config.llm?.record?.mcp : undefined;
   // Misbehavior needs an explicit opt-in that a 1.44.0 config cannot contain.
   // 1.44.0 ignored `llm.misbehavior`, so without the opt-in the key is ignored
   // (with a warning) and the server serves exactly what 1.44.0 served. With the
@@ -212,6 +224,11 @@ export async function startFromConfig(
       }
       misbehavior = parsed.config;
     }
+  }
+  if (config.llm?.record?.mcp !== undefined && !enableMcpRecording) {
+    logger.warn(
+      "Ignoring llm.record.mcp because MCP recording is not enabled. Set llm.enableMcpRecording: true to use it.",
+    );
   }
 
   // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
@@ -246,9 +263,9 @@ export async function startFromConfig(
       chunkSize: config.llm?.chunkSize,
       replaySpeed,
       // llm.record.mcp reports skipped or failed recordings only as MCP-RECORD: warnings,
-      // so a config with at least one mount defaults to "warn" rather than the silent
+      // so an enabled config with at least one mount defaults to "warn" rather than the silent
       // default. An empty llm.record.mcp records nothing. An explicit logLevel wins.
-      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(config) ? "warn" : undefined),
+      logLevel: config.llm?.logLevel ?? (hasMcpRecordMount(mcpRecord) ? "warn" : undefined),
       chaos: config.llm?.chaos,
       misbehavior,
       ...(enableMisbehavior ? { enableMisbehavior: true } : {}),
@@ -437,8 +454,8 @@ export async function startFromConfig(
   }
 
   // MR1: llm.record.mcp — record mounts (auto-mount an MCPMock where none is).
-  // Any value that is present is validated, so null, false, 0 and "" fail at start too.
-  const mcpRecord = config.llm?.record?.mcp;
+  // Read only with llm.enableMcpRecording: true. Any value that is present is then
+  // validated, so null, false, 0 and "" fail at start too.
   if (mcpRecord !== undefined) {
     wireMcpRecording(llmock, mcpRecord, {
       mounted: configMounts,
