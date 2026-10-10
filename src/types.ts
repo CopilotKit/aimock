@@ -50,19 +50,37 @@ export interface ChatMessage {
   content: string | ContentPart[] | null;
   name?: string;
   tool_calls?: ToolCallMessage[];
+  /**
+   * OpenAI Responses `custom_tool_call` history items. Set only when the
+   * server runs with `responsesTools: "extended"`; the default ignores
+   * custom tool call history, as earlier releases did.
+   */
+  custom_tool_calls?: CustomToolCallMessage[];
   tool_call_id?: string;
 }
 
 export interface ToolCallMessage {
   id: string;
+  type: "function";
   /**
-   * `"custom"` marks an OpenAI Responses `custom_tool_call` history item; its
-   * free-text `input` is carried in `function.arguments`.
+   * OpenAI Responses namespace of the called tool. Set only with
+   * `responsesTools: "extended"`, when the history item had one.
    */
-  type: "function" | "custom";
-  /** OpenAI Responses namespace of the called tool, when the history item had one. */
   namespace?: string;
   function: { name: string; arguments: string };
+}
+
+/**
+ * An OpenAI Responses `custom_tool_call` history item, normalized for fixture
+ * matching. Produced only with `responsesTools: "extended"`.
+ */
+export interface CustomToolCallMessage {
+  id: string;
+  type: "custom";
+  name: string;
+  /** Free-text input of the call ("" when the history item had none). */
+  input: string;
+  namespace?: string;
 }
 
 export interface ChatCompletionRequest {
@@ -103,6 +121,13 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   tools?: ToolDefinition[];
+  /**
+   * OpenAI Responses `custom` tools offered by the request (top level, inside
+   * a `namespace` tool, or in an `additional_tools` / `tool_search_output`
+   * input item). Set only with `responsesTools: "extended"`; `toolName`
+   * matches these as well as `tools`.
+   */
+  customTools?: CustomToolDefinition[];
   tool_choice?: string | object;
   response_format?: { type: string; [key: string]: unknown };
   /** Embedding input text, set by the embeddings handler for fixture matching. */
@@ -123,21 +148,30 @@ export interface ChatCompletionRequest {
 }
 
 /**
- * aimock's normalized request tool. OpenAI Responses `function` and `custom`
- * tools, including those inside a `namespace` tool, are flattened into this
- * form (the name always lives under `function.name`); other Responses tool
- * types are dropped. `format` is set only on a Responses `custom` tool. The
- * Responses adapter sets `namespace` only on a tool from inside a `namespace`
- * tool. Chat Completions passes its request tools through unchanged, so a
- * non-standard top-level `namespace` there is kept, but no other API's tool
- * format defines one.
+ * aimock's normalized request function tool. The OpenAI Responses adapter
+ * keeps only top-level `function` tools here by default. With
+ * `responsesTools: "extended"` it also adds the function tools inside a
+ * `namespace` tool (with `namespace` set) and those from `additional_tools` /
+ * `tool_search_output` input items.
  */
 export interface ToolDefinition {
-  type: "function" | "custom";
+  type: "function";
   function: { name: string; description?: string; parameters?: object };
-  /** OpenAI Responses namespace the tool was offered in. */
+  /** OpenAI Responses namespace the tool was offered in (extended mode only). */
   namespace?: string;
-  /** OpenAI Responses custom-tool input format (grammar or text), carried verbatim. */
+}
+
+/**
+ * An OpenAI Responses `custom` (freeform) tool offered by a request. See
+ * {@link ChatCompletionRequest.customTools}.
+ */
+export interface CustomToolDefinition {
+  type: "custom";
+  name: string;
+  description?: string;
+  /** OpenAI Responses namespace the tool was offered in, when inside a `namespace` tool. */
+  namespace?: string;
+  /** Custom-tool input format (grammar or text), carried verbatim. */
   format?: unknown;
 }
 
@@ -174,7 +208,8 @@ export interface FixtureMatch {
   /**
    * Exact OpenAI Responses tool namespace. Alone, it matches when any offered
    * tool sits in this namespace; with `toolName`, a single offered tool must
-   * carry both the name and the namespace.
+   * carry both the name and the namespace. It sees namespaced tools whatever
+   * the server's `responsesTools` mode.
    */
   toolNamespace?: string;
   model?: string | RegExp;
@@ -341,22 +376,23 @@ export interface TextResponse extends ResponseOverrides {
 }
 
 export interface ToolCall {
-  /**
-   * Optional; absent means a function call. `"toolCall"` (the block
-   * discriminator) is a legacy alias, also read as a function call.
-   */
-  type?: "function" | "toolCall";
   name: string;
   arguments: string;
   id?: string;
-  /** OpenAI Responses API only: emitted as `function_call.namespace`. Ignored by other wires. */
+  /**
+   * OpenAI Responses API only: emitted as `function_call.namespace` when the
+   * server runs with `responsesTools: "extended"`. Ignored otherwise, and by
+   * every other wire.
+   */
   namespace?: string;
 }
 
 /**
  * An OpenAI Responses custom (freeform) tool call, emitted as a
- * `custom_tool_call` item. Only the Responses API (HTTP and WebSocket) can
- * serve it; every other wire rejects it with `UnsupportedToolCallError`.
+ * `custom_tool_call` item. Fixtures carry it in `customToolCalls` (or as a
+ * `customToolCall` block in `responsesBlocks`). Only the Responses API (HTTP
+ * and WebSocket) can serve it; every other wire rejects it with
+ * `UnsupportedToolCallError`.
  */
 export interface CustomToolCall {
   type: "custom";
@@ -368,8 +404,11 @@ export interface CustomToolCall {
   namespace?: string;
 }
 
-/** One entry of a fixture's `toolCalls`: a function call or a custom tool call. */
-export type FixtureToolCall = ToolCall | CustomToolCall;
+/**
+ * A tool call the OpenAI Responses API serves: a function call (from
+ * `toolCalls`) or a custom tool call (from `customToolCalls`).
+ */
+export type FixtureToolCall = (ToolCall & { type?: undefined }) | CustomToolCall;
 
 /**
  * A single ordered streaming block for a {@link ContentWithToolCallsResponse}.
@@ -379,19 +418,30 @@ export type FixtureToolCall = ToolCall | CustomToolCall;
  * and interleaved orderings that the legacy `{ content, toolCalls }` shape
  * (always text-first) cannot express. A `text` block carries a text segment; a
  * `toolCall` block mirrors {@link ToolCall} (`name` + JSON-string `arguments`,
- * optional `id`); a `customToolCall` block mirrors {@link CustomToolCall}
- * (`name` + free-text `input`, optional `id`). Both tool blocks take an
- * optional `namespace`. Only the OpenAI Responses API accepts a
- * `customToolCall` block; every other wire rejects it with
- * `UnsupportedToolCallError`.
+ * optional `id`).
  */
 export type FixtureBlock =
   | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string }
+  | { type: "toolCall"; name: string; arguments: string; id?: string; namespace?: string };
+
+/**
+ * An ordered block for {@link ContentWithToolCallsResponse.responsesBlocks}:
+ * a {@link FixtureBlock}, or a `customToolCall` block that mirrors
+ * {@link CustomToolCall} (`name` + free-text `input`, optional `id` and
+ * `namespace`). Only the OpenAI Responses API serves `responsesBlocks`.
+ */
+export type ResponsesFixtureBlock =
+  | FixtureBlock
   | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface ToolCallResponse extends ResponseOverrides {
-  toolCalls: FixtureToolCall[];
+  toolCalls: ToolCall[];
+  /**
+   * OpenAI Responses custom tool calls, emitted after `toolCalls`. A turn with
+   * only custom calls sets `toolCalls: []`. Every other wire rejects a fixture
+   * with a non-empty `customToolCalls` (`UnsupportedToolCallError`).
+   */
+  customToolCalls?: CustomToolCall[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -413,7 +463,9 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
    */
   content?: string;
   /** See {@link ContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
-  toolCalls?: FixtureToolCall[];
+  toolCalls?: ToolCall[];
+  /** OpenAI Responses custom tool calls; see {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: CustomToolCall[];
   /**
    * Optional ordered streaming blocks. When present, builders stream these in
    * array order (tool-first / interleaved); when absent, the legacy
@@ -422,6 +474,13 @@ export interface ContentWithToolCallsResponse extends ResponseOverrides {
    * response even without `content`/`toolCalls` (see those fields above).
    */
   blocks?: FixtureBlock[];
+  /**
+   * OpenAI Responses only: ordered blocks that may include `customToolCall`
+   * blocks. On the Responses API they replace `blocks`; a fixture may not set
+   * both. Every other wire rejects a `customToolCall` block here
+   * (`UnsupportedToolCallError`) and otherwise ignores this field.
+   */
+  responsesBlocks?: ResponsesFixtureBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -514,10 +573,7 @@ export interface AudioResponse {
    * Companion modalities that can accompany streamed audio. A single Gemini turn
    * may interleave inlineData audio with a functionCall and/or text/thought
    * parts; the recorder preserves them here so the tool call / content / reasoning
-   * are not silently discarded when audio is also present. Function calls
-   * only: a custom entry in an untyped (JSON or factory) fixture is, like
-   * everywhere outside the OpenAI Responses API, rejected with
-   * `UnsupportedToolCallError` when served.
+   * are not silently discarded when audio is also present.
    */
   toolCalls?: ToolCall[];
   content?: string;
@@ -847,21 +903,22 @@ export type FalQueueOpts = FixtureOpts & { billableUnits?: number };
 // stringifies these before building the runtime Fixture.
 
 export interface FixtureFileToolCall {
-  /**
-   * `"custom"` makes this an OpenAI Responses custom tool call (uses `input`,
-   * not `arguments`). `"toolCall"` is a legacy alias for a function call.
-   */
-  type?: "function" | "custom" | "toolCall";
   name: string;
-  /**
-   * Function calls only. Accepts a JSON object or array for convenience — the
-   * loader will JSON.stringify it.
-   */
-  arguments?: string | Record<string, unknown> | unknown[];
-  /** Custom tool calls only: free-text input, never parsed or stringified. */
-  input?: string;
+  /** Accepts a JSON object or array for convenience — the loader will JSON.stringify it. */
+  arguments: string | Record<string, unknown> | unknown[];
   id?: string;
-  /** OpenAI Responses namespace; ignored by other wires. */
+  /** OpenAI Responses namespace; see {@link ToolCall.namespace}. */
+  namespace?: string;
+}
+
+/** On-disk counterpart of {@link CustomToolCall} (`customToolCalls` entries). */
+export interface FixtureFileCustomToolCall {
+  /** Optional in a file: every `customToolCalls` entry is a custom call. */
+  type?: "custom";
+  name: string;
+  /** Free-text input, never parsed or stringified. */
+  input: string;
+  id?: string;
   namespace?: string;
 }
 
@@ -869,8 +926,7 @@ export interface FixtureFileToolCall {
  * On-disk counterpart of {@link FixtureBlock}. A `toolCall` block's
  * `arguments` is relaxed exactly like {@link FixtureFileToolCall} so authors
  * may write a JSON object/array; the loader JSON.stringifies it into the
- * runtime string form. A `customToolCall` block's `input` is always a string
- * and is never stringified or parsed. Normalizes to a {@link FixtureBlock}.
+ * runtime string form. Normalizes to a {@link FixtureBlock}.
  */
 export type FixtureFileBlock =
   | { type: "text"; text: string }
@@ -881,11 +937,17 @@ export type FixtureFileBlock =
       arguments: string | Record<string, unknown> | unknown[];
       id?: string;
       namespace?: string;
-    }
+    };
+
+/** On-disk counterpart of {@link ResponsesFixtureBlock} (`responsesBlocks` entries). */
+export type FixtureFileResponsesBlock =
+  | FixtureFileBlock
   | { type: "customToolCall"; name: string; input: string; id?: string; namespace?: string };
 
 export interface FixtureFileToolCallResponse extends ResponseOverrides {
   toolCalls: FixtureFileToolCall[];
+  /** See {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: FixtureFileCustomToolCall[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -915,6 +977,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
   content?: string | Record<string, unknown> | unknown[];
   /** See {@link FixtureFileContentWithToolCallsResponse.content} — optional only for the blocks-only shape. */
   toolCalls?: FixtureFileToolCall[];
+  /** See {@link ToolCallResponse.customToolCalls}. */
+  customToolCalls?: FixtureFileCustomToolCall[];
   /**
    * Optional ordered streaming blocks (mirrors the in-memory
    * {@link ContentWithToolCallsResponse.blocks}). When present, builders stream
@@ -925,6 +989,8 @@ export interface FixtureFileContentWithToolCallsResponse extends ResponseOverrid
    * `blocks` array alone makes this a first-class blocks-only fixture.
    */
   blocks?: FixtureFileBlock[];
+  /** See {@link ContentWithToolCallsResponse.responsesBlocks}. */
+  responsesBlocks?: FixtureFileResponsesBlock[];
   reasoning?: string;
   /** Real Anthropic thinking-block signature; see {@link TextResponse.reasoningSignature}. */
   reasoningSignature?: string;
@@ -1375,6 +1441,9 @@ export interface FalRecordConfig {
   timeoutMs?: number;
 }
 
+/** See {@link MockServerOptions.responsesTools}. */
+export type ResponsesToolsMode = "legacy" | "extended";
+
 export interface MockServerOptions {
   live?: LiveOptions;
   /** Optional inbound test-client access keys. Omit to preserve permissive behavior. */
@@ -1410,6 +1479,19 @@ export interface MockServerOptions {
    * Interactions paths) serve the authored text unchanged.
    */
   strictToolArguments?: boolean;
+  /**
+   * OpenAI Responses tool handling. `"legacy"` (the default) matches,
+   * counts and journals Responses requests exactly as earlier releases did:
+   * only top-level function tools are visible, custom tool call history is not
+   * counted, and a `namespace` on a `toolCalls` entry or `toolCall` block is
+   * not emitted. `"extended"` makes namespaced, custom and `additional_tools`
+   * / `tool_search_output` tools visible to `toolName` and predicates, counts
+   * custom tool call rounds for `turnIndex` / `hasToolResult` / `toolCallId`,
+   * emits fixture namespaces, and makes the recorder keep namespaces and
+   * custom tool calls. `match.toolNamespace`, `customToolCalls` and
+   * `responsesBlocks` work in both modes.
+   */
+  responsesTools?: ResponsesToolsMode;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
   /**
@@ -1551,6 +1633,8 @@ export interface HandlerDefaults {
   strict?: boolean;
   /** See {@link MockServerOptions.strictToolArguments}. */
   strictToolArguments?: boolean;
+  /** See {@link MockServerOptions.responsesTools}. Absent means `"legacy"`. */
+  responsesTools?: ResponsesToolsMode;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   falQueue?: FalQueueConfig;
   openRouterVideo?: FalQueueConfig;

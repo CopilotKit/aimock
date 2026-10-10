@@ -9,7 +9,7 @@ import type {
   Fixture,
   FixtureMatch,
   FixtureResponse,
-  FixtureToolCall,
+  ResponsesToolsMode,
   RecordConfig,
   RecordedTimings,
   RecordProviderKey,
@@ -19,7 +19,11 @@ import type {
 import { getLastMessageByRole, getTextContent, currentTurnHasToolResult } from "./router.js";
 import { normalizeModelName } from "./model-utils.js";
 import type { Logger } from "./logger.js";
-import { collapseStreamingResponse, capturedRedactedData } from "./stream-collapse.js";
+import {
+  collapseStreamingResponse,
+  capturedRedactedData,
+  type CollapseResult,
+} from "./stream-collapse.js";
 import { writeErrorResponse } from "./sse-writer.js";
 import { resolveUpstreamUrl } from "./url.js";
 import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.js";
@@ -520,6 +524,7 @@ export async function proxyAndRecord(
     record?: RecordConfig;
     logger: Logger;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
+    responsesTools?: ResponsesToolsMode;
   },
   rawBody?: string,
   options?: ProxyOptions,
@@ -706,12 +711,19 @@ export async function proxyAndRecord(
   const contentType = upstreamHeaders["content-type"];
   const ctString = pickContentType(contentType);
   const isBinaryStream = ctString.toLowerCase().includes("application/vnd.amazon.eventstream");
-  const collapsed = collapseStreamingResponse(
+  // OpenAI Responses namespaces and custom tool calls are recorded only with
+  // responsesTools "extended"; otherwise the recording is what earlier
+  // releases wrote (namespaces dropped, custom calls not recorded).
+  const collapsedRaw = collapseStreamingResponse(
     ctString,
     providerKey,
     isBinaryStream ? rawBuffer : upstreamBody,
     defaults.logger,
   );
+  const collapsed =
+    collapsedRaw && defaults.responsesTools !== "extended"
+      ? withoutResponsesToolFields(collapsedRaw)
+      : collapsedRaw;
 
   let fixtureResponse: FixtureResponse;
 
@@ -780,7 +792,11 @@ export async function proxyAndRecord(
       const audioToolCallsSpread =
         collapsed.toolCalls && collapsed.toolCalls.length > 0
           ? {
-              toolCalls: collapsed.toolCalls.map(sanitizeRecordedToolCall),
+              toolCalls: collapsed.toolCalls.map((tc) => ({
+                ...tc,
+                name: tc.name ?? "",
+                arguments: tc.arguments ?? "{}",
+              })),
             }
           : {};
       const audioContentSpread = collapsed.content ? { content: collapsed.content } : {};
@@ -796,7 +812,8 @@ export async function proxyAndRecord(
       };
     } else if (
       collapsed.content === "" &&
-      (!collapsed.toolCalls || collapsed.toolCalls.length === 0)
+      (!collapsed.toolCalls || collapsed.toolCalls.length === 0) &&
+      !collapsed.customToolCalls?.length
     ) {
       defaults.logger.warn("Stream collapse produced empty content — fixture may be incomplete");
       const reasoningSpread = collapsed.reasoning ? { reasoning: collapsed.reasoning } : {};
@@ -852,7 +869,35 @@ export async function proxyAndRecord(
       const webSearchesSpread = collapsed.webSearches?.length
         ? { webSearches: collapsed.webSearches }
         : {};
-      if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
+      if (collapsed.customToolCalls?.length) {
+        // responsesTools "extended" only: a turn with OpenAI Responses custom
+        // tool calls. `toolCalls` (possibly empty) keeps the function calls,
+        // so earlier releases replay the recording exactly as they replay
+        // their own (they ignore the new keys). `responsesBlocks` replaces
+        // `blocks` when the collapser needed it to keep the order.
+        const toolCalls = (collapsed.toolCalls ?? []).map(sanitizeRecordedToolCall);
+        const customToolCalls = collapsed.customToolCalls.map((tc) => ({
+          ...tc,
+          name: tc.name ?? "",
+          input: tc.input ?? "",
+        }));
+        const orderSpread = collapsed.responsesBlocks?.length
+          ? { responsesBlocks: collapsed.responsesBlocks }
+          : collapsed.blocks?.length
+            ? { blocks: collapsed.blocks }
+            : {};
+        fixtureResponse = {
+          ...(collapsed.content ? { content: collapsed.content } : {}),
+          toolCalls,
+          customToolCalls,
+          ...orderSpread,
+          ...reasoningSpread,
+          ...reasoningSignatureSpread,
+          ...redactedThinkingSpread,
+          ...webSearchesSpread,
+          ...usageSpread,
+        };
+      } else if (collapsed.toolCalls && collapsed.toolCalls.length > 0) {
         const sanitizedToolCalls = collapsed.toolCalls.map(sanitizeRecordedToolCall);
         if (collapsed.content) {
           // Both content and toolCalls present — save as ContentWithToolCallsResponse.
@@ -1581,17 +1626,36 @@ function logDroppedReasoningSignature(
   }
 }
 
-/**
- * Sanitize a collapsed tool call per kind before it is persisted. A function
- * call always gets a string `arguments` (`"{}"` when missing). A Responses
- * custom call keeps its free-text `input` (`""` when missing) and never gets
- * `arguments`.
- */
-function sanitizeRecordedToolCall(tc: FixtureToolCall): FixtureToolCall {
-  if (tc.type === "custom") {
-    return { ...tc, name: tc.name ?? "", input: tc.input ?? "" };
-  }
+/** Sanitize a collapsed function call before it is persisted: string `name` and `arguments`. */
+function sanitizeRecordedToolCall(tc: ToolCall): ToolCall {
   return { ...tc, name: tc.name ?? "", arguments: tc.arguments ?? "{}" };
+}
+
+/**
+ * A collapse result as earlier releases recorded it: no `namespace` on a
+ * function call or `toolCall` block, and no custom tool calls.
+ */
+function withoutResponsesToolFields(collapsed: CollapseResult): CollapseResult {
+  const result: CollapseResult = { ...collapsed };
+  delete result.customToolCalls;
+  delete result.responsesBlocks;
+  if (result.toolCalls) {
+    result.toolCalls = result.toolCalls.map((tc) => {
+      if (tc.namespace === undefined) return tc;
+      const copy = { ...tc };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  if (result.blocks) {
+    result.blocks = result.blocks.map((block) => {
+      if (block.type === "text" || block.namespace === undefined) return block;
+      const copy = { ...block };
+      delete copy.namespace;
+      return copy;
+    });
+  }
+  return result;
 }
 
 /**

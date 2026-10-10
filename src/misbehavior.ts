@@ -1,14 +1,17 @@
 import {
+  assertCustomToolCalls,
   assertResponsesToolCalls,
   isContentWithToolCallsResponse,
   isErrorResponse,
   isTextResponse,
   isToolCallResponse,
   rebuildOrderedBlocks,
-  requireFunctionToolCalls,
-  resolveFixtureBlockCallOutcome,
+  requireEmittedFunctionToolCalls,
   resolveFixtureBlocks,
+  resolveServedBlockOutcome,
+  servedToolCalls,
   toolCallFixtureBlock,
+  withServedToolCalls,
   resolveTestId,
   toolArgsForWire,
   strictToolArgumentsEnabled,
@@ -19,9 +22,9 @@ import type {
   ChatCompletionRequest,
   ContentWithToolCallsResponse,
   Fixture,
-  FixtureBlock,
   FixtureResponse,
   FixtureToolCall,
+  ResponsesFixtureBlock,
   HandlerDefaults,
   JournalEntry,
   MisbehaviorConfig,
@@ -224,9 +227,7 @@ function invalidJsonArguments(
  * here with a custom call on any other wire.
  */
 function faultBlockOutcome(response: FixtureResponse) {
-  return isContentWithToolCallsResponse(response) && response.blocks?.length
-    ? resolveFixtureBlockCallOutcome(response.blocks)
-    : undefined;
+  return isContentWithToolCallsResponse(response) ? resolveServedBlockOutcome(response) : undefined;
 }
 
 /**
@@ -252,13 +253,12 @@ function rewriteFaultToolCalls(
   outcome: ReturnType<typeof faultBlockOutcome>,
   toolCalls: FixtureToolCall[],
 ): FixtureResponse {
-  if (!outcome) return { ...response, toolCalls };
-  return {
-    ...response,
-    content: outcome.content,
+  if (!outcome) return withServedToolCalls(response, toolCalls);
+  return withServedToolCalls(
+    { ...response, content: outcome.content },
     toolCalls,
-    blocks: rebuildOrderedBlocks(outcome.ordered, toolCalls),
-  };
+    rebuildOrderedBlocks(outcome.ordered, toolCalls),
+  );
 }
 
 /** Prepare K1 without selecting a fault, spending counters, or mutating input. */
@@ -271,7 +271,7 @@ export function prepareInvalidJsonCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -303,7 +303,7 @@ export function prepareMissingRequiredCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -366,7 +366,7 @@ export function prepareWrongTypeCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -432,7 +432,7 @@ export function prepareExtraPropertyCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -485,7 +485,7 @@ export function prepareEnumMismatchCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -544,7 +544,7 @@ export function prepareNotObjectCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1050,11 +1050,8 @@ export function validateFixtureMisbehavior(
         reason = "misbehavior/not-applicable";
       } else {
         const calls =
-          combined && response.blocks?.length
-            ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
-            : "toolCalls" in response
-              ? (response.toolCalls ?? [])
-              : [];
+          (combined ? resolveServedBlockOutcome(response)?.toolCalls : undefined) ??
+          ("toolCalls" in response ? servedToolCalls(response) : []);
         const toolFault = fault.fault.startsWith("tool-") || fault.fault === "stop-length-mid-tool";
         // Tool faults target function calls only; other faults may scope to any non-custom call.
         const target = toolFault
@@ -1140,7 +1137,7 @@ export function prepareUnknownNameCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1194,7 +1191,7 @@ export function prepareDuplicateIdCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const sourceIndex = faultTargetIndex(calls, fault.tool);
   const source = functionCallAt(calls, sourceIndex);
   if (!source) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1224,17 +1221,17 @@ export function prepareDuplicateIdCandidate(
   }
   if (source.id === undefined) delete toolCalls[destinationIndex].id;
   else toolCalls[destinationIndex].id = source.id;
-  let rewritten: FixtureResponse = { ...response, toolCalls };
+  let rewritten: FixtureResponse = withServedToolCalls(response, toolCalls);
   if (outcome) {
     let callIndex = 0;
-    const blocks = outcome.ordered.flatMap<FixtureBlock>((block) => {
+    const blocks = outcome.ordered.flatMap<ResponsesFixtureBlock>((block) => {
       if (block.type === "text") return [{ ...block }];
       const isSource = callIndex === sourceIndex;
       const rewrittenBlock = toolCallFixtureBlock(toolCalls[callIndex++]);
       if (!(inserted && isSource)) return [rewrittenBlock];
       return [rewrittenBlock, toolCallFixtureBlock(toolCalls[callIndex++])];
     });
-    rewritten = { ...response, content: outcome.content, toolCalls, blocks };
+    rewritten = withServedToolCalls({ ...response, content: outcome.content }, toolCalls, blocks);
   }
   return {
     kind: "ready",
@@ -1256,7 +1253,7 @@ export function prepareLengthCandidate(
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
-  const calls = outcome?.toolCalls ?? response.toolCalls ?? [];
+  const calls = outcome?.toolCalls ?? servedToolCalls(response);
   const index = faultTargetIndex(calls, fault.tool);
   const target = functionCallAt(calls, index);
   if (!target) return { kind: "not-applicable", detail: "Target tool call is absent" };
@@ -1273,9 +1270,9 @@ export function prepareLengthCandidate(
         ? { ...call, arguments: canonical.slice(0, cut) }
         : { ...call },
     );
-  let rewritten: FixtureResponse = { ...response, toolCalls };
+  let rewritten: FixtureResponse = withServedToolCalls(response, toolCalls);
   if (outcome) {
-    const blocks: FixtureBlock[] = [];
+    const blocks: ResponsesFixtureBlock[] = [];
     let callIndex = 0;
     let content = "";
     for (const block of outcome.ordered) {
@@ -1287,7 +1284,7 @@ export function prepareLengthCandidate(
         if (callIndex++ === index) break;
       }
     }
-    rewritten = { ...response, content, toolCalls, blocks };
+    rewritten = withServedToolCalls({ ...response, content }, toolCalls, blocks);
   }
   return {
     kind: "ready",
@@ -1299,7 +1296,9 @@ export function prepareLengthCandidate(
 function clearChatOutput(response: ContentWithToolCallsResponse): ContentWithToolCallsResponse {
   const cleared = { ...response, content: "" };
   delete cleared.blocks;
+  delete cleared.responsesBlocks;
   delete cleared.toolCalls;
+  delete cleared.customToolCalls;
   delete cleared.reasoning;
   delete cleared.reasoningSignature;
   delete cleared.redactedThinking;
@@ -1326,11 +1325,9 @@ export function prepareEmptyCandidate(
     return { kind: "not-applicable", detail: "Response is not a chat response" };
   if (fault.tool !== undefined) {
     const calls =
-      isContentWithToolCallsResponse(response) && response.blocks?.length
-        ? resolveFixtureBlockCallOutcome(response.blocks).toolCalls
-        : "toolCalls" in response
-          ? (response.toolCalls ?? [])
-          : [];
+      (isContentWithToolCallsResponse(response)
+        ? resolveServedBlockOutcome(response)?.toolCalls
+        : undefined) ?? ("toolCalls" in response ? servedToolCalls(response) : []);
     // A custom tool call is never a fault target: naming one selects nothing.
     if (!calls.some((call) => call.name === fault.tool && call.type !== "custom"))
       return {
@@ -1541,18 +1538,18 @@ function misbehaviorRoll(seed: number): number {
 function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse): boolean {
   if (typeof response !== "object" || response === null) return true;
   const blocks = "blocks" in response ? response.blocks : undefined;
-  const calls = "toolCalls" in response ? response.toolCalls : undefined;
   let functionCalls: Pick<ToolCall, "name" | "arguments">[] = [];
   try {
-    if (Array.isArray(blocks) && blocks.length > 0) {
-      if (wire === "openai-responses") resolveFixtureBlocks(blocks, { allowCustom: true });
-      else
-        functionCalls = resolveFixtureBlocks(blocks, { wire }).filter(
-          (block) => block.type === "toolCall",
-        );
-    } else if (Array.isArray(calls)) {
-      if (wire === "openai-responses") assertResponsesToolCalls(calls);
-      else functionCalls = requireFunctionToolCalls(calls, wire);
+    if (wire === "openai-responses") {
+      if (!resolveServedBlockOutcome(response) && "toolCalls" in response) {
+        assertCustomToolCalls(response);
+        assertResponsesToolCalls(servedToolCalls(response));
+      }
+    } else if ("toolCalls" in response || "blocks" in response || "responsesBlocks" in response) {
+      functionCalls = requireEmittedFunctionToolCalls(response, wire);
+      if (Array.isArray(blocks) && blocks.length > 0) {
+        functionCalls = resolveFixtureBlocks(blocks).filter((block) => block.type === "toolCall");
+      }
     }
   } catch {
     return false;

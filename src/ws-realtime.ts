@@ -20,7 +20,8 @@ import {
   fixtureToolCallErrorCode,
   isFixtureToolCallError,
   journalFixtureToolCallError,
-  requireFunctionToolCalls,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
   type FunctionFixtureBlock,
   generateToolCallId,
   flattenHeaders,
@@ -1427,16 +1428,13 @@ async function handleResponseCreate(
       defaults.logger,
       () =>
         combined && prepared.blocks?.length
-          ? resolveFixtureBlocks(prepared.blocks, { wire: REALTIME_WIRE })
+          ? resolveFixtureBlocks(prepared.blocks)
           : [
               ...((isTextResponse(prepared) || combined) && prepared.content
                 ? [{ type: "text" as const, text: prepared.content }]
                 : []),
               ...(isToolCallResponse(prepared) || combined
-                ? requireFunctionToolCalls(prepared.toolCalls ?? [], REALTIME_WIRE).map((call) => ({
-                    ...call,
-                    type: "toolCall" as const,
-                  }))
+                ? (prepared.toolCalls ?? []).map((call) => ({ type: "toolCall" as const, ...call }))
                 : []),
             ],
     );
@@ -1530,7 +1528,10 @@ async function handleResponseCreate(
         responseId,
         isBeta,
         defaults.logger,
-        () => resolveFixtureBlocks(blocks, { wire: REALTIME_WIRE }),
+        () => {
+          rejectResponsesOnlyToolCalls(response, REALTIME_WIRE);
+          return resolveFixtureBlocks(blocks);
+        },
       );
       if (!resolvedBlocks) return;
       await streamRealtimeBlocks(
@@ -1554,7 +1555,7 @@ async function handleResponseCreate(
       responseId,
       isBeta,
       defaults.logger,
-      () => requireFunctionToolCalls(response.toolCalls ?? [], REALTIME_WIRE),
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
     );
     if (!functionToolCalls) return;
 
@@ -2161,7 +2162,7 @@ async function handleResponseCreate(
       responseId,
       isBeta,
       defaults.logger,
-      () => requireFunctionToolCalls(response.toolCalls, REALTIME_WIRE),
+      () => requireServedFunctionToolCalls(response, REALTIME_WIRE),
     );
     if (!toolCalls) return;
 

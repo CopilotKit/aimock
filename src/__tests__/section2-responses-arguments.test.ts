@@ -100,8 +100,6 @@ function expectFixtureError(result: Awaited<ReturnType<typeof request>>, path: P
   expect(JSON.parse(result.body)).toEqual({
     error: {
       type: "server_error",
-      // A malformed tool-call block carries the coded fixture tool-call error.
-      ...(path === "blocks" ? { code: "aimock_invalid_fixture_tool_call" } : {}),
       message: expect.stringMatching(
         path === "blocks"
           ? /Invalid fixture block.*arguments/

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync, type Stats } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { createServer } from "./server.js";
+import type { ResponsesToolsMode } from "./types.js";
 import {
   FixtureLoadError,
   MisbehaviorConfigError,
@@ -50,6 +51,8 @@ Options:
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
       --strict-tool-arguments  Reject fixture tool calls with invalid JSON arguments instead of serving {} (default: false)
+      --responses-tools <mode>  OpenAI Responses tool handling: legacy (default) or extended (namespaced and
+                            custom tools visible to matching, custom tool rounds counted, namespaces emitted and recorded)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
@@ -98,6 +101,7 @@ const { values } = parseArgs({
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
     "strict-tool-arguments": { type: "boolean", default: false },
+    "responses-tools": { type: "string" },
     "provider-openai": { type: "string" },
     "provider-anthropic": { type: "string" },
     "provider-gemini": { type: "string" },
@@ -171,6 +175,19 @@ if (Number.isNaN(replaySpeed) || replaySpeed <= 0) {
   console.error("--replay-speed must be a positive number");
   process.exit(1);
 }
+
+const responsesToolsFlag = values["responses-tools"];
+if (
+  responsesToolsFlag !== undefined &&
+  responsesToolsFlag !== "legacy" &&
+  responsesToolsFlag !== "extended"
+) {
+  console.error(
+    `Invalid --responses-tools: ${responsesToolsFlag} (expected "legacy" or "extended")`,
+  );
+  process.exit(1);
+}
+const responsesTools: ResponsesToolsMode | undefined = responsesToolsFlag;
 
 const journalMax = Number(values["journal-max"]);
 if (Number.isNaN(journalMax) || !Number.isInteger(journalMax) || journalMax < 0) {
@@ -685,6 +702,7 @@ async function main() {
       strict: values.strict,
       strictToolArguments: values["strict-tool-arguments"],
       enableMisbehavior: values.misbehavior,
+      ...(responsesTools !== undefined ? { responsesTools } : {}),
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,

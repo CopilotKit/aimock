@@ -18,7 +18,6 @@ import {
   buildContentWithToolCallsCompletion,
   buildUsageChunk,
   isContentWithToolCallsResponse,
-  requireFunctionToolCalls,
   resolveFixtureBlocks,
 } from "../helpers.js";
 import {
@@ -1001,10 +1000,7 @@ for (const blocks of [false, true]) {
         })),
       );
       expect("toolCalls" in prepared.response && prepared.response.toolCalls).toEqual(served);
-      const wireCalls = buildToolCallCompletion(
-        served.map(({ name, arguments: args, id }) => ({ name, arguments: args, id })),
-        "gpt-4o",
-      ).choices[0].message.tool_calls;
+      const wireCalls = buildToolCallCompletion(served, "gpt-4o").choices[0].message.tool_calls;
       expect(wireCalls?.map(({ id, function: fn }) => ({ id, ...fn }))).toEqual(served);
       if (blocks) {
         expect("blocks" in prepared.response && prepared.response.blocks).toEqual([
@@ -1307,7 +1303,7 @@ for (const blocks of [false, true]) {
       if (!isContentWithToolCallsResponse(output))
         throw new Error("Expected combined prepared output");
       const overrides = extractOverrides(output);
-      const toolCalls = requireFunctionToolCalls(output.toolCalls ?? [], "OpenAI Chat Completions");
+      const toolCalls = output.toolCalls ?? [];
       const chunks = buildContentWithToolCallsChunks(
         output.content ?? "",
         toolCalls,

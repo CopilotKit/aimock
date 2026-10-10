@@ -870,15 +870,21 @@ describe("validateFixtures", () => {
     ).toBe(true);
   });
 
-  it("error: an array block is rejected as a non-object, like any other non-object block", () => {
+  it("error: a non-object block is rejected; an array block fails the type check (1.44.0)", () => {
     const withBlock = (block: unknown) =>
       validateFixtures([makeFixture({ response: { blocks: [block] } as never })]);
-    const expected = [
+    expect(withBlock("x")).toEqual([
       { severity: "error", fixtureIndex: 0, message: "blocks[0] must be an object" },
+    ]);
+    const typeError = [
+      {
+        severity: "error",
+        fixtureIndex: 0,
+        message: 'blocks[0].type must be "text" or "toolCall", got undefined',
+      },
     ];
-    expect(withBlock("x")).toEqual(expected);
-    expect(withBlock(["x"])).toEqual(expected);
-    expect(withBlock([])).toEqual(expected);
+    expect(withBlock(["x"])).toEqual(typeError);
+    expect(withBlock([])).toEqual(typeError);
   });
 
   it("error: an array toolCalls entry gets the same results as any other non-object entry", () => {

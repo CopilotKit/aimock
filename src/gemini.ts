@@ -28,7 +28,7 @@ import {
   isErrorResponse,
   isAudioResponse,
   extractOverrides,
-  requireFunctionToolCalls,
+  requireServedFunctionToolCalls,
   requireEmittedFunctionToolCalls,
   validateToolsField,
   formatToMime,
@@ -841,9 +841,7 @@ function prepareGeminiMisbehavior(
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
   // The planner skips a custom-call fixture on this wire, so this narrowing
   // never throws; the normal path's guard rejects it instead.
-  const calls =
-    outcome?.toolCalls ??
-    requireFunctionToolCalls("toolCalls" in response ? (response.toolCalls ?? []) : [], "Gemini");
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
   const overrides = extractOverrides(response);
   delete overrides.usage;
   const fault = plan.summary.fault;
@@ -1311,7 +1309,7 @@ export async function handleGemini(
     });
     // A non-array companion `toolCalls` emits no tool parts, as before custom calls existed.
     const audioToolCalls = Array.isArray(response.toolCalls)
-      ? requireFunctionToolCalls(response.toolCalls, wire)
+      ? requireServedFunctionToolCalls(response, wire)
       : [];
     if (!streaming) {
       const body = buildGeminiAudioResponse(response, audioToolCalls, logger, effReasoning);
