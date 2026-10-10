@@ -1,5 +1,6 @@
 import type { MisbehaviorPlan, ServedMisbehaviorToolCall } from "./misbehavior.js";
 import type { LiveFixtureResponse } from "./live-types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
@@ -71,6 +72,64 @@ export class InvalidToolArgumentsError extends Error {
     this.toolName = tc.name;
     this.parseDiagnostic = parseDiagnostic;
   }
+}
+
+/**
+ * The `strictToolArguments` server option and logger in effect for the request
+ * being served. The server enters it once per HTTP request and once per Gemini
+ * Live message, so response builders read it without extra parameters.
+ */
+interface ToolArgumentsScope {
+  strict: boolean;
+  logger?: Logger;
+}
+
+const toolArgumentsScope = new AsyncLocalStorage<ToolArgumentsScope>();
+
+/** Run `fn` with the `strictToolArguments` setting and logger of one request. */
+export function runWithToolArgumentsScope<T>(scope: ToolArgumentsScope, fn: () => T): T {
+  return toolArgumentsScope.run(scope, fn);
+}
+
+/** Whether `strictToolArguments` is on for the request being served (default off). */
+export function strictToolArgumentsEnabled(): boolean {
+  return toolArgumentsScope.getStore()?.strict === true;
+}
+
+/**
+ * Serve the rest of this request's tool arguments as authored (the
+ * `strictToolArguments` behavior). An applied misbehavior fault calls this so
+ * that the malformed arguments it injects are not replaced with `{}`; the
+ * planner only applies a fault to a fixture whose own arguments are valid
+ * wherever the default would replace them.
+ */
+export function keepAuthoredToolArguments(): void {
+  const scope = toolArgumentsScope.getStore();
+  if (scope) scope.strict = true;
+}
+
+/**
+ * The fixture tool-call arguments a wire serves on its normal (no misbehavior)
+ * path. Valid JSON gives the parsed value, its re-serialized text, and the
+ * authored text. Invalid JSON logs one warning and, by default, is served as
+ * `{}` / `"{}"`, as in 1.44.0. With `strictToolArguments`, an object wire
+ * (`"object"`) throws {@link InvalidToolArgumentsError} and a string wire
+ * (`"string"`) serves the authored text unchanged.
+ */
+export function servedToolArgs(
+  tc: Pick<ToolCall, "name" | "arguments">,
+  wire: "object" | "string",
+  logger?: Logger,
+): { value: unknown; text: string; raw: string } {
+  const args = toolArgsForWire(tc);
+  if (args.kind === "parsed") return args;
+  const scope = toolArgumentsScope.getStore();
+  (logger ?? scope?.logger)?.warn(
+    `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
+  );
+  if (scope?.strict !== true) return { value: {}, text: "{}", raw: "{}" };
+  if (wire === "object") throw new InvalidToolArgumentsError(tc);
+  return { value: undefined, text: args.raw, raw: args.raw };
 }
 
 /**

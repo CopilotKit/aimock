@@ -116,6 +116,8 @@ export interface AimockConfig {
     chaos?: ChaosConfig;
     misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
     record?: AimockRecordConfig;
+    /** See `MockServerOptions.strictToolArguments`. */
+    strictToolArguments?: boolean;
   };
   mcp?: MCPConfig;
   a2a?: A2AConfig;
@@ -178,6 +180,7 @@ export async function startFromConfig(
       record: llmRecordOf(config.llm?.record),
       metrics: config.metrics,
       strict: config.strict,
+      strictToolArguments: config.llm?.strictToolArguments,
     },
     resolvedAuth,
   );
