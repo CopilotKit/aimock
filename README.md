@@ -101,7 +101,7 @@ Run them all on one port with `npx @copilotkit/aimock --config aimock.json`, or 
 - **[Rate Limiting Headers](https://aimock.copilotkit.dev/chaos-testing)** — `x-ratelimit-*` headers on every response and `Retry-After` on 429 errors for testing retry/backoff logic
 - **Zero dependencies** — Everything from Node.js builtins
 
-Model misbehavior requires a build that includes this Unreleased feature. Older versions silently ignore the fixture's `misbehavior` field and serve its original response. Invalid configurations now fail during fixture loading or programmatic addition. See the [model misbehavior reference](https://aimock.copilotkit.dev/model-misbehavior) for supported parameters and compatibility details.
+Model misbehavior requires aimock 1.45.0 or later. Older versions silently ignore the fixture's `misbehavior` field and serve its original response. Invalid configurations now fail during fixture loading or programmatic addition. See the [model misbehavior reference](https://aimock.copilotkit.dev/model-misbehavior) for supported parameters and compatibility details.
 
 ## GitHub Action
 

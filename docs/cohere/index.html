@@ -226,7 +226,7 @@ data: {"type":"message-end","delta":{"finish_reason":"COMPLETE","usage":{"billed
 
         <h2 id="length-stop">Length-stop fault fidelity</h2>
         <p>
-          In this Unreleased build, streaming <code>stop-length-mid-tool</code> follows the captured
+          From aimock 1.45.0, streaming <code>stop-length-mid-tool</code> follows the captured
           <code>command-a-03-2025</code> lifecycle: an empty argument opener, incomplete argument
           deltas, <code>tool-call-end</code>, then <code>message-end</code> with
           <code>TOOL_CALL</code> and one final <code>data: [DONE]</code> sentinel. The argument
