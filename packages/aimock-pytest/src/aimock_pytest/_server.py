@@ -44,6 +44,7 @@ class AIMockServer:
         fixtures_path: str | Path | None = None,
         api_key: str | None = None,
         enable_misbehavior: bool = False,
+        responses_tools: str | None = None,
     ) -> None:
         self.node_manager = node_manager
         self.port = port
@@ -54,6 +55,11 @@ class AIMockServer:
         # ``X-AIMock-Misbehavior`` header and ``/__aimock/misbehavior`` do not
         # apply, as in 1.44.0.
         self.enable_misbehavior = enable_misbehavior
+        # OpenAI Responses tool handling (``--responses-tools``): "legacy" or
+        # "extended". Unset by default, so the CLI runs in "legacy" mode and
+        # ``match.toolNamespace``, ``customToolCalls`` and ``responsesBlocks``
+        # are ignored, as in 1.44.0.
+        self.responses_tools = responses_tools
         self._proc: subprocess.Popen[str] | None = None
         self._base_url: str | None = None
         # Background stdout drainer state. The reader thread continuously
@@ -109,6 +115,8 @@ class AIMockServer:
         ]
         if self.enable_misbehavior:
             cmd.append("--misbehavior")
+        if self.responses_tools is not None:
+            cmd.extend(["--responses-tools", self.responses_tools])
 
         child_env = os.environ.copy()
         # The plugin option owns child auth. Do not inherit a developer's or

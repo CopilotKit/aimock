@@ -3,7 +3,10 @@ import subprocess
 import sys
 from unittest import mock
 
+import pytest
 import requests
+
+from aimock_pytest import AIMockServer
 
 # ── Session-scoped fixture tests ──────────────────────────────────────────
 # These two tests share a single aimock_session instance, verifying that the
@@ -167,8 +170,25 @@ def test_add_fixture_and_match(aimock):
     assert body["choices"][0]["message"]["content"] == "Hi there!"
 
 
-def test_add_fixture_routes_tool_namespace_into_match(aimock):
+@pytest.fixture
+def aimock_extended(request, _aimock_node_manager):
+    """An ``aimock`` server started with ``responses_tools="extended"``.
+    ``match.toolNamespace`` needs it; the default (legacy) ignores the key."""
+    server = AIMockServer(
+        _aimock_node_manager,
+        port=0,
+        api_key=request.config.getoption("--aimock-api-key"),
+        responses_tools="extended",
+    )
+    server.start()
+    server._default_test_id = request.node.nodeid
+    yield server
+    server.stop()
+
+
+def test_add_fixture_routes_tool_namespace_into_match(aimock_extended):
     """toolNamespace=... is a match key: it lands under `match`, so it gates."""
+    aimock = aimock_extended
     aimock.add_fixture(
         {"toolName": "list_issues"}, {"content": "WRONG"}, toolNamespace="mcp__gitlab"
     )
