@@ -196,10 +196,40 @@ describe("startFromConfig", () => {
     ).toBe(false);
   });
 
-  it("an invalid llm.responsesTools fails startup", async () => {
-    await expect(
-      startFromConfig({ llm: { logLevel: "silent", responsesTools: "wide" as "legacy" } }),
-    ).rejects.toThrow(/responsesTools must be "legacy" or "extended"/);
+  it("ignores an invalid llm.responsesTools with a warning and runs in legacy mode", async () => {
+    // 1.44.0 ignored the key and started, so an invalid value must not fail startup.
+    const fixturePath = join(tmpDir, "ns-invalid.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cleanups.push(async () => warn.mockRestore());
+    const { llmock, url } = await startFromConfig({
+      llm: { fixtures: fixturePath, logLevel: "silent", responsesTools: "wide" as "legacy" },
+    });
+    cleanups.push(() => llmock.stop());
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "[aimock]",
+      'Ignoring llm.responsesTools because it must be "legacy" or "extended", got "wide". Using "legacy".',
+    );
+    const resp = await fetch(`${url}/v1/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5", input: "hello" }),
+    });
+    expect(resp.status).toBe(200);
+    // Legacy mode: the tool call's namespace is not emitted.
+    expect(await resp.text()).not.toContain('"namespace":"docs"');
   });
 
   it("the strictToolArguments override wins over the config", async () => {

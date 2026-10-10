@@ -5,7 +5,7 @@
  * into request conversion, fixture validation and the journal.
  */
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LLMock } from "../llmock.js";
 import { Journal } from "../journal.js";
 import { responsesToCompletionRequest } from "../responses.js";
@@ -621,13 +621,38 @@ describe("custom_tool_call / custom_tool_call_output history counts as a tool ro
 });
 
 describe("responsesTools option", () => {
-  it("rejects a value other than legacy / extended at start", async () => {
-    const bad = new LLMock({
-      port: 0,
-      responsesTools: "Extended" as unknown as "extended",
-    });
-    await expect(bad.start()).rejects.toThrow(
-      'responsesTools must be "legacy" or "extended", got "Extended"',
-    );
+  it("ignores a value other than legacy / extended with a warning and runs in legacy mode", async () => {
+    // 1.44.0 ignored the option and started, at any logLevel.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const bad = new LLMock({
+        port: 0,
+        logLevel: "silent",
+        responsesTools: "Extended" as unknown as "extended",
+      });
+      bad.addFixture({
+        match: { userMessage: "ns" },
+        response: { toolCalls: [{ name: "lookup", arguments: "{}", namespace: "docs" }] },
+      });
+      const url = await bad.start();
+      try {
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          "[aimock]",
+          'Ignoring responsesTools because it must be "legacy" or "extended", got "Extended". Using "legacy".',
+        );
+        const resp = await fetch(`${url}/v1/responses`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-5", input: "ns" }),
+        });
+        expect(resp.status).toBe(200);
+        expect(await resp.text()).not.toContain('"namespace":"docs"');
+      } finally {
+        await bad.stop();
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -202,6 +202,20 @@ export async function startFromConfig(
     }
   }
 
+  // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
+  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode.
+  let responsesTools = config.llm?.responsesTools;
+  if (
+    responsesTools !== undefined &&
+    responsesTools !== "legacy" &&
+    responsesTools !== "extended"
+  ) {
+    logger.warn(
+      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using "legacy".`,
+    );
+    responsesTools = undefined;
+  }
+
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the
   // full delay rather than none. Mirrors the fixture-level guard in fixture-loader.ts.
   let replaySpeed = config.llm?.replaySpeed;
@@ -230,7 +244,7 @@ export async function startFromConfig(
       metrics: config.metrics,
       strict: config.strict,
       strictToolArguments: overrides?.strictToolArguments ?? config.llm?.strictToolArguments,
-      responsesTools: overrides?.responsesTools ?? config.llm?.responsesTools,
+      responsesTools: overrides?.responsesTools ?? responsesTools,
     },
     resolvedAuth,
   );
