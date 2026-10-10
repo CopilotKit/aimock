@@ -777,10 +777,12 @@ console.log(fault?.applied, fault?.fault, fault?.servedToolCalls);</code></pre>
           Tool faults target function tool calls only. On the OpenAI Responses API, a custom tool
           call has no JSON arguments, so it is never a fault target: a fault that names one with
           <code>tool</code> is not applicable, and custom tool calls and namespaces pass through the
-          faulted output unchanged. A fixture that the wire cannot serve is never faulted: a custom
-          tool call on any other API, or a malformed tool call on any API, returns the coded HTTP
-          500 (<code>aimock_unsupported_tool_call</code> or
-          <code>aimock_invalid_fixture_tool_call</code>) that the request gets without a fault.
+          faulted output unchanged. A fixture that the wire cannot serve is never faulted: custom
+          tool calls (<code>customToolCalls</code> / <code>responsesBlocks</code>) on any other API,
+          or a malformed custom call, return the coded HTTP 500 (<code
+            >aimock_unsupported_tool_call</code
+          >
+          or <code>aimock_invalid_fixture_tool_call</code>) that the request gets without a fault.
         </p>
         <p>
           One-character tool arguments cannot produce a nonempty proper prefix. Empty arguments or
