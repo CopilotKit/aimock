@@ -1,7 +1,7 @@
 import {
   assertCustomToolCalls,
   assertResponsesToolCalls,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isTextResponse,
   isToolCallResponse,
@@ -227,7 +227,7 @@ function invalidJsonArguments(
  * here with a custom call on any other wire.
  */
 function faultBlockOutcome(response: FixtureResponse) {
-  return isContentWithToolCallsResponse(response) ? resolveServedBlockOutcome(response) : undefined;
+  return isCombinedFixtureResponse(response) ? resolveServedBlockOutcome(response) : undefined;
 }
 
 /**
@@ -267,7 +267,7 @@ export function prepareInvalidJsonCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-invalid-json" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -299,7 +299,7 @@ export function prepareMissingRequiredCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -362,7 +362,7 @@ export function prepareWrongTypeCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -428,7 +428,7 @@ export function prepareExtraPropertyCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -481,7 +481,7 @@ export function prepareEnumMismatchCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-args-schema-violation" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -540,7 +540,7 @@ export function prepareNotObjectCandidate(
   if (!supportsMisbehavior(context.wire, { ...fault, violation: "not-object" }, context.stream))
     return { kind: "not-applicable", detail: "not-object is unsupported on this wire/output mode" };
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -1042,7 +1042,7 @@ export function validateFixtureMisbehavior(
     let reason: MisbehaviorRule | undefined;
     if (nonchat) reason = "misbehavior/not-applicable";
     else if (typeof response !== "function") {
-      const combined = isContentWithToolCallsResponse(response);
+      const combined = isCombinedFixtureResponse(response);
       if (
         isErrorResponse(response) ||
         !(combined || isTextResponse(response) || isToolCallResponse(response))
@@ -1133,7 +1133,7 @@ export function prepareUnknownNameCandidate(
   fault: Extract<MisbehaviorFault, { fault: "tool-unknown-name" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -1187,7 +1187,7 @@ export function prepareDuplicateIdCandidate(
   if (context.toolCallIdMode === undefined && !context.emitsToolCallIds)
     return { kind: "not-applicable", detail: "Current output mode does not emit tool call IDs" };
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -1249,7 +1249,7 @@ export function prepareLengthCandidate(
   fault: Extract<MisbehaviorFault, { fault: "stop-length-mid-tool" }>,
 ): MisbehaviorCandidateResult {
   const response = context.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   if (isErrorResponse(response) || !(combined || isToolCallResponse(response)))
     return { kind: "not-applicable", detail: "Response has no tool calls" };
   const outcome = faultBlockOutcome(response);
@@ -1317,7 +1317,7 @@ export function prepareEmptyCandidate(
   if (
     isErrorResponse(response) ||
     !(
-      isContentWithToolCallsResponse(response) ||
+      isCombinedFixtureResponse(response) ||
       isTextResponse(response) ||
       isToolCallResponse(response)
     )
@@ -1325,7 +1325,7 @@ export function prepareEmptyCandidate(
     return { kind: "not-applicable", detail: "Response is not a chat response" };
   if (fault.tool !== undefined) {
     const calls =
-      (isContentWithToolCallsResponse(response)
+      (isCombinedFixtureResponse(response)
         ? resolveServedBlockOutcome(response)?.toolCalls
         : undefined) ?? ("toolCalls" in response ? servedToolCalls(response) : []);
     // A custom tool call is never a fault target: naming one selects nothing.
@@ -1678,7 +1678,7 @@ export function planMisbehavior(input: {
     let reason: MisbehaviorEvaluation["reason"];
     let detail: string | undefined;
     const response = input.response;
-    const combined = isContentWithToolCallsResponse(response);
+    const combined = isCombinedFixtureResponse(response);
     if (
       isErrorResponse(response) ||
       !(combined || isTextResponse(response) || isToolCallResponse(response))

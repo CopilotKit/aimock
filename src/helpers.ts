@@ -889,9 +889,32 @@ export function isToolCallResponse(r: FixtureResponse): r is ToolCallResponse {
   );
 }
 
+/**
+ * Whether `r` is a combined content + tool calls response: a string `content`
+ * with a `toolCalls` array, or a non-empty `blocks` array. Public, with the
+ * 1.44.0 result for every input; `responsesBlocks` does not count. aimock's
+ * own handlers use {@link isCombinedFixtureResponse}, which also counts it.
+ */
 export function isContentWithToolCallsResponse(
   r: FixtureResponse,
 ): r is ContentWithToolCallsResponse {
+  const o = r as ContentWithToolCallsResponse;
+  const hasContentAndToolCalls =
+    "content" in r &&
+    typeof o.content === "string" &&
+    "toolCalls" in r &&
+    Array.isArray(o.toolCalls);
+  const hasNonEmptyBlocks = Array.isArray(o.blocks) && o.blocks.length > 0;
+  return hasContentAndToolCalls || hasNonEmptyBlocks;
+}
+
+/**
+ * @internal The combined-response guard aimock's handlers, validation and
+ * misbehavior use: {@link isContentWithToolCallsResponse} plus a non-empty
+ * `responsesBlocks`. In legacy mode those keys are dropped before serving, so
+ * only `responsesTools: "extended"` sees the extra clause.
+ */
+export function isCombinedFixtureResponse(r: FixtureResponse): r is ContentWithToolCallsResponse {
   const o = r as ContentWithToolCallsResponse;
   // LEGACY / COMBINED shape — BOTH content (string) + toolCalls (array). This
   // clause is byte-identical to the original guard, so every fixture that
@@ -1102,7 +1125,7 @@ export function resolveResponsesBlocks(
 /** Allocate the exact OpenAI call identities once for both wire output and observations. */
 export function prepareOpenAIChatMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   // Custom tool calls reach here only on the OpenAI Responses API; the planner
   // skips every other wire's custom-call fixture so its guard rejects it.
   const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
@@ -1163,7 +1186,7 @@ export function resolveOpenAIChatMisbehaviorUsage(
   exposeReasoning = true,
 ): ReturnType<typeof resolveUsage> {
   const response = plan.response;
-  const combined = isContentWithToolCallsResponse(response);
+  const combined = isCombinedFixtureResponse(response);
   const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
   const calls =
     outcome?.toolCalls ??

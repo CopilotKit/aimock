@@ -33,7 +33,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   serializeErrorResponse,
   flattenHeaders,
@@ -2067,7 +2067,7 @@ export async function handleResponses(
   }
 
   // Combined content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     const overrides = extractOverrides(response);
     // Gate reasoning emission on the requested model's capability (aimock#254).
     const effectiveStrict = resolveStrictMode(defaults.strict, req.headers);
@@ -2307,7 +2307,7 @@ export function buildResponsesMisbehavior(
   const response = plan.response;
   if (
     !(
-      isContentWithToolCallsResponse(response) ||
+      isCombinedFixtureResponse(response) ||
       isTextResponse(response) ||
       isToolCallResponse(response)
     )
@@ -2362,7 +2362,7 @@ export function buildResponsesMisbehavior(
     plan.stop !== "content_filter" &&
     plan.reasoning === undefined
   ) {
-    const combined = isContentWithToolCallsResponse(response);
+    const combined = isCombinedFixtureResponse(response);
     // Custom tool calls and namespaces pass through a fault unchanged.
     const outcome = combined ? resolveServedBlockOutcome(response) : undefined;
     const blocks: ResponsesFixtureBlock[] = outcome?.ordered ?? [

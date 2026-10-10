@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
-import { collapseOpenAISSE } from "../stream-collapse.js";
+import { collapseOpenAISSEWithResponsesTools } from "../stream-collapse.js";
 import { validateFixtures } from "../fixture-loader.js";
 import type { Fixture, FixtureFileEntry } from "../types.js";
 
@@ -154,7 +154,7 @@ function textEvents(outputIndex: number, text: string): Record<string, unknown>[
 const created = { type: "response.created", response: { id: "resp_1", status: "in_progress" } };
 const completed = { type: "response.completed", response: { id: "resp_1", status: "completed" } };
 
-describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", () => {
+describe("collapseOpenAISSEWithResponsesTools: Responses namespace and custom tool calls (#505)", () => {
   it("collapses a streamed custom_tool_call into a custom tool call with its full input", () => {
     const body = sse([
       created,
@@ -167,7 +167,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       }),
       completed,
     ]);
-    const result = collapseOpenAISSE(body);
+    const result = collapseOpenAISSEWithResponsesTools(body);
     // `content` and `toolCalls` are what 1.44.0 produced (custom calls were
     // dropped); the custom call rides in the new `customToolCalls`.
     expect(result.content).toBe("");
@@ -179,7 +179,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("keeps namespace on a custom call, from .added or (when absent there) from output_item.done", () => {
-    const fromAdded = collapseOpenAISSE(
+    const fromAdded = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -193,7 +193,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
     expect(fromAdded.customToolCalls).toEqual([
       { type: "custom", name: "run", input: "ls -la", id: "c1", namespace: "sandbox" },
     ]);
-    const fromDone = collapseOpenAISSE(
+    const fromDone = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -218,7 +218,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       input: PATCH,
       deltas: [],
     });
-    expect(collapseOpenAISSE(sse(noDeltas)).customToolCalls).toEqual([
+    expect(collapseOpenAISSEWithResponsesTools(sse(noDeltas)).customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: PATCH, id: "c_nd" },
     ]);
     // Only the closing output_item.done: the item alone is a complete call.
@@ -226,13 +226,13 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
       string,
       unknown
     >[];
-    expect(collapseOpenAISSE(sse(doneOnly)).customToolCalls).toEqual([
+    expect(collapseOpenAISSEWithResponsesTools(sse(doneOnly)).customToolCalls).toEqual([
       { type: "custom", name: "apply_patch", input: PATCH, id: "c_nd" },
     ]);
   });
 
   it("does not double the input when deltas are followed by the .done events", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse(
         customCallEvents({
           outputIndex: 0,
@@ -249,7 +249,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("keeps namespace on a function_call, from .added or (when absent there) from output_item.done", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...functionCallEvents({
@@ -285,7 +285,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("ignores an empty-string namespace", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         ...functionCallEvents({ outputIndex: 0, callId: "f", name: "fn", args: "{}" }).map((e) =>
           e.item ? { ...e, item: { ...(e.item as object), namespace: "" } } : e,
@@ -300,7 +300,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("keeps a mixed function + custom turn in output_index order", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...functionCallEvents({
@@ -332,7 +332,7 @@ describe("collapseOpenAISSE: Responses namespace and custom tool calls (#505)", 
   });
 
   it("projects an interleaved custom / text / namespaced function turn into ordered blocks", () => {
-    const result = collapseOpenAISSE(
+    const result = collapseOpenAISSEWithResponsesTools(
       sse([
         created,
         ...customCallEvents({

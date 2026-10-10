@@ -16,7 +16,7 @@ import {
   isLiveResponse,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   isEmbeddingResponse,
   isImageResponse,
@@ -1096,10 +1096,10 @@ export function validateFixtures(
       // --- Error checks ---
 
       // Response type recognition
-      // Note: isContentWithToolCallsResponse must be checked before isTextResponse
+      // Note: isCombinedFixtureResponse must be checked before isTextResponse
       // and isToolCallResponse since it is a structural superset of both.
       if (
-        !isContentWithToolCallsResponse(response) &&
+        !isCombinedFixtureResponse(response) &&
         !isTextResponse(response) &&
         !isToolCallResponse(response) &&
         !isErrorResponse(response) &&
@@ -1121,7 +1121,7 @@ export function validateFixtures(
 
       // When a non-empty ordered `blocks` array is present, the builders stream
       // `blocks` and IGNORE the legacy `content` mirror (see validateBlocks's
-      // divergence note + isContentWithToolCallsResponse's BLOCKS-ONLY clause).
+      // divergence note + isCombinedFixtureResponse's BLOCKS-ONLY clause).
       // So an empty-string `content` is harmless in that case and must NOT raise
       // the "content is empty string" hard error. Fixtures WITHOUT blocks keep
       // the error (an empty content with no blocks produces no output).
@@ -1148,7 +1148,7 @@ export function validateFixtures(
       }
 
       // ContentWithToolCalls response checks
-      if (isContentWithToolCallsResponse(response)) {
+      if (isCombinedFixtureResponse(response)) {
         // The guard now also matches a BLOCKS-ONLY fixture (non-empty `blocks`,
         // no `content`/`toolCalls`). For that shape the content/toolCalls checks
         // below don't apply (and `content`/`toolCalls` are undefined) — the
@@ -1314,7 +1314,7 @@ export function validateFixtures(
       if (
         isTextResponse(response) ||
         isToolCallResponse(response) ||
-        isContentWithToolCallsResponse(response)
+        isCombinedFixtureResponse(response)
       ) {
         const r = response as ResponseOverrides;
         if (r.id !== undefined && typeof r.id !== "string") {

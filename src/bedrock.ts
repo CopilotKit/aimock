@@ -35,7 +35,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   flattenHeaders,
   isJsonObject,
@@ -705,7 +705,7 @@ export async function handleBedrock(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }
@@ -1639,7 +1639,7 @@ export async function handleBedrockStream(
   }
 
   // Content + tool calls response — stream as Event Stream
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       logger.warn("webSearches in fixture response are not supported for Bedrock API — ignoring");
     }

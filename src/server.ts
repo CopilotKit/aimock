@@ -67,7 +67,7 @@ import {
   extractOverrides,
   isTextResponse,
   isToolCallResponse,
-  isContentWithToolCallsResponse,
+  isCombinedFixtureResponse,
   isErrorResponse,
   serializeErrorResponse,
   isAudioResponse,
@@ -589,7 +589,7 @@ function fixtureResponseKind(response: Fixture["response"]): string {
   if (isImageResponse(response)) return "image";
   if (isEmbeddingResponse(response)) return "embedding";
   if (isJSONResponse(response)) return "json";
-  if (isContentWithToolCallsResponse(response)) return "contentWithToolCalls";
+  if (isCombinedFixtureResponse(response)) return "contentWithToolCalls";
   if (isToolCallResponse(response)) return "toolCalls";
   if (isTextResponse(response)) return "text";
   return "unknown";
@@ -2337,7 +2337,7 @@ async function handleCompletions(
     appliedPlan.reasoning === undefined &&
     (isTextResponse(response) ||
       isToolCallResponse(response) ||
-      isContentWithToolCallsResponse(response))
+      isCombinedFixtureResponse(response))
       ? resolveReasoningForModel(
           response.reasoning,
           responseModel,
@@ -2565,7 +2565,7 @@ async function handleCompletions(
   }
 
   // Content + tool calls response
-  if (isContentWithToolCallsResponse(response)) {
+  if (isCombinedFixtureResponse(response)) {
     if (response.webSearches?.length) {
       defaults.logger.warn(
         "webSearches in fixture response are not supported for Chat Completions API — ignoring",

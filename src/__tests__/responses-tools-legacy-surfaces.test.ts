@@ -15,7 +15,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LLMock } from "../llmock.js";
 import { createServer, type ServerInstance } from "../server.js";
 import { loadFixtureFile, normalizeResponse } from "../fixture-loader.js";
-import type { FixtureFileEntry, FixtureFileResponse } from "../types.js";
+import { isCombinedFixtureResponse, isContentWithToolCallsResponse } from "../helpers.js";
+import {
+  collapseOpenAISSE,
+  collapseOpenAISSEWithResponsesTools,
+  collapseStreamingResponse,
+  collapseStreamingResponseWithResponsesTools,
+} from "../stream-collapse.js";
+import type { FixtureFileEntry, FixtureFileResponse, FixtureResponse } from "../types.js";
 
 const ENTRIES: FixtureFileEntry[] = [
   {
@@ -207,5 +214,71 @@ describe("responsesTools keys on control-API surfaces", () => {
   it("normalizeResponse leaves customToolCalls and responsesBlocks as written, as 1.44.0 did", () => {
     const raw = ENTRIES[2].response as FixtureFileResponse;
     expect(JSON.stringify(normalizeResponse(raw))).toBe(JSON.stringify(raw));
+  });
+});
+
+describe("public exports keep their 1.44.0 results for the new keys", () => {
+  const withBlocks: Record<string, FixtureResponse> = {
+    contentAndBlocks: {
+      content: "ok",
+      responsesBlocks: [{ type: "text", text: "ok" }],
+    } as unknown as FixtureResponse,
+    blocksOnly: { responsesBlocks: [{ type: "text", text: "ok" }] } as unknown as FixtureResponse,
+    toolCallsAndBlocks: {
+      toolCalls: [{ name: "f", arguments: "{}" }],
+      responsesBlocks: [{ type: "text", text: "ok" }],
+    } as unknown as FixtureResponse,
+  };
+
+  it("isContentWithToolCallsResponse ignores responsesBlocks; the internal guard counts it", () => {
+    for (const response of Object.values(withBlocks)) {
+      expect(isContentWithToolCallsResponse(response)).toBe(false);
+      expect(isCombinedFixtureResponse(response)).toBe(true);
+    }
+    const combined = { content: "ok", toolCalls: [{ name: "f", arguments: "{}" }] };
+    expect(isContentWithToolCallsResponse(combined)).toBe(true);
+    expect(isContentWithToolCallsResponse({ blocks: [{ type: "text", text: "ok" }] })).toBe(true);
+  });
+
+  it("collapse drops Responses namespaces and custom calls; the recorder's variant keeps them", async () => {
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    mock.addFixturesFromJSON([
+      {
+        match: { userMessage: "combo" },
+        response: {
+          content: "before",
+          customToolCalls: [{ name: "apply_patch", input: "PATCH" }],
+          toolCalls: [{ name: "list", arguments: "{}", namespace: "mcp__gh" }],
+        },
+      } as FixtureFileEntry,
+    ]);
+    await mock.start();
+    const sse = await (
+      await fetch(`${mock.url}/v1/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", input: "combo", stream: true }),
+      })
+    ).text();
+    for (const collapsed of [
+      collapseOpenAISSE(sse),
+      collapseStreamingResponse("text/event-stream", "openai", sse),
+    ]) {
+      expect(collapsed).not.toHaveProperty("customToolCalls");
+      expect(collapsed?.toolCalls).toEqual([
+        { name: "list", arguments: "{}", id: expect.any(String) },
+      ]);
+      expect(Object.keys(collapsed?.toolCalls?.[0] ?? {})).toEqual(["name", "arguments", "id"]);
+    }
+    for (const collapsed of [
+      collapseOpenAISSEWithResponsesTools(sse),
+      collapseStreamingResponseWithResponsesTools("text/event-stream", "openai", sse),
+    ]) {
+      expect(collapsed?.customToolCalls?.[0]).toMatchObject({
+        name: "apply_patch",
+        input: "PATCH",
+      });
+      expect(collapsed?.toolCalls?.[0]).toMatchObject({ namespace: "mcp__gh" });
+    }
   });
 });
