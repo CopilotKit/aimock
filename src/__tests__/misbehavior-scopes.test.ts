@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { LLMock } from "../llmock.js";
 import { Journal } from "../journal.js";
 import type { Fixture, MisbehaviorConfig, MisbehaviorCounterKey } from "../types.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const fixture: Fixture = { match: {}, response: { content: "ok" } };
 function key(testId = "a", sourceKey = "source", entryIndex = 0): MisbehaviorCounterKey {

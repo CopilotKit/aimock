@@ -7,9 +7,8 @@ import {
   type ConverseCommandInput,
 } from "@aws-sdk/client-bedrock-runtime";
 import { expect, test, vi } from "vitest";
-import { LLMock } from "../llmock.js";
-import { createServer } from "../server.js";
 import type { FixtureResponse, MisbehaviorConfig, MisbehaviorFaultId } from "../types.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 const request: ConverseCommandInput = {
   modelId: "anthropic.claude-3-5-sonnet-20241022-v2:0",

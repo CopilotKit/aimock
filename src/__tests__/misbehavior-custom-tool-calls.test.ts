@@ -14,10 +14,10 @@
  * Real surfaces: a real LLMock over HTTP and WebSocket.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { LLMock } from "../llmock.js";
 import { validateFixtureMisbehavior } from "../misbehavior.js";
 import type { Fixture } from "../types.js";
 import { connectWebSocket } from "./ws-test-client.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 let mock: LLMock | null = null;
 

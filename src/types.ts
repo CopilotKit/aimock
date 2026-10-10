@@ -1388,6 +1388,13 @@ export interface MockServerOptions {
   replaySpeed?: number;
   /** Log verbosity. CLI default is "info"; programmatic default (when omitted) is "silent". */
   logLevel?: "silent" | "warn" | "info" | "debug";
+  /**
+   * Opt in to model misbehavior. Without it, the `misbehavior` option, a
+   * fixture's `misbehavior` key and the `X-AIMock-Misbehavior` header are
+   * ignored, as in 1.44.0. CLI: `--misbehavior`.
+   */
+  enableMisbehavior?: boolean;
+  /** Server-wide misbehavior baseline; read only with `enableMisbehavior: true`. */
   misbehavior?: MisbehaviorConfig | MisbehaviorFaultId;
   chaos?: ChaosConfig;
   /** Enable Prometheus-compatible /metrics endpoint. */
@@ -1513,6 +1520,7 @@ export interface FalQueueConfig {
 // Handler defaults — the common shape passed from server.ts to every handler
 
 export interface HandlerDefaults {
+  /** Present only when misbehavior is enabled; without it no fault is planned. */
   misbehavior?: MisbehaviorScope;
   misbehaviorCounters?: MisbehaviorCounters;
   latency: number;

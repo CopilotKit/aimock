@@ -2,7 +2,7 @@ import { connect as connectSocket } from "node:net";
 import { OpenAIRealtimeWS } from "openai/beta/realtime/ws";
 import { OpenAIRealtimeWS as OpenAIRealtimeGAWS } from "openai-current-sdk/realtime/ws";
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -10,6 +10,7 @@ import type {
   MisbehaviorFault,
 } from "../types.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
+import { createServer } from "./helpers/misbehavior-enabled.js";
 
 interface Item {
   type: string;

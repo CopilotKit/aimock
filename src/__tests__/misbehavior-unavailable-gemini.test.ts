@@ -1,7 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { LLMock } from "../llmock.js";
-import { createServer } from "../server.js";
 import type { FixtureResponse, MisbehaviorConfig } from "../types.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 let mock: LLMock | undefined;
 afterEach(async () => {

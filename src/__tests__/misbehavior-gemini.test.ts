@@ -1,8 +1,8 @@
 import { GoogleGenAI, type GenerateContentResponse, type FunctionDeclaration } from "@google/genai";
 import { expect, test } from "vitest";
-import { LLMock } from "../llmock.js";
 import { withFaultFixture } from "./helpers/misbehavior-server.js";
 import type { FixtureFileResponse, MisbehaviorFault, ToolCall } from "../types.js";
+import { LLMock } from "./helpers/misbehavior-enabled.js";
 
 const routes = [false, true].flatMap((vertex) =>
   [false, true].map((stream) => ({

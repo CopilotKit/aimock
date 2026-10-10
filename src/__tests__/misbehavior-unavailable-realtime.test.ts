@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_TEST_ID } from "../journal.js";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import type { Fixture, FixtureResponse, MisbehaviorConfig } from "../types.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
+import { createServer } from "./helpers/misbehavior-enabled.js";
 
 let server: ServerInstance;
 let ws: WSTestClient | undefined;

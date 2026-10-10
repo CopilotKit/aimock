@@ -1,6 +1,7 @@
 import { request } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
+import { createServer } from "./helpers/misbehavior-enabled.js";
 
 let instance: ServerInstance;
 

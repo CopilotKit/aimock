@@ -13,8 +13,9 @@ export {
   normalizeResponse,
 } from "./fixture-loader.js";
 export type { ValidationRef, ValidationResult } from "./fixture-loader.js";
-export { FixtureLoadError } from "./fixture-loader.js";
-export type { FixtureLoadErrorJSON } from "./fixture-loader.js";
+export { FixtureLoadError, MisbehaviorConfigError } from "./fixture-loader.js";
+export type { FixtureLoadErrorJSON, MisbehaviorConfigErrorJSON } from "./fixture-loader.js";
+export type { MisbehaviorRule } from "./misbehavior.js";
 export {
   loadFixtureFileWithServices,
   loadFixturesFromDirWithServices,

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { LLMock } from "../llmock.js";
-import { createServer, type ServerInstance } from "../server.js";
+import type { ServerInstance } from "../server.js";
 import type { FixtureResponse, MisbehaviorConfig } from "../types.js";
 import type { ResponsesSSEEvent } from "../responses.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
+import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
 
 let mock: LLMock | undefined;
 let ws: WSTestClient | undefined;
