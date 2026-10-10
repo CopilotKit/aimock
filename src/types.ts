@@ -1392,6 +1392,17 @@ export interface MockServerOptions {
   metrics?: boolean;
   /** Strict mode: return 503 instead of 404 when no fixture matches. */
   strict?: boolean;
+  /**
+   * Reject fixture tool calls whose `arguments` are not valid JSON instead of
+   * serving them as `{}`. Off by default (the 1.44.0 behavior). When on, wires
+   * that carry arguments as an object (Anthropic and Bedrock non-streaming,
+   * Converse non-streaming, Gemini, Vertex AI, Gemini Interactions
+   * non-streaming, Gemini Live, Ollama) answer 500 `aimock_invalid_tool_arguments`
+   * (Gemini Live: an error frame), and wires that carry them as a string
+   * (Cohere and the streaming Anthropic, Bedrock, Converse and Gemini
+   * Interactions paths) serve the authored text unchanged.
+   */
+  strictToolArguments?: boolean;
   /** Record-and-replay: proxy unmatched requests to upstream and save fixtures. */
   record?: RecordConfig;
   /**
@@ -1530,6 +1541,8 @@ export interface HandlerDefaults {
   registry?: MetricsRegistry;
   record?: RecordConfig;
   strict?: boolean;
+  /** See {@link MockServerOptions.strictToolArguments}. */
+  strictToolArguments?: boolean;
   requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
   falQueue?: FalQueueConfig;
   openRouterVideo?: FalQueueConfig;

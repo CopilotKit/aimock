@@ -1196,7 +1196,7 @@ describe("POST /v1/messages (error response with default status)", () => {
 });
 
 describe("POST /v1/messages (tool call with malformed JSON arguments)", () => {
-  it("rejects malformed tool call arguments in non-streaming", async () => {
+  it("falls back to {} for malformed tool call arguments in non-streaming", async () => {
     const malformedToolFixture: Fixture = {
       match: { userMessage: "malformed-args" },
       response: {
@@ -1216,12 +1216,12 @@ describe("POST /v1/messages (tool call with malformed JSON arguments)", () => {
       stream: false,
     });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.error.message).toContain("invalid JSON arguments");
+    expect(body.content[0].input).toEqual({});
   });
 
-  it("preserves malformed tool call arguments in streaming", async () => {
+  it("falls back to {} for malformed tool call arguments in streaming", async () => {
     const malformedToolFixture: Fixture = {
       match: { userMessage: "malformed-args-stream" },
       response: {
@@ -1243,14 +1243,14 @@ describe("POST /v1/messages (tool call with malformed JSON arguments)", () => {
 
     expect(res.status).toBe(200);
     const events = parseClaudeSSEEvents(res.body);
-    // The string wire preserves the authored malformed arguments exactly.
+    // The arguments delta should contain "{}" since the malformed JSON falls back to {}
     const deltas = events.filter(
       (e) =>
         e.type === "content_block_delta" &&
         (e.delta as { type: string })?.type === "input_json_delta",
     ) as (SSEEvent & { delta: { partial_json: string } })[];
     const fullJson = deltas.map((d) => d.delta.partial_json).join("");
-    expect(fullJson).toBe("{{invalid}}");
+    expect(JSON.parse(fullJson)).toEqual({});
   });
 });
 

@@ -40,7 +40,7 @@ async function requestOllama(mode: (typeof modes)[number], args: string | undefi
   fixtureDirectory = mkdtempSync(join(tmpdir(), "aimock-pr0-ollama-"));
   const fixturePath = join(fixtureDirectory, "fixture.json");
   writeFileSync(fixturePath, JSON.stringify({ fixtures: [{ match: {}, response }] }));
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.loadFixtureFile(fixturePath);
   expect(mock.getFixtures()).toHaveLength(1);
   await mock.start();

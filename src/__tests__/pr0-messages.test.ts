@@ -36,7 +36,7 @@ async function requestArguments(path: Path, stream: boolean, args: string | unde
         : { toolCalls: [tool] };
   const fixturePath = join(fixtureDir, "fixture.json");
   await writeFile(fixturePath, JSON.stringify({ fixtures: [{ match: {}, response }] }));
-  mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 2 });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true, chunkSize: 2 });
   mock.loadFixtureFile(fixturePath);
   await mock.start();
 

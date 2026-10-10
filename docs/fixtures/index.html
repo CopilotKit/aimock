@@ -608,8 +608,15 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
 
         <h2 id="tool-arguments">Tool argument JSON</h2>
         <p>
-          Malformed JSON in a tool call's <code>arguments</code> is no longer silently replaced with
-          <code>{}</code>. The response depends on how the selected API carries arguments:
+          By default, malformed JSON in a tool call's <code>arguments</code> is logged as a warning
+          and replaced with <code>{}</code> on the APIs listed below (an object, or the string
+          <code>"{}"</code>), as in 1.44.0. The OpenAI APIs always send the string unchanged. To
+          send invalid JSON on purpose, use <code>misbehavior: tool-args-invalid-json</code>.
+        </p>
+        <p>
+          With <code>strictToolArguments: true</code> (CLI <code>--strict-tool-arguments</code>,
+          config <code>llm.strictToolArguments</code>) the malformed text is not replaced. The
+          response then depends on how the selected API carries arguments:
         </p>
         <ul>
           <li>
@@ -622,8 +629,9 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
             <strong>Object arguments:</strong> Malformed JSON produces an explicit error before
             response content is sent. This applies to non-streaming Anthropic Messages, Bedrock
             InvokeModel, Bedrock Converse, and Gemini Interactions, and to Gemini, Gemini Live, and
-            Ollama. HTTP requests return status <code>500</code>; Gemini Live sends an error on the
-            existing WebSocket connection.
+            Ollama. HTTP requests return status <code>500</code> with code
+            <code>aimock_invalid_tool_arguments</code>; Gemini Live sends an error on the existing
+            WebSocket connection.
           </li>
         </ul>
         <p>
@@ -670,8 +678,8 @@ builderMock.onLive({ model: "gpt-live-1" }, transcript);</code></pre>
           When <code>blocks</code> is present it <strong>takes precedence</strong> over the
           <code>content</code> and <code>toolCalls</code> fields for stream ordering: the blocks are
           streamed in array order. When <code>blocks</code> is <strong>absent</strong>, legacy
-          <code>{ content, toolCalls }</code> fixtures with valid JSON arguments stream as before
-          &mdash; text-first, byte-identical to prior releases. The field is purely additive.
+          <code>{ content, toolCalls }</code> fixtures stream as before &mdash; text-first,
+          byte-identical to prior releases. The field is purely additive.
         </p>
 
         <h3 id="blocks-only">Blocks-only fixtures (first-class)</h3>

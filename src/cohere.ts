@@ -49,7 +49,7 @@ import {
   getContext,
   strictNoMatchMessage,
   strictNoMatchLogLine,
-  toolArgsForWire,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -291,12 +291,7 @@ function buildCohereToolCallResponse(
 ): object {
   const cohereCalls = toolCalls.map((tc) => {
     // Validate arguments JSON
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
+    const args = servedToolArgs(tc, "string", logger);
     const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
@@ -357,12 +352,7 @@ function buildCohereContentWithToolCallsResponse(
     : toolCalls;
 
   const cohereCalls = effectiveToolCalls.map((tc) => {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
+    const args = servedToolArgs(tc, "string", logger);
     const argsJson = args.raw;
     return {
       id: tc.id || generateToolCallId(),
@@ -559,12 +549,7 @@ function buildCohereToolCallStreamEvents(
     const callId = tc.id || generateToolCallId();
 
     // Validate arguments JSON
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
+    const args = servedToolArgs(tc, "string", logger);
     const argsJson = args.raw;
 
     // tool-call-start
@@ -690,12 +675,7 @@ function buildCohereContentWithToolCallsStreamEvents(
           toolPlanEmitted = true;
         }
         const callId = block.id || generateToolCallId();
-        const args = toolArgsForWire(block);
-        if (args.kind === "verbatim") {
-          logger.warn(
-            `Malformed JSON in fixture tool call arguments for "${block.name}": ${block.arguments}`,
-          );
-        }
+        const args = servedToolArgs(block, "string", logger);
         const argsJson = args.raw;
         events.push({
           type: "tool-call-start",
@@ -801,12 +781,7 @@ function buildCohereContentWithToolCallsStreamEvents(
     const tc = toolCalls[idx];
     const callId = tc.id || generateToolCallId();
 
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-    }
+    const args = servedToolArgs(tc, "string", logger);
     const argsJson = args.raw;
 
     // tool-call-start

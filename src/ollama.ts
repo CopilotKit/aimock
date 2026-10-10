@@ -52,6 +52,7 @@ import {
   strictNoMatchLogLine,
   toolArgsForWire,
   InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse } from "./sse-writer.js";
@@ -315,9 +316,7 @@ function buildOllamaChatToolCallResponse(
 function toOllamaToolCall(tc: Pick<ToolCall, "name" | "arguments">): {
   function: { name: string; arguments: unknown };
 } {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
-  return { function: { name: tc.name, arguments: args.value } };
+  return { function: { name: tc.name, arguments: servedToolArgs(tc, "object").value } };
 }
 
 function buildOllamaChatContentWithToolCallsChunks(

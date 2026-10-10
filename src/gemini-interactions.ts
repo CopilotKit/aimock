@@ -38,8 +38,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   resolveFixtureBlockOutcome,
-  toolArgsForWire,
-  InvalidToolArgumentsError,
+  servedToolArgs,
   prepareOpenAIChatMisbehavior,
   resolveOpenAIChatMisbehaviorUsage,
 } from "./helpers.js";
@@ -394,10 +393,9 @@ export function buildInteractionsTextResponse(
 }
 
 // Build a single SDK 2.x function_call step from a fixture tool call,
-// rejecting malformed arguments that the object wire cannot represent.
-function buildFunctionCallStep(tc: ToolCall): object {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
+// serving malformed arguments as `{}` (or rejecting them under strictToolArguments).
+function buildFunctionCallStep(tc: ToolCall, logger: Logger): object {
+  const args = servedToolArgs(tc, "object", logger);
   return {
     type: "function_call",
     id: tc.id || generateToolCallId(),
@@ -418,7 +416,7 @@ export function buildInteractionsToolCallResponse(
     status: "requires_action",
     model: overrides?.model ?? model,
     role: "model",
-    steps: toolCalls.map((tc) => buildFunctionCallStep(tc)),
+    steps: toolCalls.map((tc) => buildFunctionCallStep(tc, logger)),
     usage: interactionsUsage(overrides),
   };
 }
@@ -453,7 +451,10 @@ export function buildInteractionsContentWithToolCallsResponse(
         outputText += block.text;
       } else {
         steps.push(
-          buildFunctionCallStep({ name: block.name, arguments: block.arguments, id: block.id }),
+          buildFunctionCallStep(
+            { name: block.name, arguments: block.arguments, id: block.id },
+            logger,
+          ),
         );
       }
     }
@@ -463,7 +464,7 @@ export function buildInteractionsContentWithToolCallsResponse(
     steps.push({ type: "model_output", content: [{ type: "text", text: content }] });
     outputText = content;
     for (const tc of toolCalls) {
-      steps.push(buildFunctionCallStep(tc));
+      steps.push(buildFunctionCallStep(tc, logger));
     }
   }
 
@@ -571,7 +572,7 @@ export function buildInteractionsTextSSEEvents(
 export function buildInteractionsToolCallSSEEvents(
   toolCalls: ToolCall[],
   interactionId: string,
-  _logger: Logger,
+  logger: Logger,
   overrides?: ResponseOverrides,
 ): InteractionsSSEEvent[] {
   const events: InteractionsSSEEvent[] = [];
@@ -589,7 +590,7 @@ export function buildInteractionsToolCallSSEEvents(
   // carries an empty `arguments: {}` placeholder.
   for (let idx = 0; idx < toolCalls.length; idx++) {
     const tc = toolCalls[idx];
-    const args = toolArgsForWire(tc);
+    const args = servedToolArgs(tc, "string", logger);
 
     events.push({
       event_type: "step.start",
@@ -612,7 +613,7 @@ export function buildInteractionsToolCallSSEEvents(
       index: idx,
       delta: {
         type: "arguments_delta",
-        arguments: args.kind === "parsed" ? args.text : args.raw,
+        arguments: args.text,
       },
       event_id: nextEventId(),
     });
@@ -688,8 +689,9 @@ function pushFunctionCallStepEvents(
   events: InteractionsSSEEvent[],
   index: number,
   tc: ToolCall,
+  logger: Logger,
 ): void {
-  const args = toolArgsForWire(tc);
+  const args = servedToolArgs(tc, "string", logger);
 
   events.push({
     event_type: "step.start",
@@ -708,7 +710,7 @@ function pushFunctionCallStepEvents(
     index,
     delta: {
       type: "arguments_delta",
-      arguments: args.kind === "parsed" ? args.text : args.raw,
+      arguments: args.text,
     },
     event_id: nextEventId(),
   });
@@ -752,11 +754,16 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
       if (block.type === "text") {
         pushTextStepEvents(events, idx, block.text, chunkSize);
       } else {
-        pushFunctionCallStepEvents(events, idx, {
-          name: block.name,
-          arguments: block.arguments,
-          id: block.id,
-        });
+        pushFunctionCallStepEvents(
+          events,
+          idx,
+          {
+            name: block.name,
+            arguments: block.arguments,
+            id: block.id,
+          },
+          logger,
+        );
       }
       idx += 1;
     }
@@ -765,7 +772,7 @@ export function buildInteractionsContentWithToolCallsSSEEvents(
     // index 1+ — byte-for-byte unchanged from the pre-blocks behavior.
     pushTextStepEvents(events, 0, content, chunkSize);
     for (let i = 0; i < toolCalls.length; i++) {
-      pushFunctionCallStepEvents(events, i + 1, toolCalls[i]);
+      pushFunctionCallStepEvents(events, i + 1, toolCalls[i], logger);
     }
   }
 

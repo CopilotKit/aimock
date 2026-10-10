@@ -42,6 +42,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   toolArgsForWire,
+  servedToolArgs,
   InvalidToolArgumentsError,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
@@ -113,14 +114,7 @@ function converseUsage(overrides?: ResponseOverrides): {
 }
 
 function parseConverseToolArgumentsForStream(toolCall: ToolCall, logger: Logger): string {
-  const args = toolArgsForWire(toolCall);
-  if (args.kind === "verbatim") {
-    logger.warn(
-      `Malformed JSON in fixture tool call arguments for "${toolCall.name}": ${toolCall.arguments}`,
-    );
-    return args.raw;
-  }
-  return args.text;
+  return servedToolArgs(toolCall, "string", logger).text;
 }
 
 function buildBedrockStreamTextEvents(
@@ -617,13 +611,7 @@ function buildConverseToolCallResponse(
     });
   }
   for (const tc of toolCalls) {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     contentBlocks.push({
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),
@@ -664,13 +652,7 @@ function buildConverseContentWithToolCallsResponse(
   // Converse `input` requires a JSON value; reject malformed arguments before
   // emitting an object response instead of substituting an empty object.
   const toolUseBlock = (tc: { name: string; arguments: string; id?: string }): object => {
-    const args = toolArgsForWire(tc);
-    if (args.kind === "verbatim") {
-      logger.warn(
-        `Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`,
-      );
-      throw new InvalidToolArgumentsError(tc);
-    }
+    const args = servedToolArgs(tc, "object", logger);
     return {
       toolUse: {
         toolUseId: tc.id || generateToolUseId(),

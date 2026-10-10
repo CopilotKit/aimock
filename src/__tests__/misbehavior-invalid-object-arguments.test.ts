@@ -63,6 +63,7 @@ async function observe(
   const fixture: Fixture = { match: {}, response };
   server = await createServer([fixture], {
     logLevel: "silent",
+    strictToolArguments: true,
     ...(misbehavior ? { misbehavior } : {}),
   });
   const output = await drive(server.url);

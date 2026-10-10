@@ -44,8 +44,7 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
-  toolArgsForWire,
-  InvalidToolArgumentsError,
+  servedToolArgs,
 } from "./helpers.js";
 import { matchFixtureDiagnostic, recordMatchOptions } from "./router.js";
 import { writeErrorResponse, delay, calculateDelay } from "./sse-writer.js";
@@ -388,11 +387,7 @@ function buildGeminiTextStreamChunks(
 }
 
 function parseToolCallPart(tc: ToolCall, logger: Logger): GeminiPart {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") {
-    logger.warn(`Malformed JSON in fixture tool call arguments for "${tc.name}": ${tc.arguments}`);
-    throw new InvalidToolArgumentsError(tc);
-  }
+  const args = servedToolArgs(tc, "object", logger);
   // Surface the fixture's tool_call.id on the Gemini functionCall response
   // so clients can preserve it across the round-trip and any
   // toolCallId-keyed follow-up fixtures match. Pairs with v1.23.1's

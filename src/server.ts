@@ -95,6 +95,7 @@ import {
   strictOverrideField,
   strictNoMatchMessage,
   strictNoMatchLogLine,
+  runWithToolArgumentsScope,
   getContext,
   describeMatch,
 } from "./helpers.js";
@@ -2964,6 +2965,9 @@ async function startServer(
     get strict() {
       return serverOptions.strict;
     },
+    get strictToolArguments() {
+      return serverOptions.strictToolArguments;
+    },
     get requestTransform() {
       return serverOptions.requestTransform;
     },
@@ -3436,9 +3440,11 @@ async function startServer(
     // Run inside the request scope so every journal write made while serving
     // this request (in any handler module) is attributed back to it.
     requestScope.run(req, () => {
-      handleHttpRequest(req, res).catch((err: unknown) => {
-        routeError(req, res, err, req.url ?? "?");
-      });
+      runWithToolArgumentsScope({ strict: defaults.strictToolArguments === true, logger }, () =>
+        handleHttpRequest(req, res).catch((err: unknown) => {
+          routeError(req, res, err, req.url ?? "?");
+        }),
+      );
     });
   });
 

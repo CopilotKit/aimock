@@ -42,6 +42,7 @@ Options:
       --record-full-model-version  Record exact model version without date stripping (default: false)
       --proxy-only          Proxy mode: forward unmatched requests without saving
       --strict              Strict mode: fail on unmatched requests (overridable per-request via X-AIMock-Strict header)
+      --strict-tool-arguments  Reject fixture tool calls with invalid JSON arguments instead of serving {} (default: false)
       --journal-max <n>     Max request entries retained in memory (default: 1000, 0 = unbounded)
       --fixture-counts-max <n>  Max unique testIds retained in fixture match-count map (default: 500, 0 = unbounded)
       --provider-openai <url>     Upstream URL for OpenAI (used with --record)
@@ -88,6 +89,7 @@ const { values } = parseArgs({
     "record-full-model-version": { type: "boolean", default: false },
     "proxy-only": { type: "boolean", default: false },
     strict: { type: "boolean", default: false },
+    "strict-tool-arguments": { type: "boolean", default: false },
     "provider-openai": { type: "string" },
     "provider-anthropic": { type: "string" },
     "provider-gemini": { type: "string" },
@@ -670,6 +672,7 @@ async function main() {
       metrics: values.metrics,
       record,
       strict: values.strict,
+      strictToolArguments: values["strict-tool-arguments"],
       journalMaxEntries: journalMax,
       fixtureCountsMaxTestIds: fixtureCountsMax,
       auth: resolveInboundAuth(selectInboundAuthSource(undefined)).publicConfig,

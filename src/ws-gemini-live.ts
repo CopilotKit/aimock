@@ -21,7 +21,6 @@ import type {
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
 import { matchFixtureDiagnostic } from "./router.js";
 import {
-  InvalidToolArgumentsError,
   fixtureToolCallErrorCode,
   googleFixtureToolCallErrorDetails,
   isFixtureToolCallError,
@@ -29,6 +28,9 @@ import {
   requireFunctionToolCalls,
   toolCallFixtureBlock,
   toolArgsForWire,
+  runWithToolArgumentsScope,
+  servedToolArgs,
+  strictToolArgumentsEnabled,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -238,9 +240,7 @@ function convertTools(geminiTools?: GeminiLiveToolDef[]): ToolDefinition[] {
 }
 
 function liveToolArguments(tc: Pick<ToolCall, "name" | "arguments">) {
-  const args = toolArgsForWire(tc);
-  if (args.kind === "verbatim") throw new InvalidToolArgumentsError(tc);
-  return args.value;
+  return servedToolArgs(tc, "object").value;
 }
 
 const GEMINI_LIVE_WIRE = "Gemini Live";
@@ -312,7 +312,7 @@ function preflightToolArguments(
 ): ToolCall[] {
   return journalFixtureToolCallError(journalEntry, () => {
     const functionCalls = requireFunctionToolCalls(toolCalls, GEMINI_LIVE_WIRE);
-    for (const tc of functionCalls) liveToolArguments(tc);
+    if (strictToolArgumentsEnabled()) for (const tc of functionCalls) liveToolArguments(tc);
     return functionCalls;
   });
 }
@@ -321,7 +321,8 @@ function preflightToolArguments(
 function preflightBlocks(blocks: FixtureFileBlock[], journalEntry: JournalEntry) {
   return journalFixtureToolCallError(journalEntry, () => {
     const resolved = resolveFixtureBlocks(blocks, { wire: GEMINI_LIVE_WIRE });
-    for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
+    if (strictToolArgumentsEnabled())
+      for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
     return resolved;
   });
 }
@@ -339,6 +340,7 @@ export function handleWebSocketGeminiLive(
     model: string;
     logger: Logger;
     strict?: boolean;
+    strictToolArguments?: boolean;
     requestTransform?: (req: ChatCompletionRequest) => ChatCompletionRequest;
     testId?: string;
     upgradeHeaders?: import("node:http").IncomingHttpHeaders;
@@ -364,7 +366,10 @@ export function handleWebSocketGeminiLive(
       const historyMark = session.conversationHistory.length;
       try {
         beforeProcessMessage?.();
-        await processMessage(raw, ws, fixtures, journal, defaults, session);
+        await runWithToolArgumentsScope(
+          { strict: defaults.strictToolArguments === true, logger },
+          () => processMessage(raw, ws, fixtures, journal, defaults, session),
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Internal error";
         logger.error(`WebSocket Gemini Live error: ${msg}`);

@@ -410,7 +410,7 @@ test("Live SDK native parametersJsonSchema no-fault control preserves args and n
   );
 });
 
-test("Live applied K3 retains native malformed-authored error journaling and recovery", async () => {
+test("Live K3 skips a fixture with malformed authored arguments and serves {} by default", async () => {
   await withLive(
     { fault: "tool-unknown-name", name: "undeclared" },
     "tool-only",
@@ -422,28 +422,15 @@ test("Live applied K3 retains native malformed-authored error journaling and rec
       console.log(
         JSON.stringify({ cell: "K3-authored-invalid", messages, journal: mock.getRequests() }),
       );
+      // As in 1.44.0: the malformed arguments are served as {}. The fault is
+      // not applied (the tool keeps its authored name). The strict error path
+      // is covered by pr0-gemini-live.test.ts under strictToolArguments.
       expect(messages).toEqual([
-        {
-          error: {
-            code: 13,
-            status: "INTERNAL",
-            message: expect.stringContaining("invalid JSON arguments"),
-            details: [
-              {
-                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                reason: "AIMOCK_INVALID_TOOL_ARGUMENTS",
-                domain: "aimock",
-                metadata: { code: "aimock_invalid_tool_arguments" },
-              },
-            ],
-          },
-        },
+        { toolCall: { functionCalls: [{ name: "lookup", args: {}, id: expect.any(String) }] } },
+        { serverContent: { turnComplete: true } },
       ]);
       expect(mock.getRequests()).toHaveLength(1);
-      expect(mock.getLastRequest()?.response).toMatchObject({
-        status: 500,
-        error: expect.stringContaining("invalid JSON arguments"),
-      });
+      expect(mock.getLastRequest()?.response.status).toBe(200);
       expect((await turn("recovery")).map((message) => message.text ?? "").join("")).toBe(
         "Recovered.",
       );

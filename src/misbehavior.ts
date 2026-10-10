@@ -11,6 +11,8 @@ import {
   toolCallFixtureBlock,
   resolveTestId,
   toolArgsForWire,
+  strictToolArgumentsEnabled,
+  keepAuthoredToolArguments,
 } from "./helpers.js";
 import { parseChaosNumber } from "./chaos.js";
 import type {
@@ -1555,16 +1557,28 @@ function servesFixture(wire: WireId, stream: boolean, response: FixtureResponse)
   } catch {
     return false;
   }
+  const normalPathReplaces = strictToolArgumentsEnabled()
+    ? rejectsInvalidToolArguments(wire, stream)
+    : replacesInvalidToolArguments(wire);
   return (
-    !rejectsInvalidToolArguments(wire, stream) ||
-    functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
+    !normalPathReplaces || functionCalls.every((call) => toolArgsForWire(call).kind === "parsed")
   );
 }
 
 /**
+ * Whether the normal path of this wire serves invalid-JSON `arguments` as
+ * `{}` / `"{}"` (the default, as in 1.44.0) instead of the authored text. The
+ * OpenAI wires pass the authored text through unchanged.
+ */
+function replacesInvalidToolArguments(wire: WireId): boolean {
+  return rejectsInvalidToolArguments(wire, false) || wire === "cohere";
+}
+
+/**
  * Whether this wire and output mode carry tool arguments as an object, so the
- * normal path must parse a fixture's string `arguments` and answers
- * aimock_invalid_tool_arguments when they are not valid JSON. The other modes
+ * normal path must parse a fixture's string `arguments` and, under
+ * `strictToolArguments`, answers aimock_invalid_tool_arguments when they are
+ * not valid JSON. The other modes
  * pass the authored string through unchanged (the OpenAI wires, Cohere, and
  * the streaming Anthropic, Bedrock and Gemini Interactions paths, which send
  * arguments as a JSON-string fragment).
@@ -1625,13 +1639,13 @@ export function planMisbehavior(input: {
       summary: { applied: false, source, wire, evaluations: [] },
     };
   // A fixture this wire cannot serve (a custom tool call off the OpenAI
-  // Responses API, a malformed tool call, invalid JSON arguments on a wire
-  // that carries arguments as an object, a malformed text block or an
-  // unknown block type) is never faulted and never throws here: the request
-  // takes the normal path exactly as with no misbehavior config, which
-  // journals it and answers the coded fixture tool-call error
-  // (aimock_unsupported_tool_call, aimock_invalid_fixture_tool_call or
-  // aimock_invalid_tool_arguments) or the plain block error.
+  // Responses API, a malformed tool call, invalid JSON arguments that the
+  // normal path replaces or rejects, a malformed text block or an unknown
+  // block type) is never faulted and never throws here: the request takes the
+  // normal path exactly as with no misbehavior config, which journals it and
+  // answers the coded fixture tool-call error (aimock_unsupported_tool_call,
+  // aimock_invalid_fixture_tool_call or, under strictToolArguments,
+  // aimock_invalid_tool_arguments), the plain block error, or `{}` arguments.
   if (!servesFixture(wire, input.stream, input.response)) return { kind: "skipped" };
   const config = parsed.config;
   const explicit = source === "header" || source === "fixture";
@@ -1752,6 +1766,9 @@ export function planMisbehavior(input: {
         ordinal,
       };
       evaluations.push(row);
+      // The fault's own malformed arguments (tool-args-invalid-json) must reach
+      // the wire as authored, never the `{}` default of the normal path.
+      keepAuthoredToolArguments();
       return {
         kind: "applied",
         ...candidate,

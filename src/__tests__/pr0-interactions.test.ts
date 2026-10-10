@@ -43,7 +43,7 @@ async function requestArguments(branch: (typeof branches)[number], args: string 
       ],
     }),
   );
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.loadFixtureFile(path);
   await mock.start();
   const client = new GoogleGenAI({ apiKey: "local-proof", httpOptions: { baseUrl: mock.url } });
