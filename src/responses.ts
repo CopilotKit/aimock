@@ -706,6 +706,20 @@ function legacyFunctionCall(call: ToolCall): FixtureToolCall {
   return id !== undefined ? { name, arguments: args, id } : { name, arguments: args };
 }
 
+/**
+ * The exported builders' `toolCalls` as legacy function calls. It walks
+ * `toolCalls` by index up to `toolCalls.length`, as earlier releases did, so an
+ * untyped caller's non-array value gives the same calls: none for an object
+ * without `length`, and entries by index for a string or array-like.
+ */
+function legacyFunctionCalls(toolCalls: ToolCall[]): FixtureToolCall[] {
+  const calls: FixtureToolCall[] = [];
+  for (let idx = 0; idx < toolCalls.length; idx++) {
+    calls.push(legacyFunctionCall(toolCalls[idx]));
+  }
+  return calls;
+}
+
 /** Resolve exported-builder `blocks` as earlier releases did (no namespace emitted). */
 function legacyOrderedBlocks(
   blocks: FixtureBlock[] | undefined,
@@ -730,7 +744,7 @@ export function buildToolCallStreamEvents(
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
   return toolCallStreamEvents(
-    toolCalls.map(legacyFunctionCall),
+    legacyFunctionCalls(toolCalls),
     model,
     chunkSize,
     reasoning,
@@ -1438,15 +1452,17 @@ export function buildContentWithToolCallsStreamEvents(
   emitEncryptedReasoning = false,
   synthesizeSummarylessReasoning = false,
 ): ResponsesSSEEvent[] {
+  const ordered = legacyOrderedBlocks(blocks);
+  // With blocks, earlier releases never read `toolCalls`, so neither does this.
   return contentWithToolCallsStreamEvents(
     content,
-    toolCalls.map(legacyFunctionCall),
+    ordered && ordered.length > 0 ? [] : legacyFunctionCalls(toolCalls),
     model,
     chunkSize,
     reasoning,
     webSearches,
     overrides,
-    legacyOrderedBlocks(blocks),
+    ordered,
     emitEncryptedReasoning,
     synthesizeSummarylessReasoning,
   );
