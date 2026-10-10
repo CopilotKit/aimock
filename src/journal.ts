@@ -188,6 +188,8 @@ export interface JournalOptions {
 export class Journal implements MisbehaviorCounters {
   private entries: JournalEntry[] = [];
   private readonly matchedFixtures = new WeakMap<JournalEntry, Fixture>();
+  /** The fixture a request was served from, where the entry names its caller fixture instead. */
+  private readonly servedFixtures = new WeakMap<JournalEntry, Fixture>();
   private readonly fixtureMatchCountsByTestId: Map<string, Map<Fixture, number>> = new Map();
   /** An extended server's view of a fixture to the caller's fixture (configureFixtureViewSource). */
   private fixtureViewSource = (fixture: Fixture): Fixture => fixture;
@@ -251,11 +253,16 @@ export class Journal implements MisbehaviorCounters {
       ...entry,
       body: capBody(entry.body),
     };
-    // An extended server matches a fixture's view; the entry names the caller's fixture.
+    // A request is served from an extended server's view of a fixture, or
+    // from LLMock's per-addition copy with misbehavior enabled; the entry
+    // names the caller's fixture behind it, as in 1.44.0.
     const fixture = full.response.fixture;
-    const source = fixture ? this.fixtureViewSource(fixture) : fixture;
-    if (source !== fixture) full.response = { ...full.response, fixture: source };
-    if (matchedFixture) this.matchedFixtures.set(full, this.fixtureViewSource(matchedFixture));
+    const source = fixture ? this.fixtureCountKey(fixture) : fixture;
+    if (fixture && source !== fixture) {
+      full.response = { ...full.response, fixture: source };
+      this.servedFixtures.set(full, fixture);
+    }
+    if (matchedFixture) this.matchedFixtures.set(full, this.fixtureCountKey(matchedFixture));
     this.entries.push(full);
     // FIFO eviction when over capacity. Array.prototype.shift() is O(n)
     // regardless of how many we drop per add; we accept it at small caps
@@ -292,9 +299,17 @@ export class Journal implements MisbehaviorCounters {
   }
 
   findByFixture(fixture: Fixture): JournalEntry[] {
-    return this.entries.filter(
-      (e) => (this.matchedFixtures.get(e) ?? e.response.fixture) === fixture,
-    );
+    const key = this.fixtureCountKey(fixture);
+    return this.entries.filter((e) => (this.matchedFixtures.get(e) ?? e.response.fixture) === key);
+  }
+
+  /**
+   * @internal The fixture `entry`'s request was served from: the extended
+   * view or the per-addition copy when the entry names the caller's fixture
+   * behind it, otherwise `entry.response.fixture`. The journal JSON shows it.
+   */
+  servedFixture(entry: JournalEntry): Fixture | null {
+    return this.servedFixtures.get(entry) ?? entry.response.fixture;
   }
 
   /**

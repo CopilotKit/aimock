@@ -980,7 +980,7 @@ async function handleControlAPI(
       "Content-Type": "application/json",
       "X-Total-Count": String(total),
     });
-    res.end(journalJson(entries, fixtures));
+    res.end(journalJson(entries, journal));
     return true;
   }
 
@@ -2906,21 +2906,25 @@ export async function createServerWithResolvedAuth(
 }
 
 /**
- * The journal as JSON. The entries hold the caller's fixtures; a server with
- * `responsesTools: "extended"` shows each one as it reads it (its extended
- * view), so the journal reads as it did when those fixtures were marked in
- * place. Any other server shows the entries as they are.
+ * The journal as JSON. An entry names the caller's fixture; the JSON shows
+ * the fixture the request was served from (`Journal.servedFixture`): an
+ * extended server's view, with the held keys applied, or LLMock's
+ * per-addition copy with misbehavior enabled. The journal therefore reads as
+ * it did when the entries held those objects.
  */
-function journalJson(entries: JournalEntry[], fixtures: readonly Fixture[]): string {
-  if (!isExtendedResponsesToolsList(fixtures)) return JSON.stringify(entries);
+function journalJson(entries: JournalEntry[], journal: Journal): string {
+  if (!entries.some((entry) => journal.servedFixture(entry) !== entry.response.fixture)) {
+    return JSON.stringify(entries);
+  }
   return JSON.stringify(
     entries.map((entry) => {
       const fixture = entry.response.fixture;
-      if (!fixture) return entry;
-      const view = responsesToolsExtendedView(fixture);
-      return view === fixture
-        ? entry
-        : { ...entry, response: { ...entry.response, fixture: view } };
+      let served = journal.servedFixture(entry);
+      if (served === fixture || !served) return entry;
+      // A view is rebuilt from its fixture, as the extended server reads it now.
+      const viewSource = responsesToolsViewSource(served);
+      if (viewSource !== served) served = responsesToolsExtendedView(viewSource);
+      return { ...entry, response: { ...entry.response, fixture: served } };
     }),
   );
 }
@@ -4480,7 +4484,7 @@ async function startServer(
         }
         const entries = journal.getAll(opts);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(journalJson(entries, fixtures));
+        res.end(journalJson(entries, journal));
         return;
       }
       if (req.method === "DELETE") {

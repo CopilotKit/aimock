@@ -8,7 +8,8 @@ import { LLMock } from "../llmock.js";
 import { Journal, isChatCompletionBody } from "../journal.js";
 import { createServer } from "../server.js";
 import { loadFixtureFile } from "../fixture-loader.js";
-import type { ChatCompletionRequest, Fixture, JournalEntry } from "../types.js";
+import { fixtureMisbehaviorSourceKey, getFixtureMisbehaviorPosition } from "../misbehavior.js";
+import type { ChatCompletionRequest, Fixture, JournalEntry, MisbehaviorConfig } from "../types.js";
 
 // ---- Helpers ----
 
@@ -2032,7 +2033,7 @@ describe("LLMock caller fixture count identity", () => {
  * getFixtureMatchCount, the count-map keys and JournalEntry.response.fixture.
  * Expected values are what published 1.44.0 returns for the same calls.
  */
-describe("default mode keeps the caller's fixture objects (1.44.0 identity)", () => {
+describe("the caller's fixture objects are the identity, with misbehavior off or on (1.44.0)", () => {
   const literal = (): Fixture[] => [
     { match: { userMessage: "a" }, response: { content: "A" } },
     { match: { userMessage: "s", sequenceIndex: 0 }, response: { content: "S0" } },
@@ -2130,12 +2131,112 @@ describe("default mode keeps the caller's fixture objects (1.44.0 identity)", ()
     }
   });
 
-  it("enableMisbehavior still gives each addition its own fault source", async () => {
-    const fixture: Fixture = { match: { userMessage: "a" }, response: { content: "A" } };
+  // With misbehavior enabled LLMock stores a copy per addition (each its own
+  // fault source), and the journal names the caller's object behind it.
+  it.each([
+    ["addFixture", (m: LLMock, c: Fixture[]) => c.forEach((f) => m.addFixture(f))],
+    ["addFixtures", (m: LLMock, c: Fixture[]) => m.addFixtures(c)],
+    [
+      "prependFixture",
+      (m: LLMock, c: Fixture[]) => [...c].reverse().forEach((f) => m.prependFixture(f)),
+    ],
+    ["addFixtures(loadFixtureFile())", (m: LLMock, c: Fixture[]) => m.addFixtures(c)],
+  ] as const)("enableMisbehavior, LLMock.%s", async (label, add) => {
+    const caller = label.includes("loadFixtureFile") ? loadFixtureFile(fixtureFile()) : literal();
     const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
-    mock.addFixture(fixture).addFixture(fixture);
-    const [first, second] = mock.getFixtures();
-    expect(first).not.toBe(second);
-    expect(first).not.toBe(fixture);
+    add(mock, caller);
+    await mock.start();
+    try {
+      await expectCallerIdentity(mock.url, mock.journal, caller);
+      // The stored copies resolve to the same caller fixtures.
+      const stored = mock.getFixtures();
+      expect(stored.map((f) => mock.journal.getFixtureMatchCount(f))).toEqual([1, 2, 2]);
+      expect(stored.map((f) => mock.journal.findByFixture(f).length)).toEqual([2, 2, 1]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it("enableMisbehavior, LLMock on(): getFixtures() objects", async () => {
+    const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
+    for (const f of literal()) mock.on(f.match, f.response);
+    await mock.start();
+    try {
+      await expectCallerIdentity(mock.url, mock.journal, [...mock.getFixtures()]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it.each([false, true])(
+    "an object added twice is one caller fixture (1.44.0), enableMisbehavior=%s",
+    async (enableMisbehavior) => {
+      const fixture: Fixture = {
+        match: { userMessage: "twice" },
+        response: { toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }] },
+        ...(enableMisbehavior && {
+          misbehavior: { faults: [{ fault: "tool-args-invalid-json", rate: 0 }] },
+        }),
+      };
+      const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior });
+      mock.addFixture(fixture).addFixture(fixture);
+      await mock.start();
+      try {
+        expect((await post(mock.url, chatBody("twice", false))).status).toBe(200);
+        expect((await post(mock.url, chatBody("twice", false))).status).toBe(200);
+        // 1.44.0 stored the object twice; the first slot matched both requests.
+        const journal = mock.journal;
+        expect(journal.getFixtureMatchCount(fixture)).toBe(2);
+        expect(journal.findByFixture(fixture)).toHaveLength(2);
+        expect([...journal.fixtureMatchCounts.keys()]).toEqual([fixture]);
+        expect(journal.getAll().map((e) => e.response.fixture)).toEqual([fixture, fixture]);
+        for (const e of journal.getAll()) expect(e.response.fixture).toBe(fixture);
+        const [first, second] = mock.getFixtures();
+        if (!enableMisbehavior) {
+          expect(first).toBe(fixture);
+          expect(second).toBe(fixture);
+          return;
+        }
+        // Each addition stays its own fault source.
+        expect(first).not.toBe(second);
+        expect(getFixtureMisbehaviorPosition(first)).toBe("code#0");
+        expect(getFixtureMisbehaviorPosition(second)).toBe("code#1");
+        const config: MisbehaviorConfig = {
+          faults: [{ fault: "tool-args-invalid-json", rate: 0 }],
+        };
+        expect(first.misbehavior).toEqual(config);
+        expect(fixtureMisbehaviorSourceKey(first, config)).not.toBe(
+          fixtureMisbehaviorSourceKey(second, config),
+        );
+        for (const stored of [first, second]) {
+          expect(journal.getFixtureMatchCount(stored)).toBe(2);
+          expect(journal.findByFixture(stored)).toHaveLength(2);
+        }
+      } finally {
+        await mock.stop();
+      }
+    },
+  );
+
+  it("the journal JSON shows the copy each request was served from", async () => {
+    const fixture: Fixture = {
+      match: { userMessage: "json" },
+      response: { toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}' }] },
+      misbehavior: { faults: [{ fault: "tool-args-invalid-json", rate: 0 }] },
+    };
+    const mock = new LLMock({ port: 0, logLevel: "silent", enableMisbehavior: true });
+    mock.addFixture(fixture);
+    await mock.start();
+    try {
+      await post(mock.url, chatBody("json", false));
+      const served = mock.getFixtures()[0];
+      const body = (await (await fetch(`${mock.url}/__aimock/journal`)).json()) as {
+        response: { fixture: unknown };
+      }[];
+      expect(body[0].response.fixture).toEqual(JSON.parse(JSON.stringify(served)));
+      expect(mock.journal.getAll()[0].response.fixture).toBe(fixture);
+    } finally {
+      await mock.stop();
+    }
   });
 });
