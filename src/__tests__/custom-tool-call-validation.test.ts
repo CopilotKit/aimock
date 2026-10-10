@@ -22,64 +22,65 @@ function issuesFor(response: Record<string, unknown>) {
   return validateFixtures([entryToFixture(entry(response))]).map((r) => [r.severity, r.message]);
 }
 
+/**
+ * Fixtures 1.44.0 accepted: every one of them loads with NO finding at all
+ * (not even a warning), so `aimock validate --strict` keeps passing. A
+ * `toolCalls` entry is always a function call; a `type`, `input` or invalid
+ * `namespace` on it is ignored, as 1.44.0 ignored it.
+ */
+const legacyClean: Array<{ id: string; response: Record<string, unknown> }> = [
+  {
+    id: 'legacy type "toolCall"',
+    response: { toolCalls: [{ type: "toolCall", name: "f", arguments: "{}" }] },
+  },
+  {
+    id: 'type "custom" with arguments',
+    response: { toolCalls: [{ type: "custom", name: "f", arguments: "{}" }] },
+  },
+  {
+    id: 'type "customToolCall" with arguments',
+    response: { toolCalls: [{ type: "customToolCall", name: "f", arguments: "{}" }] },
+  },
+  {
+    id: "empty namespace",
+    response: { toolCalls: [{ name: "f", namespace: "", arguments: "{}" }] },
+  },
+  {
+    id: "non-string namespace",
+    response: { toolCalls: [{ name: "f", namespace: 3, arguments: "{}" }] },
+  },
+  { id: "numeric id", response: { toolCalls: [{ name: "f", id: 5, arguments: "{}" }] } },
+  { id: "non-string name", response: { toolCalls: [{ name: 5, arguments: "{}" }] } },
+  {
+    id: "function with input",
+    response: { toolCalls: [{ name: "f", arguments: "{}", input: "x" }] },
+  },
+  {
+    id: "toolCall block with input",
+    response: {
+      blocks: [
+        { type: "text", text: "a" },
+        { type: "toolCall", name: "f", arguments: "{}", input: "x" },
+      ],
+    },
+  },
+  {
+    id: "toolCall block with an empty namespace",
+    response: {
+      blocks: [
+        { type: "text", text: "a" },
+        { type: "toolCall", name: "f", arguments: "{}", namespace: "" },
+      ],
+    },
+  },
+];
+
+/** The new OpenAI Responses keys are validated; each row has exactly one defect. */
 const rows: Array<{
   id: string;
   response: Record<string, unknown>;
   expected: [string, string];
 }> = [
-  {
-    // Loaded before custom calls existed: a warning, still a function call.
-    id: "unknown type",
-    response: { toolCalls: [{ type: "toolCall", name: "f", arguments: "{}" }] },
-    expected: [
-      "warning",
-      'toolCalls[0].type "toolCall" is read as a function call; use "function" (or omit type), or "custom" for a custom tool call',
-    ],
-  },
-  {
-    id: "empty namespace",
-    response: { toolCalls: [{ name: "f", namespace: "", arguments: "{}" }] },
-    expected: ["error", "toolCalls[0].namespace must be a non-empty string"],
-  },
-  {
-    id: "non-string namespace",
-    response: { toolCalls: [{ type: "custom", name: "f", namespace: 3, input: "x" }] },
-    expected: ["error", "toolCalls[0].namespace must be a non-empty string"],
-  },
-  {
-    id: "custom empty name",
-    response: { toolCalls: [{ type: "custom", name: "", input: "x" }] },
-    expected: ["error", "toolCalls[0].name is empty"],
-  },
-  {
-    id: "custom missing input",
-    response: { toolCalls: [{ type: "custom", name: "apply_patch" }] },
-    expected: ["error", "toolCalls[0].input must be a string for a custom tool call"],
-  },
-  {
-    id: "custom non-string input",
-    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: { a: 1 } }] },
-    expected: ["error", "toolCalls[0].input must be a string for a custom tool call"],
-  },
-  {
-    id: "custom with arguments",
-    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "x", arguments: "{}" }] },
-    expected: ["error", "toolCalls[0].arguments is not valid on a custom tool call; use input"],
-  },
-  {
-    id: "custom empty input",
-    response: { toolCalls: [{ type: "custom", name: "apply_patch", input: "" }] },
-    expected: ["warning", "toolCalls[0].input is empty"],
-  },
-  {
-    // Loaded before custom calls existed: a warning, the input is ignored.
-    id: "function with input",
-    response: { toolCalls: [{ name: "f", arguments: "{}", input: "x" }] },
-    expected: [
-      "warning",
-      'toolCalls[0].input is ignored on a function call; it is only valid when type is "custom"',
-    ],
-  },
   {
     id: "function invalid JSON (content+toolCalls)",
     response: { content: "c", toolCalls: [{ type: "function", name: "f", arguments: "{" }] },
@@ -89,104 +90,161 @@ const rows: Array<{
     ],
   },
   {
+    id: "custom non-string namespace",
+    response: { toolCalls: [], customToolCalls: [{ name: "f", namespace: 3, input: "x" }] },
+    expected: ["error", "customToolCalls[0].namespace must be a non-empty string"],
+  },
+  {
+    id: "custom empty name",
+    response: { toolCalls: [], customToolCalls: [{ name: "", input: "x" }] },
+    expected: ["error", "customToolCalls[0].name must be a non-empty string"],
+  },
+  {
+    id: "custom missing input",
+    response: { toolCalls: [], customToolCalls: [{ name: "apply_patch" }] },
+    expected: ["error", "customToolCalls[0].input must be a string for a custom tool call"],
+  },
+  {
+    id: "custom non-string input",
+    response: { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: { a: 1 } }] },
+    expected: ["error", "customToolCalls[0].input must be a string for a custom tool call"],
+  },
+  {
+    id: "custom with arguments",
+    response: {
+      toolCalls: [],
+      customToolCalls: [{ name: "apply_patch", input: "x", arguments: "{}" }],
+    },
+    expected: [
+      "error",
+      "customToolCalls[0].arguments is not valid on a custom tool call; use input",
+    ],
+  },
+  {
+    id: "custom empty input",
+    response: { toolCalls: [], customToolCalls: [{ name: "apply_patch", input: "" }] },
+    expected: ["warning", "customToolCalls[0].input is empty"],
+  },
+  {
+    id: "custom wrong type",
+    response: {
+      toolCalls: [],
+      customToolCalls: [{ type: "function", name: "apply_patch", input: "x" }],
+    },
+    expected: ["error", 'customToolCalls[0].type must be "custom" when present'],
+  },
+  {
     id: "customToolCall block missing input",
-    response: { blocks: [{ type: "customToolCall", name: "apply_patch" }] },
-    expected: ["error", "blocks[0].input must be a string for a custom tool call"],
+    response: { responsesBlocks: [{ type: "customToolCall", name: "apply_patch" }] },
+    expected: ["error", "responsesBlocks[0].input must be a string for a custom tool call"],
   },
   {
     id: "customToolCall block with arguments",
     response: {
-      blocks: [{ type: "customToolCall", name: "apply_patch", input: "x", arguments: "{}" }],
+      responsesBlocks: [
+        { type: "customToolCall", name: "apply_patch", input: "x", arguments: "{}" },
+      ],
     },
-    expected: ["error", "blocks[0].arguments is not valid on a custom tool call; use input"],
+    expected: [
+      "error",
+      "responsesBlocks[0].arguments is not valid on a custom tool call; use input",
+    ],
   },
   {
     id: "customToolCall block empty input",
-    response: { blocks: [{ type: "customToolCall", name: "apply_patch", input: "" }] },
-    expected: ["warning", "blocks[0].input is empty"],
+    response: { responsesBlocks: [{ type: "customToolCall", name: "apply_patch", input: "" }] },
+    expected: ["warning", "responsesBlocks[0].input is empty"],
   },
   {
     id: "customToolCall block empty namespace",
-    response: { blocks: [{ type: "customToolCall", name: "run", namespace: "", input: "x" }] },
-    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+    response: {
+      responsesBlocks: [{ type: "customToolCall", name: "run", namespace: "", input: "x" }],
+    },
+    expected: ["error", "responsesBlocks[0].namespace must be a non-empty string"],
   },
   {
     id: "customToolCall block empty name",
-    response: { blocks: [{ type: "customToolCall", name: "", input: "x" }] },
-    expected: ["error", "blocks[0].name must be a non-empty string"],
+    response: { responsesBlocks: [{ type: "customToolCall", name: "", input: "x" }] },
+    expected: ["error", "responsesBlocks[0].name must be a non-empty string"],
   },
   {
     id: "customToolCall block non-string id",
-    response: { blocks: [{ type: "customToolCall", name: "apply_patch", input: "x", id: 7 }] },
-    expected: ["error", "blocks[0].id must be a string, got number"],
+    response: {
+      responsesBlocks: [{ type: "customToolCall", name: "apply_patch", input: "x", id: 7 }],
+    },
+    expected: ["error", "responsesBlocks[0].id must be a string, got number"],
   },
   {
-    id: "customToolCall block non-string namespace",
-    response: { blocks: [{ type: "customToolCall", name: "run", namespace: 7, input: "x" }] },
-    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+    id: "toolCall responsesBlock non-string namespace",
+    response: { responsesBlocks: [{ type: "toolCall", name: "f", namespace: 7, arguments: "{}" }] },
+    expected: ["error", "responsesBlocks[0].namespace must be a non-empty string"],
   },
   {
-    id: "toolCall block non-string namespace",
-    response: { blocks: [{ type: "toolCall", name: "f", namespace: 7, arguments: "{}" }] },
-    expected: ["error", "blocks[0].namespace must be a non-empty string"],
+    id: "toolCall responsesBlock with input",
+    response: { responsesBlocks: [{ type: "toolCall", name: "f", arguments: "{}", input: "x" }] },
+    expected: ["error", 'responsesBlocks[0].input is only valid on a "customToolCall" block'],
   },
   {
-    id: "toolCall block with input",
-    response: { blocks: [{ type: "toolCall", name: "f", arguments: "{}", input: "x" }] },
-    expected: ["error", 'blocks[0].input is only valid on a "customToolCall" block'],
-  },
-  {
-    id: "unknown block type",
-    response: { blocks: [{ type: "custom", name: "apply_patch", input: "x" }] },
+    id: "unknown responsesBlock type",
+    response: { responsesBlocks: [{ type: "custom", name: "apply_patch", input: "x" }] },
     expected: [
       "error",
-      'blocks[0].type must be "text", "toolCall" or "customToolCall", got "custom"',
+      'responsesBlocks[0].type must be "text", "toolCall" or "customToolCall", got "custom"',
     ],
+  },
+  {
+    id: "blocks and responsesBlocks together",
+    response: {
+      blocks: [{ type: "text", text: "a" }],
+      responsesBlocks: [{ type: "text", text: "a" }],
+    },
+    expected: ["error", "blocks and responsesBlocks cannot both be set; use responsesBlocks alone"],
   },
 ];
 
 describe("validateFixtures: namespace and custom tool call rules", () => {
+  it.each(legacyClean)("1.44.0 shape, no finding: $id", ({ response }) => {
+    expect(issuesFor(response)).toEqual([]);
+  });
+
   // Each row has exactly one defect, so it yields exactly one issue.
   it.each(rows)("$id", ({ response, expected }) => {
     expect(issuesFor(response)).toEqual([expected]);
-  });
-
-  it("does not stringify object arguments on a custom call (they stay invalid, not JSON)", () => {
-    const fixture = entryToFixture(
-      entry({
-        toolCalls: [{ type: "custom", name: "apply_patch", input: "x", arguments: { a: 1 } }],
-      }),
-    );
-    const stored: unknown = (fixture.response as { toolCalls: unknown[] }).toolCalls[0];
-    expect(stored).toEqual({
-      type: "custom",
-      name: "apply_patch",
-      input: "x",
-      arguments: { a: 1 },
-    });
-    expect(validateFixtures([fixture]).map((r) => [r.severity, r.message])).toEqual([
-      ["error", "toolCalls[0].arguments is not valid on a custom tool call; use input"],
-    ]);
   });
 
   it("accepts valid namespaced and custom calls with no issues, and never parses or stringifies input", () => {
     const input = '{"looks":"like json"} but is free text';
     const fixture = entryToFixture(
       entry({
-        toolCalls: [
-          { name: "f", namespace: "ns", arguments: { a: 1 } },
-          { type: "custom", name: "apply_patch", namespace: "sandbox", input },
-        ],
-        blocks: [
-          { type: "toolCall", name: "f", namespace: "ns", arguments: "{}" },
+        toolCalls: [{ name: "f", namespace: "ns", arguments: { a: 1 } }],
+        customToolCalls: [{ name: "apply_patch", namespace: "sandbox", input }],
+      }),
+    );
+    expect(validateFixtures([fixture])).toEqual([]);
+    const response = fixture.response as {
+      toolCalls: Array<Record<string, unknown>>;
+      customToolCalls: Array<Record<string, unknown>>;
+    };
+    expect(response.toolCalls[0].arguments).toBe('{"a":1}');
+    expect(response.customToolCalls[0]).toEqual({
+      type: "custom",
+      name: "apply_patch",
+      namespace: "sandbox",
+      input,
+    });
+    const blocksFixture = entryToFixture(
+      entry({
+        responsesBlocks: [
+          { type: "toolCall", name: "f", namespace: "ns", arguments: { a: 1 } },
           { type: "customToolCall", name: "apply_patch", input },
         ],
       }),
     );
-    expect(validateFixtures([fixture]).filter((r) => r.severity === "error")).toEqual([]);
-    const calls = (fixture.response as { toolCalls: Array<Record<string, unknown>> }).toolCalls;
-    expect(calls[0].arguments).toBe('{"a":1}');
-    expect(calls[1]).toEqual({ type: "custom", name: "apply_patch", namespace: "sandbox", input });
+    expect(validateFixtures([blocksFixture])).toEqual([]);
+    const blocks = (blocksFixture.response as { responsesBlocks: Array<Record<string, unknown>> })
+      .responsesBlocks;
+    expect(blocks[0].arguments).toBe('{"a":1}');
+    expect(blocks[1].input).toBe(input);
   });
 });
 
@@ -200,7 +258,41 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     dir = undefined;
   });
 
-  const bad = { toolCalls: [{ type: "custom", name: "apply_patch", arguments: { a: 1 } }] };
+  const bad = { toolCalls: [], customToolCalls: [{ name: "apply_patch", arguments: { a: 1 } }] };
+  const legacy = { toolCalls: [{ type: "custom", name: "apply_patch", arguments: { a: 1 } }] };
+
+  it("1.44.0 shapes pass every validating door (validate --strict, control API, addFixturesFromJSON)", async () => {
+    dir = mkdtempSync(join(tmpdir(), "aimock-505-validate-legacy-"));
+    const file = join(dir, "legacy.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        fixtures: legacyClean.map((row) => ({
+          match: { userMessage: row.id },
+          response: row.response,
+        })),
+      }),
+    );
+    let code: number | null = null;
+    runValidateCli({
+      argv: ["--strict", file],
+      log: () => {},
+      logError: () => {},
+      exit: (c) => {
+        code = c;
+      },
+    });
+    expect(code ?? 0).toBe(0);
+    mock = new LLMock({ port: 0, logLevel: "silent" });
+    await mock.start();
+    const res = await fetch(`${mock.url}/__aimock/fixtures`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fixtures: [entry(legacy)] }),
+    });
+    expect(res.status, await res.text()).toBe(200);
+    expect(() => new LLMock({ port: 0 }).addFixturesFromJSON([entry(legacy)])).not.toThrow();
+  });
 
   it("aimock validate", () => {
     dir = mkdtempSync(join(tmpdir(), "aimock-505-validate-"));
@@ -217,7 +309,9 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
       },
     });
     expect(code).toBe(1);
-    expect(logs.join("\n")).toContain("toolCalls[0].input must be a string for a custom tool call");
+    expect(logs.join("\n")).toContain(
+      "customToolCalls[0].input must be a string for a custom tool call",
+    );
   });
 
   it("control API", async () => {
@@ -230,14 +324,14 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     });
     expect(res.status).toBe(400);
     expect(await res.text()).toContain(
-      "toolCalls[0].arguments is not valid on a custom tool call; use input",
+      "customToolCalls[0].arguments is not valid on a custom tool call; use input",
     );
   });
 
   it("addFixturesFromJSON", () => {
     const unstarted = new LLMock({ port: 0 });
     expect(() => unstarted.addFixturesFromJSON([entry(bad)])).toThrow(
-      /toolCalls\[0\]\.input must be a string for a custom tool call/,
+      /customToolCalls\[0\]\.input must be a string for a custom tool call/,
     );
   });
 
@@ -267,7 +361,7 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
     const r = await hit(m, "/v1/responses", { model: "gpt-5", input: "go" });
     expect(r.status, r.text).toBe(500);
     const message =
-      'Invalid fixture tool call: "input" must be a string for a custom tool call (toolCalls[0])';
+      'Invalid fixture tool call: "input" must be a string for a custom tool call (customToolCalls[0])';
     expect((JSON.parse(r.text) as { error: unknown }).error).toEqual({
       message,
       type: "server_error",
@@ -313,7 +407,7 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
       message: '"customToolCall" block "id" must be a string when present',
     },
     {
-      id: "empty namespace on a toolCall block",
+      id: "empty namespace on a toolCall responsesBlock",
       block: { type: "toolCall", name: "f", namespace: "", arguments: "{}" },
       message: '"namespace" must be a non-empty string when present',
     },
@@ -325,7 +419,7 @@ describe("validating doors reject at load; unvalidated loads fail at request tim
   ])(
     "an unvalidated block with $id fails at request time on /v1/responses",
     async ({ block, message }) => {
-      const m = await startUnvalidated({ blocks: [{ type: "text", text: "hi" }, block] });
+      const m = await startUnvalidated({ responsesBlocks: [{ type: "text", text: "hi" }, block] });
       const r = await hit(m, "/v1/responses", { model: "gpt-5", input: "go", stream: true });
       expect(r.status, r.text).toBe(500);
       const json = JSON.parse(r.text) as { error?: { code?: unknown; message?: unknown } };

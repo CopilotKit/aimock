@@ -23,7 +23,6 @@ import {
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
-  isPlainObject,
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
@@ -37,10 +36,8 @@ import {
 } from "./misbehavior.js";
 
 /**
- * Auto-stringify object-valued `content`, `toolCalls[].arguments` (function
- * calls only; a custom call's `input` is left as-is) and `arguments` on
- * `toolCall` blocks. This lets fixture authors write plain JSON objects instead
- * of escaped strings.
+ * Auto-stringify object-valued `content` and `toolCalls[].arguments` fields.
+ * This lets fixture authors write plain JSON objects instead of escaped strings.
  * All other fields (including ResponseOverrides, and the ErrorResponse
  * `fallthrough` OpenRouter-failover flag) pass through unmodified via the
  * shallow clone below.
@@ -58,11 +55,10 @@ export function normalizeResponse(
     response.content = JSON.stringify(response.content);
   }
 
-  // Auto-stringify object arguments in function toolCalls. A custom call's
-  // free-text `input` is never stringified, and it takes no `arguments`.
+  // Auto-stringify object arguments in toolCalls
   if (Array.isArray(response.toolCalls)) {
     response.toolCalls = (response.toolCalls as Array<Record<string, unknown>>).map((tc) => {
-      if (typeof tc.arguments === "object" && tc.arguments !== null && tc.type !== "custom") {
+      if (typeof tc.arguments === "object" && tc.arguments !== null) {
         return { ...tc, arguments: JSON.stringify(tc.arguments) };
       }
       return tc;
@@ -85,6 +81,35 @@ export function normalizeResponse(
         return { ...block, arguments: JSON.stringify(block.arguments) };
       }
       return block;
+    });
+  }
+
+  // `responsesBlocks` (OpenAI Responses): the same idiom for its `toolCall`
+  // blocks. A `customToolCall` block's free-text `input` is never stringified.
+  if (Array.isArray(response.responsesBlocks)) {
+    response.responsesBlocks = (response.responsesBlocks as unknown[]).map((block) => {
+      const b = block as Record<string, unknown> | null;
+      if (
+        b !== null &&
+        typeof b === "object" &&
+        b.type === "toolCall" &&
+        typeof b.arguments === "object" &&
+        b.arguments !== null
+      ) {
+        return { ...b, arguments: JSON.stringify(b.arguments) };
+      }
+      return block;
+    });
+  }
+
+  // `customToolCalls` entries may omit `type` in a file; every entry is a
+  // custom call. Their `input` is free text and is never stringified.
+  if (Array.isArray(response.customToolCalls)) {
+    response.customToolCalls = (response.customToolCalls as unknown[]).map((tc) => {
+      const entry = tc as Record<string, unknown> | null;
+      return entry !== null && typeof entry === "object" && entry.type === undefined
+        ? { ...entry, type: "custom" }
+        : tc;
     });
   }
 
@@ -529,92 +554,135 @@ function validateWebSearches(
 }
 
 /**
- * Per-entry `toolCalls` checks. A custom tool call (`type: "custom"`) takes
- * free-text `input`, no `arguments`, a non-empty string `name` and a string
- * `id` when present. `namespace`, when present, must be a non-empty string on
- * either kind, and `type: "customToolCall"` (the block discriminator) is an
- * error. Every other entry is a function call: an empty `name` and `arguments`
- * that `JSON.parse` rejects are errors. The check does not require a string, so
- * a value such as `null` or a number that `JSON.parse` accepts after string
- * coercion passes. A non-string `name` or `id`, a stray `input`, or any other
- * `type` (including the legacy `"toolCall"`) loads with a warning.
- */
-function validateToolCallEntries(
-  toolCalls: unknown[],
-  fixtureIndex: number,
-  results: ValidationResult[],
-): void {
-  const error = (message: string) => results.push({ severity: "error", fixtureIndex, message });
-  const warning = (message: string) => results.push({ severity: "warning", fixtureIndex, message });
-  for (let j = 0; j < toolCalls.length; j++) {
-    const tc = (toolCalls[j] ?? {}) as Record<string, unknown>;
-    const isCustom = tc.type === "custom";
-    if (!tc.name) {
-      error(`toolCalls[${j}].name is empty`);
-    } else if (typeof tc.name !== "string") {
-      (isCustom ? error : warning)(`toolCalls[${j}].name must be a string, got ${typeof tc.name}`);
-    }
-    if (tc.id !== undefined && typeof tc.id !== "string") {
-      (isCustom ? error : warning)(`toolCalls[${j}].id must be a string, got ${typeof tc.id}`);
-    }
-    if (tc.namespace !== undefined && (typeof tc.namespace !== "string" || tc.namespace === "")) {
-      error(`toolCalls[${j}].namespace must be a non-empty string`);
-    }
-    if (tc.type === "customToolCall") {
-      error(`toolCalls[${j}].type must be "function" or "custom", got "customToolCall"`);
-      continue;
-    }
-    if (isCustom) {
-      if (typeof tc.input !== "string") {
-        error(`toolCalls[${j}].input must be a string for a custom tool call`);
-      } else if (tc.input === "") {
-        warning(`toolCalls[${j}].input is empty`);
-      }
-      if (tc.arguments !== undefined) {
-        error(`toolCalls[${j}].arguments is not valid on a custom tool call; use input`);
-      }
-      continue;
-    }
-    if (tc.type !== undefined && tc.type !== "function") {
-      warning(
-        `toolCalls[${j}].type ${JSON.stringify(tc.type)} is read as a function call; use "function" (or omit type), or "custom" for a custom tool call`,
-      );
-    }
-    if (tc.input !== undefined) {
-      warning(
-        `toolCalls[${j}].input is ignored on a function call; it is only valid when type is "custom"`,
-      );
-    }
-    try {
-      JSON.parse(tc.arguments as string);
-    } catch {
-      error(
-        `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
-      );
-    }
-  }
-}
-
-/**
- * Path (`toolCalls[j]` or `blocks[j]`) of the first custom tool call that a
- * static fixture response would serve, or undefined. Factory responses are
- * skipped. Like `requireEmittedFunctionToolCalls`, non-empty `blocks` are
- * authoritative: only they are scanned, and the legacy `toolCalls` list is
- * read only when there are no blocks to serve.
+ * Path (`customToolCalls[j]` or `responsesBlocks[j]`) of the first custom
+ * tool call a static fixture response carries, or undefined. Factory
+ * responses are skipped.
  */
 function firstCustomToolCallPath(response: unknown): string | undefined {
   if (response === null || typeof response !== "object") return undefined;
-  const r = response as { toolCalls?: unknown; blocks?: unknown };
-  const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object";
-  if (Array.isArray(r.blocks) && r.blocks.length > 0) {
-    const j = r.blocks.findIndex((b) => isObj(b) && b.type === "customToolCall");
-    return j >= 0 ? `blocks[${j}]` : undefined;
+  const r = response as { customToolCalls?: unknown; responsesBlocks?: unknown };
+  if (Array.isArray(r.customToolCalls) && r.customToolCalls.length > 0) {
+    return "customToolCalls[0]";
   }
-  if (Array.isArray(r.toolCalls)) {
-    const j = r.toolCalls.findIndex((tc) => isObj(tc) && tc.type === "custom");
-    if (j >= 0) return `toolCalls[${j}]`;
+  if (Array.isArray(r.responsesBlocks)) {
+    const j = r.responsesBlocks.findIndex(
+      (b) =>
+        b !== null && typeof b === "object" && (b as { type?: unknown }).type === "customToolCall",
+    );
+    if (j >= 0) return `responsesBlocks[${j}]`;
   }
   return undefined;
+}
+
+/**
+ * Checks for the OpenAI Responses keys `customToolCalls` and
+ * `responsesBlocks`. Both are new, so their findings never touch a fixture an
+ * earlier release accepted. A custom tool call takes a non-empty string
+ * `name`, a string `input` (empty: warning), no `arguments`, a string `id`
+ * when present and a non-empty string `namespace` when present.
+ * `responsesBlocks` follows the `blocks` rules plus `customToolCall` blocks,
+ * and may not be combined with `blocks`.
+ */
+function validateResponsesToolKeys(
+  response: unknown,
+  fixtureIndex: number,
+  results: ValidationResult[],
+): void {
+  if (response === null || typeof response !== "object") return;
+  const r = response as { customToolCalls?: unknown; responsesBlocks?: unknown; blocks?: unknown };
+  const error = (message: string) => results.push({ severity: "error", fixtureIndex, message });
+  const warning = (message: string) => results.push({ severity: "warning", fixtureIndex, message });
+  const checkCustom = (tc: Record<string, unknown>, path: string) => {
+    if (typeof tc.name !== "string" || tc.name === "") {
+      error(`${path}.name must be a non-empty string`);
+    }
+    if (typeof tc.input !== "string") {
+      error(`${path}.input must be a string for a custom tool call`);
+    } else if (tc.input === "") {
+      warning(`${path}.input is empty`);
+    }
+    if (tc.arguments !== undefined) {
+      error(`${path}.arguments is not valid on a custom tool call; use input`);
+    }
+    if (tc.id !== undefined && typeof tc.id !== "string") {
+      error(`${path}.id must be a string, got ${typeof tc.id}`);
+    }
+    if (tc.namespace !== undefined && (typeof tc.namespace !== "string" || tc.namespace === "")) {
+      error(`${path}.namespace must be a non-empty string`);
+    }
+  };
+  if (r.customToolCalls !== undefined) {
+    if (!Array.isArray(r.customToolCalls)) {
+      error(`customToolCalls must be an array, got ${typeof r.customToolCalls}`);
+    } else {
+      r.customToolCalls.forEach((entry: unknown, j) => {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          error(`customToolCalls[${j}] must be an object`);
+          return;
+        }
+        const tc = entry as Record<string, unknown>;
+        if (tc.type !== undefined && tc.type !== "custom") {
+          error(`customToolCalls[${j}].type must be "custom" when present`);
+        }
+        checkCustom(tc, `customToolCalls[${j}]`);
+      });
+    }
+  }
+  if (r.responsesBlocks === undefined) return;
+  if (!Array.isArray(r.responsesBlocks)) {
+    error(`responsesBlocks must be an array, got ${typeof r.responsesBlocks}`);
+    return;
+  }
+  if (Array.isArray(r.blocks) && r.blocks.length > 0 && r.responsesBlocks.length > 0) {
+    error("blocks and responsesBlocks cannot both be set; use responsesBlocks alone");
+  }
+  r.responsesBlocks.forEach((entry: unknown, j) => {
+    const path = `responsesBlocks[${j}]`;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      error(`${path} must be an object`);
+      return;
+    }
+    const block = entry as Record<string, unknown>;
+    if (block.type === "text") {
+      if (typeof block.text !== "string") error(`${path}.text must be a string`);
+      return;
+    }
+    if (block.type === "customToolCall") {
+      checkCustom(block, path);
+      return;
+    }
+    if (block.type !== "toolCall") {
+      error(
+        `${path}.type must be "text", "toolCall" or "customToolCall", got ${JSON.stringify(block.type)}`,
+      );
+      return;
+    }
+    if (typeof block.name !== "string" || block.name === "") {
+      error(`${path}.name must be a non-empty string`);
+    }
+    if (block.id !== undefined && typeof block.id !== "string") {
+      error(`${path}.id must be a string, got ${typeof block.id}`);
+    }
+    if (block.input !== undefined) {
+      error(`${path}.input is only valid on a "customToolCall" block`);
+    }
+    if (
+      block.namespace !== undefined &&
+      (typeof block.namespace !== "string" || block.namespace === "")
+    ) {
+      error(`${path}.namespace must be a non-empty string`);
+    }
+    const args = block.arguments;
+    if (typeof args === "string") {
+      try {
+        JSON.parse(args);
+      } catch {
+        error(`${path}.arguments is not valid JSON: ${args}; ${INVALID_ARGUMENTS_HINT}`);
+      }
+    } else if (args === null || typeof args !== "object") {
+      error(`${path}.arguments must be a string or an object`);
+    }
+  });
 }
 
 function validateBlocks(
@@ -638,8 +706,8 @@ function validateBlocks(
   }
 
   for (let j = 0; j < response.blocks.length; j++) {
-    const block: unknown = response.blocks[j];
-    if (!isPlainObject(block)) {
+    const block = response.blocks[j] as Record<string, unknown> | null | undefined;
+    if (typeof block !== "object" || block === null) {
       results.push({
         severity: "error",
         fixtureIndex,
@@ -647,61 +715,12 @@ function validateBlocks(
       });
       continue;
     }
-    if (block.type !== "text" && block.type !== "toolCall" && block.type !== "customToolCall") {
+    if (block.type !== "text" && block.type !== "toolCall") {
       results.push({
         severity: "error",
         fixtureIndex,
-        message: `blocks[${j}].type must be "text", "toolCall" or "customToolCall", got ${JSON.stringify(block.type)}`,
+        message: `blocks[${j}].type must be "text" or "toolCall", got ${JSON.stringify(block.type)}`,
       });
-      continue;
-    }
-    if (
-      block.type !== "text" &&
-      block.namespace !== undefined &&
-      (typeof block.namespace !== "string" || block.namespace === "")
-    ) {
-      results.push({
-        severity: "error",
-        fixtureIndex,
-        message: `blocks[${j}].namespace must be a non-empty string`,
-      });
-    }
-    if (block.type === "customToolCall") {
-      // Same rules as a custom `toolCalls` entry, with blocks[j] paths.
-      if (typeof block.name !== "string" || block.name === "") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].name must be a non-empty string`,
-        });
-      }
-      if (typeof block.input !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].input must be a string for a custom tool call`,
-        });
-      } else if (block.input === "") {
-        results.push({
-          severity: "warning",
-          fixtureIndex,
-          message: `blocks[${j}].input is empty`,
-        });
-      }
-      if (block.arguments !== undefined) {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].arguments is not valid on a custom tool call; use input`,
-        });
-      }
-      if (block.id !== undefined && typeof block.id !== "string") {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].id must be a string, got ${typeof block.id}`,
-        });
-      }
       continue;
     }
     if (block.type === "text") {
@@ -722,13 +741,6 @@ function validateBlocks(
       }
     } else {
       // toolCall block — mirror toolCalls[] name + arguments checks.
-      if (block.input !== undefined) {
-        results.push({
-          severity: "error",
-          fixtureIndex,
-          message: `blocks[${j}].input is only valid on a "customToolCall" block`,
-        });
-      }
       if (typeof block.name !== "string" || block.name === "") {
         results.push({
           severity: "error",
@@ -781,21 +793,15 @@ function validateBlocks(
         (b as { type?: unknown }).type === "text" &&
         typeof (b as { text?: unknown }).text === "string",
     );
-    // Each tool call is compared as kind + name + namespace, so a custom call
-    // and a function call of the same name (or two namespaces) differ.
-    const callKey = (kind: string, name: unknown, namespace: unknown) =>
-      JSON.stringify([kind, name, namespace ?? null]);
-    const toolCallBlockKeys = response.blocks
+    const toolCallBlockNames = response.blocks
       .filter(
-        (b): b is { type: "toolCall" | "customToolCall"; name: unknown; namespace?: unknown } =>
+        (b): b is { type: "toolCall"; name: string } =>
           b != null &&
           typeof b === "object" &&
-          ((b as { type?: unknown }).type === "toolCall" ||
-            (b as { type?: unknown }).type === "customToolCall"),
+          (b as { type?: unknown }).type === "toolCall" &&
+          typeof (b as { name?: unknown }).name === "string",
       )
-      .map((b) =>
-        callKey(b.type === "customToolCall" ? "custom" : "function", b.name, b.namespace),
-      );
+      .map((b) => b.name);
 
     // Text divergence: blocks' concatenated text vs legacy `content`.
     if (hasLegacyContent) {
@@ -810,18 +816,15 @@ function validateBlocks(
       }
     }
 
-    // Tool-call divergence: blocks' ordered toolCall and customToolCall blocks
-    // vs legacy `toolCalls`, by kind, name and namespace.
+    // ToolCall divergence: blocks' ordered toolCall names vs legacy `toolCalls`.
     if (hasLegacyToolCalls) {
-      const legacyKeys = (
-        response.toolCalls as Array<{ type?: unknown; name?: unknown; namespace?: unknown } | null>
-      ).map((tc) =>
-        callKey(tc?.type === "custom" ? "custom" : "function", tc?.name, tc?.namespace),
+      const legacyNames = (response.toolCalls as Array<{ name?: unknown }>).map((tc) =>
+        typeof tc?.name === "string" ? tc.name : undefined,
       );
-      const sameCalls =
-        legacyKeys.length === toolCallBlockKeys.length &&
-        legacyKeys.every((k, i) => k === toolCallBlockKeys[i]);
-      if (!sameCalls) {
+      const sameNames =
+        legacyNames.length === toolCallBlockNames.length &&
+        legacyNames.every((n, k) => n === toolCallBlockNames[k]);
+      if (!sameNames) {
         results.push({
           severity: "warning",
           fixtureIndex,
@@ -1095,8 +1098,13 @@ export function validateFixtures(
       // the "content is empty string" hard error. Fixtures WITHOUT blocks keep
       // the error (an empty content with no blocks produces no output).
       const hasNonEmptyBlocks =
-        Array.isArray((response as { blocks?: unknown }).blocks) &&
-        (response as { blocks: unknown[] }).blocks.length > 0;
+        (Array.isArray((response as { blocks?: unknown }).blocks) &&
+          (response as { blocks: unknown[] }).blocks.length > 0) ||
+        (Array.isArray((response as { responsesBlocks?: unknown }).responsesBlocks) &&
+          (response as { responsesBlocks: unknown[] }).responsesBlocks.length > 0);
+      const hasCustomToolCalls =
+        Array.isArray((response as { customToolCalls?: unknown }).customToolCalls) &&
+        (response as { customToolCalls: unknown[] }).customToolCalls.length > 0;
 
       // Text response checks
       if (isTextResponse(response)) {
@@ -1129,14 +1137,32 @@ export function validateFixtures(
           }
         }
         if (Array.isArray(response.toolCalls)) {
-          if (response.toolCalls.length === 0) {
+          if (response.toolCalls.length === 0 && !hasCustomToolCalls) {
             results.push({
               severity: "warning",
               fixtureIndex: i,
               message: "toolCalls array is empty — fixture will never produce tool calls",
             });
           }
-          validateToolCallEntries(response.toolCalls, i, results);
+          for (let j = 0; j < response.toolCalls.length; j++) {
+            const tc = response.toolCalls[j];
+            if (!tc.name) {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].name is empty`,
+              });
+            }
+            try {
+              JSON.parse(tc.arguments);
+            } catch {
+              results.push({
+                severity: "error",
+                fixtureIndex: i,
+                message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
+              });
+            }
+          }
         }
         validateReasoning(response, i, results);
         validateWebSearches(response, i, results);
@@ -1150,17 +1176,37 @@ export function validateFixtures(
         i,
         results,
       );
+      // OpenAI Responses keys (new): customToolCalls and responsesBlocks.
+      validateResponsesToolKeys(response, i, results);
 
       // Tool call response checks
       if (isToolCallResponse(response)) {
-        if (response.toolCalls.length === 0) {
+        if (response.toolCalls.length === 0 && !hasCustomToolCalls) {
           results.push({
             severity: "warning",
             fixtureIndex: i,
             message: "toolCalls array is empty — fixture will never produce tool calls",
           });
         }
-        validateToolCallEntries(response.toolCalls, i, results);
+        for (let j = 0; j < response.toolCalls.length; j++) {
+          const tc = response.toolCalls[j];
+          if (!tc.name) {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].name is empty`,
+            });
+          }
+          try {
+            JSON.parse(tc.arguments);
+          } catch {
+            results.push({
+              severity: "error",
+              fixtureIndex: i,
+              message: `toolCalls[${j}].arguments is not valid JSON: ${tc.arguments}; ${INVALID_ARGUMENTS_HINT}`,
+            });
+          }
+        }
         validateWebSearches(response, i, results);
       }
 
@@ -1502,11 +1548,10 @@ export function validateFixtures(
           message: `match.toolNamespace must be a string, got ${typeof f.match.toolNamespace}`,
         });
       } else if (f.match.toolNamespace.length === 0) {
-        // A request never carries an empty namespace: aimock rejects a
-        // namespace tool named "" with a 400 (validateResponsesTools), as
-        // OpenAI's spec requires (openai/openai-openapi openapi.yaml 2.3.0,
-        // NamespaceToolParam: `name` has `minLength: 1`), so this value never
-        // matches. Reject it as an authoring mistake.
+        // OpenAI's spec gives a namespace tool a non-empty name
+        // (openai/openai-openapi openapi.yaml 2.3.0, NamespaceToolParam: `name`
+        // has `minLength: 1`), and aimock drops a namespace tool named "", so
+        // this value never matches. Reject it as an authoring mistake.
         results.push({
           severity: "error",
           fixtureIndex: i,
@@ -1535,9 +1580,7 @@ export function validateFixtures(
         : undefined;
     if (customCallPath !== undefined) {
       // No non-"chat" endpoint can carry a custom tool call, but the failure
-      // differs per wire: media handlers answer an uncoded 500 shape error,
-      // Realtime sends an error event, and openai-live rejects the fixture at
-      // load. So the text names no status or error code.
+      // differs per wire, so the text names no status or error code.
       results.push({
         severity: "warning",
         fixtureIndex: i,
@@ -1588,9 +1631,8 @@ export function validateFixtures(
     // duplicates when they would match the SAME requests, so the dedup key must
     // include EVERY match discriminator the router (matchFixtureDiagnostic in
     // router.ts) actually gates on: userMessage, systemMessage, inputText,
-    // toolCallId, toolResultContains, toolName, toolNamespace, model,
-    // responseFormat, endpoint, context, sequenceIndex, turnIndex, and
-    // hasToolResult. Omitting any of these
+    // toolCallId, toolResultContains, toolName, model, responseFormat, endpoint,
+    // context, sequenceIndex, turnIndex, and hasToolResult. Omitting any of these
     // (the old key only carried turnIndex/hasToolResult/toolResultContains/
     // sequenceIndex/context) flags two legitimately-distinct fixtures — e.g. two
     // that differ ONLY in toolCallId or model — as false duplicates.
@@ -1603,36 +1645,32 @@ export function validateFixtures(
     // Values are serialised kind-aware so RegExp / string[] matchers do not
     // collide (a template literal would coerce a RegExp to its source and an
     // array via join, losing the distinction) — mirroring describeMatch in
-    // router.ts. The field tuple is JSON-encoded rather than joined with a
-    // delimiter, so a "|" inside a value (e.g. toolName "a|" + toolNamespace
-    // "b" vs toolName "a" + toolNamespace "|b") cannot shift field boundaries.
-    // The key is not collision-free: an absent field and an empty-string
-    // field both encode as "", so e.g. toolCallId (or toolName, context)
-    // absent vs "" share a key.
+    // router.ts.
     const um = f.match.userMessage;
     if (typeof um === "string" && um) {
       const m = f.match;
       const dedupKey =
         m.predicate !== undefined
           ? `predicate:${i}`
-          : JSON.stringify(
-              [
-                serializeMatcher(m.userMessage),
-                serializeMatcher(m.systemMessage),
-                serializeMatcher(m.inputText),
-                m.toolCallId,
-                m.toolResultContains,
-                m.toolName,
-                m.toolNamespace,
-                serializeMatcher(m.model),
-                m.responseFormat,
-                m.endpoint,
-                m.context,
-                m.sequenceIndex,
-                m.turnIndex,
-                m.hasToolResult,
-              ].map((v) => (v === undefined ? "" : String(v))),
-            );
+          : [
+              serializeMatcher(m.userMessage),
+              serializeMatcher(m.systemMessage),
+              serializeMatcher(m.inputText),
+              m.toolCallId,
+              m.toolResultContains,
+              m.toolName,
+              serializeMatcher(m.model),
+              m.responseFormat,
+              m.endpoint,
+              m.context,
+              m.sequenceIndex,
+              m.turnIndex,
+              m.hasToolResult,
+              // Appended only when set, so every key without it is unchanged.
+              ...(m.toolNamespace !== undefined ? [`toolNamespace=${m.toolNamespace}`] : []),
+            ]
+              .map((v) => (v === undefined ? "" : String(v)))
+              .join("|");
       const prev = seenUserMessages.get(dedupKey);
       if (prev !== undefined) {
         const ref: ValidationRef = {
