@@ -6,6 +6,7 @@ import { loadConfig, startFromConfig } from "../config-loader.js";
 import type { AimockConfig } from "../config-loader.js";
 import type { RecordedTimings } from "../types.js";
 import { Logger } from "../logger.js";
+import * as llmockModule from "../llmock.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "config-loader-test-"));
@@ -231,6 +232,50 @@ describe("startFromConfig", () => {
     // Legacy mode: the tool call's namespace is not emitted.
     expect(await resp.text()).not.toContain('"namespace":"docs"');
   });
+
+  it.each(["strictToolArguments", "enableMisbehavior"] as const)(
+    "ignores a non-boolean llm.%s with a warning and leaves the option off",
+    async (key) => {
+      // 1.44.0 ignored the key, so a string "true" must not enable anything or fail.
+      const fixturePath = join(tmpDir, `non-boolean-${key}.json`);
+      writeFileSync(
+        fixturePath,
+        JSON.stringify({
+          fixtures: [
+            {
+              match: { userMessage: "hello" },
+              response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+            },
+          ],
+        }),
+        "utf-8",
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+      cleanups.push(async () => {
+        warn.mockRestore();
+        construction.mockRestore();
+      });
+      const { llmock, url } = await startFromConfig({
+        llm: { fixtures: fixturePath, logLevel: "silent", [key]: "true" as unknown as boolean },
+      });
+      cleanups.push(() => llmock.stop());
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "[aimock]",
+        `Ignoring llm.${key} because it must be true or false, got "true".`,
+      );
+      expect(construction.mock.calls[0][0][key]).toBeUndefined();
+      // strictToolArguments stays off: malformed arguments are served as {} (HTTP 200).
+      const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      });
+      await resp.text();
+      expect(resp.status).toBe(200);
+    },
+  );
 
   it("the strictToolArguments override wins over the config", async () => {
     const fixturePath = join(tmpDir, "bad-args-2.json");
