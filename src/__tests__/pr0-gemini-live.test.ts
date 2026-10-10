@@ -60,7 +60,7 @@ async function connect(branch: Branch, args: string | undefined) {
       ],
     }),
   );
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.loadFixtureFile(file);
   await mock.start();
   const client = new GoogleGenAI({

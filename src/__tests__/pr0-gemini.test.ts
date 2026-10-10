@@ -57,7 +57,7 @@ async function requestGemini(scenario: (typeof cases)[number], args: string | un
     path,
     JSON.stringify({ fixtures: [{ match: {}, response: fixtureResponse(scenario.shape, args) }] }),
   );
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.loadFixtureFile(path);
   await mock.start();
 

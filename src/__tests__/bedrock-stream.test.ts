@@ -1493,7 +1493,7 @@ describe("POST /model/{modelId}/invoke-with-response-stream (unknown response ty
 describe("POST /model/{modelId}/invoke-with-response-stream (malformed tool args)", () => {
   const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-  it("preserves malformed tool call arguments verbatim", async () => {
+  it("malformed tool call arguments fall back to empty JSON string", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-tool-args" },
       response: {
@@ -1517,8 +1517,8 @@ describe("POST /model/{modelId}/invoke-with-response-stream (malformed tool args
     const fullJson = deltas
       .map((f) => (f.payload as { delta: { partial_json?: string } }).delta.partial_json ?? "")
       .join("");
-    // Preserve authored malformed arguments on the string-carrying wire.
-    expect(fullJson).toBe("NOT VALID JSON");
+    // Malformed arguments should fall back to "{}"
+    expect(fullJson).toBe("{}");
   });
 });
 
@@ -1875,7 +1875,7 @@ describe("converseToCompletionRequest (edge cases)", () => {
 describe("POST /model/{modelId}/converse (malformed tool call arguments)", () => {
   const MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
-  it("rejects malformed JSON with a native AWS diagnostic", async () => {
+  it("falls back to empty input for malformed JSON", async () => {
     const badArgsFixture: Fixture = {
       match: { userMessage: "bad-args" },
       response: {
@@ -1887,13 +1887,9 @@ describe("POST /model/{modelId}/converse (malformed tool call arguments)", () =>
       messages: [{ role: "user", content: [{ text: "bad-args" }] }],
     });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.__type).toBe("InternalServerException");
-    expect(body.message).toContain('fixture tool call "fn" has invalid JSON arguments');
-    expect(body.message).toContain(
-      "Use a wire that carries tool arguments as a string to test malformed JSON.",
-    );
+    expect(body.output.message.content[0].toolUse.input).toEqual({});
   });
 });
 

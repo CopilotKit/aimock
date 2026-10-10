@@ -49,7 +49,7 @@ async function invoke(mode: (typeof modes)[number], args: string | undefined) {
   directory = await mkdtemp(join(tmpdir(), "aimock-pr0-bedrock-"));
   const fixturePath = join(directory, "fixture.json");
   await writeFile(fixturePath, JSON.stringify({ fixtures: [{ match: {}, response }] }));
-  mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 3 });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true, chunkSize: 3 });
   mock.loadFixtureFile(fixturePath);
   await mock.start();
   client = new BedrockRuntimeClient({

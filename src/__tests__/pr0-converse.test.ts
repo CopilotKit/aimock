@@ -51,7 +51,7 @@ async function observe(shape: Shape, stream: boolean, args: string | undefined) 
   directory = await mkdtemp(join(tmpdir(), "pr0-converse-"));
   const fixturePath = join(directory, "fixture.json");
   await writeFile(fixturePath, JSON.stringify({ fixtures: [{ match: {}, response }] }));
-  mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 2 });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true, chunkSize: 2 });
   mock.loadFixtureFile(fixturePath);
   expect(mock.getFixtures()).toHaveLength(1);
   await mock.start();

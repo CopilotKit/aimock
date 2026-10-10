@@ -122,6 +122,40 @@ describe("startFromConfig", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("llm.strictToolArguments opts into rejecting invalid JSON tool arguments", async () => {
+    const fixturePath = join(tmpDir, "bad-args.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+          },
+        ],
+      }),
+      "utf-8",
+    );
+    const statusFor = async (config: AimockConfig): Promise<number> => {
+      const { llmock, url } = await startFromConfig(config);
+      cleanups.push(() => llmock.stop());
+      const resp = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      });
+      await resp.text();
+      return resp.status;
+    };
+    // Default (as in 1.44.0): served as {}.
+    expect(await statusFor({ llm: { fixtures: fixturePath, logLevel: "silent" } })).toBe(200);
+    expect(
+      await statusFor({
+        llm: { fixtures: fixturePath, logLevel: "silent", strictToolArguments: true },
+      }),
+    ).toBe(500);
+  });
+
   it("creates server with LLM fixtures from a file", async () => {
     const fixturePath = writeFixtureFile(tmpDir);
     const config: AimockConfig = { llm: { fixtures: fixturePath } };

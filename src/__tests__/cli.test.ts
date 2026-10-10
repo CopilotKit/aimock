@@ -383,6 +383,61 @@ describe.skipIf(!CLI_AVAILABLE)("CLI: --log-level", () => {
   });
 });
 
+describe.skipIf(!CLI_AVAILABLE)("CLI: --strict-tool-arguments", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Invalid JSON tool arguments on Gemini (an object-arguments wire).
+  async function geminiStatus(flags: string[]): Promise<{ status: number; body: string }> {
+    assertBuiltCliIsCurrent();
+    const fixturePath = join(tmpDir, "bad-args.json");
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        fixtures: [
+          {
+            match: { userMessage: "hello" },
+            response: { toolCalls: [{ name: "lookup", arguments: '{"city":' }] },
+          },
+        ],
+      }),
+    );
+    const child = spawnCli(["--fixtures", fixturePath, "--port", "0", ...flags]);
+    try {
+      await child.waitForOutput(/listening on/i, 5000);
+      const url = /listening on (http:\/\/\S+)/i.exec(child.stdout())![1];
+      const res = await fetch(`${url}/v1beta/models/gemini-2.0-flash:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      });
+      return { status: res.status, body: await res.text() };
+    } finally {
+      child.kill("SIGTERM");
+      await child.waitForExit();
+    }
+  }
+
+  it("serves invalid JSON tool arguments as {} without the flag", async () => {
+    const { status, body } = await geminiStatus([]);
+    expect(status).toBe(200);
+    expect(JSON.parse(body).candidates[0].content.parts[0].functionCall.args).toEqual({});
+  });
+
+  it("rejects invalid JSON tool arguments with the flag", async () => {
+    const { status, body } = await geminiStatus(["--strict-tool-arguments"]);
+    expect(status).toBe(500);
+    expect(body).toContain("invalid JSON arguments");
+  });
+});
+
 describe.skipIf(!CLI_AVAILABLE)("CLI: --validate-on-load", () => {
   let tmpDir: string;
 

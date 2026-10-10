@@ -35,7 +35,7 @@ const paths = [
 ] as const;
 
 async function requestWire(path: (typeof paths)[number], args: string) {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.addFixture({
     match: {},
     response: { toolCalls: [{ id: "call_pr0", name: "lookup", arguments: args }] },

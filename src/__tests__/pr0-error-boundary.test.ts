@@ -51,7 +51,7 @@ const routes = [
 test.each(routes)(
   "invalid object arguments return only the provider error: $path",
   async ({ path, body, shape }) => {
-    mock = new LLMock({ port: 0, logLevel: "silent" });
+    mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
     mock.addFixture({ match: {}, response: { content: "must not be emitted", toolCalls: [tool] } });
     await mock.start();
     const response = await fetch(mock.url + path, {
@@ -151,7 +151,7 @@ test.each([false, true])(
 );
 
 test("an unrelated provider failure retains its envelope and journal fields", async () => {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true });
   mock.addFixture({
     match: {},
     response: () => {

@@ -28,7 +28,7 @@ const argumentsCases = [
 
 async function requestCohere(mode: (typeof modes)[number], args: string | undefined) {
   const directory = await mkdtemp(join(tmpdir(), "aimock-pr0-cohere-"));
-  const mock = new LLMock({ port: 0, logLevel: "silent", chunkSize: 3 });
+  const mock = new LLMock({ port: 0, logLevel: "silent", strictToolArguments: true, chunkSize: 3 });
   const wire: { status: number; body: string }[] = [];
   const toolCall = { id: "call_pr0", name: "lookup", arguments: args };
   const response =

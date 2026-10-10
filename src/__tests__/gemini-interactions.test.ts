@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import * as http from "node:http";
 import type { Fixture } from "../types.js";
 import { createServer, type ServerInstance } from "../server.js";
@@ -15,7 +15,6 @@ import {
 } from "../gemini-interactions.js";
 import { collapseGeminiInteractionsSSE } from "../stream-collapse.js";
 import { Logger } from "../logger.js";
-import { InvalidToolArgumentsError } from "../helpers.js";
 import { SKIPPED_BY_STATE_RE } from "./helpers/strict-matchers.js";
 import { fnArgs } from "./helpers/tool-calls.js";
 
@@ -818,15 +817,15 @@ describe("response builders", () => {
     expect(toolResp.status).toBe("requires_action");
   });
 
-  it("rejects malformed JSON on the object argument wire", () => {
-    expect(() =>
-      buildInteractionsToolCallResponse(
-        [{ name: "fn", arguments: "not-json", id: "call_x" }],
-        "m",
-        "id-0",
-        logger,
-      ),
-    ).toThrow(InvalidToolArgumentsError);
+  it("handles malformed JSON in tool call arguments gracefully", () => {
+    const resp = buildInteractionsToolCallResponse(
+      [{ name: "fn", arguments: "not-json", id: "call_x" }],
+      "m",
+      "id-0",
+      logger,
+    ) as Record<string, unknown>;
+    const steps = resp.steps as Array<Record<string, unknown>>;
+    expect(steps[0].arguments).toEqual({});
   });
 });
 
@@ -947,18 +946,25 @@ describe("SSE event builders", () => {
     expect((deltas[2].delta as Record<string, unknown>).text).toBe("GH");
   });
 
-  it("preserves malformed tool-call arguments verbatim when streaming", () => {
-    const events = buildInteractionsToolCallSSEEvents(
-      [{ name: "fn", arguments: "not-json", id: "call_1" }],
-      "aimock-int-0",
-      logger,
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        event_type: "step.delta",
-        delta: { type: "arguments_delta", arguments: "not-json" },
-      }),
-    );
+  it("falls back to empty args and warns on malformed tool-call arguments (streaming)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const events = buildInteractionsToolCallSSEEvents(
+        [{ name: "fn", arguments: "not-json", id: "call_1" }],
+        "aimock-int-0",
+        new Logger("warn"),
+      );
+      const argDelta = events.find(
+        (e) =>
+          e.event_type === "step.delta" &&
+          (e.delta as Record<string, unknown>).type === "arguments_delta",
+      )!;
+      // Malformed args degrade to a valid empty-object fragment, not garbage.
+      expect((argDelta.delta as Record<string, unknown>).arguments).toBe("{}");
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("emits usage and requires_action status on interaction.completed for tool calls", () => {
