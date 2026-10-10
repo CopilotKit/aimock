@@ -156,13 +156,19 @@ export async function startFromConfig(
   overrides?: { port?: number; host?: string },
 ): Promise<{ llmock: LLMock; url: string }> {
   const logger = new Logger("info");
+  // A valid `llm.misbehavior` enables misbehavior. 1.44.0 ignored this key, so
+  // an invalid value cannot fail startup: warn and leave misbehavior disabled,
+  // which serves exactly what 1.44.0 served for the same config.
   let misbehavior: MisbehaviorConfig | undefined;
   if (config.llm?.misbehavior !== undefined) {
     const parsed = parseMisbehavior(config.llm.misbehavior, "llm.misbehavior");
-    if (!parsed.ok) {
-      throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}`);
+    if (parsed.ok) {
+      misbehavior = parsed.config;
+    } else {
+      logger.warn(
+        `${parsed.issue.rule}: ${parsed.issue.path}: ${parsed.issue.message}. Ignoring llm.misbehavior; misbehavior stays disabled.`,
+      );
     }
-    misbehavior = parsed.config;
   }
 
   // A non-positive replaySpeed fails calculateDelay's `speed > 0` check and applies the

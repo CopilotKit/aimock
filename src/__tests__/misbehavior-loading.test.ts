@@ -800,7 +800,7 @@ describe("shared validateFixtures misbehavior diagnostics", () => {
 // Run real plugin hooks in a child runner: a failing beforeAll must not fail
 // this parent suite. As in mcp-fakes-plugins, Jest uses Vitest's compatible globals.
 describe("actual plugin misbehavior diagnostics", () => {
-  function runPlugin(plugin: string, fixturePath: string) {
+  function runPlugin(plugin: string, fixturePath: string, enableMisbehavior = true) {
     const directory = mkdtempSync(resolve(".aimock-plugin-loading-"));
     directories.push(directory);
     const testFile = join(directory, "plugin.test.ts");
@@ -821,7 +821,7 @@ describe("actual plugin misbehavior diagnostics", () => {
     writeFileSync(
       testFile,
       `import { useAimock } from ${JSON.stringify(resolve(`src/${plugin}.ts`))};
-const mock = useAimock({ fixtures: ${JSON.stringify(fixturePath)}, port: 0, patchEnv: false, logLevel: "silent", enableMisbehavior: true });
+const mock = useAimock({ fixtures: ${JSON.stringify(fixturePath)}, port: 0, patchEnv: false, logLevel: "silent"${enableMisbehavior ? ", enableMisbehavior: true" : ""} });
 it("serves the loaded fixture over HTTP", async () => {
   const result = await fetch(mock().url + "/v1/chat/completions", {
     method: "POST",
@@ -844,13 +844,9 @@ it("serves the loaded fixture over HTTP", async () => {
   }
 
   describe.each(["vitest", "jest"])("%s plugin", (plugin) => {
-    // KNOWN DEPENDENCY: the plugins' loadFixtures rethrows only FixtureLoadError
-    // and logs any other load error as a warning, so a MisbehaviorConfigError
-    // does not yet fail beforeAll. The fix is one `|| err instanceof
-    // MisbehaviorConfigError` in src/vitest.ts and src/jest.ts (owned by the
-    // #509 track). `it.fails` keeps the required behavior here and turns red
-    // once the plugins propagate the error: then change it back to `it.each`.
-    it.fails.each([
+    // With enableMisbehavior: true, a MisbehaviorConfigError fails beforeAll,
+    // as it fails server startup.
+    it.each([
       {
         surface: "file",
         config: { faults: [], typo: "unexpected" },
@@ -899,6 +895,15 @@ it("serves the loaded fixture over HTTP", async () => {
       },
       20000,
     );
+
+    it("ignores an invalid misbehavior key without enableMisbehavior, as 1.44.0", () => {
+      const { file } = fixtureFile([entry({ faults: [], typo: "unexpected" })]);
+      const result = runPlugin(plugin, file, false);
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toMatch(/Tests\s+1 passed \(1\)/);
+      expect(result.output).not.toContain("MisbehaviorConfigError");
+      expect(result.output).not.toContain("[aimock] Failed to load fixtures");
+    }, 20000);
 
     it("starts and serves HTTP with a valid empty misbehavior override", () => {
       const { file } = fixtureFile([entry({ faults: [] })]);

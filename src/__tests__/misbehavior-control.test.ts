@@ -181,22 +181,28 @@ describe("config-file misbehavior defaults", () => {
     );
   });
 
+  // 1.44.0 ignored llm.misbehavior, so a value it accepted keeps starting: an
+  // invalid value warns and leaves misbehavior disabled (1.44.0 behavior).
   it.each([
     [{ faults: [], typo: true }, "misbehavior/unknown-key"],
     [{ faults: [{ fault: "empty-response", rate: 2 }] }, "misbehavior/bad-value"],
     [null, "misbehavior/bad-value"],
+    ["unknown-fault", "misbehavior/bad-value"],
   ])(
-    "rejects bad raw config with a plain rule-prefixed TypeError: %j",
+    "warns about bad raw config, leaves misbehavior disabled and serves as 1.44.0: %j",
     async (misbehavior, rule) => {
-      let caught: unknown;
-      try {
-        await start(misbehavior);
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBeInstanceOf(TypeError);
-      expect(Object.getPrototypeOf(caught)).toBe(TypeError.prototype);
-      expect(caught).toHaveProperty("message", expect.stringMatching(new RegExp(`^${rule}`)));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const construction = vi.spyOn(llmockModule, "createLLMockWithResolvedAuth");
+      const { url } = await start(misbehavior);
+      expect(construction.mock.calls[0][0].misbehavior).toBeUndefined();
+      expect(construction.mock.calls[0][0].enableMisbehavior).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        "[aimock]",
+        expect.stringMatching(
+          new RegExp(`^${rule}: llm\\.misbehavior.*Ignoring llm\\.misbehavior`),
+        ),
+      );
+      expect(await responseContent(url)).toBe("configured answer");
     },
   );
 
