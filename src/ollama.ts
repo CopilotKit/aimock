@@ -25,7 +25,6 @@ import type {
 } from "./types.js";
 import {
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -514,10 +513,7 @@ function prepareOllamaMisbehavior(
   // never throws; the normal path's guard rejects it instead.
   const calls =
     outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      "Ollama",
-    );
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
   const model = request.model;
 
@@ -1478,49 +1474,8 @@ export async function handleOllamaGenerate(
     return;
   }
 
-  // Text response (only type supported for /api/generate). A text fixture
-  // whose ordered `blocks` carry a tool call is a tool-call fixture here, and
-  // is rejected below rather than served with the call silently dropped.
-  // Only `toolCall` and `customToolCall` blocks count as tool calls. The
-  // blocks are first validated in the order /api/chat uses: a
-  // `customToolCall` block is rejected ahead of every other block check, so
-  // such a list goes straight to the tool-call rejection; any other list is
-  // validated block by block, so an unknown, misspelled or malformed block
-  // throws the same error here as on /api/chat, even when the list also
-  // carries a valid `toolCall` block. (routeError shapes a fixture tool-call
-  // error's body by path, so only its envelope differs between the two.)
-  const blocks = (response as { blocks?: unknown }).blocks;
-  const blockList: unknown[] = Array.isArray(blocks) ? blocks : [];
-  const isBlockOfType = (b: unknown, type: string): boolean =>
-    b !== null && typeof b === "object" && "type" in b && b.type === type;
-  const blocksCarryCustomToolCall = blockList.some((b) => isBlockOfType(b, "customToolCall"));
-  const blocksCarryToolCall =
-    blocksCarryCustomToolCall || blockList.some((b) => isBlockOfType(b, "toolCall"));
-  if (!blocksCarryCustomToolCall && blockList.length > 0) {
-    try {
-      resolveFixtureBlocks(blockList as FixtureBlock[]);
-    } catch (err) {
-      // Journal the matched request before the error escapes, as /api/chat
-      // does (it journals, then its builder throws). routeError then keeps
-      // this entry's body, fixture and misbehavior outcome instead of
-      // writing a bodiless "internal" entry.
-      const journalEntry = journal.add({
-        method: req.method ?? "POST",
-        path: urlPath,
-        headers: flattenHeaders(req.headers),
-        body: completionReq,
-        response: { status: 500, fixture },
-      });
-      recordMisbehaviorOutcome({
-        entry: journalEntry,
-        summary: misbehavior.summary,
-        defaults,
-        testId,
-      });
-      throw err;
-    }
-  }
-  if (isTextResponse(response) && !blocksCarryToolCall) {
+  // Text response (only type supported for /api/generate)
+  if (isTextResponse(response)) {
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: urlPath,

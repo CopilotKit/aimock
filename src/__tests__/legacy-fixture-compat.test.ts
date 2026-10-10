@@ -6,9 +6,9 @@
  * - A Gemini audio fixture with non-array companion `toolCalls` emits no tool
  *   parts.
  * - Function-call `toolCalls` entries that loaded before (legacy
- *   `type: "toolCall"`, any other non-custom `type`, a numeric `id`, a numeric
- *   `name`, a stray `input`) load with a warning and serve, through the
- *   control API, `addFixturesFromJSON` and programmatic fixtures alike.
+ *   `type: "toolCall"`, any other `type`, a numeric `id`, a numeric `name`, a
+ *   stray `input`) load with no finding at all and serve, through the control
+ *   API, `addFixturesFromJSON` and programmatic fixtures alike.
  *
  * Real surfaces: a real LLMock over HTTP.
  */
@@ -111,32 +111,14 @@ describe("Gemini audio with a non-array companion toolCalls", () => {
   });
 });
 
-const legacyEntries: Array<[string, Record<string, unknown>, string]> = [
-  [
-    'legacy type "toolCall"',
-    { type: "toolCall", name: "lookup", arguments: '{"q":"x"}' },
-    'toolCalls[0].type "toolCall" is read as a function call; use "function" (or omit type), or "custom" for a custom tool call',
-  ],
-  [
-    'unknown type "foo"',
-    { type: "foo", name: "lookup", arguments: '{"q":"x"}' },
-    'toolCalls[0].type "foo" is read as a function call; use "function" (or omit type), or "custom" for a custom tool call',
-  ],
-  [
-    "numeric id",
-    { name: "lookup", arguments: '{"q":"x"}', id: 7 },
-    "toolCalls[0].id must be a string, got number",
-  ],
-  [
-    "numeric name",
-    { name: 5, arguments: '{"q":"x"}' },
-    "toolCalls[0].name must be a string, got number",
-  ],
-  [
-    "input on a function call",
-    { name: "lookup", arguments: '{"q":"x"}', input: "ignored" },
-    'toolCalls[0].input is ignored on a function call; it is only valid when type is "custom"',
-  ],
+const legacyEntries: Array<[string, Record<string, unknown>]> = [
+  ['legacy type "toolCall"', { type: "toolCall", name: "lookup", arguments: '{"q":"x"}' }],
+  ['unknown type "foo"', { type: "foo", name: "lookup", arguments: '{"q":"x"}' }],
+  ['type "custom" with arguments', { type: "custom", name: "lookup", arguments: '{"q":"x"}' }],
+  ["empty namespace", { name: "lookup", arguments: '{"q":"x"}', namespace: "" }],
+  ["numeric id", { name: "lookup", arguments: '{"q":"x"}', id: 7 }],
+  ["numeric name", { name: 5, arguments: '{"q":"x"}' }],
+  ["input on a function call", { name: "lookup", arguments: '{"q":"x"}', input: "ignored" }],
 ];
 
 const serveRoutes: Array<[string, string, Record<string, unknown>]> = [
@@ -146,10 +128,10 @@ const serveRoutes: Array<[string, string, Record<string, unknown>]> = [
 ];
 
 describe("function-call toolCalls entries that loaded before still load and serve", () => {
-  it.each(legacyEntries)("%s: validation warns, no error", (_label, call, warning) => {
+  it.each(legacyEntries)("%s: validation reports nothing, as 1.44.0", (_label, call) => {
     const entry = { match: { userMessage: "go" }, response: { toolCalls: [call] } };
     const issues = validateFixtures([entryToFixture(entry as unknown as FixtureFileEntry)]);
-    expect(issues.map((i) => [i.severity, i.message])).toEqual([["warning", warning]]);
+    expect(issues).toEqual([]);
   });
 
   it.each(legacyEntries)("%s: the control API adds it and it serves", async (_label, call) => {
@@ -191,25 +173,20 @@ describe("function-call toolCalls entries that loaded before still load and serv
   });
 });
 
-describe("custom entries and namespaces stay strict at load", () => {
+describe("custom-shaped toolCalls entries get exactly the 1.44.0 findings", () => {
+  // A toolCalls entry is a function call, so one without `arguments` fails
+  // the arguments check, as it did in 1.44.0; nothing about `type`, `input`,
+  // `id` or `namespace` is reported.
+  const HINT = "to send invalid JSON on purpose, use `misbehavior: tool-args-invalid-json`";
   it.each([
-    [
-      { type: "custom", name: "apply_patch", input: "x", id: 7 },
-      "toolCalls[0].id must be a string, got number",
-    ],
-    [{ type: "custom", name: 5, input: "x" }, "toolCalls[0].name must be a string, got number"],
-    [
-      { name: "lookup", arguments: "{}", namespace: "" },
-      "toolCalls[0].namespace must be a non-empty string",
-    ],
-    [
-      { type: "customToolCall", name: "apply_patch", input: "x" },
-      'toolCalls[0].type must be "function" or "custom", got "customToolCall"',
-    ],
-  ])("%j is an error", (call, message) => {
+    [{ type: "custom", name: "apply_patch", input: "x", id: 7 }],
+    [{ type: "customToolCall", name: "apply_patch", input: "x" }],
+  ])("%j", (call) => {
     const entry = { match: { userMessage: "go" }, response: { toolCalls: [call] } };
     const issues = validateFixtures([entryToFixture(entry as unknown as FixtureFileEntry)]);
-    expect(issues.filter((i) => i.severity === "error").map((i) => i.message)).toEqual([message]);
+    expect(issues.map((i) => [i.severity, i.message])).toEqual([
+      ["error", `toolCalls[0].arguments is not valid JSON: undefined; ${HINT}`],
+    ]);
   });
 });
 

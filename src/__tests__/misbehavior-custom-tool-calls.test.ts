@@ -26,10 +26,47 @@ afterEach(async () => {
   mock = null;
 });
 
+/**
+ * Custom calls live in the Responses-only keys. A case written as one ordered
+ * call list (custom and function calls mixed) becomes `responsesBlocks`, which
+ * keeps that order; `blocks` holding a `customToolCall` block become
+ * `responsesBlocks` as well. Namespaces on function calls are emitted because
+ * the server runs with `responsesTools: "extended"`.
+ */
+function toResponsesShape(response: Record<string, unknown>): Record<string, unknown> {
+  const isCustom = (c: unknown) =>
+    typeof c === "object" && c !== null && (c as { type?: unknown }).type === "custom";
+  const isCustomBlock = (b: unknown) =>
+    typeof b === "object" && b !== null && (b as { type?: unknown }).type === "customToolCall";
+  const out: Record<string, unknown> = { ...response };
+  if (Array.isArray(response.toolCalls) && response.toolCalls.some(isCustom)) {
+    delete out.toolCalls;
+    out.responsesBlocks = [
+      ...(typeof response.content === "string" && response.content !== ""
+        ? [{ type: "text", text: response.content }]
+        : []),
+      ...response.toolCalls.map((c) => {
+        return {
+          ...(c as Record<string, unknown>),
+          type: isCustom(c) ? "customToolCall" : "toolCall",
+        };
+      }),
+    ];
+  }
+  if (Array.isArray(response.blocks) && response.blocks.some(isCustomBlock)) {
+    delete out.blocks;
+    out.responsesBlocks = response.blocks;
+  }
+  return out;
+}
+
 async function start(response: Record<string, unknown>): Promise<LLMock> {
-  mock = new LLMock({ port: 0, logLevel: "silent" });
+  mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
   // Deliberately loose: some cases carry malformed in-code tool calls.
-  mock.addFixture({ match: { userMessage: "go" }, response } as unknown as Fixture);
+  mock.addFixture({
+    match: { userMessage: "go" },
+    response: toResponsesShape(response),
+  } as unknown as Fixture);
   await mock.start();
   return mock;
 }
@@ -628,9 +665,9 @@ describe("non-Responses wires: fixture tool-call errors win over faults", () => 
     },
   );
 
-  it("Chat Completions: function-only blocks beside a custom legacy toolCall are still faulted", async () => {
+  it("Chat Completions: function-only blocks beside legacy toolCalls are still faulted", async () => {
     const m = await start({
-      toolCalls: [{ type: "custom", name: "apply_patch", input: PATCH }],
+      toolCalls: [{ name: "apply_patch", arguments: "{}" }],
       blocks: [{ type: "toolCall", name: "weather", arguments: '{"city":"Paris"}' }],
     });
     const r = await post(m, "/v1/chat/completions", chatBody, "tool-unknown-name");
@@ -639,17 +676,14 @@ describe("non-Responses wires: fixture tool-call errors win over faults", () => 
     expect(m.getLastRequest()?.response.misbehavior).toMatchObject({ applied: true });
   });
 
-  it("Chat Completions: a malformed function call is aimock_invalid_fixture_tool_call", async () => {
+  it("Chat Completions: a function call with an empty namespace is faulted (namespace ignored, as 1.44.0)", async () => {
     const m = await start({
       toolCalls: [{ name: "weather", arguments: '{"city":"Paris"}', namespace: "" }],
     });
     const r = await post(m, "/v1/chat/completions", chatBody, "tool-unknown-name");
-    expect(r.status, r.text).toBe(500);
-    expect(JSON.parse(r.text).error.code).toBe("aimock_invalid_fixture_tool_call");
-    expect(m.getRequests()).toHaveLength(1);
-    const entry = m.getLastRequest();
-    expect(entry?.body).not.toBeNull();
-    expect(entry?.response.fixture).not.toBeNull();
+    expect(r.status, r.text).toBe(200);
+    expect(r.text).toContain("weather_v2");
+    expect(m.getLastRequest()?.response.misbehavior).toMatchObject({ applied: true });
   });
 });
 

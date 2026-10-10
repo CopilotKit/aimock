@@ -29,8 +29,6 @@ import {
   generateToolUseId,
   extractOverrides,
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
-  toolCallFixtureBlock,
   isTextResponse,
   isToolCallResponse,
   isContentWithToolCallsResponse,
@@ -1199,14 +1197,7 @@ export function prepareClaudeMisbehavior(
     isContentWithToolCallsResponse(response) && response.blocks?.length
       ? resolveFixtureBlockOutcome(response.blocks)
       : undefined;
-  // The planner skips a custom-call fixture on this wire, so this narrowing
-  // never throws; the normal path's guard rejects it instead.
-  const calls =
-    outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      "toolCalls" in response ? (response.toolCalls ?? []) : [],
-      "Anthropic Messages",
-    );
+  const calls = outcome?.toolCalls ?? ("toolCalls" in response ? (response.toolCalls ?? []) : []);
   const toolCalls = calls.map((call, index) => ({
     ...call,
     // Captured Claude max_tokens tool output has input {}, even for a cut JSON prefix.
@@ -1229,7 +1220,7 @@ export function prepareClaudeMisbehavior(
       content: outcome.content,
       toolCalls,
       blocks: outcome.ordered.map((block) =>
-        block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[index++]),
+        block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
       ),
     };
   } else if ("toolCalls" in response) {

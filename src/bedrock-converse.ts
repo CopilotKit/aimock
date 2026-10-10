@@ -20,7 +20,6 @@ import type {
 } from "./types.js";
 import {
   requireEmittedFunctionToolCalls,
-  requireFunctionToolCalls,
   type FunctionFixtureBlock,
   generateToolUseId,
   estimatePromptTokens,
@@ -750,10 +749,10 @@ function prepareConverseMisbehavior(
     ...("content" in response && response.content
       ? [{ type: "text" as const, text: response.content }]
       : []),
-    ...requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      "Bedrock Converse",
-    ).map((call) => ({ ...call, type: "toolCall" as const })),
+    ...(combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []).map((call) => ({
+      type: "toolCall" as const,
+      ...call,
+    })),
   ];
   const calls = blocks.filter((block) => block.type === "toolCall");
   const preparedCalls = calls.map((call, index) => {

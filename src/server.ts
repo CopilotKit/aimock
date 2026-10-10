@@ -84,7 +84,7 @@ import {
   fixtureToolCallErrorCode,
   googleFixtureToolCallErrorDetails,
   isFixtureToolCallError,
-  requireFunctionToolCalls,
+  requireServedFunctionToolCalls,
   requireEmittedFunctionToolCalls,
   resolveRequestId,
   markMintedRequestId,
@@ -2550,12 +2550,13 @@ async function handleCompletions(
           effectiveStrict,
           defaults.logger,
         );
-    // Validate the emitted carrier (authoritative blocks, else toolCalls) before
-    // any byte is written. It runs after journaling so a rejected fixture's 500
-    // entry keeps the request body and the matched fixture (routeError amends
-    // it). Reuse the normalized blocks for both response shapes and the usage
-    // estimate.
+    // Validate authoritative blocks before recording success in either mode.
+    // Reuse their normalized payload for nonstream responses and usage estimates.
     const streaming = body.stream === true;
+    const blockOutcome =
+      response.blocks && response.blocks.length > 0
+        ? resolveFixtureBlockOutcome(response.blocks)
+        : undefined;
     const journalEntry = journal.add({
       method: req.method ?? "POST",
       path: req.url ?? COMPLETIONS_PATH,
@@ -2564,11 +2565,11 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
+    // A Responses-only custom tool call (customToolCalls / responsesBlocks) is
+    // rejected before any byte is written. It runs after journaling so the 500
+    // entry keeps the request body and the matched fixture (routeError amends
+    // it).
     const toolCalls = requireEmittedFunctionToolCalls(response, wire);
-    const blockOutcome =
-      response.blocks && response.blocks.length > 0
-        ? resolveFixtureBlockOutcome(response.blocks)
-        : undefined;
     if (!streaming) {
       const completion = buildContentWithToolCallsCompletion(
         blockOutcome?.content ?? response.content ?? "",
@@ -2730,7 +2731,7 @@ async function handleCompletions(
       response: { status: 200, fixture },
     });
     recordOutcome(journalEntry);
-    const toolCalls = requireFunctionToolCalls(response.toolCalls, wire);
+    const toolCalls = requireServedFunctionToolCalls(response, wire);
     if (body.stream !== true) {
       const completion = buildToolCallCompletion(
         toolCalls,

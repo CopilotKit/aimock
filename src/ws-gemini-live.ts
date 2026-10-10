@@ -13,7 +13,6 @@ import type {
   ToolDefinition,
   AudioResponse,
   ToolCall,
-  FixtureToolCall,
   FixtureFileBlock,
   JournalEntry,
   HandlerDefaults,
@@ -26,8 +25,8 @@ import {
   googleFixtureToolCallErrorDetails,
   isFixtureToolCallError,
   journalFixtureToolCallError,
-  requireFunctionToolCalls,
-  toolCallFixtureBlock,
+  rejectResponsesOnlyToolCalls,
+  requireServedFunctionToolCalls,
   toolArgsForWire,
   isTextResponse,
   isToolCallResponse,
@@ -254,14 +253,9 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
   const combined = isContentWithToolCallsResponse(response);
   const outcome =
     combined && response.blocks?.length ? resolveFixtureBlockOutcome(response.blocks) : undefined;
-  // The planner skips a custom-call fixture on this wire, so this narrowing
-  // never throws; the preflight guard rejects it instead.
   const calls =
     outcome?.toolCalls ??
-    requireFunctionToolCalls(
-      combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : [],
-      GEMINI_LIVE_WIRE,
-    );
+    (combined || isToolCallResponse(response) ? (response.toolCalls ?? []) : []);
   const duplicate = plan.duplicateId;
   const toolCalls = calls.map((call, index) => {
     const args = toolArgsForWire(call);
@@ -278,7 +272,7 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
   if (outcome) {
     let index = 0;
     const blocks = outcome.ordered.map((block) =>
-      block.type === "text" ? { ...block } : toolCallFixtureBlock(toolCalls[index++]),
+      block.type === "text" ? { ...block } : { ...block, ...toolCalls[index++] },
     );
     preparedResponse = { ...preparedResponse, content: outcome.content, toolCalls, blocks };
   } else if (combined || isToolCallResponse(response)) {
@@ -307,20 +301,24 @@ function prepareLiveMisbehavior(plan: MisbehaviorPlan): MisbehaviorPlan {
  * this turn from the history, and leaves the socket open.
  */
 function preflightToolArguments(
-  toolCalls: FixtureToolCall[],
+  response: { toolCalls?: ToolCall[] },
   journalEntry: JournalEntry,
 ): ToolCall[] {
   return journalFixtureToolCallError(journalEntry, () => {
-    const functionCalls = requireFunctionToolCalls(toolCalls, GEMINI_LIVE_WIRE);
+    const functionCalls = requireServedFunctionToolCalls(response, GEMINI_LIVE_WIRE);
     for (const tc of functionCalls) liveToolArguments(tc);
     return functionCalls;
   });
 }
 
 /** Resolve ordered blocks (rejecting custom tool calls) and preflight their arguments. */
-function preflightBlocks(blocks: FixtureFileBlock[], journalEntry: JournalEntry) {
+function preflightBlocks(
+  response: { blocks?: FixtureFileBlock[]; customToolCalls?: unknown },
+  journalEntry: JournalEntry,
+) {
   return journalFixtureToolCallError(journalEntry, () => {
-    const resolved = resolveFixtureBlocks(blocks, { wire: GEMINI_LIVE_WIRE });
+    rejectResponsesOnlyToolCalls(response, GEMINI_LIVE_WIRE);
+    const resolved = resolveFixtureBlocks(response.blocks ?? []);
     for (const block of resolved) if (block.type === "toolCall") liveToolArguments(block);
     return resolved;
   });
@@ -719,7 +717,7 @@ async function processMessage(
     const journalEntry = addResponseEntry(200);
 
     const audioResp = response as AudioResponse;
-    const audioToolCalls = preflightToolArguments(audioResp.toolCalls ?? [], journalEntry);
+    const audioToolCalls = preflightToolArguments(audioResp, journalEntry);
     let mimeType: string;
     let data: string;
 
@@ -797,7 +795,7 @@ async function processMessage(
     // blocks-only fixture (post-F0 it matches this guard) would stream an EMPTY
     // payload — a silent drop. Legacy fixtures (no `blocks`) skip this entirely.
     if (response.blocks && response.blocks.length > 0) {
-      const resolvedBlocks = preflightBlocks(response.blocks, journalEntry);
+      const resolvedBlocks = preflightBlocks(response, journalEntry);
       const interruption = createInterruptionSignal(fixture);
       const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
       const { recordedTimings } = fixture;
@@ -931,7 +929,7 @@ async function processMessage(
       return;
     }
 
-    const functionToolCalls = preflightToolArguments(response.toolCalls ?? [], journalEntry);
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
     const content = response.content ?? "";
     const chunkList: string[] = [];
     for (let i = 0; i < content.length; i += chunkSize) {
@@ -1158,7 +1156,7 @@ async function processMessage(
   if (isToolCallResponse(response)) {
     const journalEntry = addResponseEntry(200);
 
-    const functionToolCalls = preflightToolArguments(response.toolCalls ?? [], journalEntry);
+    const functionToolCalls = preflightToolArguments(response, journalEntry);
 
     const interruption = createInterruptionSignal(fixture);
     const replaySpeed = fixture.replaySpeed ?? defaults.replaySpeed;
