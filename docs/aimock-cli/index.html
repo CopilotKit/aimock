@@ -339,7 +339,10 @@ $ docker run -d -p 4010:4010 \
           the config already serves with an MCP mock (<code>mcp.path</code>) records through that
           mount. A free path gets a new MCP mock. A path held by another kind of mock fails at
           start. <code>llm.record.mcp</code> alone does not turn on LLM recording: that needs
-          <code>llm.record.providers</code>.
+          <code>llm.record.providers</code>. When <code>llm.record.mcp</code> is set and
+          <code>llm.logLevel</code> is not, the log level is <code>"warn"</code>, so that the
+          <code>MCP-RECORD:</code> warnings for skipped or failed recordings are visible; an
+          explicit <code>llm.logLevel</code>, including <code>"silent"</code>, wins.
         </p>
         <div class="code-block" data-sample="inline:mcp-record-config">
           <div class="code-block-header">aimock.json <span class="lang-tag">json</span></div>
@@ -759,9 +762,10 @@ dup.json[2]: 2 fixture(s), 0 error(s), 2 warning(s)</code></pre>
         </p>
         <p>
           A <a href="/mcp-mock#recorded-fakes">recorded file</a> is checked with the same rules,
-          plus the <code>record-replay/fa-*</code> rules for its recorded keys. Each entry of its
-          top-level <code>_warnings</code> (a redacted secret, or a string that looks like a token)
-          is printed as a warning.
+          plus the checks of its recorded keys (an error names its
+          <code>record-replay/fa-*</code> rule in the message). Each entry of its top-level
+          <code>_warnings</code> (a redacted secret, or a string that looks like a token) is printed
+          as a warning.
         </p>
 
         <h3>The <code>--json</code> Report</h3>

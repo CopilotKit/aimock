@@ -27,6 +27,7 @@ import {
   MCP_FAKES_DEFAULT_TEST_ID,
   McpFakeStore,
   type McpFakeAddOrigin,
+  type McpFakeAddOriginInternal,
   type McpFakeAddResult,
   type McpFakeBlockSnapshot,
   type McpFakeReportEventInput,
@@ -132,6 +133,11 @@ export class MCPMock implements Mountable {
   }
 
   addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult {
+    return this.addFakes(blocks, origin);
+  }
+
+  /** `addMcpFakes`, plus the internal `record` origin of the MCP recorder. */
+  private addFakes(blocks: McpFakeSource[], origin: McpFakeAddOriginInternal): McpFakeAddResult {
     const result = this.fakes.add(blocks, origin);
     this.fakeBlocks += blocks.length;
     return result;
@@ -538,7 +544,7 @@ export class MCPMock implements Mountable {
     const fakes = this.fakes;
     return {
       fakes,
-      addMcpFakes: (blocks, origin) => this.addMcpFakes(blocks, origin),
+      addMcpFakes: (blocks, origin) => this.addFakes(blocks, origin),
       journalEntry: (entry) => void this.journal?.add(entry),
       logger: () => this.logger,
       replaySpeed: () => this.replaySpeed,

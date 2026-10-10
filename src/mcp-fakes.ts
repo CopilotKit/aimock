@@ -46,9 +46,11 @@ import type {
 // Load rules of the recorded keys FA1-FA5 (the record-replay LE values)
 
 /**
- * The `FixtureLoadError` rules of the recorded `mcpFakes` keys FA1-FA5. A
- * recorded file that breaks a `fakes:` rule still throws its `mcp-fakes/`
- * value; only a malformed FA key throws one of these.
+ * The finer rules of the recorded `mcpFakes` keys FA1-FA5. A malformed FA key
+ * throws `FixtureLoadError` with the rule `mcp-fakes/bad-block:h` (the rule
+ * 1.44.0 gave these keys, then unknown), and its message names one of these
+ * in brackets after the rule. A recorded file that breaks a `fakes:` rule
+ * throws its `mcp-fakes/` value and names none of these.
  */
 export const RECORD_REPLAY_LOAD_RULES = [
   "record-replay/fa-list",
@@ -59,12 +61,6 @@ export const RECORD_REPLAY_LOAD_RULES = [
 ] as const;
 
 export type RecordReplayLoadRule = (typeof RECORD_REPLAY_LOAD_RULES)[number];
-
-declare module "./fixture-loader.js" {
-  interface FixtureLoadRuleRegistry {
-    "record-replay": RecordReplayLoadRule;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -378,10 +374,21 @@ export interface McpFakeAddOrigin {
    * input is one `mcpFakes` value of that addition: a single item with a null
    * `blockIndex` is the single-object form (no `[<i>]`); otherwise each block
    * is numbered by its position in the input (`[0]`, `[1]`, ...).
-   * `record`: a run-time addition written by the MCP recorder (MR12), numbered
-   * as `code` / `control-api` are, with the source `record#<n>`.
    */
-  kind: "file" | "code" | "control-api" | "record";
+  kind: "file" | "code" | "control-api";
+}
+
+/**
+ * The origin of an add inside aimock: a public `McpFakeAddOrigin`, or
+ * `record`, a run-time addition written by the MCP recorder (MR12), numbered
+ * as `code` / `control-api` are, with the source `record#<n>`. Kept off the
+ * public `McpFakeAddOrigin`, so that a user `Mountable.addMcpFakes` that
+ * switches over its `kind` stays exhaustive.
+ *
+ * @internal
+ */
+export interface McpFakeAddOriginInternal {
+  kind: McpFakeAddOrigin["kind"] | "record";
 }
 
 /** What a successful `McpFakeStore.add` / `Mountable.addMcpFakes` returns. */
@@ -1449,14 +1456,24 @@ function notificationsProblem(v: unknown): Message | null {
   );
 }
 
-/** A `record-replay/fa-*` error of one block (and, for FA3/FA4, one entry). */
+/**
+ * A malformed FA key of one block (and, for FA3/FA4, one entry): the 1.44.0
+ * rule `mcp-fakes/bad-block:h`, with the `record-replay/fa-*` value first in
+ * the message detail (`[mcp-fakes/bad-block:h] [record-replay/fa-list] ...`).
+ */
 function faError(
   ctx: { source: string | null; blockId: string | null },
-  rule: RecordReplayLoadRule,
+  faRule: RecordReplayLoadRule,
   detail: Message,
   entryId: string | null = null,
 ): FixtureLoadError {
-  return new FixtureLoadError({ rule, file: ctx.source, blockId: ctx.blockId, entryId, detail });
+  return new FixtureLoadError({
+    rule: "mcp-fakes/bad-block:h",
+    file: ctx.source,
+    blockId: ctx.blockId,
+    entryId,
+    detail: msg`[${fixed(faRule)}] ${detail}`,
+  });
 }
 
 /**
@@ -1488,6 +1505,21 @@ function validateCall(
   for (const key of presentKeys(raw)) {
     if (!CALL_KEYS.has(key)) bad("h", msg`has unknown key ${shown(key)}`);
   }
+  // FA3/FA4 here, where 1.44.0 rejected them as unknown keys (R13).
+  if (has(raw, "notifications")) {
+    const problem = notificationsProblem(raw.notifications);
+    if (problem) {
+      errors.push(
+        faError(ctx, "record-replay/fa-notifications", msg`${where} ${problem}`, entryId),
+      );
+    }
+  }
+  if (has(raw, "durationMs")) {
+    const problem = mustBeNonNegative(raw.durationMs, "durationMs");
+    if (problem) {
+      errors.push(faError(ctx, "record-replay/fa-duration", msg`${where} ${problem}`, entryId));
+    }
+  }
   if (has(raw, "id") && !isNonEmptyString(raw.id)) {
     bad("d", msg`id must be a non-empty string, got ${shown(raw.id)}`);
   }
@@ -1512,20 +1544,6 @@ function validateCall(
   if (hasResult) {
     const problem = validateResult(raw.result);
     if (problem) bad("d", problem);
-  }
-  if (has(raw, "notifications")) {
-    const problem = notificationsProblem(raw.notifications);
-    if (problem) {
-      errors.push(
-        faError(ctx, "record-replay/fa-notifications", msg`${where} ${problem}`, entryId),
-      );
-    }
-  }
-  if (has(raw, "durationMs")) {
-    const problem = mustBeNonNegative(raw.durationMs, "durationMs");
-    if (problem) {
-      errors.push(faError(ctx, "record-replay/fa-duration", msg`${where} ${problem}`, entryId));
-    }
   }
   if (errors.length > before) return { entryId, call: null };
   // Frozen copies of the snapshot: nothing the store keeps can be changed.
@@ -1663,25 +1681,9 @@ function validateBlock(
     if (!BLOCK_KEYS.has(key))
       errors.push(badBlock(ctx, "h", msg`block has unknown key ${shown(key)}`));
   }
-  const scope = validateScope(raw.scope, ctx, errors);
-
-  let undeclared: McpFakeUndeclaredPolicy | undefined;
-  if (has(raw, "undeclaredTools")) {
-    if (raw.undeclaredTools === "allow" || raw.undeclaredTools === "deny") {
-      undeclared = raw.undeclaredTools;
-    } else {
-      errors.push(
-        badBlock(
-          ctx,
-          "g",
-          msg`undeclaredTools must be "allow" or "deny", got ${shown(raw.undeclaredTools)}`,
-        ),
-      );
-    }
-  }
-  if (scope === "shared" && undeclared === "deny") {
-    errors.push(badBlock(ctx, "c", msg`scope "shared" cannot have undeclaredTools "deny"`));
-  }
+  // The FA keys are checked here, where 1.44.0 rejected them as unknown keys,
+  // so a block with a bad FA key and another error keeps the 1.44.0 first
+  // rule, `mcp-fakes/bad-block:h` (R13).
   if (has(raw, "list")) {
     const problem = listProblem(raw.list);
     if (problem) errors.push(faError(ctx, "record-replay/fa-list", problem));
@@ -1703,6 +1705,25 @@ function validateBlock(
         ),
       );
     }
+  }
+  const scope = validateScope(raw.scope, ctx, errors);
+
+  let undeclared: McpFakeUndeclaredPolicy | undefined;
+  if (has(raw, "undeclaredTools")) {
+    if (raw.undeclaredTools === "allow" || raw.undeclaredTools === "deny") {
+      undeclared = raw.undeclaredTools;
+    } else {
+      errors.push(
+        badBlock(
+          ctx,
+          "g",
+          msg`undeclaredTools must be "allow" or "deny", got ${shown(raw.undeclaredTools)}`,
+        ),
+      );
+    }
+  }
+  if (scope === "shared" && undeclared === "deny") {
+    errors.push(badBlock(ctx, "c", msg`scope "shared" cannot have undeclaredTools "deny"`));
   }
   let mount = MCP_FAKES_DEFAULT_MOUNT;
   if (has(raw, "mount")) {
@@ -2129,7 +2150,7 @@ export class McpFakeStore {
    * blocks are numbered per `McpFakeAddOrigin`; a block given with a null
    * `blockIndex` keeps the single-object depth limit.
    */
-  add(sources: readonly McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult {
+  add(sources: readonly McpFakeSource[], origin: McpFakeAddOriginInternal): McpFakeAddResult {
     const originData = snapshotInput(origin);
     const kind = isPlainObject(originData) ? originData.kind : undefined;
     if (kind !== "file" && kind !== "code" && kind !== "control-api" && kind !== "record") {

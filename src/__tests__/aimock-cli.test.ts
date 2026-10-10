@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { execFile, type ChildProcess } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   writeFileSync,
@@ -12,7 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAimockCli, type AimockCliDeps } from "../aimock-cli.js";
-import type { AimockConfig } from "../config-loader.js";
+import type { AimockConfig, AimockRecordConfig } from "../config-loader.js";
+import { connectV1 } from "./mcp-fakes-harness.js";
+import { startUpstream, type UpstreamHandle } from "./mcp-upstream-harness.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/aimock-cli.js");
 const CLI_AVAILABLE = existsSync(CLI_PATH);
@@ -246,6 +249,126 @@ describe.skipIf(!CLI_AVAILABLE)("aimock CLI: server lifecycle", () => {
     const { stderr, code } = await runCli(["--config", configPath]);
     expect(stderr).toContain("Failed to load config");
     expect(code).toBe(1);
+  });
+});
+
+describe.skipIf(!CLI_AVAILABLE)("aimock CLI: llm.record.mcp defaults logLevel to warn", () => {
+  let tmpDir: string;
+  // Fixtures in a subdirectory, so the loader does not read aimock.json as a fixture file.
+  let fx: string;
+  let up: UpstreamHandle;
+
+  beforeAll(async () => {
+    up = await startUpstream();
+  }, 60_000);
+
+  afterAll(async () => {
+    await up?.stop();
+  });
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fx = join(tmpDir, "fixtures");
+    mkdirSync(fx);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /**
+   * The `llm` block as written to the config file. `llm.record` here is MCP-only, as in the
+   * documented sample: `AimockRecordConfig` requires `providers`, but the loader accepts a
+   * record block without it (no LLM recording). `providers: {}` is not the same at runtime:
+   * any LLM `record` object passes the server's `defaults.record` gates (record-mode
+   * matching, the fixture-miss record branch).
+   */
+  type McpRecordOnlyLlm = Omit<NonNullable<AimockConfig["llm"]>, "record"> & {
+    record?: Pick<AimockRecordConfig, "mcp">;
+  };
+
+  /** Start `aimock --config`, send MCP calls with no testId, and return all output. */
+  async function outputAfterUnscopedCalls(llm: McpRecordOnlyLlm): Promise<string> {
+    const child = spawnCli(["--config", writeConfig(tmpDir, { llm })]);
+    try {
+      await child.waitForOutput(/listening on/i, 10_000);
+      const url = child.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+      expect(url).toBeTruthy();
+      const client = await connectV1(`${url}/mcp`);
+      await client.listTools();
+      await client.callTool({ name: "echo", arguments: { message: "hi" } });
+      await client.close();
+      if (llm?.record?.mcp && llm.logLevel === undefined) {
+        await child.waitForOutput(/MCP-RECORD:/, 5000);
+      } else {
+        // Give a warning the same time to appear before asserting it did not.
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return child.stdout() + child.stderr();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.cp.exitCode !== null) return resolve();
+        child.cp.on("close", () => resolve());
+      });
+    }
+  }
+
+  it("prints the MCP-RECORD warning at the default log level", async () => {
+    const out = await outputAfterUnscopedCalls({
+      fixtures: fx,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).toContain("MCP-RECORD: forwarded, not recorded");
+  });
+
+  it("an explicit logLevel silent wins: only the listening line", async () => {
+    const out = await outputAfterUnscopedCalls({
+      fixtures: fx,
+      logLevel: "silent",
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).not.toContain("MCP-RECORD");
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  /** Start `aimock --config`, call a deprecated route that warns, and return all output. */
+  async function outputAfterDeprecatedRoute(llm: McpRecordOnlyLlm): Promise<string> {
+    const child = spawnCli(["--config", writeConfig(tmpDir, { llm })]);
+    try {
+      await child.waitForOutput(/listening on/i, 10_000);
+      const url = child.stdout().match(/listening on (http:\/\/\S+)/)?.[1];
+      expect(url).toBeTruthy();
+      // This deprecated route logs a warning, which "warn" would print.
+      const res = await fetch(`${url}/__aimock/reset/fixtures`, { method: "POST" });
+      expect(res.ok).toBe(true);
+      await new Promise((r) => setTimeout(r, 500));
+      return child.stdout() + child.stderr();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.cp.exitCode !== null) return resolve();
+        child.cp.on("close", () => resolve());
+      });
+    }
+  }
+
+  it("a config without llm.record.mcp still starts silent", async () => {
+    const out = await outputAfterDeprecatedRoute({ fixtures: fx });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  it("R2 (C3): an empty llm.record.mcp {} records nothing and still starts silent", async () => {
+    const out = await outputAfterDeprecatedRoute({ fixtures: fx, record: { mcp: {} } });
+    expect(out.trim().split("\n")).toEqual([expect.stringMatching(/listening on/)]);
+  });
+
+  it("positive control: llm.record.mcp with a mount prints the deprecated-route warning", async () => {
+    const out = await outputAfterDeprecatedRoute({
+      fixtures: fx,
+      record: { mcp: { "/mcp": up.url } },
+    });
+    expect(out).toContain("deprecated");
   });
 });
 

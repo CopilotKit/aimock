@@ -13,11 +13,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -36,6 +38,9 @@ const DIST = resolve(process.env.AIMOCK_S6_DIST ?? join(REPO_ROOT, "dist"));
 const LLMOCK = join(DIST, "cli.js");
 const AIMOCK = join(DIST, "aimock-cli.js");
 const BUILT = existsSync(LLMOCK) && existsSync(AIMOCK);
+
+/** Mode bits are not enforced for root, so the EACCES cases cannot fail there. */
+const IS_ROOT = process.getuid?.() === 0;
 
 const TEST_ID = "mcp › record";
 const SLUG = "mcp--record";
@@ -312,6 +317,21 @@ describe.skipIf(!BUILT)("S6: MCP recording through the CLIs", () => {
       expect(r.out).toContain("--mcp-record must be <mount>=<url>");
     });
 
+    it("F2: --mcp-record with a file --fixtures exits 1: the destination is not a directory", () => {
+      const fx = join(tmp("fxfile"), "fx.json");
+      writeFileSync(fx, JSON.stringify({ fixtures: [] }));
+      const r = runToExit(LLMOCK, [
+        "--fixtures",
+        fx,
+        "--mcp-record",
+        "/mcp=http://127.0.0.1:9/mcp",
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(
+        `Error: MCP record destination ${join(fx, "recorded")} is not a directory`,
+      );
+    });
+
     it("an AIMOCK_RECORD_SECRET_VALUES entry under 8 characters exits 1", () => {
       const r = runToExit(
         LLMOCK,
@@ -346,6 +366,73 @@ describe.skipIf(!BUILT)("S6: MCP recording through the CLIs", () => {
       expect(r.out).toContain(
         "Error: --mcp-record mount /agui is held by a mount that is not an MCP mock",
       );
+    });
+
+    it.each<[string, string, string]>([
+      ["a trailing /", "/mcp/", 'mount "/mcp/" can never be reached: it must not end with "/"'],
+      ["a query", "/mcp?x", 'mount "/mcp?x" can never be reached: it must be a plain URL path'],
+      ["whitespace", "/a b", 'mount "/a b" can never be reached: it must be a plain URL path'],
+      ["a //", "//", 'mount "//" can never be reached: it must not start with "//"'],
+    ])("R2: a --mcp-record mount with %s exits 1, naming the mount", (_name, mount, message) => {
+      const r = runToExit(LLMOCK, [
+        "--fixtures",
+        tmp("unreach"),
+        "--mcp-record",
+        `${mount}=http://127.0.0.1:9/mcp`,
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`Error: --mcp-record ${message}`);
+    });
+
+    it("R2: a --mcp-record upstream that is not http(s) exits 1, naming the mount", () => {
+      const r = runToExit(LLMOCK, [
+        "--fixtures",
+        tmp("ftp"),
+        "--mcp-record",
+        "/mcp=ftp://user:tok3n-secret@host/mcp",
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(
+        "Error: --mcp-record /mcp: the upstream must be an http: or https: URL",
+      );
+      expect(r.out).not.toContain("tok3n-secret");
+    });
+
+    it("R2: a --fixtures/recorded that is a broken symbolic link exits 1, naming it", () => {
+      const fx = tmp("dangling");
+      const recorded = join(fx, "recorded");
+      symlinkSync(join(fx, "nowhere"), recorded);
+      const r = runToExit(LLMOCK, [
+        "--fixtures",
+        fx,
+        "--mcp-record",
+        "/mcp=http://127.0.0.1:9/mcp",
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(
+        `Error: MCP record destination ${recorded} goes through a broken symbolic link at ${recorded}`,
+      );
+    });
+
+    it.skipIf(IS_ROOT)("R2: a --fixtures/recorded that is not writable exits 1, naming it", () => {
+      const fx = tmp("eacces");
+      const recorded = join(fx, "recorded");
+      mkdirSync(recorded);
+      chmodSync(recorded, 0o500);
+      try {
+        const r = runToExit(LLMOCK, [
+          "--fixtures",
+          fx,
+          "--mcp-record",
+          "/mcp=http://127.0.0.1:9/mcp",
+        ]);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain(
+          `Error: MCP record destination ${recorded} is not writable (EACCES at ${recorded})`,
+        );
+      } finally {
+        chmodSync(recorded, 0o700);
+      }
     });
   });
 
@@ -425,6 +512,234 @@ describe.skipIf(!BUILT)("S6: MCP recording through the CLIs", () => {
       expect(r.out).toContain(
         "llm.record.mcp mount /a2a is held by a mount that is not an MCP mock",
       );
+    });
+
+    const UP = "http://127.0.0.1:9/mcp";
+    const AUTH = "X-Key: never-echo-this-value";
+    it.each<[string, unknown, string]>([
+      ["a record that is not an object", UP, "llm.record.mcp must be an object of <mount>"],
+      [
+        "a mount with no leading /",
+        { mcp: { upstream: UP } },
+        'llm.record.mcp must be <mount>: <url or object>, with a mount that starts with "/"; got "mcp"',
+      ],
+      [
+        "a null mount value",
+        { "/mcp": null },
+        'llm.record.mcp mount "/mcp" must be an upstream URL string or an object',
+      ],
+      [
+        "a numeric mount value",
+        { "/mcp": 42 },
+        'llm.record.mcp mount "/mcp" must be an upstream URL string or an object',
+      ],
+      [
+        "a string proxyOnly",
+        { "/mcp": { upstream: UP, proxyOnly: "false" } },
+        'llm.record.mcp mount "/mcp" key proxyOnly must be a boolean',
+      ],
+      [
+        "a string strict",
+        { "/mcp": { upstream: UP, strict: "false" } },
+        'llm.record.mcp mount "/mcp" key strict must be a boolean',
+      ],
+      [
+        "a bad key beside an upstreamAuth",
+        { "/mcp": { upstream: UP, upstreamAuth: AUTH, strict: 1 } },
+        'llm.record.mcp mount "/mcp" key strict must be a boolean',
+      ],
+      [
+        "a numeric upstreamAuth",
+        { "/mcp": { upstream: UP, upstreamAuth: 42 } },
+        'llm.record.mcp mount "/mcp" key upstreamAuth must be a string',
+      ],
+      [
+        "a string maxRecordBufferBytes",
+        { "/mcp": { upstream: UP, maxRecordBufferBytes: "1024" } },
+        'llm.record.mcp mount "/mcp" key maxRecordBufferBytes must be a finite number',
+      ],
+      [
+        "a non-string secretValues entry",
+        { "/mcp": { upstream: UP, secretValues: [12345678] } },
+        'llm.record.mcp mount "/mcp" key secretValues must be an array of strings',
+      ],
+      [
+        "an unknown key",
+        { "/mcp": { upstream: UP, fixturPath: "/nonexistent-typo" } },
+        'llm.record.mcp mount "/mcp" has an unknown key "fixturPath"',
+      ],
+      [
+        "no upstream",
+        { "/mcp": { proxyOnly: true } },
+        'llm.record.mcp mount "/mcp" key upstream is required',
+      ],
+      ...[null, false, 0, ""].map((mcp): [string, unknown, string] => [
+        `a record of ${JSON.stringify(mcp)}`,
+        mcp,
+        "llm.record.mcp must be an object of <mount>",
+      ]),
+      [
+        "a mount with a trailing /",
+        { "/mcp/": UP },
+        'llm.record.mcp mount "/mcp/" can never be reached: it must not end with "/"',
+      ],
+      [
+        "a mount with a query",
+        { "/mcp?x=1": UP },
+        'llm.record.mcp mount "/mcp?x=1" can never be reached: it must be a plain URL path',
+      ],
+      [
+        "a mount with whitespace",
+        { "/a b": UP },
+        'llm.record.mcp mount "/a b" can never be reached: it must be a plain URL path',
+      ],
+      [
+        "a // mount",
+        { "//": UP },
+        'llm.record.mcp mount "//" can never be reached: it must not start with "//"',
+      ],
+      [
+        "a string upstream that is not a URL",
+        { "/mcp": "not a url" },
+        'llm.record.mcp mount "/mcp": the upstream is not a valid URL',
+      ],
+      [
+        "a string upstream that is not http(s)",
+        { "/mcp": "ftp://host/mcp" },
+        'llm.record.mcp mount "/mcp": the upstream must be an http: or https: URL',
+      ],
+      [
+        "an object upstream that is not a URL",
+        { "/mcp": { upstream: "" } },
+        'llm.record.mcp mount "/mcp": the upstream is not a valid URL',
+      ],
+      [
+        "a numeric fixturePath",
+        { "/mcp": { upstream: UP, fixturePath: 42 } },
+        'llm.record.mcp mount "/mcp" key fixturePath must be a non-empty string',
+      ],
+      [
+        "an empty fixturePath",
+        { "/mcp": { upstream: UP, fixturePath: "" } },
+        'llm.record.mcp mount "/mcp" key fixturePath must be a non-empty string',
+      ],
+      ...[0, -5, 300 * 1024 * 1024].map((max): [string, unknown, string] => [
+        `a maxRecordBufferBytes of ${max}`,
+        { "/mcp": { upstream: UP, maxRecordBufferBytes: max } },
+        'llm.record.mcp mount "/mcp" key maxRecordBufferBytes must be a finite number greater than 0 and at most 268435456',
+      ]),
+    ])("F1: %s fails at start, naming the mount and key", (_name, mcp, message) => {
+      const fx = join(tmp("cfgbad"), "fx");
+      mkdirSync(fx);
+      const r = runToExit(AIMOCK, [
+        "--config",
+        config(fx, { llm: { fixtures: fx, record: { mcp } } }),
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(message);
+      expect(r.out).not.toContain("TypeError");
+      // S2 (c): never the upstream or its credential.
+      expect(r.out).not.toContain(UP);
+      expect(r.out).not.toContain(AUTH);
+    });
+
+    it.each([42, ""])(
+      "R2: an llm.record.fixturePath of %j fails at start, naming the key",
+      (fixturePath) => {
+        const fx = join(tmp("cfgfp"), "fx");
+        mkdirSync(fx);
+        const r = runToExit(AIMOCK, [
+          "--config",
+          config(fx, { llm: { fixtures: fx, record: { fixturePath, mcp: { "/mcp": UP } } } }),
+        ]);
+        expect(r.status).toBe(1);
+        expect(r.out).toContain("llm.record.fixturePath must be a non-empty string");
+        expect(r.out).not.toContain("TypeError");
+        expect(r.out).not.toContain("paths[0]");
+      },
+    );
+
+    it.each<[string, Record<string, unknown>, string]>([
+      [
+        "a credentialed URL as the mount",
+        { "http://user:tok3n-secret@host/mcp": "/mcp" },
+        'with a mount that starts with "/"; got "http://host/mcp" (credentials removed)',
+      ],
+      [
+        "a credential query in the mount",
+        { "/mcp?token=tok3n-secret": UP },
+        'llm.record.mcp mount "/mcp" (credentials removed) can never be reached',
+      ],
+    ])("R2: %s fails at start without printing the credential", (_name, mcp, message) => {
+      const fx = join(tmp("cfgcred"), "fx");
+      mkdirSync(fx);
+      const r = runToExit(AIMOCK, [
+        "--config",
+        config(fx, { llm: { fixtures: fx, record: { mcp } } }),
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(message);
+      expect(r.out).not.toContain("tok3n-secret");
+    });
+
+    it("R2: a fixturePath that is a broken symbolic link fails at start, naming the mount and it", () => {
+      const dir = tmp("cfgdangling");
+      const fx = join(dir, "fx");
+      mkdirSync(fx);
+      const link = join(dir, "broken");
+      symlinkSync(join(dir, "nowhere"), link);
+      const r = runToExit(AIMOCK, [
+        "--config",
+        config(fx, {
+          llm: { fixtures: fx, record: { mcp: { "/mcp": { upstream: UP, fixturePath: link } } } },
+        }),
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(
+        `llm.record.mcp mount "/mcp": MCP record destination ${link} goes through a broken symbolic link at ${link}`,
+      );
+    });
+
+    it.skipIf(IS_ROOT)(
+      "R2: a fixturePath under a directory it cannot enter fails at start, naming the mount and it",
+      () => {
+        const dir = tmp("cfgeacces");
+        const fx = join(dir, "fx");
+        mkdirSync(fx);
+        const locked = join(dir, "locked");
+        mkdirSync(locked);
+        chmodSync(locked, 0);
+        const destination = join(locked, "rec");
+        try {
+          const r = runToExit(AIMOCK, [
+            "--config",
+            config(fx, {
+              llm: {
+                fixtures: fx,
+                record: { mcp: { "/mcp": { upstream: UP, fixturePath: destination } } },
+              },
+            }),
+          ]);
+          expect(r.status).toBe(1);
+          expect(r.out).toContain(
+            `llm.record.mcp mount "/mcp": MCP record destination ${destination} cannot be checked (EACCES at ${destination})`,
+          );
+        } finally {
+          chmodSync(locked, 0o700);
+        }
+      },
+    );
+
+    it("F2: llm.fixtures that is a file fails at start: the destination is not a directory", () => {
+      const dir = tmp("cfgfxfile");
+      const fx = join(dir, "fx.json");
+      writeFileSync(fx, JSON.stringify({ fixtures: [] }));
+      const r = runToExit(AIMOCK, [
+        "--config",
+        config(fx, { llm: { fixtures: fx, record: { mcp: { "/mcp": UP } } } }),
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`MCP record destination ${join(fx, "recorded")} is not a directory`);
     });
 
     it("C10: llm.record with only mcp leaves LLM requests exactly as without record", async () => {

@@ -53,7 +53,18 @@ function deepFrozen(value: unknown): boolean {
   return Object.values(value).every(deepFrozen);
 }
 
-describe("FA bad-block files throw the record-replay rule", () => {
+// A malformed FA key throws the 1.44.0 rule `mcp-fakes/bad-block:h` (the keys
+// were unknown there), and its message names the record-replay rule right
+// after it, so the published `FixtureLoadRule` union is unchanged.
+const FA_RULE = "mcp-fakes/bad-block:h";
+
+/** The `record-replay/fa-*` rule a message names after `[mcp-fakes/bad-block:h]`, or null. */
+function faRuleOf(e: { message: string }): string | null {
+  const m = /: \[mcp-fakes\/bad-block:h\] \[(record-replay\/fa-[a-z]+)\] /.exec(e.message);
+  return m ? m[1] : null;
+}
+
+describe("FA bad-block files throw bad-block:h naming the record-replay rule", () => {
   const cases: Array<[string, string, string | null]> = [
     ["fa-list", "record-replay/fa-list", null],
     ["fa-recorded", "record-replay/fa-recorded", null],
@@ -68,15 +79,21 @@ describe("FA bad-block files throw the record-replay rule", () => {
   it.each(cases)("bad/%s.json", (name, rule, entryId) => {
     const source = `${name}.json`;
     const err = addFails(readBlock(`bad/${name}.json`), source);
-    expect(err.errors.map((e) => [e.rule, e.file, e.blockId, e.entryId])).toEqual([
-      [rule, source, source, entryId],
+    expect(err.errors.map((e) => [e.rule, faRuleOf(e), e.file, e.blockId, e.entryId])).toEqual([
+      [FA_RULE, rule, source, source, entryId],
     ]);
+    // The add error carries the first error's rule and message.
+    expect([err.rule, faRuleOf(err)]).toEqual([FA_RULE, rule]);
+    expect(err.message).toBe(err.errors[0].message);
+    expect(err.toJSON()).toMatchObject({ rule: FA_RULE, message: err.message });
   });
 
   it("validateMcpFakes reports the same rule", () => {
     const result = validateMcpFakes(readBlock("bad/fa-timing.json"), "x.json");
     expect(result.blocks).toEqual([]);
-    expect(result.errors.map((e) => e.rule)).toEqual(["record-replay/fa-timing"]);
+    expect(result.errors.map((e) => [e.rule, faRuleOf(e)])).toEqual([
+      [FA_RULE, "record-replay/fa-timing"],
+    ]);
   });
 });
 
@@ -85,7 +102,11 @@ describe("FA rule values", () => {
     ...contract(),
     ...patch,
   });
-  const rulesOf = (raw: unknown): string[] => addFails(raw).errors.map((e) => e.rule);
+  const rulesOf = (raw: unknown): (string | null)[] =>
+    addFails(raw).errors.map((e) => {
+      expect(e.rule).toBe(FA_RULE);
+      return faRuleOf(e);
+    });
 
   it("FA1 list: not an array, element without a string name, repeated name, not JSON", () => {
     expect(rulesOf(withBlock({ list: { name: "echo" } }))).toEqual(["record-replay/fa-list"]);
@@ -137,8 +158,8 @@ describe("FA rule values", () => {
       [{ ...ok, params: undefined }],
     ]) {
       const err = addFails(call(n));
-      expect(err.errors.map((e) => [e.rule, e.entryId])).toEqual([
-        ["record-replay/fa-notifications", "mcp.json:echo#0"],
+      expect(err.errors.map((e) => [e.rule, faRuleOf(e), e.entryId])).toEqual([
+        [FA_RULE, "record-replay/fa-notifications", "mcp.json:echo#0"],
       ]);
     }
     expect(() => loaded(call([ok]))).not.toThrow();
@@ -149,8 +170,8 @@ describe("FA rule values", () => {
       const raw = withBlock({
         tools: [{ name: "echo", calls: [{ args: {}, error: "boom", durationMs }] }],
       });
-      expect(addFails(raw).errors.map((e) => [e.rule, e.entryId])).toEqual([
-        ["record-replay/fa-duration", "mcp.json:echo#0"],
+      expect(addFails(raw).errors.map((e) => [e.rule, faRuleOf(e), e.entryId])).toEqual([
+        [FA_RULE, "record-replay/fa-duration", "mcp.json:echo#0"],
       ]);
     }
     const zero = withBlock({
@@ -180,9 +201,10 @@ describe("FA rule values", () => {
       ],
     ];
     for (const [raw, rule] of cases) {
-      const rules = addFails(raw).errors.map((e) => e.rule);
-      expect(rules).toEqual([rule]);
-      expect(rules.some((r) => r.startsWith("record-replay/"))).toBe(false);
+      const errors = addFails(raw).errors;
+      expect(errors.map((e) => e.rule)).toEqual([rule]);
+      expect(errors.map(faRuleOf)).toEqual([null]);
+      expect(errors.some((e) => e.message.includes("record-replay/"))).toBe(false);
     }
   });
 });
@@ -334,4 +356,56 @@ describe("recordedList and replayOf", () => {
     expect(echo).toEqual({ timing: "immediate", notifications: [], durationMs: 12 });
     expect(store.replayOf("missing")).toBeNull();
   });
+});
+
+// R13: 1.44.0 rejected each FA key as an unknown key before any other block
+// or call check, so its first error (the thrown `rule`) was
+// `mcp-fakes/bad-block:h` even when the block had another error too. These
+// values were measured against the published 1.44.0 package.
+describe("R13: a bad FA key with another error keeps the 1.44.0 rule", () => {
+  const call = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    anyArgs: true,
+    result: "ok",
+    ...extra,
+  });
+  const block = (
+    extra: Record<string, unknown> = {},
+    callExtra: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    scope: "shared",
+    tools: [{ name: "t", calls: [call(callExtra)] }],
+    ...extra,
+  });
+  const blockOthers: Record<string, Record<string, unknown>> = {
+    "bad scope": { scope: 5 },
+    "bad undeclaredTools": { undeclaredTools: "x" },
+    "shared + deny": { undeclaredTools: "deny" },
+  };
+  const callOthers: Record<string, Record<string, unknown>> = {
+    "no args": { anyArgs: undefined },
+    "bad id": { id: 5 },
+    "bad error": { result: undefined, error: 5 },
+    "bad anyArgs": { anyArgs: false },
+  };
+  const blockFa: Record<string, unknown> = { list: "x", recorded: 5, timing: "slow" };
+  const callFa: Record<string, unknown> = { notifications: "x", durationMs: -1 };
+
+  for (const [key, value] of Object.entries(blockFa)) {
+    for (const [other, extra] of Object.entries(blockOthers)) {
+      it(`block ${key} + ${other}`, () => {
+        const err = addFails(JSON.parse(JSON.stringify(block({ [key]: value, ...extra }))));
+        expect(err.rule).toBe("mcp-fakes/bad-block:h");
+        expect(err.errors.length).toBeGreaterThan(1);
+      });
+    }
+  }
+  for (const [key, value] of Object.entries(callFa)) {
+    for (const [other, extra] of Object.entries(callOthers)) {
+      it(`call ${key} + ${other}`, () => {
+        const err = addFails(JSON.parse(JSON.stringify(block({}, { [key]: value, ...extra }))));
+        expect(err.rule).toBe("mcp-fakes/bad-block:h");
+        expect(err.errors.length).toBeGreaterThan(1);
+      });
+    }
+  }
 });

@@ -41,16 +41,18 @@ import {
 import {
   MCP_FAKES_DEFAULT_TEST_ID,
   validateMcpFakes,
-  type McpFakeAddOrigin,
+  type McpFakeAddOriginInternal,
   type McpFakeAddResult,
   type McpFakeClaim,
   type McpFakeStore,
 } from "./mcp-fakes.js";
 import { fakeFailure, writeFakeToolAnswer, type McpFakeEvent } from "./mcp-handler.js";
 import {
+  REDACTED,
   RecordUnsafeError,
   knownSecrets,
   sanitizeRecording,
+  scrubUrl,
   validateSecretValues,
 } from "./record-sanitize.js";
 import { aimockVersion } from "./version.js";
@@ -98,7 +100,7 @@ const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 export interface RecorderHost {
   /** MR4 claims, MR12 registration. */
   readonly fakes: McpFakeStore;
-  addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOrigin): McpFakeAddResult;
+  addMcpFakes(blocks: McpFakeSource[], origin: McpFakeAddOriginInternal): McpFakeAddResult;
   journalEntry(entry: Omit<JournalEntry, "id" | "timestamp">): void;
   logger(): Logger | null;
   replaySpeed(): number;
@@ -232,6 +234,7 @@ export class McpRecorder {
         ? Math.min(Math.floor(max), MAX_RECORD_BUFFER_BYTES)
         : DEFAULT_RECORD_BUFFER_BYTES;
     this.fixturePath = config.fixturePath ?? "./fixtures/recorded";
+    if (!config.proxyOnly) checkMcpRecordDestination(this.fixturePath);
   }
 
   /** AM1 entry point. Reads the body itself. Always handles the request. */
@@ -555,8 +558,49 @@ export class McpRecorder {
     const { req, res } = x;
     const status = up.statusCode ?? 502;
     const sessionId = headerOf(req, "mcp-session-id");
-    up.on("error", () => {
-      if (!res.writableEnded) res.end();
+    const rpcId = x.rpcId;
+    const UPSTREAM_ABORTED_ERROR = "aimock MCP recorder: the upstream response failed";
+    // Set by the recordable paths below; true once the call was recorded or skipped.
+    let processed = false;
+    // A client that goes away makes forward() destroy the upstream request,
+    // which errors `up`: that is not an upstream failure.
+    let clientGone = false;
+    res.on("close", () => {
+      if (!res.writableFinished) clientGone = true;
+    });
+    // Set by the SSE path: a JSON-RPC error for the open request, so a client
+    // waiting on the stream fails at once instead of at its own timeout.
+    let sseError: (() => string) | null = null;
+    // An upstream that dies mid-body is never relayed as a complete answer, on
+    // any path: a 502 before headers, a terminated stream after them.
+    up.on("error", (err: Error) => {
+      // A client that left, or an answer already complete (MR14), has nothing to fail.
+      if (clientGone || res.writableEnded) {
+        finish();
+        return;
+      }
+      // An SSE call recorded before the stream died keeps its recording; one
+      // whose response was already relayed gets no second answer.
+      const answered = processed;
+      const recorded = answered && x.recordSkipped === undefined && x.recordError === undefined;
+      processed = true;
+      if (!recorded) x.recordSkipped = "upstream-aborted";
+      this.log().error(
+        build(
+          msg`MCP-RECORD: the upstream response failed mid-body (${fixed("upstream-aborted")}) for ${plainText(x.rpcMethod ?? req.method ?? "?")} on mount ${plainText(x.mount)}: ${plainText(err.message)}`,
+        ),
+      );
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: UPSTREAM_ABORTED_ERROR }));
+        finish();
+        return;
+      }
+      if (!answered && sseError !== null && !res.writableEnded) {
+        res.write(sseError(), () => res.destroy());
+      } else {
+        res.destroy();
+      }
       finish();
     });
 
@@ -600,9 +644,7 @@ export class McpRecorder {
     }
 
     const isSse = String(up.headers["content-type"] ?? "").includes("text/event-stream");
-    const rpcId = x.rpcId;
     const messages: TimedMessage[] = [];
-    let processed = false;
     let size = 0;
     let overflow = false;
     const process = (): void => {
@@ -627,6 +669,18 @@ export class McpRecorder {
       res.flushHeaders();
       const decoder = new StringDecoder("utf8");
       let pending = "";
+      if (rpcId !== undefined) {
+        const error = { code: -32603, message: UPSTREAM_ABORTED_ERROR };
+        sseError = () => {
+          // A half-sent upstream event is closed under a type clients ignore,
+          // so it never merges into the error event.
+          const close =
+            pending === ""
+              ? ""
+              : `${/[\r\n]$/.test(pending) ? "" : "\n"}event: aimock-discarded\n\n`;
+          return `${close}event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: rpcId, error })}\n\n`;
+        };
+      }
       up.on("data", (chunk: Buffer) => {
         if (!processed && !overflow) {
           size += chunk.length;
@@ -1321,8 +1375,109 @@ export interface McpRecordFlag {
 }
 
 /**
+ * A mount key as an error message may show it: JSON-quoted, with any
+ * credential (URL userinfo, a credential query parameter, a secret-looking
+ * fragment) removed by the record sanitizer's URL rule (S2 c) and marked as
+ * removed. A key with an `@` that the URL rule cannot parse is not shown.
+ */
+export function redactMountForError(mount: string): string {
+  const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(mount);
+  const prefix = absolute ? "" : mount.startsWith("/") ? "http://localhost" : "http://";
+  const scrubbed = scrubUrl(
+    prefix + mount,
+    () => false,
+    () => {
+      throw new Error("unreachable: no value is a secret here");
+    },
+  );
+  if (scrubbed !== prefix + mount) {
+    const shown = scrubbed.startsWith(prefix) ? scrubbed.slice(prefix.length) : REDACTED;
+    return `${JSON.stringify(shown)} (credentials removed)`;
+  }
+  return mount.includes("@") && !URL.canParse(prefix + mount)
+    ? JSON.stringify(REDACTED)
+    : JSON.stringify(mount);
+}
+
+/**
+ * Why a mount path can never be reached, or `undefined` when it can. The
+ * server matches a request's URL pathname against the mount exactly or as a
+ * `<mount>/` prefix, so a mount must be a plain, normalized URL path: it
+ * starts with one `/`, has no trailing `/` (except the root `/`), and has no
+ * query, fragment, whitespace, dot segment or character the URL parser escapes.
+ */
+export function unreachableMountReason(mount: string): string | undefined {
+  if (!mount.startsWith("/")) return 'it must start with "/"';
+  if (mount.startsWith("//")) return 'it must not start with "//"';
+  if (mount.length > 1 && mount.endsWith("/")) return 'it must not end with "/"';
+  if (new URL(mount, "http://localhost").pathname !== mount) {
+    return "it must be a plain URL path, with no query, fragment, whitespace, dot segment or escaped character";
+  }
+  return undefined;
+}
+
+/**
+ * Why an upstream URL is unusable, or `undefined` when it is a valid http(s)
+ * URL. Never includes the value: it can carry credentials (S2 c).
+ */
+function badUpstreamReason(upstream: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(upstream);
+  } catch {
+    return "is not a valid URL";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return "must be an http: or https: URL";
+  }
+  return undefined;
+}
+
+/**
+ * F2: fail at start, not at every write, when the recording destination can
+ * never be written. The deepest path component that exists must be a
+ * directory this process can write to and enter. A path that does not exist
+ * yet is created on the first write, but not through a broken symbolic link.
+ * `label` prefixes the error (for example the mount it belongs to).
+ */
+export function checkMcpRecordDestination(fixturePath: string, label?: string): void {
+  const destination = path.resolve(fixturePath);
+  const fail = (problem: string): never => {
+    const text = `MCP record destination ${destination} ${problem}`;
+    throw new Error(label ? `${label}: ${text}` : text);
+  };
+  const code = (err: unknown): string => (err as NodeJS.ErrnoException | null)?.code ?? String(err);
+  let probe = destination;
+  for (;;) {
+    let stat: fs.Stats | undefined;
+    let broken = false;
+    try {
+      const entry = fs.lstatSync(probe, { throwIfNoEntry: false });
+      stat = entry?.isSymbolicLink() ? fs.statSync(probe, { throwIfNoEntry: false }) : entry;
+      broken = entry !== undefined && stat === undefined;
+    } catch (err) {
+      // ENOTDIR: an ancestor is a file; the walk up finds it.
+      if (code(err) !== "ENOTDIR") fail(`cannot be checked (${code(err)} at ${probe})`);
+    }
+    if (broken) fail(`goes through a broken symbolic link at ${probe}`);
+    if (stat !== undefined) {
+      if (!stat.isDirectory()) fail("is not a directory");
+      try {
+        fs.accessSync(probe, fs.constants.W_OK | fs.constants.X_OK);
+      } catch (err) {
+        fail(`is not writable (${code(err)} at ${probe})`);
+      }
+      return;
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) return;
+    probe = parent;
+  }
+}
+
+/**
  * Parse a `--mcp-record` / `--mcp-proxy-only` value at its first `=`. The
- * mount must start with `/` and the upstream must be a URL. A bad value
+ * mount must be a reachable path and the upstream an http(s) URL. A bad value
  * throws an error that names `flag`, never the URL (it can carry credentials).
  */
 export function parseMcpRecordFlag(value: string, flag = "--mcp-record"): McpRecordFlag {
@@ -1332,10 +1487,15 @@ export function parseMcpRecordFlag(value: string, flag = "--mcp-record"): McpRec
   if (!mount.startsWith("/")) {
     throw new Error(`${flag} must be <mount>=<url>, with a mount that starts with "/"`);
   }
-  try {
-    new URL(upstream);
-  } catch {
-    throw new Error(`${flag} ${mount}: the upstream is not a valid URL`);
+  const unreachable = unreachableMountReason(mount);
+  if (unreachable !== undefined) {
+    throw new Error(
+      `${flag} mount ${redactMountForError(mount)} can never be reached: ${unreachable}`,
+    );
+  }
+  const badUpstream = badUpstreamReason(upstream);
+  if (badUpstream !== undefined) {
+    throw new Error(`${flag} ${mount}: the upstream ${badUpstream}`);
   }
   return { mount, upstream };
 }
@@ -1391,9 +1551,93 @@ export function wireMcpRecording(
   record: Record<string, string | McpRecordConfig>,
   opts: WireMcpRecordingOptions,
 ): void {
-  const fromEnv = mcpRecordEnv(opts.env);
-  for (const [mountPath, value] of Object.entries(record)) {
-    const config: McpRecordConfig = typeof value === "string" ? { upstream: value } : value;
+  // F1: the config file is untyped JSON. Before anything is mounted, check
+  // every mount's path, settings, upstream URL, holder and destination. The
+  // McpRecorder constructor still checks secretValues and upstreamAuth while
+  // mounting, so a failure there can leave earlier mounts mounted.
+  // Errors name the mount and key, never a value (S2 c).
+  const where = "llm.record.mcp";
+  const plain = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const keyTypes: Record<keyof McpRecordConfig, string> = {
+    upstream: "a string",
+    fixturePath: "a non-empty string",
+    proxyOnly: "a boolean",
+    maxRecordBufferBytes: `a finite number greater than 0 and at most ${MAX_RECORD_BUFFER_BYTES}`,
+    upstreamAuth: "a string",
+    secretValues: "an array of strings",
+    strict: "a boolean",
+  };
+  const hasType = (key: keyof McpRecordConfig, v: unknown): boolean => {
+    switch (key) {
+      case "proxyOnly":
+      case "strict":
+        return typeof v === "boolean";
+      case "maxRecordBufferBytes":
+        return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= MAX_RECORD_BUFFER_BYTES;
+      case "secretValues":
+        return Array.isArray(v) && v.every((s) => typeof s === "string");
+      case "fixturePath":
+        return typeof v === "string" && v.length > 0;
+      default:
+        return typeof v === "string";
+    }
+  };
+  const isConfigKey = (key: string): key is keyof McpRecordConfig =>
+    Object.prototype.hasOwnProperty.call(keyTypes, key);
+  const unknownRecord: unknown = record;
+  if (!plain(unknownRecord)) {
+    throw new Error(`${where} must be an object of <mount>: <url or record settings>`);
+  }
+  const sharedFixturePath: unknown = opts.fixturePath;
+  if (
+    sharedFixturePath !== undefined &&
+    !(typeof sharedFixturePath === "string" && sharedFixturePath.length > 0)
+  ) {
+    throw new Error("llm.record.fixturePath must be a non-empty string");
+  }
+  const wired: {
+    mountPath: string;
+    config: McpRecordConfig;
+    fixturePath: string | undefined;
+    held: RecordableMcpMount | undefined;
+  }[] = [];
+  for (const [mountPath, value] of Object.entries(unknownRecord)) {
+    const mount = redactMountForError(mountPath);
+    if (!mountPath.startsWith("/")) {
+      throw new Error(
+        `${where} must be <mount>: <url or object>, with a mount that starts with "/"; got ${mount}`,
+      );
+    }
+    const unreachable = unreachableMountReason(mountPath);
+    if (unreachable !== undefined) {
+      throw new Error(`${where} mount ${mount} can never be reached: ${unreachable}`);
+    }
+    if (typeof value !== "string" && !plain(value)) {
+      throw new Error(`${where} mount ${mount} must be an upstream URL string or an object`);
+    }
+    if (typeof value !== "string") {
+      for (const [key, v] of Object.entries(value)) {
+        if (!isConfigKey(key)) {
+          throw new Error(
+            `${where} mount ${mount} has an unknown key ${JSON.stringify(key)} (expected one of ${Object.keys(keyTypes).join(", ")})`,
+          );
+        }
+        if (!hasType(key, v)) {
+          throw new Error(`${where} mount ${mount} key ${key} must be ${keyTypes[key]}`);
+        }
+      }
+      if (!("upstream" in value)) {
+        throw new Error(`${where} mount ${mount} key upstream is required`);
+      }
+    }
+    // Every key now has its declared type.
+    const typed = record[mountPath];
+    const config: McpRecordConfig = typeof typed === "string" ? { upstream: typed } : typed;
+    const badUpstream = badUpstreamReason(config.upstream);
+    if (badUpstream !== undefined) {
+      throw new Error(`${where} mount ${mount}: the upstream ${badUpstream}`);
+    }
     const held = opts.mounted.get(mountPath);
     if (held !== undefined && !(held instanceof opts.mcpMock)) {
       throw new Error(
@@ -1404,11 +1648,19 @@ export function wireMcpRecording(
       config.fixturePath ??
       opts.fixturePath ??
       (opts.fixtures ? path.resolve(opts.fixtures, "recorded") : undefined);
-    if (!config.proxyOnly && fixturePath === undefined) {
-      throw new Error(
-        "llm.record.mcp requires llm.fixtures or llm.record.fixturePath for the recording destination",
-      );
+    if (!config.proxyOnly) {
+      if (fixturePath === undefined) {
+        throw new Error(
+          "llm.record.mcp requires llm.fixtures or llm.record.fixturePath for the recording destination",
+        );
+      }
+      checkMcpRecordDestination(fixturePath, `${where} mount ${mount}`);
     }
+    wired.push({ mountPath, config, fixturePath, held });
+  }
+
+  const fromEnv = mcpRecordEnv(opts.env);
+  for (const { mountPath, config, fixturePath, held } of wired) {
     const mcp = held ?? new opts.mcpMock();
     mcp.enableRecording({
       ...config,
