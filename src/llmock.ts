@@ -164,7 +164,9 @@ export class LLMock {
     if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
       markFixtureMisbehaviorEnabled(fixture);
     }
-    if (this.options.responsesTools === "extended") markFixtureResponsesToolsExtended(fixture);
+    // A fixture passed in is not marked for responsesTools "extended": the
+    // server reads it through its extended view, so the caller's object (which
+    // another server may share) is left as it was loaded.
     return fixture;
   }
 

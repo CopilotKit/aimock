@@ -22,7 +22,7 @@ import {
   collapseStreamingResponse,
   collapseStreamingResponseWithResponsesTools,
 } from "../stream-collapse.js";
-import type { FixtureFileEntry, FixtureFileResponse, FixtureResponse } from "../types.js";
+import type { Fixture, FixtureFileEntry, FixtureFileResponse, FixtureResponse } from "../types.js";
 
 const ENTRIES: FixtureFileEntry[] = [
   {
@@ -280,5 +280,98 @@ describe("public exports keep their 1.44.0 results for the new keys", () => {
       });
       expect(collapsed?.toolCalls?.[0]).toMatchObject({ namespace: "mcp__gh" });
     }
+  });
+});
+
+/**
+ * #518 R3-F2 — the responsesTools mode belongs to each server, never to the
+ * fixtures it was given. Two servers that share one fixture array, or one
+ * `loadFixtureFile` result, each behave exactly as if they ran alone: the
+ * legacy one as 1.44.0, the extended one with the keys applied.
+ */
+describe("servers that share fixtures keep their own responsesTools mode", () => {
+  const shared: ServerInstance[] = [];
+  afterEach(async () => {
+    for (const s of shared.splice(0)) await new Promise<void>((r) => s.server.close(() => r()));
+  });
+
+  async function start(fixtures: Fixture[], mode: "legacy" | "extended"): Promise<ServerInstance> {
+    const s = await createServer(fixtures, {
+      port: 0,
+      logLevel: "silent",
+      ...(mode === "extended" && { responsesTools: "extended" }),
+    });
+    shared.push(s);
+    return s;
+  }
+
+  /** Wire, listing and journal of one server, against what that mode shows alone. */
+  async function expectMode(url: string, mode: "legacy" | "extended"): Promise<void> {
+    // A Responses request that offers no namespace: only legacy ignores `toolNamespace`.
+    const res = await fetch(`${url}/v1/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        input: "tns",
+        tools: [{ type: "function", name: "t", parameters: {} }],
+      }),
+    });
+    const text = await res.text();
+    if (mode === "legacy") {
+      expect(res.status).toBe(200);
+      expect(text).toContain("TNS");
+    } else {
+      expect(res.status).toBe(404);
+    }
+    expect(await listing(url)).toBe(mode === "legacy" ? LEGACY_LISTING : EXTENDED_LISTING);
+    const journal = await journalFixtures(url);
+    expect(journal.slice(-2)).toEqual(
+      mode === "legacy"
+        ? [LEGACY_CTC, '{"match":{"userMessage":"tns"},"response":{"content":"TNS"}}']
+        : [
+            EXTENDED_CTC,
+            '{"match":{"userMessage":"tns","toolNamespace":"nsX"},"response":{"content":"TNS"}}',
+          ],
+    );
+  }
+
+  it.each([
+    ["legacy first", ["legacy", "extended"] as const],
+    ["extended first", ["extended", "legacy"] as const],
+  ])("one fixture array, %s", async (_label, order) => {
+    const fixtures = loadFixtureFile(fixtureFile());
+    const servers: Record<string, ServerInstance> = {};
+    for (const mode of order) servers[mode] = await start(fixtures, mode);
+    // The extended server serves first, so a leak would reach the legacy one.
+    await expectMode(servers.extended.url, "extended");
+    await expectMode(servers.legacy.url, "legacy");
+    expect(await listing(servers.extended.url)).toBe(EXTENDED_LISTING);
+  });
+
+  it.each([
+    ["legacy first", ["legacy", "extended"] as const],
+    ["extended first", ["extended", "legacy"] as const],
+  ])("one loadFixtureFile result in two arrays, %s", async (_label, order) => {
+    const fixtures = loadFixtureFile(fixtureFile());
+    const before = JSON.stringify(fixtures);
+    const servers: Record<string, ServerInstance> = {};
+    for (const mode of order) servers[mode] = await start([...fixtures], mode);
+    await expectMode(servers.extended.url, "extended");
+    await expectMode(servers.legacy.url, "legacy");
+    // The caller's fixture objects are as loadFixtureFile returned them.
+    expect(JSON.stringify(fixtures)).toBe(before);
+  });
+
+  it("an extended LLMock leaves caller fixtures it was given as they were loaded", async () => {
+    const fixtures = loadFixtureFile(fixtureFile());
+    const before = JSON.stringify(fixtures);
+    mock = new LLMock({ port: 0, logLevel: "silent", responsesTools: "extended" });
+    mock.addFixtures(fixtures);
+    await mock.start();
+    const legacy = await start(fixtures, "legacy");
+    await expectMode(mock.url, "extended");
+    await expectMode(legacy.url, "legacy");
+    expect(JSON.stringify(fixtures)).toBe(before);
   });
 });

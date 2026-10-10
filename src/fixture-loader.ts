@@ -24,12 +24,14 @@ import {
   isTranscriptionResponse,
   isVideoResponse,
   isJSONResponse,
+  fixtureListTarget,
 } from "./helpers.js";
 import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import {
+  copyFixtureMisbehaviorPosition,
   parseMisbehavior,
   setFixtureMisbehaviorPosition,
   validateFixtureMisbehavior,
@@ -957,14 +959,15 @@ export function claimOneShotError(fixtures: Fixture[], fixture: Fixture): boolea
  * generation means the queue was cleared or reset while the claim was parked
  * (in the chaos-latency await) and the claim is stale — re-arming it would
  * plant the previous test's injection in the next test's freshly reset queue.
- * Keyed by array identity: every clear path preserves the array reference
- * (`length = 0`), so the counter follows the live queue.
+ * Keyed by the caller's array (a server's own list resolves to it): every
+ * clear path preserves the array reference (`length = 0`), so the counter
+ * follows the live queue.
  */
 const fixtureQueueGeneration = new WeakMap<Fixture[], number>();
 const oneShotClaimGeneration = new WeakMap<Fixture, number>();
 
 function queueGeneration(fixtures: Fixture[]): number {
-  return fixtureQueueGeneration.get(fixtures) ?? 0;
+  return fixtureQueueGeneration.get(fixtureListTarget(fixtures)) ?? 0;
 }
 
 /**
@@ -977,7 +980,7 @@ function queueGeneration(fixtures: Fixture[]): number {
  */
 export function clearFixtureQueue(fixtures: Fixture[]): void {
   fixtures.length = 0;
-  fixtureQueueGeneration.set(fixtures, queueGeneration(fixtures) + 1);
+  fixtureQueueGeneration.set(fixtureListTarget(fixtures), queueGeneration(fixtures) + 1);
 }
 
 /**
@@ -1996,11 +1999,14 @@ interface HeldResponsesTools {
 const heldResponsesTools = new WeakMap<Fixture, HeldResponsesTools>();
 
 /**
- * @internal Mark a fixture for a server with `responsesTools: "extended"`.
- * A fixture the loader made gets its held `match.toolNamespace` back and its
- * `customToolCalls` / `responsesBlocks` normalized (in place; the loader made
- * the objects), and `validateFixtures` checks those keys. Without the mark
- * they are ignored and the fixture stays as 1.44.0 loaded it. Idempotent.
+ * @internal Mark a fixture for a server with `responsesTools: "extended"`,
+ * where that server made the fixture itself (its own load, `--validate`, the
+ * control API): the held `match.toolNamespace` is applied and
+ * `customToolCalls` / `responsesBlocks` are normalized in place, and
+ * `validateFixtures` checks those keys. Idempotent. A fixture the caller
+ * passed in is never marked: an extended server reads it through
+ * {@link responsesToolsExtendedView}, so another server sharing it still sees
+ * it as 1.44.0 loaded it.
  */
 export function markFixtureResponsesToolsExtended(fixture: Fixture): void {
   responsesToolsExtendedFixtures.add(fixture);
@@ -2008,19 +2014,86 @@ export function markFixtureResponsesToolsExtended(fixture: Fixture): void {
   if (held === undefined) return;
   heldResponsesTools.delete(fixture);
   if (held.toolNamespace !== undefined) {
-    // Rebuild the match so `toolNamespace` sits after `toolName`, in the same
-    // key order the listing and journal have always shown in this mode.
-    const match: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(fixture.match)) {
-      match[key] = value;
-      if (key === "toolName") match.toolNamespace = held.toolNamespace;
-    }
-    if (!("toolNamespace" in match)) match.toolNamespace = held.toolNamespace;
-    fixture.match = match as FixtureMatch;
+    fixture.match = withHeldToolNamespace(fixture.match, held.toolNamespace);
   }
   if (held.normalize) {
     normalizeResponsesToolsKeys(fixture.response as unknown as Record<string, unknown>);
   }
+}
+
+/**
+ * `match` with `toolNamespace` after `toolName`, in the same key order the
+ * listing and journal have always shown in extended mode.
+ */
+function withHeldToolNamespace(match: FixtureMatch, toolNamespace: unknown): FixtureMatch {
+  const rebuilt: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(match)) {
+    rebuilt[key] = value;
+    if (key === "toolName") rebuilt.toolNamespace = toolNamespace;
+  }
+  if (!("toolNamespace" in rebuilt)) rebuilt.toolNamespace = toolNamespace;
+  return rebuilt as FixtureMatch;
+}
+
+/**
+ * The extended view of one held fixture. `match` and `response` record the
+ * fixture's values the view was built from, so it is rebuilt only when the
+ * fixture's own `match` or `response` is replaced.
+ */
+interface ExtendedView {
+  view: Fixture;
+  match?: FixtureMatch;
+  viewMatch?: FixtureMatch;
+  response?: Fixture["response"];
+  viewResponse?: Fixture["response"];
+}
+
+const extendedViews = new WeakMap<Fixture, ExtendedView>();
+
+/**
+ * @internal The fixture as a server with `responsesTools: "extended"` reads
+ * it. A fixture with held keys gets a separate object, one per fixture, with
+ * `match.toolNamespace` applied and `customToolCalls` / `responsesBlocks`
+ * normalized, as {@link markFixtureResponsesToolsExtended} would leave it.
+ * The fixture itself is not changed, so a legacy server that shares it is
+ * unaffected. Every other property is read from the fixture on each call.
+ * A fixture with nothing held is returned as it is.
+ */
+export function responsesToolsExtendedView(fixture: Fixture): Fixture {
+  const held = heldResponsesTools.get(fixture);
+  if (held === undefined) return fixture;
+  let cached = extendedViews.get(fixture);
+  if (cached === undefined) {
+    cached = { view: {} as Fixture };
+    responsesToolsExtendedFixtures.add(cached.view);
+    extendedViews.set(fixture, cached);
+  }
+  if (cached.viewMatch === undefined || cached.match !== fixture.match) {
+    cached.match = fixture.match;
+    cached.viewMatch =
+      held.toolNamespace !== undefined
+        ? withHeldToolNamespace(fixture.match, held.toolNamespace)
+        : fixture.match;
+  }
+  if (!("viewResponse" in cached) || cached.response !== fixture.response) {
+    cached.response = fixture.response;
+    let viewResponse = fixture.response;
+    if (held.normalize && typeof viewResponse === "object" && viewResponse !== null) {
+      const copy = { ...(viewResponse as unknown as Record<string, unknown>) };
+      normalizeResponsesToolsKeys(copy);
+      viewResponse = copy as unknown as FixtureResponse;
+    }
+    cached.viewResponse = viewResponse;
+  }
+  const view = cached.view as unknown as Record<string, unknown>;
+  const source = fixture as unknown as Record<string, unknown>;
+  for (const key of Object.keys(view)) if (!(key in source)) delete view[key];
+  for (const key of Object.keys(source)) {
+    view[key] =
+      key === "match" ? cached.viewMatch : key === "response" ? cached.viewResponse : source[key];
+  }
+  copyFixtureMisbehaviorPosition(fixture, cached.view);
+  return cached.view;
 }
 
 /**
