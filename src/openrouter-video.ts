@@ -63,6 +63,18 @@ interface OpenRouterVideoRequest {
 
 const DEFAULT_OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0";
 
+/**
+ * Video models OpenRouter has REMOVED (deprecation policy: a removed surface
+ * never mocks success — it serves the rejection the real API serves now).
+ *
+ * openai/sora-2: gone from the live /api/v1/videos/models listing and from
+ * /api/v1/models (its /endpoints page is a 404). A live submit observed on
+ * 2026-10-10 is rejected with HTTP 400, content-type application/json, body
+ * `{"error":{"message":"Model openai/sora-2 does not exist","code":400}}` —
+ * the same rejection OpenRouter gives any unknown model id.
+ */
+const OPENROUTER_VIDEO_SUNSET_MODELS: ReadonlySet<string> = new Set(["openai/sora-2"]);
+
 // ─── OpenRouterVideoJobMap (TTL + bounded) ──────────────────────────────────
 
 export const OPENROUTER_VIDEO_MAX_ENTRIES = 10_000;
@@ -1146,7 +1158,7 @@ async function proxyOpenRouterVideoRecordContent(args: {
 
 // ─── GET /api/v1/videos/models — model listing ──────────────────────────────
 
-const DEFAULT_OPENROUTER_VIDEO_MODELS = [DEFAULT_OPENROUTER_VIDEO_MODEL, "openai/sora-2"];
+const DEFAULT_OPENROUTER_VIDEO_MODELS = [DEFAULT_OPENROUTER_VIDEO_MODEL];
 
 function modelEntry(id: string): Record<string, unknown> {
   return {
@@ -1277,7 +1289,13 @@ export async function handleOpenRouterVideoModels(
   for (const f of fixtures) {
     if (f.match.endpoint === "video") {
       sawVideoFixture = true;
-      if (f.match.model && typeof f.match.model === "string") {
+      // A sunset model can never be served, so a fixture for one must not
+      // advertise it in the listing either.
+      if (
+        f.match.model &&
+        typeof f.match.model === "string" &&
+        !OPENROUTER_VIDEO_SUNSET_MODELS.has(f.match.model)
+      ) {
         modelIds.add(f.match.model);
       }
     }
@@ -1434,6 +1452,27 @@ export async function handleOpenRouterVideoCreate(
           message: "Invalid type for parameter: 'model' must be a non-empty string",
           type: "invalid_request_error",
         },
+      }),
+    );
+    return;
+  }
+
+  // Sunset models serve the live rejection BEFORE fixture matching, chaos and
+  // the record proxy: no fixture can make a removed model succeed, and the
+  // upstream would only return this same 400.
+  if (videoReq.model !== undefined && OPENROUTER_VIDEO_SUNSET_MODELS.has(videoReq.model)) {
+    journal.add({
+      method,
+      path,
+      headers: flattenHeaders(req.headers),
+      body: parsedBody,
+      response: { status: 400, fixture: null },
+    });
+    writeErrorResponse(
+      res,
+      400,
+      JSON.stringify({
+        error: { message: `Model ${videoReq.model} does not exist`, code: 400 },
       }),
     );
     return;

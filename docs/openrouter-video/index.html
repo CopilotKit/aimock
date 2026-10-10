@@ -240,6 +240,17 @@
           disables the proxy &mdash; a strict request is always served the synthesized listing.
         </p>
 
+        <h2>Removed Models</h2>
+        <p>
+          OpenRouter removed <code>openai/sora-2</code>. Following the
+          <a href="/deprecation-policy">deprecation policy</a>, aimock serves the rejection the real
+          API now returns: <code>POST /api/v1/videos</code> with that model gets
+          <code>400</code> and
+          <code>{"error":{"message":"Model openai/sora-2 does not exist","code":400}}</code>, even
+          when a fixture matches it, and the request never reaches a record-mode upstream. The model
+          is not in the default listing, and a fixture for it does not add it to the listing.
+        </p>
+
         <h2>Chaos &amp; Metrics</h2>
         <p>
           <a href="/chaos-testing">Chaos injection</a> applies to all four routes. Journal entries

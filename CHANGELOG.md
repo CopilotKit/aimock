@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenRouter Video: `openai/sora-2` now returns the real removal rejection, not a job.** OpenRouter removed the model, and a live submit returns `400 {"error":{"message":"Model openai/sora-2 does not exist","code":400}}`. `POST /api/v1/videos` with `model: "openai/sora-2"` now returns that 400 even when a fixture matches, and never reaches a record-mode upstream. The default `GET /api/v1/videos/models` listing no longer includes `openai/sora-2`, and a fixture for it no longer adds it to the listing. Move fixtures to a model OpenRouter still serves (for example `bytedance/seedance-2.0`). The daily drift check now confirms the model stays absent instead of requiring it.
+
 ## [1.45.0] - 2026-10-10
 
 Every fixture, config and request that 1.44.0 accepted behaves the same by default. New behavior that would change those inputs is opt-in.
