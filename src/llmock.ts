@@ -73,6 +73,11 @@ export class LLMock {
   private fixtures: Fixture[] = [];
   private fixtureAddition = 0;
   private readonly fixtureCountOrigins = new WeakMap<Fixture, Fixture>();
+  /**
+   * Fixtures this LLMock built itself (on() and the other helpers), so the
+   * caller never held them: the stored object is their identity.
+   */
+  private readonly ownFixtures = new WeakSet<Fixture>();
   private searchFixtures: SearchFixture[] = [];
   private rerankFixtures: RerankFixture[] = [];
   private moderationFixtures: ModerationFixture[] = [];
@@ -108,16 +113,21 @@ export class LLMock {
     const misbehaviorEnabled = this.misbehaviorEnabled;
     // A fixture loaded from a file holds its `misbehavior` key until enabled.
     if (misbehaviorEnabled) enableHeldFixtureMisbehavior(fixture);
-    const countIdentity = this.fixtureCountOrigins.get(fixture) ?? fixture;
+    // A fixture this LLMock built (on() and the helpers) is new to it, so it
+    // needs no per-addition copy, and the object stored is its identity.
+    const own = this.ownFixtures.delete(fixture);
+    const countIdentity = own ? undefined : (this.fixtureCountOrigins.get(fixture) ?? fixture);
     const previousPosition = getFixtureMisbehaviorPosition(fixture);
     const isNewAddition = previousPosition === undefined || /^code#\d+$/.test(previousPosition);
     const position = isNewAddition ? `code#${this.fixtureAddition++}` : previousPosition;
     // With misbehavior enabled, re-adding a code fixture creates a new fault
-    // source without changing the old entry, so each addition is its own copy
-    // (counted under the caller's object, fixtureCountOrigins). Without it the
-    // position is never read, and the caller's object is stored as in 1.44.0,
-    // so findByFixture and JournalEntry.response.fixture name it.
-    if (isNewAddition && misbehaviorEnabled) fixture = { ...fixture };
+    // source without changing the old entry, so each addition is its own copy.
+    // The journal counts and records every copy under the caller's object
+    // (fixtureCountOrigins), so the identity APIs read as they do without
+    // misbehavior: an object added twice is one caller fixture, as in 1.44.0.
+    // Without misbehavior the position is never read, and the caller's object
+    // is stored as in 1.44.0.
+    if (isNewAddition && misbehaviorEnabled && !own) fixture = { ...fixture };
     if (misbehaviorEnabled && fixture.misbehavior !== undefined) {
       const parsed = parseMisbehavior(fixture.misbehavior);
       if (parsed.ok) fixture = { ...fixture, misbehavior: parsed.config };
@@ -140,7 +150,7 @@ export class LLMock {
         match: { ...fixture.match },
         response: normalizeLiveFixture(fixture.response, this.options.live),
       };
-    } else if (fixture !== countIdentity) {
+    } else if (countIdentity !== undefined && fixture !== countIdentity) {
       this.fixtureCountOrigins.set(fixture, countIdentity);
     }
     setFixtureMisbehaviorPosition(fixture, position);
@@ -166,6 +176,12 @@ export class LLMock {
   prependFixture(fixture: Fixture): this {
     this.fixtures.unshift(this.normalizeFixture(fixture));
     return this;
+  }
+
+  /** Mark a fixture this LLMock built, for {@link normalizeFixture}. */
+  private own(fixture: Fixture): Fixture {
+    this.ownFixtures.add(fixture);
+    return fixture;
   }
 
   getFixtures(): readonly Fixture[] {
@@ -331,7 +347,7 @@ export class LLMock {
         normalizeResponsesToolsKeys(normalized as unknown as Record<string, unknown>);
       }
     }
-    return this.addFixture({ match, response: normalized, ...opts });
+    return this.addFixture(this.own({ match, response: normalized, ...opts }));
   }
 
   onLive(
@@ -389,77 +405,97 @@ export class LLMock {
   }
 
   onImage(prompt: string | RegExp, response: ImageResponse): this {
-    return this.addFixture({
-      match: { userMessage: prompt, endpoint: "image" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: prompt, endpoint: "image" },
+        response,
+      }),
+    );
   }
 
   onSpeech(input: string | RegExp, response: AudioResponse): this {
-    return this.addFixture({
-      match: { userMessage: input, endpoint: "speech" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: input, endpoint: "speech" },
+        response,
+      }),
+    );
   }
 
   onTranscription(response: TranscriptionResponse): this {
-    return this.addFixture({
-      match: { endpoint: "transcription" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { endpoint: "transcription" },
+        response,
+      }),
+    );
   }
 
   onTranslation(response: TranscriptionResponse): this {
-    return this.addFixture({
-      match: { endpoint: "translation" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { endpoint: "translation" },
+        response,
+      }),
+    );
   }
 
   onVideo(prompt: string | RegExp, response: VideoResponse): this {
-    return this.addFixture({
-      match: { userMessage: prompt, endpoint: "video" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: prompt, endpoint: "video" },
+        response,
+      }),
+    );
   }
 
   onAudio(input: string | RegExp, response: AudioResponse): this {
-    return this.addFixture({ match: { userMessage: input }, response });
+    return this.addFixture(this.own({ match: { userMessage: input }, response }));
   }
 
   onSoundEffect(text: string | RegExp, response: AudioResponse): this {
-    return this.addFixture({
-      match: { userMessage: text, endpoint: "audio-gen" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: text, endpoint: "audio-gen" },
+        response,
+      }),
+    );
   }
 
   onMusic(prompt: string | RegExp, response: AudioResponse): this {
-    return this.addFixture({
-      match: { userMessage: prompt, endpoint: "audio-gen" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: prompt, endpoint: "audio-gen" },
+        response,
+      }),
+    );
   }
 
   onElevenLabsTTS(text: string | RegExp, response: AudioResponse): this {
-    return this.addFixture({
-      match: { userMessage: text, endpoint: "elevenlabs-tts" },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: text, endpoint: "elevenlabs-tts" },
+        response,
+      }),
+    );
   }
 
   onElevenLabsVoiceDesign(description: string | RegExp, response: VoiceDesignResponse): this {
-    return this.addFixture({
-      match: { userMessage: description, endpoint: "elevenlabs-voice-design" },
-      response: voiceDesignToJson(response),
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: description, endpoint: "elevenlabs-voice-design" },
+        response: voiceDesignToJson(response),
+      }),
+    );
   }
 
   onFalAudio(prompt: string | RegExp, response: AudioResponse, model?: string): this {
-    return this.addFixture({
-      match: { userMessage: prompt, endpoint: "fal-audio", ...(model ? { model } : {}) },
-      response,
-    });
+    return this.addFixture(
+      this.own({
+        match: { userMessage: prompt, endpoint: "fal-audio", ...(model ? { model } : {}) },
+        response,
+      }),
+    );
   }
 
   // fal.queue.* is the dominant client API; onFalRun is a sync alias.
@@ -470,11 +506,13 @@ export class LLMock {
   // billed-units value on replay. Omit it to preserve the header-less default.
   onFalQueue(modelOrPrompt: string | RegExp, response: unknown, opts?: FalQueueOpts): this {
     const { billableUnits, ...fixtureOpts } = opts ?? {};
-    return this.addFixture({
-      match: { model: modelOrPrompt, endpoint: "fal" },
-      response: { json: response, ...(billableUnits != null ? { billableUnits } : {}) },
-      ...fixtureOpts,
-    });
+    return this.addFixture(
+      this.own({
+        match: { model: modelOrPrompt, endpoint: "fal" },
+        response: { json: response, ...(billableUnits != null ? { billableUnits } : {}) },
+        ...fixtureOpts,
+      }),
+    );
   }
 
   onFalRun(modelOrPrompt: string | RegExp, response: unknown, opts?: FalQueueOpts): this {

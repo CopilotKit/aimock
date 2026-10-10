@@ -205,7 +205,9 @@
           <code>aimock</code> bins), or <code>llm.responsesTools: "extended"</code> in an
           <code>aimock --config</code> file. Any other option or config value is ignored with a
           warning and the server runs in <code>legacy</code> mode, as 1.44.0 ignored it; an invalid
-          <code>--responses-tools</code> flag value exits 1. With it:
+          <code>--responses-tools</code> flag value exits 1. The mode is fixed when the server
+          starts: changing <code>responsesTools</code> on the options object after
+          <code>createServer</code> or <code>LLMock.start()</code> is unsupported. With it:
         </p>
         <ul>
           <li>

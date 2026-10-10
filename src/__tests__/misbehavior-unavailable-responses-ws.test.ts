@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ServerInstance } from "../server.js";
-import type { FixtureResponse, MisbehaviorConfig } from "../types.js";
+import type { Fixture, FixtureResponse, MisbehaviorConfig } from "../types.js";
 import type { ResponsesSSEEvent } from "../responses.js";
 import { connectWebSocket, type WSTestClient } from "./ws-test-client.js";
 import { LLMock, createServer } from "./helpers/misbehavior-enabled.js";
@@ -140,7 +140,7 @@ describe.each(outputs)("Responses WS $name inherited guard transition", ({ name,
   test("explicit supported fault applies, then the same connection recovers", async () => {
     mock = new LLMock({ port: 0 });
     let calls = 0;
-    mock.addFixture({
+    const faultFixture: Fixture = {
       match: { userMessage: "fault" },
       response: (request) => {
         calls++;
@@ -148,7 +148,8 @@ describe.each(outputs)("Responses WS $name inherited guard transition", ({ name,
         return response;
       },
       misbehavior: fault,
-    });
+    };
+    mock.addFixture(faultFixture);
     mock.addFixture({ match: { userMessage: "valid" }, response });
     await connect();
     const applied = await exchange("fault", false);
@@ -161,7 +162,9 @@ describe.each(outputs)("Responses WS $name inherited guard transition", ({ name,
     expect(calls).toBe(1);
     expect(entries).toHaveLength(2);
     expect(entries.map((entry) => entry.response.status)).toEqual([200, 200]);
-    expect(entries[0].response.fixture).toBe(mock.getFixtures()[0]);
+    // The entry names the caller's fixture; LLMock's per-addition copy resolves to it.
+    expect(entries[0].response.fixture).toBe(faultFixture);
+    expect(mock.journal.findByFixture(mock.getFixtures()[0])).toEqual([entries[0]]);
     expect(entries[0].response.misbehavior).toMatchObject({
       applied: true,
       source: "fixture",
