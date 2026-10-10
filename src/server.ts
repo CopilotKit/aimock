@@ -43,6 +43,7 @@ import {
   MisbehaviorConfigError,
   enableHeldFixtureMisbehavior,
   markFixtureResponsesToolsExtended,
+  responsesToolsExtendedView,
 } from "./fixture-loader.js";
 import { writeSSEStream, writeErrorResponse } from "./sse-writer.js";
 import { createInterruptionSignal } from "./interruption.js";
@@ -100,7 +101,7 @@ import {
   strictNoMatchMessage,
   strictNoMatchLogLine,
   runWithToolArgumentsScope,
-  setFixtureListResponsesTools,
+  createServerFixtureList,
   isExtendedResponsesToolsList,
   withoutResponsesToolKeys,
   getContext,
@@ -1014,7 +1015,6 @@ async function handleControlAPI(
     // `customToolCalls` and `responsesBlocks`; elsewhere they do not change
     // the kind, as in 1.44.0.
     const extendedTools = isExtendedResponsesToolsList(fixtures);
-    if (extendedTools) fixtures.forEach(markFixtureResponsesToolsExtended);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -2906,13 +2906,16 @@ async function startServer(
   serviceFixtures: ServiceFixtures | undefined,
   commitHandOff: () => void,
 ): Promise<ServerInstance> {
+  const callerFixtures = fixtures;
   // Keep raw entries in the caller's live array, assigning only absent identities.
   let rawFixtureAddition = 0;
   function ensureRawFixturePositions(): void {
     const existingPositions = new Set(
-      fixtures.map(getFixtureMisbehaviorPosition).filter((position) => position !== undefined),
+      callerFixtures
+        .map(getFixtureMisbehaviorPosition)
+        .filter((position) => position !== undefined),
     );
-    for (const fixture of fixtures) {
+    for (const fixture of callerFixtures) {
       if (getFixtureMisbehaviorPosition(fixture) !== undefined) continue;
       let position: string;
       do {
@@ -2941,7 +2944,15 @@ async function startServer(
       `Ignoring responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(serverOptions.responsesTools)}. Using "legacy".`,
     );
   }
-  setFixtureListResponsesTools(fixtures, () => serverOptions.responsesTools);
+  // From here on the server reads and writes the caller's array through its
+  // own list, which carries this server's responsesTools mode (and, when
+  // "extended", each fixture's extended view). Nothing is written to the
+  // caller's fixtures for the mode, so servers that share them stay apart.
+  fixtures = createServerFixtureList(
+    callerFixtures,
+    () => serverOptions.responsesTools,
+    responsesToolsExtendedView,
+  );
   // Runtime-mutable server chaos config. Reads fall through to the construction
   // options until POST /__aimock/chaos installs an override, which is scoped to
   // the caller's testId. The untagged baseline lives in the SAME map under
@@ -2967,7 +2978,7 @@ async function startServer(
   // so no fault is planned, and the `misbehavior` option, fixture keys and the
   // X-AIMock-Misbehavior header are ignored, as in 1.44.0.
   const misbehaviorEnabled = serverOptions.enableMisbehavior === true;
-  if (misbehaviorEnabled) fixtures.forEach(enableHeldFixtureMisbehavior);
+  if (misbehaviorEnabled) callerFixtures.forEach(enableHeldFixtureMisbehavior);
   if (misbehaviorEnabled && serverOptions.misbehavior !== undefined) {
     const parsed = parseMisbehavior(serverOptions.misbehavior);
     if (!parsed.ok) throw new TypeError(`${parsed.issue.rule}: ${parsed.issue.message}`);

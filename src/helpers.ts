@@ -594,25 +594,79 @@ export function isResponseFactory(r: FixtureResponse | ResponseFactory): r is Re
   return typeof r === "function";
 }
 
-/**
- * The `responsesTools` mode of each server's live fixture list. The server
- * registers its list once; the matcher reads the mode from the list it is
- * given, so every handler on every wire sees the same mode without extra
- * parameters. A list that no server registered is `"legacy"`.
- */
-const fixtureListResponsesTools = new WeakMap<object, () => ResponsesToolsMode | undefined>();
-
-/** Register the `responsesTools` mode (read live) of a server's fixture list. */
-export function setFixtureListResponsesTools(
-  fixtures: readonly Fixture[],
-  mode: () => ResponsesToolsMode | undefined,
-): void {
-  fixtureListResponsesTools.set(fixtures, mode);
+/** A server's own view of the caller's fixture array: see {@link createServerFixtureList}. */
+interface ServerFixtureList {
+  /** The caller's array, which every read and write reaches. */
+  target: Fixture[];
+  /** The server's `responsesTools` mode, read live. */
+  mode: () => ResponsesToolsMode | undefined;
 }
 
-/** Whether `fixtures` belongs to a server running with `responsesTools: "extended"`. */
+const serverFixtureLists = new WeakMap<object, ServerFixtureList>();
+
+/**
+ * Array methods that read elements and write them back. On a server list
+ * they run on the caller's array, so the extended view of an element is
+ * never written into it.
+ */
+const ELEMENT_MOVING_METHODS = new Set<PropertyKey>([
+  "copyWithin",
+  "fill",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "sort",
+  "splice",
+  "unshift",
+]);
+
+/**
+ * The fixture list one server reads and writes: a live view of the caller's
+ * `fixtures` array, with its own identity. The matcher reads the server's
+ * `responsesTools` mode from the list it is given, so every handler on every
+ * wire sees that server's mode without extra parameters, and two servers that
+ * share one array each keep their own mode. With `"extended"`, reading an
+ * element gives `extendedView(element)` (the fixture with its held keys
+ * applied); the caller's array and its fixtures are never changed for it.
+ * Writes (push, splice, `length = 0`, ...) reach the caller's array.
+ */
+export function createServerFixtureList(
+  fixtures: Fixture[],
+  mode: () => ResponsesToolsMode | undefined,
+  extendedView: (fixture: Fixture) => Fixture,
+): Fixture[] {
+  const boundMethods = new Map<PropertyKey, unknown>();
+  const list = new Proxy(fixtures, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof value === "function") {
+        if (!ELEMENT_MOVING_METHODS.has(key)) return value;
+        let bound = boundMethods.get(key);
+        if (bound === undefined) {
+          bound = (value as (...args: unknown[]) => unknown).bind(target);
+          boundMethods.set(key, bound);
+        }
+        return bound;
+      }
+      if (typeof key !== "string" || mode() !== "extended") return value;
+      const first = key.charCodeAt(0);
+      if (first < 48 || first > 57 || value === null || typeof value !== "object") return value;
+      return extendedView(value as Fixture);
+    },
+  });
+  serverFixtureLists.set(list, { target: fixtures, mode });
+  return list;
+}
+
+/** Whether `fixtures` is the list of a server running with `responsesTools: "extended"`. */
 export function isExtendedResponsesToolsList(fixtures: readonly Fixture[]): boolean {
-  return fixtureListResponsesTools.get(fixtures)?.() === "extended";
+  return serverFixtureLists.get(fixtures)?.mode() === "extended";
+}
+
+/** The caller's array behind a server list; any other array is itself. */
+export function fixtureListTarget(fixtures: Fixture[]): Fixture[] {
+  return serverFixtureLists.get(fixtures)?.target ?? fixtures;
 }
 
 /**
