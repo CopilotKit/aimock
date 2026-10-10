@@ -183,7 +183,7 @@ export async function startFromConfig(
   const logger = new Logger("info");
   // 1.44.0 ignored these keys, so a non-boolean value (such as the string
   // "true") is ignored with a warning, as `llm.misbehavior` is, and the
-  // option stays off.
+  // option stays off unless its CLI flag turns it on.
   const booleanOptIn = (key: "enableMisbehavior" | "strictToolArguments"): boolean | undefined => {
     const value: unknown = config.llm?.[key];
     if (value === undefined || typeof value === "boolean") return value;
@@ -215,15 +215,21 @@ export async function startFromConfig(
   }
 
   // 1.44.0 ignored `llm.responsesTools`, so an invalid value is ignored with a
-  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode.
+  // warning (as `llm.misbehavior` is) and the server runs in "legacy" mode,
+  // unless `--responses-tools` sets the mode. The warning names the mode that
+  // actually runs.
   let responsesTools = config.llm?.responsesTools;
   if (
     responsesTools !== undefined &&
     responsesTools !== "legacy" &&
     responsesTools !== "extended"
   ) {
+    const effective =
+      overrides?.responsesTools !== undefined
+        ? `"${overrides.responsesTools}" from --responses-tools`
+        : '"legacy"';
     logger.warn(
-      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using "legacy".`,
+      `Ignoring llm.responsesTools because it must be "legacy" or "extended", got ${JSON.stringify(responsesTools)}. Using ${effective}.`,
     );
     responsesTools = undefined;
   }
