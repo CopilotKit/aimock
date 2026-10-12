@@ -1,125 +1,979 @@
 {
-  "generatedAt": "2026-10-12",
-  "totalAdopters": 119,
+  "lastScan": "2026-10-12T17:03:12.455Z",
   "adopters": [
-    {"repo": "openclaw/openclaw", "channels": ["package"]},
-    {"repo": "mastra-ai/mastra", "channels": ["package"]},
-    {"repo": "ag-ui-protocol/ag-ui", "channels": ["package","npx"]},
-    {"repo": "TanStack/ai", "channels": ["package"]},
-    {"repo": "liveloveapp/hashbrown", "channels": ["package","npx"]},
-    {"repo": "cortexkit/aft", "channels": ["package"]},
-    {"repo": "openstory-so/openstory", "channels": ["package"]},
-    {"repo": "BodhiSearch/BodhiApp", "channels": ["package"]},
-    {"repo": "selfagency/opilot", "channels": ["package"]},
-    {"repo": "testomatio/explorbot", "channels": ["package"]},
-    {"repo": "selfagency/agentsy", "channels": ["package"]},
-    {"repo": "atomicstrata/llm-wiki-compiler", "channels": ["package"]},
-    {"repo": "Zoo-Code-Org/Zoo-Code", "channels": ["package"]},
-    {"repo": "azents/azents", "channels": ["package"]},
-    {"repo": "corovcam/Universal-Object-Mapping", "channels": ["container","npx"]},
-    {"repo": "jerelvelarde/copilotkit-engineering-map", "channels": ["package"]},
-    {"repo": "jerelvelarde/angular-research-copilot", "channels": ["package"]},
-    {"repo": "cortexkit/magic-context", "channels": ["package"]},
-    {"repo": "jerelvelarde/cpk-pm-demo", "channels": ["package"]},
-    {"repo": "knap-ai/knapsack_desktop", "channels": ["package"]},
-    {"repo": "ComposioHQ/composio", "channels": ["package","npx"]},
-    {"repo": "marieai/marie-ai", "channels": ["package","container"]},
-    {"repo": "deepnote/vscode-deepnote", "channels": ["package"]},
-    {"repo": "tanaabased/openclaw-agent-system", "channels": ["package","symbol"], "firstSeen": "2026-09-14"},
-    {"repo": "Shubhamsaboo/awesome-llm-apps", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "karakeep-app/karakeep", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "thushan/olla", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "mattermost/mattermost-plugin-agents", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "Near-One/nomadic-ironclaw", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "Anmol-Baranwal/aimock-testing", "channels": ["symbol","npx"], "firstSeen": "2026-08-31"},
-    {"repo": "umyunsang/UMMAYA", "channels": ["container"], "firstSeen": "2026-08-31"},
-    {"repo": "agentskillexchange/skills", "channels": ["symbol"], "firstSeen": "2026-08-31"},
-    {"repo": "octelium/octelium", "channels": ["container"], "firstSeen": "2026-09-07"},
-    {"repo": "supabitapp/supaterm", "channels": ["package"], "firstSeen": "2026-09-07"},
-    {"repo": "botiverse/oar", "channels": ["package"], "firstSeen": "2026-09-07"},
-    {"repo": "gagan114662/openbot", "channels": ["package"], "firstSeen": "2026-09-07"},
-    {"repo": "tercumantanumut/selene", "channels": ["symbol"], "firstSeen": "2026-09-14"},
-    {"repo": "cacheplane/threadplane", "channels": ["package","symbol"], "firstSeen": "2026-09-14"},
-    {"repo": "EmberAGI/arbitrum-vibekit", "channels": ["symbol"], "firstSeen": "2026-09-14"},
-    {"repo": "hamchowderr/mastra-chat-kit", "channels": ["package"], "firstSeen": "2026-09-14"},
-    {"repo": "ansu86d/copilotkit-llm-mock", "channels": ["symbol"], "firstSeen": "2026-09-14"},
-    {"repo": "rivet-dev/agentos", "channels": ["symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "affromero/flight-finder", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "ranst91/remote-skills", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "sshkeda/nudge", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "galElmalah/claude-mods", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "mockagents/mockagents", "channels": ["symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "rophy/opencode-rc", "channels": ["container"], "firstSeen": "2026-09-21"},
-    {"repo": "alpoxdev/openbot", "channels": ["package","symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "tmoody1973/openbot", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "kendoriddy/plugiq-agentforce", "channels": ["package","symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "SouvikJoy/clover-platform", "channels": ["package"], "firstSeen": "2026-09-21"},
-    {"repo": "empireX8/ai-companion", "channels": ["symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "SkrOYC/langchain-middlewares-callbacks-ts", "channels": ["symbol"], "firstSeen": "2026-09-21"},
-    {"repo": "cjcrist/notebooklm-lite", "channels": ["container"], "firstSeen": "2026-09-21"},
-    {"repo": "alpic-ai/skybridge", "channels": ["symbol"], "firstSeen": "2026-09-28"},
-    {"repo": "AXT224/openmuse", "channels": ["package","symbol"], "firstSeen": "2026-09-28"},
-    {"repo": "Rikinshah787/opensource-muse", "channels": ["package","symbol"], "firstSeen": "2026-09-28"},
-    {"repo": "galElmalah/claude-queue-plugin", "channels": ["package"], "firstSeen": "2026-09-28"},
-    {"repo": "MadonnaMat/intellivault", "channels": ["container"], "firstSeen": "2026-09-28"},
-    {"repo": "thomascfoley-stack/carvis-web", "channels": ["symbol"], "firstSeen": "2026-09-28"},
-    {"repo": "drexc/Andy-Agent", "channels": ["symbol"], "firstSeen": "2026-09-28"},
-    {"repo": "sherhanfsl/copilot", "channels": ["package","container"], "firstSeen": "2026-09-28"},
-    {"repo": "OpenBox-AI/openbox-copilotkit-sdk", "channels": ["container"], "firstSeen": "2026-09-28"},
-    {"repo": "barockok/slaude", "channels": ["package"], "firstSeen": "2026-10-04"},
-    {"repo": "xuboboo/zmuse", "channels": ["package"], "firstSeen": "2026-10-04"},
-    {"repo": "corbitsdev/workbench", "channels": ["package"], "firstSeen": "2026-10-04"},
-    {"repo": "everest-an/hypercode", "channels": ["package"], "firstSeen": "2026-10-04"},
-    {"repo": "Pro-GenAI/Agent-RT", "channels": ["package"], "firstSeen": "2026-10-04"},
-    {"repo": "izmailov-labs/franca", "channels": ["npx"], "firstSeen": "2026-10-04"},
-    {"repo": "App-netizen-arch/special-octo-chainsaw", "channels": ["npx"], "firstSeen": "2026-10-04"},
-    {"repo": "Mikehutu/copilot-studio-briefkit", "channels": ["npx"], "firstSeen": "2026-10-04"},
-    {"repo": "boctavian2014-ux/C-A-V-A-L-Studio", "channels": ["symbol"], "firstSeen": "2026-10-04"},
-    {"repo": "Ugbot/london-A2UI", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "EsrakFahim/my-ag-ui-app", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "qw457812/copilotkit-langgraph-fastapi", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "cprice-ping/AG-UI-Travel-Agent", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "jakubzika/i-love-moms", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "jerelvelarde/generative-ui-london-hackathon-starter", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "2dotd/form-filling", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Teju63/financial-coach-agent", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "KrishnaAsati16/AI-Financial-Coach-Agent", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "johnfink8/mise", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "MriBoyd/ansam-v0.1", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "evanholmes/megaphone", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "ayushozha/blackbox-economy", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "andrei-ignat-AI/COS.ai", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "mxmzb/example-app-web-component", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "singhrahul7988/Jenny-AI-bookmarker", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "absolutepraya/marka", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "yashthakur1/karakeepa", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "yashthakur1/Karakeep_16", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "sai-ctruong/awesome-llm-apps", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Remi-537/awesome-llm-apps", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "utpalmv/awesome-llm-apps", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "ferro269/awesome-llm-apps-IMPORT-", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "mezberg/ai_home_designer", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "DeclanErice/LLMBasedTripAssistant", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "deb538/AGUI-A2UI-ADK", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Ruthvik219/AI-Financial-coach-Agent", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "amo-tech-ai/ipix", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "amoai-tech/ipixai", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "general-intelligence-systems/ag-ui", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Juanqu261/agentic_dev", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "AIstar007/Dynamic_UI_with_Voice_Integration", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Parth-Singla-123/Unified-Chat-Search", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "zain22972/Model_Pulse-", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "Hieuej147/job-PhuQuoc", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "felipevisu/POC", "channels": ["container"], "firstSeen": "2026-10-04"},
-    {"repo": "supabitapp/supaterm-legacy", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "orka-agents/orka", "channels": ["container"], "firstSeen": "2026-10-12"},
-    {"repo": "ackness/covel", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "ArlindNocaj/copilot-sdk-ag-ui-frontend-demo", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "cberguno/OpenBot", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "AbdAlnaserTech/Awesome-LLM-Apps", "channels": ["container"], "firstSeen": "2026-10-12"},
-    {"repo": "itsmejay80/keepsake", "channels": ["container"], "firstSeen": "2026-10-12"},
-    {"repo": "W3JDev/hermes-platform", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "Abhiram-pro/openmuse-custom_inference", "channels": ["package"], "firstSeen": "2026-10-12"},
-    {"repo": "2710-bhushan/Generative-AI-Projects", "channels": ["container"], "firstSeen": "2026-10-12"}
+    {
+      "repo": "2710-bhushan/Generative-AI-Projects",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "2dotd/form-filling",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "AbdAlnaserTech/Awesome-LLM-Apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Abhiram-pro/openmuse-custom_inference",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "absolutepraya/marka",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ackness/covel",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "affromero/flight-finder",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ag-ui-protocol/ag-ui",
+      "channels": [
+        "package",
+        "npx"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "agentskillexchange/skills",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "AIstar007/Dynamic_UI_with_Voice_Integration",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "alpic-ai/skybridge",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "alpoxdev/openbot",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "amo-tech-ai/ipix",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "amoai-tech/ipixai",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "andrei-ignat-AI/COS.ai",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Anmol-Baranwal/aimock-testing",
+      "channels": [
+        "symbol",
+        "npx"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ansu86d/copilotkit-llm-mock",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "App-netizen-arch/special-octo-chainsaw",
+      "channels": [
+        "npx"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ArlindNocaj/copilot-sdk-ag-ui-frontend-demo",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "atomicstrata/llm-wiki-compiler",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "AXT224/openmuse",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ayushozha/blackbox-economy",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "azents/azents",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "barockok/slaude",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "boctavian2014-ux/C-A-V-A-L-Studio",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "BodhiSearch/BodhiApp",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "botiverse/oar",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-07",
+      "missedRuns": 0
+    },
+    {
+      "repo": "cacheplane/angular-agent-framework",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-10-12T17:03:12.455Z"
+    },
+    {
+      "repo": "cacheplane/dawnai",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-10-12T17:03:12.455Z"
+    },
+    {
+      "repo": "cacheplane/threadplane",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "cberguno/OpenBot",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "cjcrist/notebooklm-lite",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ComposioHQ/composio",
+      "channels": [
+        "package",
+        "npx"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "corbitsdev/workbench",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "corovcam/Universal-Object-Mapping",
+      "channels": [
+        "container",
+        "npx"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "cortexkit/aft",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "cortexkit/magic-context",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "cprice-ping/AG-UI-Travel-Agent",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "deb538/AGUI-A2UI-ADK",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "DeclanErice/LLMBasedTripAssistant",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "deepnote/vscode-deepnote",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "drexc/Andy-Agent",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "EmberAGI/arbitrum-vibekit",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "empireX8/ai-companion",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "EsrakFahim/my-ag-ui-app",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "evanholmes/megaphone",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "everest-an/hypercode",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "felipevisu/POC",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ferro269/awesome-llm-apps-IMPORT-",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "gagan114662/openbot",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-07",
+      "missedRuns": 0
+    },
+    {
+      "repo": "galElmalah/claude-mods",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "galElmalah/claude-queue-plugin",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 1
+    },
+    {
+      "repo": "general-intelligence-systems/ag-ui",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "hamchowderr/mastra-chat-kit",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Hieuej147/job-PhuQuoc",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "itsmejay80/keepsake",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "izmailov-labs/franca",
+      "channels": [
+        "npx"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "jakubzika/i-love-moms",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "jerelvelarde/angular-research-copilot",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "jerelvelarde/copilotkit-engineering-map",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "jerelvelarde/cpk-pm-demo",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "jerelvelarde/generative-ui-london-hackathon-starter",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "johnfink8/mise",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Juanqu261/agentic_dev",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "karakeep-app/karakeep",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "kendoriddy/plugiq-agentforce",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "knap-ai/knapsack_desktop",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "KrishnaAsati16/AI-Financial-Coach-Agent",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "liveloveapp/hashbrown",
+      "channels": [
+        "package",
+        "npx"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "MadonnaMat/intellivault",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "marieai/marie-ai",
+      "channels": [
+        "package",
+        "container"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "mastra-ai/mastra",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "mattermost/mattermost-plugin-agents",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mezberg/ai_home_designer",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Mikehutu/copilot-studio-briefkit",
+      "channels": [
+        "npx"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mockagents/mockagents",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "MriBoyd/ansam-v0.1",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "mxmzb/example-app-web-component",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Near-One/nomadic-ironclaw",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "octelium/octelium",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-09-07",
+      "missedRuns": 0
+    },
+    {
+      "repo": "OpenBox-AI/openbox-copilotkit-sdk",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "openclaw/openclaw",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "openstory-so/openstory",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "orka-agents/orka",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Parth-Singla-123/Unified-Chat-Search",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Pro-GenAI/Agent-RT",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "qw457812/copilotkit-langgraph-fastapi",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ranst91/remote-skills",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Remi-537/awesome-llm-apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Rikinshah787/opensource-muse",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "rivet-dev/agentos",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "rophy/opencode-rc",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Ruthvik219/AI-Financial-coach-Agent",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "sai-ctruong/awesome-llm-apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "selfagency/agentsy",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "selfagency/opilot",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "sherhanfsl/copilot",
+      "channels": [
+        "package",
+        "container"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Shubhamsaboo/awesome-llm-apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "singhrahul7988/Jenny-AI-bookmarker",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "SkillNerds/xskill",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-10-12T17:03:12.455Z"
+    },
+    {
+      "repo": "SkrOYC/langchain-middlewares-callbacks-ts",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "SouvikJoy/clover-platform",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "sshkeda/nudge",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "supabitapp/supaterm",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-07",
+      "missedRuns": 0
+    },
+    {
+      "repo": "supabitapp/supaterm-legacy",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "tanaabased/openclaw-agent-system",
+      "channels": [
+        "package",
+        "symbol"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "TanStack/ai",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "Teju63/financial-coach-agent",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "tercumantanumut/selene",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-14",
+      "missedRuns": 0
+    },
+    {
+      "repo": "testomatio/explorbot",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    },
+    {
+      "repo": "thomascfoley-stack/carvis-web",
+      "channels": [
+        "symbol"
+      ],
+      "firstSeen": "2026-09-28",
+      "missedRuns": 0
+    },
+    {
+      "repo": "thushan/olla",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "tmoody1973/openbot",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-09-21",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Ugbot/london-A2UI",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "umyunsang/UMMAYA",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-08-31",
+      "missedRuns": 0
+    },
+    {
+      "repo": "utpalmv/awesome-llm-apps",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "W3JDev/hermes-platform",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-12",
+      "missedRuns": 0
+    },
+    {
+      "repo": "xuboboo/zmuse",
+      "channels": [
+        "package"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "yashthakur1/Karakeep_16",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "yashthakur1/karakeepa",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "ysansan98/ant-chat",
+      "channels": [
+        "adopter-display"
+      ],
+      "missedRuns": 0,
+      "firstSeen": "2026-10-12T17:03:12.455Z"
+    },
+    {
+      "repo": "zain22972/Model_Pulse-",
+      "channels": [
+        "container"
+      ],
+      "firstSeen": "2026-10-04",
+      "missedRuns": 0
+    },
+    {
+      "repo": "Zoo-Code-Org/Zoo-Code",
+      "channels": [
+        "package"
+      ],
+      "missedRuns": 0
+    }
   ]
 }
