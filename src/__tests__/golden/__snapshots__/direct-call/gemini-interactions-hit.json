@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "headers": {
+    "cache-control": "no-cache",
+    "content-type": "text/event-stream"
+  },
+  "body": "data: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"aimock-int-0\",\"status\":\"in_progress\"},\"event_id\":\"evt_1\"}\n\ndata: {\"event_type\":\"step.start\",\"index\":0,\"step\":{\"type\":\"model_output\"},\"event_id\":\"evt_2\"}\n\ndata: {\"event_type\":\"step.delta\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"Hi there.\"},\"event_id\":\"evt_3\"}\n\ndata: {\"event_type\":\"step.stop\",\"index\":0,\"event_id\":\"evt_4\"}\n\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"id\":\"aimock-int-0\",\"status\":\"completed\",\"usage\":{\"total_input_tokens\":0,\"total_output_tokens\":0,\"total_tokens\":0}},\"event_id\":\"evt_5\"}\n\n"
+}

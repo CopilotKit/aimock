@@ -1,0 +1,7 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.25,-0.5,0.75]}],\"model\":\"text-embedding-3-small\",\"usage\":{\"prompt_tokens\":0,\"total_tokens\":0}}"
+}

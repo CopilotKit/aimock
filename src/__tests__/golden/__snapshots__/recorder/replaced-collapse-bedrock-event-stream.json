@@ -1,0 +1,10 @@
+{
+  "content": "Hello world",
+  "toolCalls": [
+    {
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Paris\"}",
+      "id": "toolu_fixed_1"
+    }
+  ]
+}

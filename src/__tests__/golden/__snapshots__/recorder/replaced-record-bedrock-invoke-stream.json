@@ -1,0 +1,38 @@
+{
+  "fixtures": [
+    {
+      "match": {
+        "userMessage": "record bedrock stream",
+        "model": "anthropic.claude-sonnet-4-5-v1",
+        "turnIndex": 0,
+        "hasToolResult": false
+      },
+      "response": {
+        "content": "Hello world",
+        "toolCalls": [
+          {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Paris\"}",
+            "id": "toolu_fixed_1"
+          }
+        ]
+      },
+      "recordedTimings": {
+        "ttftMs": "<ms>",
+        "interChunkDelaysMs": [
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>",
+          "<ms>"
+        ],
+        "totalDurationMs": "<ms>"
+      }
+    }
+  ]
+}
