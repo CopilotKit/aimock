@@ -10,6 +10,8 @@ import type {
 } from "./types.js";
 import type { Journal } from "./journal.js";
 import { flattenHeaders } from "./helpers.js";
+import { collect } from "./response/catalog/collect.js";
+import { renderOpenRouterChatModels } from "./response/catalog/render.js";
 
 /**
  * OpenRouter chat/LLM router shaping. aimock detects an OpenRouter request by
@@ -290,90 +292,6 @@ export function serializeOpenRouterError(
 
 // ─── Discovery endpoints ─────────────────────────────────────────────────────
 
-/** Default model slug set for `GET /api/v1/models` when no chat fixtures name one. */
-const DEFAULT_OPENROUTER_MODELS = [
-  "openai/gpt-4o",
-  "anthropic/claude-3.5-sonnet",
-  "google/gemini-2.0-flash-001",
-];
-
-/**
- * Build one OpenRouter model-catalog object (deterministic static filler).
- * Field set mirrors real OpenRouter bytes (or-capture/models-first.json):
- * pricing values are STRINGS; the object also carries hugging_face_id,
- * knowledge_cutoff, supported_voices, links, default_parameters,
- * expiration_date, and a `reasoning` descriptor (SDKs tolerate extras).
- */
-function openRouterModelObject(id: string): Record<string, unknown> {
-  return {
-    id,
-    canonical_slug: id,
-    hugging_face_id: null,
-    name: id,
-    created: 0,
-    description: `Mock OpenRouter model ${id} served by aimock.`,
-    context_length: 128000,
-    architecture: {
-      modality: "text->text",
-      input_modalities: ["text"],
-      output_modalities: ["text"],
-      tokenizer: "Other",
-      instruct_type: null,
-    },
-    pricing: {
-      prompt: "0",
-      completion: "0",
-      request: "0",
-      image: "0",
-      web_search: "0",
-      internal_reasoning: "0",
-      input_cache_read: "0",
-      input_cache_write: "0",
-    },
-    top_provider: {
-      context_length: 128000,
-      max_completion_tokens: 16384,
-      is_moderated: false,
-    },
-    per_request_limits: null,
-    supported_parameters: [
-      "tools",
-      "tool_choice",
-      "max_tokens",
-      "temperature",
-      "top_p",
-      "stop",
-      "reasoning",
-    ],
-    default_parameters: null,
-    supported_voices: null,
-    knowledge_cutoff: null,
-    expiration_date: null,
-    links: { details: `/api/v1/models/${id}/endpoints` },
-    reasoning: { mandatory: false, default_enabled: false },
-  };
-}
-
-/**
- * Collect the model ids advertised by `GET /api/v1/models`: every loaded chat
- * (or endpoint-less) fixture with a string `match.model`, in first-seen order;
- * the default set when none contribute one. Mirrors the Ollama `/api/tags` and
- * OpenRouter video `/models` synthesis idioms.
- */
-function collectModelIds(fixtures: Fixture[]): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const f of fixtures) {
-    if (f.match.endpoint !== undefined && f.match.endpoint !== "chat") continue;
-    const m = f.match.model;
-    if (typeof m === "string" && m.length > 0 && !seen.has(m)) {
-      seen.add(m);
-      ids.push(m);
-    }
-  }
-  return ids.length > 0 ? ids : DEFAULT_OPENROUTER_MODELS;
-}
-
 function journalGet(
   req: http.IncomingMessage,
   journal: Journal,
@@ -400,10 +318,10 @@ export function handleOpenRouterModels(
 ): void {
   setCorsHeaders(res);
   const path = req.url ?? "/api/v1/models";
-  const data = collectModelIds(fixtures).map(openRouterModelObject);
+  const body = renderOpenRouterChatModels(collect(fixtures, "chat").ids);
   journalGet(req, journal, path, 200);
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ data }));
+  res.end(JSON.stringify(body));
 }
 
 /** GET /api/v1/key — the caller's key metadata/limits/usage (static defaults). */
