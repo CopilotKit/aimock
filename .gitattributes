@@ -8,3 +8,6 @@
 *.svg filter=lfs diff=lfs merge=lfs -text
 docs/favicon.svg !filter !diff !merge
 docs/og-image.* !filter !diff !merge
+# Public API reports written by `pnpm api:report` (scripts/api-report.ts)
+etc/*.api.md linguist-generated=true text eol=lf
+src/__tests__/golden/__snapshots__/** text eol=lf
