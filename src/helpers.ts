@@ -11,6 +11,10 @@ import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
 import { isRecognizedApiKeyHeader } from "./api-key-auth.js";
 import {
+  resolveStrictMode as resolvePolicyStrictMode,
+  strictOverrideField as policyStrictOverrideField,
+} from "./response/policy.js";
+import {
   estimatePromptTokens as estimateUsagePromptTokens,
   estimateTokens as estimateUsageTokens,
 } from "./response/usage/estimate.js";
@@ -383,17 +387,7 @@ export function resolveStrictMode(
   serverDefault: boolean | undefined,
   rawHeaders?: IncomingHttpHeaders,
 ): boolean {
-  if (rawHeaders) {
-    const header = rawHeaders["x-aimock-strict"];
-    const rawVal =
-      typeof header === "string" ? header : Array.isArray(header) ? header[0] : undefined;
-    if (typeof rawVal === "string") {
-      const val = rawVal.trim().toLowerCase();
-      if (val === "true" || val === "1") return true;
-      if (val === "false" || val === "0") return false;
-    }
-  }
-  return serverDefault ?? false;
+  return resolvePolicyStrictMode(serverDefault, rawHeaders);
 }
 
 const STRICT_INTEGER_RE = /^\d+$/;
@@ -445,11 +439,7 @@ export function strictOverrideField(
   serverDefault: boolean | undefined,
   rawHeaders?: IncomingHttpHeaders,
 ): { strictOverride?: boolean } {
-  const effective = resolveStrictMode(serverDefault, rawHeaders);
-  if (effective !== (serverDefault ?? false)) {
-    return { strictOverride: effective };
-  }
-  return {};
+  return policyStrictOverrideField(serverDefault, rawHeaders);
 }
 
 /**
