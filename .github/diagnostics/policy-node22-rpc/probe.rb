@@ -8,8 +8,8 @@ SUBJECT_SHA = "1e47d150f6caddffc8e006fd4bec9d89bed5732a"
 SUBJECT_TREE = "beb6464d69b2b972237ccd20b20e827f2eb81005"
 LOG_LIMIT = 8 * 1024 * 1024
 EVIDENCE_LIMIT = 64 * 1024 * 1024
-STAGE_TIMEOUTS = { "install" => 120, "build" => 90, "test" => 240 }.freeze
-TOTAL_TIMEOUT_SECONDS = 480
+STAGE_TIMEOUTS = { "install" => 120, "build" => 90, "test" => 540 }.freeze
+TOTAL_TIMEOUT_SECONDS = 780
 
 subject = File.realpath(ARGV.fetch(0))
 evidence = File.expand_path(ARGV.fetch(1))
@@ -142,7 +142,7 @@ begin
     raise "Unexpected dependency version" unless Digest::SHA256.file(dependency).hexdigest == "207b5394beb3d4599bae86b4921a28b3a7a9cb6c3266286ea822bd8d1cb39830"
     capture!("ruby", File.join(helper_root, "instrument.rb"), subject, File.dirname(backup))
     FileUtils.cp(dependency, File.join(File.dirname(backup), "birpc.instrumented.js"))
-    run_command(subject, evidence, "test", ["node", "node_modules/vitest/vitest.mjs", "run", "src/__tests__/misbehavior-loading.test.ts", "--maxWorkers=2", "--minWorkers=1"], { "AIMOCK_RPC_PROBE_DIR" => File.dirname(backup) }, deadline: total_deadline)
+    run_command(subject, evidence, "test", ["pnpm", "test"], { "AIMOCK_RPC_PROBE_DIR" => File.dirname(backup) }, deadline: total_deadline)
 rescue StandardError => error
     exit_code = 1
     File.write(File.join(evidence, "failure.txt"), "#{error.class}: #{error.message}\n")
