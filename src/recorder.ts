@@ -30,6 +30,7 @@ import { applyConfiguredProviderAuth, applyProviderAuth } from "./provider-auth.
 import { isAuthenticatedRequest, isRecognizedApiKeyHeader } from "./api-key-auth.js";
 import { getTestId, slugifyTestId, slugifyContext, hasMintedRequestId } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import { captureUsage } from "./response/usage/recording.js";
 
 /** True when an SSE frame completes an OpenAI stream. */
 function isTerminalSSEFrame(frame: string): boolean {
@@ -780,7 +781,14 @@ export async function proxyAndRecord(
     // collapse never yields both `audioB64` and a stream usage frame), but a
     // future collapser that set both would drop the usage on the audio path
     // with no compiler signal.
-    const collapsedUsage = sanitizeRecordedUsage(collapsed.usage);
+    const collapsedUsage = captureUsage({
+      provider: providerKey,
+      contentType: ctString,
+      operation: request._endpointType,
+      family: "final",
+      stage: "final",
+      observation: collapsed.usage,
+    });
     const usageSpread = collapsedUsage ? { usage: collapsedUsage } : {};
     // Audio from streamed inlineData (e.g. Gemini SSE with audio parts).
     // A single Gemini turn can interleave audio with a functionCall and/or
@@ -992,6 +1000,7 @@ export async function proxyAndRecord(
         upstreamStatus,
         defaults.logger,
         request,
+        { provider: providerKey, contentType: ctString, operation: request._endpointType },
       );
     }
   }
@@ -1646,22 +1655,6 @@ function toToolCallArguments(raw: unknown): string {
 }
 
 /**
- * `usage` sub-objects that carry numeric breakdowns rather than a scalar. The
- * inner fields are NOT allowlisted here on purpose: the recorder keeps every
- * finite-numeric inner field (documented or forward-compat), matching the
- * load-time validator in fixture-loader.ts, whose index-signature escape hatch
- * accepts undocumented numeric inner keys too. A `Set` (own-key membership via
- * `.has()`, no prototype-chain walk) mirrors that validator's
- * `new Set(Object.keys(...))` classification so anything this recorder writes
- * loads cleanly.
- */
-const USAGE_OBJECT_FIELDS: ReadonlySet<string> = new Set([
-  "cost_details",
-  "prompt_tokens_details",
-  "completion_tokens_details",
-]);
-
-/**
  * Sanitize a provider-reported `usage` object into the fixture
  * `response.usage` override shape (#368).
  *
@@ -1684,29 +1677,7 @@ const USAGE_OBJECT_FIELDS: ReadonlySet<string> = new Set([
  * entirely and keeps pre-#368 fixtures byte-identical.
  */
 export function sanitizeRecordedUsage(raw: unknown): ResponseOverrides["usage"] | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (val === undefined || val === null) continue;
-    if (USAGE_OBJECT_FIELDS.has(key)) {
-      if (typeof val !== "object" || val === null || Array.isArray(val)) continue;
-      const inner: Record<string, unknown> = {};
-      for (const [innerKey, innerVal] of Object.entries(val as Record<string, unknown>)) {
-        // Documented inner fields must be numeric (validator-enforced); undocumented
-        // ones are unvalidated, so pass them through only when numeric too — keeping
-        // the recorded object uniformly safe to re-load.
-        if (typeof innerVal === "number" && Number.isFinite(innerVal)) inner[innerKey] = innerVal;
-      }
-      if (Object.keys(inner).length > 0) out[key] = inner;
-      continue;
-    }
-    if (key === "is_byok") {
-      if (typeof val === "boolean") out[key] = val;
-      continue;
-    }
-    if (typeof val === "number" && Number.isFinite(val)) out[key] = val;
-  }
-  return Object.keys(out).length > 0 ? (out as ResponseOverrides["usage"]) : undefined;
+  return captureUsage({ family: "final", stage: "final", observation: raw });
 }
 
 /**
@@ -1718,6 +1689,7 @@ function buildFixtureResponse(
   status: number,
   logger?: Logger,
   request?: ChatCompletionRequest,
+  captureContext: { provider?: RecordProviderKey; contentType?: string; operation?: string } = {},
 ): FixtureResponse {
   if (parsed === null || parsed === undefined) {
     // Raw / unparseable response — save as error
@@ -1836,6 +1808,13 @@ function buildFixtureResponse(
     !("message" in obj) &&
     !("outputs" in obj);
   if (looksLikeTranscription) {
+    const transcriptionUsage = captureUsage({
+      ...captureContext,
+      family: "transcription",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const transcriptionUsageSpread = transcriptionUsage ? { usage: transcriptionUsage } : {};
     return {
       transcription: {
         text: obj.text as string,
@@ -1853,9 +1832,7 @@ function buildFixtureResponse(
             }
           : {}),
         ...(obj.duration !== undefined ? { duration: Number(obj.duration) } : {}),
-        ...(obj.usage && typeof obj.usage === "object"
-          ? { usage: obj.usage as Record<string, unknown> }
-          : {}),
+        ...transcriptionUsageSpread,
         ...(Array.isArray(obj.words) ? { words: obj.words } : {}),
         ...(Array.isArray(obj.segments) ? { segments: obj.segments } : {}),
       },
@@ -1870,6 +1847,13 @@ function buildFixtureResponse(
     !("content" in obj) &&
     !("candidates" in obj)
   ) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "interactions",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const outputs = obj.outputs as Array<Record<string, unknown>>;
     const fnCallOutputs = outputs.filter((o) => o.type === "function_call");
     const textOutputs = outputs.filter((o) => o.type === "text" && typeof o.text === "string");
@@ -1884,15 +1868,15 @@ function buildFixtureResponse(
         ...(o.id ? { id: String(o.id) } : {}),
       }));
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasContent) {
-      return { content: joinedText };
+      return { ...usageSpread, content: joinedText };
     }
     // Recognized Gemini Interactions shape but empty content
-    return { content: "" };
+    return { ...usageSpread, content: "" };
   }
 
   // OpenAI video generation: { id, status, ... }
@@ -1963,7 +1947,12 @@ function buildFixtureResponse(
       // `CollapseResult.usage`): replay then serves the real token counts rather
       // than the `ceil(len/4)` estimate, and OpenRouter's `usage.cost` survives
       // recording. Omitted when upstream sent no usage.
-      const openaiUsage = sanitizeRecordedUsage(obj.usage);
+      const openaiUsage = captureUsage({
+        ...captureContext,
+        family: "openai",
+        stage: "nonstream",
+        observation: obj,
+      });
       const usageSpread = openaiUsage ? { usage: openaiUsage } : {};
 
       if (hasToolCalls) {
@@ -2010,6 +1999,13 @@ function buildFixtureResponse(
 
   // Anthropic: { content: [{ type: "text", text: "..." }] } or tool_use
   if (Array.isArray(obj.content) && obj.content.length > 0) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "anthropic",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const blocks = obj.content as Array<Record<string, unknown>>;
     const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
     const textBlocks = blocks.filter((b) => b.type === "text" && typeof b.text === "string");
@@ -2068,6 +2064,7 @@ function buildFixtureResponse(
       }));
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
           toolCalls,
           ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
@@ -2076,6 +2073,7 @@ function buildFixtureResponse(
         };
       }
       return {
+        ...usageSpread,
         toolCalls,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
@@ -2084,6 +2082,7 @@ function buildFixtureResponse(
     }
     if (hasContent) {
       return {
+        ...usageSpread,
         content: joinedText,
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
@@ -2104,6 +2103,7 @@ function buildFixtureResponse(
     // redactedThinking field.)
     if (thinkingBlocks.length > 0 || redactedBlocks.length > 0) {
       return {
+        ...usageSpread,
         content: "",
         ...(anthropicReasoning ? { reasoning: anthropicReasoning } : {}),
         ...reasoningSignatureSpread,
@@ -2117,6 +2117,13 @@ function buildFixtureResponse(
     const candidate = obj.candidates[0] as Record<string, unknown>;
     const content = candidate.content as Record<string, unknown> | undefined;
     if (content && Array.isArray(content.parts)) {
+      const capturedUsage = captureUsage({
+        ...captureContext,
+        family: "gemini",
+        stage: "nonstream",
+        observation: obj,
+      });
+      const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
       const parts = content.parts as Array<Record<string, unknown>>;
 
       // Audio inlineData parts take priority over text. Key on the PRESENCE of
@@ -2146,6 +2153,7 @@ function buildFixtureResponse(
       if (audioParts.length > 0) {
         const inlineData = audioParts[0].inlineData as Record<string, unknown>;
         return {
+          ...usageSpread,
           audio: {
             b64Json: String(inlineData.data ?? ""),
             contentType:
@@ -2177,21 +2185,31 @@ function buildFixtureResponse(
         });
         if (hasContent) {
           return {
+            ...usageSpread,
             content: joinedText,
             toolCalls,
             ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
           };
         }
-        return { toolCalls, ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
+        return {
+          ...usageSpread,
+          toolCalls,
+          ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+        };
       }
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
           ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
         };
       }
       // Recognized Gemini shape but empty content
-      return { content: "", ...(geminiReasoning ? { reasoning: geminiReasoning } : {}) };
+      return {
+        ...usageSpread,
+        content: "",
+        ...(geminiReasoning ? { reasoning: geminiReasoning } : {}),
+      };
     }
   }
 
@@ -2200,6 +2218,13 @@ function buildFixtureResponse(
     const output = obj.output as Record<string, unknown>;
     const msg = output.message as Record<string, unknown> | undefined;
     if (msg && Array.isArray(msg.content)) {
+      const capturedUsage = captureUsage({
+        ...captureContext,
+        family: "bedrock-converse",
+        stage: "nonstream",
+        observation: obj,
+      });
+      const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
       const blocks = msg.content as Array<Record<string, unknown>>;
       const toolUseBlocks = blocks.filter((b) => b.toolUse);
       const textBlocks = blocks.filter((b) => typeof b.text === "string");
@@ -2229,21 +2254,31 @@ function buildFixtureResponse(
         });
         if (hasContent) {
           return {
+            ...usageSpread,
             content: joinedText,
             toolCalls,
             ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
           };
         }
-        return { toolCalls, ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
+        return {
+          ...usageSpread,
+          toolCalls,
+          ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+        };
       }
       if (hasContent) {
         return {
+          ...usageSpread,
           content: joinedText,
           ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
         };
       }
       // Recognized Bedrock Converse shape but empty content
-      return { content: "", ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}) };
+      return {
+        ...usageSpread,
+        content: "",
+        ...(bedrockReasoning ? { reasoning: bedrockReasoning } : {}),
+      };
     }
   }
 
@@ -2256,6 +2291,13 @@ function buildFixtureResponse(
     typeof obj.message === "object" &&
     Array.isArray((obj.message as Record<string, unknown>).content)
   ) {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "cohere",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const msg = obj.message as Record<string, unknown>;
     const contentBlocks = msg.content as Array<Record<string, unknown>>;
     // Join ALL text blocks, not just the first — a multi-block Cohere response
@@ -2286,9 +2328,9 @@ function buildFixtureResponse(
         ...(b.id ? { id: String(b.id) } : {}),
       }));
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (msgToolCalls.length > 0) {
       const toolCalls: ToolCall[] = msgToolCalls.map((tc) => {
@@ -2307,22 +2349,29 @@ function buildFixtureResponse(
         };
       });
       if (hasContent) {
-        return { content: joinedText, toolCalls };
+        return { ...usageSpread, content: joinedText, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasContent) {
-      return { content: joinedText };
+      return { ...usageSpread, content: joinedText };
     }
     // Recognized Cohere v2 shape (finish_reason + message.content array) with
     // no text and no tool calls. Own the empty turn here and return an
     // empty-content fixture rather than falling through to the Ollama branch
     // below, which would re-handle `message.content` and mis-route it.
-    return { content: "" };
+    return { ...usageSpread, content: "" };
   }
 
   // Ollama: { message: { content: "...", tool_calls: [...] } }
   if (obj.message && typeof obj.message === "object") {
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "ollama",
+      stage: "nonstream",
+      observation: obj,
+    });
+    const usageSpread = capturedUsage ? { usage: capturedUsage } : {};
     const msg = obj.message as Record<string, unknown>;
     const hasOllamaToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
     const hasOllamaContent = typeof msg.content === "string" && msg.content.length > 0;
@@ -2338,18 +2387,18 @@ function buildFixtureResponse(
           };
         });
       if (hasOllamaContent) {
-        return { content: msg.content as string, toolCalls };
+        return { ...usageSpread, content: msg.content as string, toolCalls };
       }
-      return { toolCalls };
+      return { ...usageSpread, toolCalls };
     }
     if (hasOllamaContent) {
-      return { content: msg.content as string };
+      return { ...usageSpread, content: msg.content as string };
     }
     // Ollama message with content array (like Cohere)
     if (Array.isArray(msg.content) && msg.content.length > 0) {
       const first = msg.content[0] as Record<string, unknown>;
       if (typeof first.text === "string") {
-        return { content: first.text };
+        return { ...usageSpread, content: first.text };
       }
     }
   }
@@ -2359,7 +2408,13 @@ function buildFixtureResponse(
   // here, and gating merely on `"done" in obj` would capture unrelated payloads
   // that happen to carry a `response` string and some other `done`-keyed value.
   if (typeof obj.response === "string" && typeof obj.done === "boolean") {
-    return { content: obj.response };
+    const capturedUsage = captureUsage({
+      ...captureContext,
+      family: "ollama",
+      stage: "nonstream",
+      observation: obj,
+    });
+    return { ...(capturedUsage ? { usage: capturedUsage } : {}), content: obj.response };
   }
 
   // Fallback: unknown format — save as error. Log the observed top-level shape

@@ -30,6 +30,7 @@ import type { Logger } from "./logger.js";
 import { CHAOS_FIELDS, CHAOS_FIELD_NAMES, parseChaosField } from "./chaos.js";
 import { Message, build, fixed, jsonText, msg, quote, within } from "./message-text.js";
 import { MCP_FAKES_ECHO_LIMIT } from "./constants.js";
+import { getUsageFieldDefinition } from "./response/usage/fields.js";
 import {
   copyFixtureMisbehaviorPosition,
   parseMisbehavior,
@@ -1390,20 +1391,11 @@ export function validateFixtures(
             // on the documented ones — otherwise a bad inner scalar (e.g.
             // cost_details.upstream_inference_cost: "abc") passes load-time
             // validation and only blows up at replay in the canonical SDK.
-            const numericInnerFields: Record<string, readonly string[]> = {
-              cost_details: [
-                "upstream_inference_cost",
-                "upstream_inference_prompt_cost",
-                "upstream_inference_completions_cost",
-              ],
-              prompt_tokens_details: ["cached_tokens", "cache_write_tokens", "audio_tokens"],
-              completion_tokens_details: ["reasoning_tokens"],
-            };
-            const objectUsageFields = new Set(Object.keys(numericInnerFields));
             for (const key of Object.keys(r.usage)) {
               const val = (r.usage as Record<string, unknown>)[key];
               if (val === undefined) continue;
-              if (objectUsageFields.has(key)) {
+              const definition = getUsageFieldDefinition(key);
+              if (definition.kind === "object") {
                 if (typeof val !== "object" || val === null || Array.isArray(val)) {
                   results.push({
                     severity: "error",
@@ -1416,7 +1408,7 @@ export function validateFixtures(
                   // Type-check the documented inner scalars; each is optional
                   // (required-if-present), so only validate keys that are set.
                   const inner = val as Record<string, unknown>;
-                  for (const innerKey of numericInnerFields[key]) {
+                  for (const innerKey of definition.numericMembers) {
                     const innerVal = inner[innerKey];
                     if (innerVal !== undefined && typeof innerVal !== "number") {
                       results.push({
@@ -1427,7 +1419,7 @@ export function validateFixtures(
                     }
                   }
                 }
-              } else if (key === "is_byok") {
+              } else if (definition.kind === "boolean") {
                 if (typeof val !== "boolean") {
                   results.push({
                     severity: "error",
