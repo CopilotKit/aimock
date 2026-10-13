@@ -10,6 +10,10 @@ import { build, fixed, msg, quote, type MessageValue } from "./message-text.js";
 import type { Logger } from "./logger.js";
 import { isReasoningModel } from "./model-utils.js";
 import { isRecognizedApiKeyHeader } from "./api-key-auth.js";
+import {
+  estimatePromptTokens as estimateUsagePromptTokens,
+  estimateTokens as estimateUsageTokens,
+} from "./response/usage/estimate.js";
 import type {
   ChatCompletionRequest,
   Fixture,
@@ -1536,24 +1540,14 @@ export function extractOverrides(
  * Uses the ~4 characters per token heuristic common for English text.
  */
 export function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
+  return estimateUsageTokens(text);
 }
 
 /**
  * Estimate prompt tokens from a request's messages array.
  */
 export function estimatePromptTokens(messages: ChatCompletionRequest["messages"]): number {
-  let totalChars = 0;
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      totalChars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part.text) totalChars += part.text.length;
-      }
-    }
-  }
-  return Math.max(1, Math.ceil(totalChars / 4));
+  return estimateUsagePromptTokens(messages);
 }
 
 /**
