@@ -110,6 +110,8 @@ import {
   describeMatch,
 } from "./helpers.js";
 import { DEFAULT_TEST_ID } from "./constants.js";
+import { collect } from "./response/catalog/collect.js";
+import { renderOpenAIModels, renderOllamaTags } from "./response/catalog/render.js";
 import {
   isOpenRouterPath,
   buildOpenRouterCandidates,
@@ -418,14 +420,6 @@ function normalizeCompatPath(pathname: string, logger?: Logger): string {
 // `[^/]+` segment would otherwise swallow the `models` listing path. The
 // content/status REs are shared with the route registry and metrics.ts
 // path-label normalization (imported above).
-
-const DEFAULT_MODELS = [
-  "gpt-4",
-  "gpt-4o",
-  "claude-3-5-sonnet-20241022",
-  "gemini-2.0-flash",
-  "text-embedding-3-small",
-];
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -3800,23 +3794,9 @@ async function startServer(
 
     if (pathname === OLLAMA_TAGS_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
-      }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const models = ids.map((name) => ({
-        name,
-        model: name,
-        modified_at: new Date().toISOString(),
-        size: 0,
-        digest: "",
-        details: {},
-      }));
+      const body = renderOllamaTags(collect(fixtures, "all").ids, () => new Date().toISOString());
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ models }));
+      res.end(JSON.stringify(body));
       return;
     }
 
@@ -4035,21 +4015,9 @@ async function startServer(
     // Models listing
     if (pathname === MODELS_PATH && req.method === "GET") {
       setCorsHeaders(res);
-      const modelIds = new Set<string>();
-      for (const f of fixtures) {
-        if (f.match.model && typeof f.match.model === "string") {
-          modelIds.add(f.match.model);
-        }
-      }
-      const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_MODELS;
-      const data = ids.map((id) => ({
-        id,
-        object: "model" as const,
-        created: 1686935002,
-        owned_by: "aimock",
-      }));
+      const body = renderOpenAIModels(collect(fixtures, "all").ids);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ object: "list", data }));
+      res.end(JSON.stringify(body));
       return;
     }
 
