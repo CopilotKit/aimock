@@ -18,6 +18,7 @@
  */
 
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -411,12 +412,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -435,12 +434,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -467,12 +464,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${bedrockShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -545,12 +540,10 @@ export async function handleBedrock(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -591,12 +584,10 @@ export async function handleBedrock(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -630,12 +621,14 @@ export async function handleBedrock(
       response: { status: misbehavior.status, fixture },
     });
     const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
-    res.setHeader("x-amzn-errortype", type);
-    writeErrorResponse(
-      res,
-      misbehavior.status,
-      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
-    );
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
 
@@ -673,14 +666,7 @@ export async function handleBedrock(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -822,12 +808,10 @@ export async function handleBedrock(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }
 
@@ -1323,12 +1307,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1347,12 +1329,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1379,12 +1359,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Invalid request: ${bedrockShapeError}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "validation", {
+        message: `Invalid request: ${bedrockShapeError}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1457,12 +1435,10 @@ export async function handleBedrockStream(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("bedrock", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1503,12 +1479,10 @@ export async function handleBedrockStream(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("bedrock", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1542,12 +1516,14 @@ export async function handleBedrockStream(
       response: { status: misbehavior.status, fixture },
     });
     const type = misbehavior.status === 400 ? "ValidationException" : "NotImplementedException";
-    res.setHeader("x-amzn-errortype", type);
-    writeErrorResponse(
-      res,
-      misbehavior.status,
-      JSON.stringify({ __type: type, code: misbehavior.code, message: misbehavior.message }),
-    );
+    const renderedError = renderError("bedrock", "misbehavior", {
+      type,
+      code: misbehavior.code,
+      message: misbehavior.message,
+    });
+    for (const [name, value] of Object.entries(renderedError.headers ?? {}))
+      res.setHeader(name, value);
+    writeErrorResponse(res, misbehavior.status, renderedError.body);
     return;
   }
   const latency = fixture.latency ?? defaults.latency;
@@ -1607,14 +1583,7 @@ export async function handleBedrockStream(
     });
     // Bedrock Claude error format: { type: "error", error: { type, message } }
     // Uses ?? (nullish coalescing) intentionally — preserves explicit empty-string types from fixtures.
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("bedrock", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -1769,11 +1738,9 @@ export async function handleBedrockStream(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("bedrock", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }

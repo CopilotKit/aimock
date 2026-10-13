@@ -7,6 +7,7 @@
  */
 
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
 import type {
   ChatCompletionRequest,
   ChatMessage,
@@ -1466,12 +1467,10 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: `Malformed JSON: ${detail}`,
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("messages", "validation", {
+        message: `Malformed JSON: ${detail}`,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1490,12 +1489,10 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({
-        error: {
-          message: "Request body must be a JSON object",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("messages", "validation", {
+        message: "Request body must be a JSON object",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1522,7 +1519,10 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       400,
-      JSON.stringify({ error: { message: messagesError, type: "invalid_request_error" } }),
+      renderError("messages", "validation", {
+        message: messagesError,
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1551,13 +1551,7 @@ export async function handleMessages(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          type: "error",
-          error: {
-            type: "invalid_request_error",
-            message: violationMessage,
-          },
-        }),
+        renderError("messages", "thinking", { message: violationMessage }).body,
       );
       return;
     }
@@ -1584,7 +1578,10 @@ export async function handleMessages(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({ error: { message: toolsError, type: "invalid_request_error" } }),
+        renderError("messages", "validation", {
+          message: toolsError,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1665,12 +1662,10 @@ export async function handleMessages(
       writeErrorResponse(
         res,
         strictStatus,
-        JSON.stringify({
-          error: {
-            message: strictMessage,
-            type: "invalid_request_error",
-          },
-        }),
+        renderError("messages", "strict-miss", {
+          message: strictMessage,
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -1711,12 +1706,10 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       404,
-      JSON.stringify({
-        error: {
-          message: "No fixture matched",
-          type: "invalid_request_error",
-        },
-      }),
+      renderError("messages", "fixture-miss", {
+        message: "No fixture matched",
+        type: "invalid_request_error",
+      }).body,
     );
     return;
   }
@@ -1748,14 +1741,11 @@ export async function handleMessages(
     writeErrorResponse(
       res,
       misbehavior.status,
-      JSON.stringify({
-        type: "error",
-        error: {
-          type: misbehavior.status === 400 ? "invalid_request_error" : "api_error",
-          code: misbehavior.code,
-          message: misbehavior.message,
-        },
-      }),
+      renderError("messages", "misbehavior", {
+        type: misbehavior.status === 400 ? "invalid_request_error" : "api_error",
+        code: misbehavior.code,
+        message: misbehavior.message,
+      }).body,
     );
     return;
   }
@@ -1821,14 +1811,7 @@ export async function handleMessages(
       testId,
     });
     // Anthropic-style error format: { type: "error", error: { type, message } }
-    const anthropicError = {
-      type: "error",
-      error: {
-        type: response.error.type ?? "api_error",
-        message: response.error.message,
-      },
-    };
-    writeErrorResponse(res, status, JSON.stringify(anthropicError), {
+    writeErrorResponse(res, status, renderError("messages", "fixture", response.error).body, {
       retryAfter: response.retryAfter,
     });
     return;
@@ -2084,11 +2067,9 @@ export async function handleMessages(
   writeErrorResponse(
     res,
     500,
-    JSON.stringify({
-      error: {
-        message: "Fixture response did not match any known type",
-        type: "server_error",
-      },
-    }),
+    renderError("messages", "unknown-response", {
+      message: "Fixture response did not match any known type",
+      type: "server_error",
+    }).body,
   );
 }

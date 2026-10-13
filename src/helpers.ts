@@ -3,6 +3,7 @@ import type { LiveFixtureResponse } from "./live-types.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import type * as http from "node:http";
+import { renderError } from "./response/errors.js";
 import type { IncomingHttpHeaders } from "node:http";
 import { DEFAULT_TEST_ID, MCP_FAKES_ECHO_LIMIT } from "./constants.js";
 import { cutText } from "./echo-text.js";
@@ -1437,14 +1438,7 @@ export function isErrorResponse(r: FixtureResponse): r is ErrorResponse {
  * response body.  Real LLM APIs don't include it.
  */
 export function serializeErrorResponse(response: ErrorResponse): string {
-  return JSON.stringify({
-    error: {
-      message: response.error.message,
-      type: response.error.type ?? "server_error",
-      param: response.error.param ?? null,
-      code: response.error.code ?? null,
-    },
-  });
+  return renderError("openai", "fixture", response.error).body;
 }
 
 export function isEmbeddingResponse(r: FixtureResponse): r is EmbeddingResponse {
