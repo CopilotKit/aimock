@@ -112,6 +112,7 @@ import {
 import { DEFAULT_TEST_ID } from "./constants.js";
 import { collect } from "./response/catalog/collect.js";
 import { renderOpenAIModels, renderOllamaTags } from "./response/catalog/render.js";
+import { renderError } from "./response/errors.js";
 import {
   isOpenRouterPath,
   buildOpenRouterCandidates,
@@ -3236,22 +3237,20 @@ async function startServer(
    * `toolCallEnvelope` instead of using this one.
    */
   function invalidToolArgumentsEnvelope(pathname: string, message: string, code: string): string {
-    if (pathname === OLLAMA_CHAT_PATH) return JSON.stringify({ error: message, code });
+    if (pathname === OLLAMA_CHAT_PATH)
+      return renderError("ollama", "tool-argument", { message, code }).body;
     if (pathname === GEMINI_INTERACTIONS_PATH) {
-      return JSON.stringify({ error: { code, message } });
+      return renderError("interactions", "tool-argument", { message, code }).body;
     }
     if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
-      return JSON.stringify({
-        error: {
-          code: 500,
-          message,
-          status: "INTERNAL",
-          details: googleFixtureToolCallErrorDetails(code),
-        },
-      });
+      return renderError("gemini", "tool-argument", {
+        message,
+        code,
+        googleDetails: googleFixtureToolCallErrorDetails(code),
+      }).body;
     }
     if (pathname === MESSAGES_PATH) {
-      return JSON.stringify({ type: "error", error: { type: "api_error", code, message } });
+      return renderError("messages", "tool-argument", { message, code }).body;
     }
     if (
       BEDROCK_INVOKE_RE.test(pathname) ||
@@ -3259,29 +3258,27 @@ async function startServer(
       BEDROCK_CONVERSE_RE.test(pathname) ||
       BEDROCK_CONVERSE_STREAM_RE.test(pathname)
     ) {
-      return JSON.stringify({ __type: "InternalServerException", message, reason: code });
+      return renderError("bedrock", "tool-argument", { message, code }).body;
     }
-    return JSON.stringify({ error: { message, type: "server_error", code } });
+    return renderError("openai", "tool-argument", { message, code }).body;
   }
 
   function invalidMisbehaviorHeaderEnvelope(pathname: string, detail: string): string {
     const code = "aimock_misbehavior_invalid";
     const message = `${code}: ${detail}`;
     if (pathname === OLLAMA_CHAT_PATH || pathname === OLLAMA_GENERATE_PATH) {
-      return JSON.stringify({ error: message });
+      return renderError("ollama", "invalid-misbehavior-header", { message, code }).body;
     }
-    if (pathname === COHERE_CHAT_PATH) return JSON.stringify({ message });
+    if (pathname === COHERE_CHAT_PATH)
+      return renderError("cohere", "invalid-misbehavior-header", { message, code }).body;
     if (pathname === GEMINI_INTERACTIONS_PATH) {
-      return JSON.stringify({ error: { code, message } });
+      return renderError("interactions", "invalid-misbehavior-header", { message, code }).body;
     }
     if (GEMINI_PATH_RE.test(pathname) || VERTEX_AI_RE.test(pathname)) {
-      return JSON.stringify({ error: { code: 400, message, status: "INVALID_ARGUMENT" } });
+      return renderError("gemini", "invalid-misbehavior-header", { message, code }).body;
     }
     if (pathname === MESSAGES_PATH) {
-      return JSON.stringify({
-        type: "error",
-        error: { type: "invalid_request_error", code, message },
-      });
+      return renderError("messages", "invalid-misbehavior-header", { message, code }).body;
     }
     if (
       BEDROCK_INVOKE_RE.test(pathname) ||
@@ -3289,9 +3286,9 @@ async function startServer(
       BEDROCK_CONVERSE_RE.test(pathname) ||
       BEDROCK_CONVERSE_STREAM_RE.test(pathname)
     ) {
-      return JSON.stringify({ __type: "ValidationException", message });
+      return renderError("bedrock", "invalid-misbehavior-header", { message, code }).body;
     }
-    return JSON.stringify({ error: { message, type: "invalid_request_error", code } });
+    return renderError("openai", "invalid-misbehavior-header", { message, code }).body;
   }
 
   /**
@@ -3454,12 +3451,10 @@ async function startServer(
             )
           : opts?.envelope
             ? opts.envelope(msg, status)
-            : JSON.stringify({
-                error: {
-                  message: msg,
-                  type: errorTypeForStatus(status),
-                },
-              }),
+            : renderError("openai", "route-failure", {
+                message: msg,
+                type: errorTypeForStatus(status),
+              }).body,
       );
     } else {
       // Headers are on the wire, so the status the client got is fixed. If the
@@ -3646,9 +3641,10 @@ async function startServer(
       writeErrorResponse(
         res,
         400,
-        JSON.stringify({
-          error: { message: "Invalid request target", type: "invalid_request_error" },
-        }),
+        renderError("openai", "route-failure", {
+          message: "Invalid request target",
+          type: "invalid_request_error",
+        }).body,
       );
       return;
     }
@@ -4478,7 +4474,7 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4493,7 +4489,7 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4508,7 +4504,7 @@ async function startServer(
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
           streamEvent: (m) =>
-            `event: error\ndata: ${JSON.stringify({ error: { message: m } })}\n\n`,
+            `event: error\ndata: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4813,7 +4809,8 @@ async function startServer(
         await handleGeminiInteractions(req, res, raw, fixtures, journal, defaults, setCorsHeaders);
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4863,7 +4860,8 @@ async function startServer(
         );
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -4891,7 +4889,8 @@ async function startServer(
         );
       } catch (err: unknown) {
         routeError(req, res, err, pathname, {
-          streamEvent: (m) => `data: ${JSON.stringify({ error: { message: m } })}\n\n`,
+          streamEvent: (m) =>
+            `data: ${renderError("openai", "stream-failure", { message: m }).body}\n\n`,
         });
       }
       return;
@@ -5440,9 +5439,10 @@ async function startServer(
         envelope: (m, status) =>
           isOpenRouter
             ? serializeOpenRouterError(status, m)
-            : JSON.stringify({
-                error: { message: m, type: errorTypeForStatus(status) },
-              }),
+            : renderError("openai", "route-failure", {
+                message: m,
+                type: errorTypeForStatus(status),
+              }).body,
         // OpenRouter's numeric `error.code` is the HTTP status, so the aimock
         // code rides in its free-form `metadata`.
         ...(isOpenRouter
@@ -5452,7 +5452,10 @@ async function startServer(
           `data: ${
             isOpenRouter
               ? serializeOpenRouterError(status, m)
-              : JSON.stringify({ error: { message: m, type: errorTypeForStatus(status) } })
+              : renderError("openai", "route-failure", {
+                  message: m,
+                  type: errorTypeForStatus(status),
+                }).body
           }\n\n`,
       });
     }

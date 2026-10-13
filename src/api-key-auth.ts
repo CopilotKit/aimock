@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type * as http from "node:http";
 import type * as net from "node:net";
 import type { ApiKeyAuthConfig } from "./types.js";
+import { renderError } from "./response/errors.js";
 
 export const INBOUND_API_KEY_HEADERS = [
   "authorization",
@@ -13,13 +14,9 @@ export const INBOUND_API_KEY_HEADERS = [
 
 const RECOGNIZED_HEADERS = new Set<string>(INBOUND_API_KEY_HEADERS);
 
-export const API_KEY_ERROR_BODY = JSON.stringify({
-  error: {
-    message: "Invalid API key",
-    type: "authentication_error",
-    code: "invalid_api_key",
-  },
-});
+export const API_KEY_ERROR_BODY = renderError("openai", "legacy-auth", {
+  message: "Invalid API key",
+}).body;
 
 /** @internal */
 export interface ApiKeyPolicy {
