@@ -43,6 +43,21 @@ import {
   testIdSuffix,
   upstreamTimeoutSignal,
 } from "./video-proxy-shared.js";
+/**
+ * Video models OpenRouter has REMOVED (deprecation policy: a removed surface
+ * never mocks success — it serves the rejection the real API serves now).
+ *
+ * openai/sora-2: gone from the live /api/v1/videos/models listing and from
+ * /api/v1/models (its /endpoints page is a 404). A live submit observed on
+ * 2026-10-10 is rejected with HTTP 400, content-type application/json, body
+ * `{"error":{"message":"Model openai/sora-2 does not exist","code":400}}` —
+ * the same rejection OpenRouter gives any unknown model id.
+ */
+import { collect, OPENROUTER_VIDEO_SUNSET_MODELS } from "./response/catalog/collect.js";
+import {
+  DEFAULT_OPENROUTER_VIDEO_MODEL,
+  renderOpenRouterVideoModels,
+} from "./response/catalog/render.js";
 
 /**
  * OpenRouter async video lifecycle mock (`/api/v1/videos`). Mirrors the
@@ -60,20 +75,6 @@ interface OpenRouterVideoRequest {
   prompt?: string;
   [key: string]: unknown;
 }
-
-const DEFAULT_OPENROUTER_VIDEO_MODEL = "bytedance/seedance-2.0";
-
-/**
- * Video models OpenRouter has REMOVED (deprecation policy: a removed surface
- * never mocks success — it serves the rejection the real API serves now).
- *
- * openai/sora-2: gone from the live /api/v1/videos/models listing and from
- * /api/v1/models (its /endpoints page is a 404). A live submit observed on
- * 2026-10-10 is rejected with HTTP 400, content-type application/json, body
- * `{"error":{"message":"Model openai/sora-2 does not exist","code":400}}` —
- * the same rejection OpenRouter gives any unknown model id.
- */
-const OPENROUTER_VIDEO_SUNSET_MODELS: ReadonlySet<string> = new Set(["openai/sora-2"]);
 
 // ─── OpenRouterVideoJobMap (TTL + bounded) ──────────────────────────────────
 
@@ -1158,23 +1159,6 @@ async function proxyOpenRouterVideoRecordContent(args: {
 
 // ─── GET /api/v1/videos/models — model listing ──────────────────────────────
 
-const DEFAULT_OPENROUTER_VIDEO_MODELS = [DEFAULT_OPENROUTER_VIDEO_MODEL];
-
-function modelEntry(id: string): Record<string, unknown> {
-  return {
-    id,
-    name: id,
-    supported_durations: [4, 8],
-    supported_resolutions: ["720p", "1080p"],
-    supported_aspect_ratios: ["16:9", "9:16", "1:1"],
-    supported_frame_images: [],
-    supported_sizes: [],
-    generate_audio: false,
-    seed: true,
-    pricing_skus: [],
-  };
-}
-
 /**
  * Synthesizes the OpenRouter video model listing from loaded fixtures —
  * video-endpoint fixtures with a string `match.model` (mirrors the Ollama
@@ -1284,23 +1268,8 @@ export async function handleOpenRouterVideoModels(
     }
   }
 
-  const modelIds = new Set<string>();
-  let sawVideoFixture = false;
-  for (const f of fixtures) {
-    if (f.match.endpoint === "video") {
-      sawVideoFixture = true;
-      // A sunset model can never be served, so a fixture for one must not
-      // advertise it in the listing either.
-      if (
-        f.match.model &&
-        typeof f.match.model === "string" &&
-        !OPENROUTER_VIDEO_SUNSET_MODELS.has(f.match.model)
-      ) {
-        modelIds.add(f.match.model);
-      }
-    }
-  }
-  if (modelIds.size === 0 && sawVideoFixture) {
+  const collection = collect(fixtures, "video-active");
+  if (collection.ids.length === 0 && collection.diagnostics.sawVideoFixture) {
     // Video fixtures are loaded but none has a string match.model (e.g. all
     // RegExp models or onVideo registrations) — the listing silently serves
     // the default set, which can surprise fixture authors.
@@ -1308,7 +1277,7 @@ export async function handleOpenRouterVideoModels(
       "No video fixture contributes a string model — serving the default video model set",
     );
   }
-  const ids = modelIds.size > 0 ? [...modelIds] : DEFAULT_OPENROUTER_VIDEO_MODELS;
+  const body = renderOpenRouterVideoModels(collection.ids);
 
   // Guard BEFORE journaling (file convention): the synthesis is reachable
   // after an AWAITED-but-failed proxy attempt above, so the client may have
@@ -1336,7 +1305,7 @@ export async function handleOpenRouterVideoModels(
   });
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ data: ids.map((id) => modelEntry(id)) }));
+  res.end(JSON.stringify(body));
 }
 
 // ─── POST /api/v1/videos — submit ───────────────────────────────────────────
