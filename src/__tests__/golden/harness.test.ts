@@ -3,6 +3,7 @@
  * `harness`) that drives every capture mode end to end: plain body, SSE,
  * NDJSON, AWS event-stream and a raw-socket capture.
  */
+import { channel } from "node:diagnostics_channel";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
@@ -78,6 +79,52 @@ async function rawServer(onConn: (sock: net.Socket) => void): Promise<{
 }
 
 const GET = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+
+/** Reset only after the real capture socket has read the fixture bytes. */
+async function resetServer(response: string) {
+  let peer: net.Socket | undefined;
+  const s = await rawServer((sock) => {
+    peer = sock;
+    sock.write(response);
+  });
+  const port = Number(new URL(s.url).port);
+  const errors: Error[] = [];
+  const sockets = channel("net.client.socket");
+  const observe = (message: unknown) => {
+    if (
+      typeof message !== "object" ||
+      message === null ||
+      !("socket" in message) ||
+      !(message.socket instanceof net.Socket)
+    )
+      return;
+    const client = message.socket;
+    client.once("connect", () => {
+      if (client.remotePort !== port) return;
+      let received = 0;
+      client.on("data", (chunk: Buffer) => {
+        received += chunk.length;
+        if (received === Buffer.byteLength(response) && peer) {
+          // A write callback only confirms the send buffer was flushed. The
+          // client must read the response before we introduce the socket error.
+          peer.resetAndDestroy();
+          peer = undefined;
+        }
+      });
+      client.once("error", (err) => errors.push(err));
+    });
+  };
+  sockets.subscribe(observe);
+  return {
+    url: s.url,
+    errors,
+    close: async () => {
+      sockets.unsubscribe(observe);
+      await s.close();
+    },
+  };
+}
+
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Every non-test `.ts` file under `root` (default: src/). */
@@ -614,13 +661,10 @@ describe("captureRawHttp", () => {
   });
 
   it("fails on a body cut short by a reset", async () => {
-    const s = await rawServer((sock) => {
-      sock.write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789", () =>
-        sock.resetAndDestroy(),
-      );
-    });
+    const s = await resetServer("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789");
     try {
       await expect(captureRawHttp(s.url, GET)).rejects.toThrow(/incomplete|truncated/);
+      expect(s.errors).toMatchObject([{ code: "ECONNRESET" }]);
     } finally {
       await s.close();
     }
@@ -638,25 +682,34 @@ describe("captureRawHttp", () => {
   });
 
   it("fails on a close-delimited body cut short by a reset", async () => {
-    const s = await rawServer((sock) => {
-      sock.write("HTTP/1.1 200 OK\r\n\r\npartial", () => sock.resetAndDestroy());
-    });
+    const s = await resetServer("HTTP/1.1 200 OK\r\n\r\npartial");
     try {
       await expect(captureRawHttp(s.url, GET)).rejects.toThrow(/incomplete/);
+      expect(s.errors).toMatchObject([{ code: "ECONNRESET" }]);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("accepts the same close-delimited body ended by a clean close", async () => {
+    const s = await rawServer((sock) => sock.end("HTTP/1.1 200 OK\r\n\r\npartial"));
+    try {
+      await expect(captureRawHttp(s.url, GET)).resolves.toEqual({
+        status: 200,
+        headers: {},
+        body: "partial",
+      });
     } finally {
       await s.close();
     }
   });
 
   it("keeps a complete response that is followed by a reset", async () => {
-    const s = await rawServer((sock) => {
-      sock.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\n\r\nno", () =>
-        sock.resetAndDestroy(),
-      );
-    });
+    const s = await resetServer("HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\n\r\nno");
     try {
       const got = await captureRawHttp(s.url, GET);
       expect(got).toEqual({ status: 401, headers: { "content-length": "2" }, body: "no" });
+      expect(s.errors).toMatchObject([{ code: "ECONNRESET" }]);
     } finally {
       await s.close();
     }
@@ -713,13 +766,12 @@ describe("captureRawHttp", () => {
   });
 
   it("keeps the specific parse error when a socket error follows", async () => {
-    const s = await rawServer((sock) => {
-      sock.write("BOGUS\r\n\r\n", () => sock.resetAndDestroy());
-    });
+    const s = await resetServer("BOGUS\r\n\r\n");
     try {
       await expect(captureRawHttp(s.url, GET)).rejects.toThrow(
         /before the response was complete \(incomplete: captureRawHttp: bad status line: BOGUS\)/,
       );
+      expect(s.errors).toMatchObject([{ code: "ECONNRESET" }]);
     } finally {
       await s.close();
     }

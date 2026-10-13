@@ -18,7 +18,7 @@
  */
 import { readFileSync } from "node:fs";
 import * as http from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleBedrock,
@@ -101,6 +101,19 @@ async function closeMounts(): Promise<void> {
 }
 
 afterEach(closeMounts);
+
+/** Probe the listener with a new TCP connection, without fetch's socket pool. */
+function connectMount(m: Mounted): Promise<void> {
+  const { hostname, port } = new URL(m.url);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(port), hostname);
+    socket.once("error", reject);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve();
+    });
+  });
+}
 
 /** Mount one handler, with fixed fixtures and defaults, in a bare HTTP server. */
 async function mount(
@@ -539,13 +552,15 @@ describe("direct-call mount harness: a handler that throws never yields a captur
     );
     await post(pending, "/x", {});
     await post(completed, "/x", {});
+    await expect(connectMount(pending)).resolves.toBeUndefined();
+    await expect(connectMount(completed)).resolves.toBeUndefined();
     try {
       await expect(closeMounts()).rejects.toThrow(/did not settle within 1000 ms/);
-      await expect(post(pending, "/x", {})).rejects.toMatchObject({
-        cause: { code: "ECONNREFUSED" },
+      await expect(connectMount(pending)).rejects.toMatchObject({
+        code: "ECONNREFUSED",
       });
-      await expect(post(completed, "/x", {})).rejects.toMatchObject({
-        cause: { code: "ECONNREFUSED" },
+      await expect(connectMount(completed)).rejects.toMatchObject({
+        code: "ECONNREFUSED",
       });
     } finally {
       release();
