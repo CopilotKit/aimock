@@ -55,6 +55,11 @@ import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 import type { MisbehaviorPlan } from "./misbehavior.js";
+import { mapAnthropicFinish } from "./response/finish.js";
+import {
+  resolve as resolveAnthropicUsage,
+  render as renderAnthropicUsage,
+} from "./response/usage/codecs/anthropic.js";
 
 /**
  * Non-empty placeholder signature written into emitted `thinking` blocks.
@@ -404,21 +409,7 @@ function thinkingViolationMessage(v: ThinkingViolation): string {
 
 function claudeStopReason(finishReason: string | undefined, defaultReason: string): string {
   if (!finishReason) return defaultReason;
-  if (finishReason === "stop") return "end_turn";
-  if (finishReason === "tool_calls") return "tool_use";
-  if (finishReason === "length") return "max_tokens";
-  return finishReason;
-}
-
-function claudeUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
-  return {
-    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
-  };
+  return mapAnthropicFinish(finishReason);
 }
 
 interface ClaudeSSEEvent {
@@ -489,7 +480,7 @@ function buildClaudeTextStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -564,7 +555,7 @@ function buildClaudeTextStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "end_turn"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -601,7 +592,7 @@ function buildClaudeToolCallStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -695,7 +686,7 @@ function buildClaudeToolCallStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -760,7 +751,7 @@ function buildClaudeTextResponse(
     model: overrides?.model ?? model,
     stop_reason: claudeStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
@@ -811,7 +802,7 @@ function buildClaudeToolCallResponse(
     model: overrides?.model ?? model,
     stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
@@ -845,7 +836,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
       model: effectiveModel,
       stop_reason: null,
       stop_sequence: null,
-      usage: claudeUsage(overrides),
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-start"),
     },
   });
 
@@ -966,7 +957,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
         ),
         stop_sequence: null,
       },
-      usage: { output_tokens: claudeUsage(overrides).output_tokens },
+      usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
     });
 
     // message_stop
@@ -1044,7 +1035,7 @@ function buildClaudeContentWithToolCallsStreamEvents(
       stop_reason: claudeStopReason(overrides?.finishReason, "tool_use"),
       stop_sequence: null,
     },
-    usage: { output_tokens: claudeUsage(overrides).output_tokens },
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-delta"),
   });
 
   // message_stop
@@ -1131,7 +1122,7 @@ function buildClaudeContentWithToolCallsResponse(
       blockHasTools === false ? "end_turn" : "tool_use",
     ),
     stop_sequence: null,
-    usage: claudeUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "messages-final"),
   };
 }
 
@@ -1229,15 +1220,16 @@ export function prepareClaudeMisbehavior(
     context.logger,
   );
   const content = outcome?.content ?? ("content" in response ? (response.content ?? "") : "");
-  const usage = {
-    input_tokens: estimatePromptTokens(context.request.messages),
-    output_tokens: estimateTokens(
+  const resolvedUsage = resolveAnthropicUsage(undefined, {
+    inputTokens: estimatePromptTokens(context.request.messages),
+    outputTokens: estimateTokens(
       content +
         servedToolCalls.map((call) => call.name + call.arguments).join("") +
         (reasoning ?? "") +
         (plan.refusal ?? ""),
     ),
-  };
+  });
+  const usage = renderAnthropicUsage(resolvedUsage, "messages-final", "applied-misbehavior");
   const overrides = {
     ...extractOverrides(response),
     ...(plan.stop === "length" ? { finishReason: "length" } : {}),
@@ -1282,7 +1274,7 @@ export function prepareClaudeMisbehavior(
       {
         type: "message_delta",
         delta: { stop_reason: "max_tokens", stop_sequence: null },
-        usage: { output_tokens: usage.output_tokens },
+        usage: renderAnthropicUsage(resolvedUsage, "messages-delta", "applied-misbehavior"),
       },
       { type: "message_stop" },
     );
@@ -1325,7 +1317,7 @@ export function prepareClaudeMisbehavior(
       {
         type: "message_delta",
         delta: { stop_reason: stop, stop_sequence: null, ...detail },
-        usage: { output_tokens: usage.output_tokens },
+        usage: renderAnthropicUsage(resolvedUsage, "messages-delta", "applied-misbehavior"),
       },
       { type: "message_stop" },
     ];

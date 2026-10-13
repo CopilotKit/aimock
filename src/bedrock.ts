@@ -62,6 +62,11 @@ import { applyChaosAsync } from "./chaos.js";
 import { planMisbehavior, recordMisbehaviorOutcome } from "./misbehavior.js";
 import { prepareClaudeMisbehavior } from "./messages.js";
 import { proxyAndRecord } from "./recorder.js";
+import { mapAnthropicFinish } from "./response/finish.js";
+import {
+  resolve as resolveAnthropicUsage,
+  render as renderAnthropicUsage,
+} from "./response/usage/codecs/anthropic.js";
 
 // ─── Bedrock Claude request types ────────────────────────────────────────────
 
@@ -105,30 +110,7 @@ function bedrockStopReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "end_turn";
-  if (overrideFinishReason === "tool_calls") return "tool_use";
-  if (overrideFinishReason === "length") return "max_tokens";
-  return overrideFinishReason;
-}
-
-/**
- * Build a Bedrock-style usage object from optional overrides.
- *
- * When no overrides are provided (the common case for mock fixtures),
- * returns all-zero token counts. This is intentional — aimock does not
- * attempt to estimate token usage from fixture content. Callers that
- * need realistic usage numbers should set `usage` in their fixture's
- * response overrides.
- */
-function bedrockUsage(overrides?: ResponseOverrides): {
-  input_tokens: number;
-  output_tokens: number;
-} {
-  if (!overrides?.usage) return { input_tokens: 0, output_tokens: 0 };
-  return {
-    input_tokens: overrides.usage.input_tokens ?? overrides.usage.prompt_tokens ?? 0,
-    output_tokens: overrides.usage.output_tokens ?? overrides.usage.completion_tokens ?? 0,
-  };
+  return mapAnthropicFinish(overrideFinishReason);
 }
 
 // ─── Input conversion: Bedrock → ChatCompletionRequest ──────────────────────
@@ -306,7 +288,7 @@ function buildBedrockTextResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "end_turn"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -339,7 +321,7 @@ function buildBedrockToolCallResponse(
     model: overrides?.model ?? model,
     stop_reason: bedrockStopReason(overrides?.finishReason, "tool_use"),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -393,7 +375,7 @@ function buildBedrockBlocksResponse(
       outcome.hasToolCalls ? "tool_use" : "end_turn",
     ),
     stop_sequence: null,
-    usage: bedrockUsage(overrides),
+    usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-final"),
   };
 }
 
@@ -884,7 +866,7 @@ function buildBedrockInvokeMessageStart(
         model: overrides?.model ?? model,
         stop_reason: null,
         stop_sequence: null,
-        usage: bedrockUsage(overrides),
+        usage: renderAnthropicUsage(resolveAnthropicUsage(overrides), "bedrock-start"),
       },
     },
   };
@@ -899,7 +881,7 @@ function buildBedrockInvokeMessageDelta(stopReason: string): {
     payload: {
       type: "message_delta",
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: 0 },
+      usage: renderAnthropicUsage(resolveAnthropicUsage(), "bedrock-delta"),
     },
   };
 }

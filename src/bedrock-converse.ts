@@ -50,6 +50,7 @@ import { writeEventStream } from "./aws-event-stream.js";
 import { createInterruptionSignal } from "./interruption.js";
 import type { Journal } from "./journal.js";
 import type { Logger } from "./logger.js";
+import { mapAnthropicFinish } from "./response/finish.js";
 import { applyChaosAsync } from "./chaos.js";
 import { proxyAndRecord } from "./recorder.js";
 import { planMisbehavior, recordMisbehaviorOutcome, type MisbehaviorPlan } from "./misbehavior.js";
@@ -87,10 +88,7 @@ function converseStopReason(
   defaultReason: string,
 ): string {
   if (!overrideFinishReason) return defaultReason;
-  if (overrideFinishReason === "stop") return "end_turn";
-  if (overrideFinishReason === "tool_calls") return "tool_use";
-  if (overrideFinishReason === "length") return "max_tokens";
-  return overrideFinishReason;
+  return mapAnthropicFinish(overrideFinishReason);
 }
 
 /**
